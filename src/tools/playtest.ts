@@ -72,6 +72,8 @@ export const playtestRunTool: Tool = {
     // overruns: whatever hangs then rejects, and the run ends as "stuck" with what it recorded.
     let browser: any = null;
     let host: PlaytestHost | null = null;
+    // Why a game played in software on this machine instead of on a GPU (the result says so; frame rates mean nothing then).
+    let softwareBecause: string | null = null;
     let killed = '';
     const kill = async (why: string) => {
       if (killed) return;
@@ -120,9 +122,11 @@ export const playtestRunTool: Tool = {
           opening.then((h) => h?.close(), () => {});
           if (p.gpu === 'require') throw e;
           ctx.log(`no GPU browser (${e.message}); playing here in software`);
+          softwareBecause = String(e.message ?? e).slice(0, 300);
           return null;
         });
         if (!host && p.gpu === 'require') throw new GenError('No GPU server is ready for the playtest (start one, or use gpu: auto)', { kind: 'gpu' });
+        if (!host && !softwareBecause && p.mode !== 'site') softwareBecause = 'no GPU machine was ready (the playtester did not start and no GPU server was running)';
       }
       if (!host) {
         // This machine has one browser to give: playtests that run here take turns.
@@ -389,7 +393,7 @@ export const playtestRunTool: Tool = {
       const result: any = {
         url: p.url, mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract ? p.scenario : null, outcome,
         stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `GPU server ${host.server}` : 'this machine',
-        seconds: T(), loadSeconds, fps, renderer, software, contract, scenarios,
+        seconds: T(), loadSeconds, fps, renderer, software, softwareBecause, contract, scenarios,
         metrics: report?.metrics ?? {}, events: report?.events ?? [], log: report?.log ?? [],
         problems: dedupeBy(problems, (x) => x.message),
         console: { errors: errors.length, warnings: consoleLines.length - errors.length, first: consoleLines.slice(0, 30) },

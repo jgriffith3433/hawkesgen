@@ -201,6 +201,15 @@ export async function startPlaytester() {
 /** Starts the playtester if needed and waits until its browser server answers. */
 export async function ensurePlaytester(onStep: (s: string) => void = () => {}, timeoutMs = 15 * 60_000) {
   const end = Date.now() + timeoutMs;
+  // Caught mid idle-stop: EC2 can't start a stopping machine, so wait for the stop to finish, then start it again
+  // (falling back to software on the control server instead once froze it with two games rendering on 2 CPUs).
+  for (;;) {
+    const { instance: i } = await requirePlaytester();
+    if (i.State?.Name !== 'stopping') break;
+    onStep('the playtester is powering off after its idle time; starting it again once it has');
+    if (Date.now() > end) throw fail('The playtester was still powering off; try again in a minute.');
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
   const first = await startPlaytester();
   if (first.was !== 'running') onStep('starting the playtester (T4 GPU)');
   for (;;) {
