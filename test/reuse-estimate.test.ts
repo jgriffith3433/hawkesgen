@@ -1,0 +1,68 @@
+// Takes are paid for once (submit with `reuse`), and estimates come from history. A scratch data folder, no GPU.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-reuse-'));
+const { db, J } = await import('../src/db.ts');
+const { submit, getJob, jobRecipeKey, queue } = await import('../src/jobs.ts');
+(queue as any).pump = () => {}; // no servers here: jobs stay queued
+const { putAsset } = await import('../src/library.ts');
+const { getTool } = await import('../src/tools/index.ts');
+const { validateParams } = await import('../src/tools/validate.ts');
+const { estimate } = await import('../src/estimate.ts');
+
+const owner = { id: 'test', name: 'test', role: 'owner', projects: ['*'] } as any;
+
+/** A finished image.generate job with one output, as if a server had made it. */
+function finished(prompt: string, seed: number, gpu = 12) {
+  const tool = getTool('image.generate')!;
+  const job = submit(owner, { tool: tool.id, project: 'sandbox', params: { prompt, seed } });
+  const a = putAsset({
+    data: Buffer.from(`png ${prompt} ${seed}`), ext: '.png', job: job.id, client: 'test', project: 'sandbox', tool: tool.id, seed,
+    recipe: { tool: tool.id, version: tool.version, params: job.params, inputs: {}, models: tool.models?.(job.params), seed } as any,
+  });
+  db.prepare('UPDATE jobs SET status = ?, outputs = ?, gpu_seconds = ?, finished = ? WHERE id = ?')
+    .run('done', J([{ asset: a.id, seed, mime: 'image/png', kind: 'image' }]), gpu, Date.now(), job.id);
+  return { job: getJob(job.id)!, asset: a.id };
+}
+
+test('reuse hands back a finished job of the same recipe, any seed, skipping excluded takes', () => {
+  const t1 = finished('a red door', 11);
+  const t2 = finished('a red door', 12);
+  const again = submit(owner, { tool: 'image.generate', project: 'sandbox', params: { prompt: 'a red door', seed: 99 }, reuse: true }) as any;
+  assert.equal(again.reused, true);
+  assert.equal(again.id, t1.job.id);
+  const second = submit(owner, { tool: 'image.generate', project: 'sandbox', params: { prompt: 'a red door', seed: 100 }, reuse: { exclude: [t1.asset] } }) as any;
+  assert.equal(second.id, t2.job.id);
+  const third = submit(owner, { tool: 'image.generate', project: 'sandbox', params: { prompt: 'a red door', seed: 101 }, reuse: { exclude: [t1.asset, t2.asset] } }) as any;
+  assert.ok(!third.reused, 'a third take is new');
+  const other = submit(owner, { tool: 'image.generate', project: 'sandbox', params: { prompt: 'a blue door' }, reuse: true }) as any;
+  assert.ok(!other.reused, 'a different prompt is a different recipe');
+  const plain = submit(owner, { tool: 'image.generate', project: 'sandbox', params: { prompt: 'a red door' } }) as any;
+  assert.ok(!plain.reused, 'no reuse unless asked');
+});
+
+test('the recipe key ignores the seed', () => {
+  const tool = getTool('image.generate')!;
+  const a = jobRecipeKey(tool, validateParams(tool, { prompt: 'x', seed: 1 }), {});
+  const b = jobRecipeKey(tool, validateParams(tool, { prompt: 'x', seed: 2 }), {});
+  assert.equal(a, b);
+});
+
+test('estimates come from history and count loads, boots and the idle tail', () => {
+  const e = estimate('sandbox', [
+    { tool: 'image.generate', params: { prompt: 'x' }, count: 10, label: 'tiles' },
+    { tool: 'asset.make', params: { steps: [{ tool: 'image.generate', params: { prompt: 'y' } }, { tool: 'image.upscale', params: {} }], candidates: 4 }, count: 2, label: 'props' },
+  ]);
+  const tiles = e.lines.find((l: any) => l.label === 'tiles')!;
+  assert.match(tiles.basis, /past jobs/);
+  assert.equal(tiles.gpuSeconds, 120); // 10 x the 12 s median of the jobs above
+  const step1 = e.lines.find((l: any) => l.label === 'props · step 1')!;
+  assert.equal(step1.count, 8); // 2 assets x 4 candidates
+  assert.ok(e.lines.some((l: any) => l.label === 'props · pick'));
+  assert.ok(e.gpu.servers >= 1 && e.gpu.boots > 0 && e.gpu.modelLoads > 0);
+  assert.ok(e.cost.withIdleTail > e.cost.total && e.cost.total > 0);
+});

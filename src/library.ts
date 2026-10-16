@@ -115,6 +115,11 @@ export function findByRecipe(key: string, project?: string): Asset | null {
   return parseRow<Asset>(row, JSON_COLS) ?? null;
 }
 
+/** Every asset made from this recipe (any seed) in a project, oldest first: the takes already paid for. */
+export function findAllByRecipe(key: string, project: string): Asset[] {
+  return (db.prepare('SELECT * FROM assets WHERE recipe_key = ? AND project = ? ORDER BY created ASC').all(key, project) as any[]).map((r) => parseRow<Asset>(r, JSON_COLS)!);
+}
+
 // ------------------------------------------------------------------ blobs
 // Uploaded input files, stored by content. A caller on another machine
 // uploads once (POST /v1/blobs) and refers to "blob:<sha256>".

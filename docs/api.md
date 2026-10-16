@@ -28,6 +28,10 @@ POST /v1/jobs
   job, so its recipe is exact.
 - `key`: sending the same key again (same API key) returns the existing job instead of a new one.
 - `priority`: -10…10, higher first.
+- `reuse`: `true` or `{ "exclude": ["a_…"] }`: if a finished job in this project already made exactly this recipe
+  (same tool version, params and inputs; any seed), that job is returned (`reused: true`) instead of a new one being
+  paid for. `exclude` lists assets the caller already has, so best-of-N asks for distinct takes. `asset.make` sets it
+  on every step (unless `fresh`); the MCP `hawkesgen_run` sets it unless `reuse: false`.
 - `POST /v1/run` takes the same body plus `timeout` (seconds) and answers when the job ends.
 
 | Route | |
@@ -56,6 +60,7 @@ A finished job has `outputs: [{ asset, seed, mime, kind, title }]` and/or `resul
 | `DELETE /v1/assets/:id` | Delete (admin) |
 | `GET /v1/files/:id[?download=1]` | The file (supports Range, so videos stream) |
 | `POST /v1/blobs` (body = file bytes, header `X-Filename`) | Upload an input → `{ "blob": "blob:<sha256>" }` |
+| `POST /v1/estimate` `{ project, items: [{ tool \| preset, params, count, label }], servers? }` | What a batch would cost before running it: GPU seconds per line (the median of past jobs of that tool, scaled by frames and pixels, else the tool's guess), model loads per family, server boots, API costs, `cost: { gpu, api, idleTail, total, withIdleTail }`, `wallMinutes`, `note`. `asset.make` items expand into their steps × `candidates` plus a pick. `src/estimate.ts` |
 | `POST /v1/recipes/check` `{ tool, params, inputs, project }` | `{ status: "current" \| "missing", asset }`: is there an asset from exactly this tool version, params and inputs (any seed)? |
 
 ## Presets

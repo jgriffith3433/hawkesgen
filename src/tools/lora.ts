@@ -12,6 +12,7 @@ import { GenError } from '../util.ts';
 import { getAsset } from '../library.ts';
 import { paths } from '../config.ts';
 import { sshRun, scpToServer, MODELS_DIR } from '../providers/comfy/fleet.ts';
+import { ask } from '../providers/anthropic.ts';
 
 const WORKFLOW = () => path.join(paths.server, '..', 'workflows', 'image-generate');
 const baseModels = () => JSON.parse(fs.readFileSync(path.join(WORKFLOW(), 'workflow.json'), 'utf8')).models ?? [];
@@ -19,13 +20,15 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(
 
 export const loraTrainTool: Tool = {
   id: 'lora.train',
-  version: 2,
+  version: 3,
   title: 'Train a character LoRA',
   description:
     'Trains a LoRA (a small add-on model) on 5 to 30 images of one character, so image.character can draw it on-model ' +
     'in any pose or scene. Use the character\'s source image and poses (e.g. AllTheCharacters/<Folder>/poses). Images ' +
     'are framed on a plain background here; training runs on the GPU fleet (Z-Image Turbo base, about 20 to 40 minutes). ' +
-    'The output is the .safetensors file; its trigger word goes at the start of prompts.',
+    'The output is the .safetensors file; its trigger word goes at the start of prompts. Captions per image (what changes: ' +
+    'pose, view, expression, framing; never the character’s own look) train a much stronger LoRA than one caption for all: ' +
+    'give `captions` or set `autoCaption` (Claude writes them).',
   provider: 'comfy',
   family: 'z-image',
   output: 'file',
@@ -33,6 +36,8 @@ export const loraTrainTool: Tool = {
   params: {
     name: { type: 'string', required: true, description: 'The character (names the file and the trigger word)', example: 'susan' },
     caption: { type: 'text', description: 'What the character is (after the trigger word in every training caption)', example: 'a woman in a dark coat with shadow tendrils, full body, game character art' },
+    captions: { type: 'json', description: 'One caption per image, in order (the trigger word is added): what differs in that image, e.g. "side view facing right, mid-jump, fists raised"' },
+    autoCaption: { type: 'boolean', default: false, description: 'Claude writes a caption per image (pose, view, framing; not the character’s look, so the look binds to the trigger word). About 5 cents.' },
     steps: { type: 'integer', min: 100, max: 4000, description: 'Training steps (default: 100 per image, 600 to 1500)' },
     rank: { type: 'integer', default: 16, min: 4, max: 64, advanced: true },
     learningRate: { type: 'number', default: 0.0001, min: 0.00001, max: 0.001, advanced: true },
@@ -77,7 +82,40 @@ export const loraTrainTool: Tool = {
         batch = [`batch${i}`, 0];
       }
     });
-    g.dataset = { class_type: 'MakeTrainingDataset', inputs: { images: batch, vae: ['vae', 0], clip: ['clip', 0], texts: ['caption', 0] } };
+    // Captions: one per image when given (or written by Claude), else the one caption for all.
+    let captions: string[] | null = Array.isArray(p.captions) ? p.captions.map(String) : null;
+    if (captions && captions.length !== images.length) throw new GenError(`captions: give one per image (${images.length}), not ${captions.length}`);
+    if (!captions && p.autoCaption) {
+      ctx.step(`Claude is captioning ${images.length} training images`);
+      const r = await ask({
+        system: 'You caption training images for a character LoRA. For each image, write one short caption of what is specific to that image: camera view (front, three-quarter, side facing left/right, back), pose and action, expression, framing (full body, upper body, close-up), and anything held or happening. Do NOT describe the character’s permanent look (face, hair, body, outfit colors, signature items): that must bind to the trigger word.',
+        prompt: `The character: ${p.caption || p.name}. ${images.length} images, in order. Return one caption per image.`,
+        images, effort: 'low', maxTokens: 4000,
+        schema: { type: 'object', additionalProperties: false, required: ['captions'], properties: { captions: { type: 'array', items: { type: 'string' } } } },
+      }, ctx.signal);
+      ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: `${r.model} captions` });
+      const got: string[] = JSON.parse(r.text).captions ?? [];
+      if (got.length === images.length) captions = got;
+      else ctx.log(`Claude gave ${got.length} captions for ${images.length} images; using the one caption for all`);
+    }
+    if (captions) {
+      // ComfyUI reads per-image captions from a folder of image + .txt pairs in its input folder.
+      const dir = `hwk-${name}-${ctx.job.id}`;
+      await sshRun(`mkdir -p /opt/comfy/input/${dir} && echo ok`, c.server.id);
+      ctx.step(`sending ${images.length} captioned images to the server`);
+      for (const [i, img] of images.entries()) {
+        const framed = ctx.tmp(`train-${i}.png`);
+        const txt = ctx.tmp(`train-${i}.txt`);
+        fs.writeFileSync(txt, `${trigger}, ${captions[i]}`);
+        await scpToServer(framed, `/opt/comfy/input/${dir}/${String(i).padStart(3, '0')}.png`, c.server.id);
+        await scpToServer(txt, `/opt/comfy/input/${dir}/${String(i).padStart(3, '0')}.txt`, c.server.id);
+      }
+      for (const k of Object.keys(g)) if (/^(img|batch)\d+$/.test(k) || k === 'caption') delete g[k];
+      g.folder = { class_type: 'LoadImageTextDataSetFromFolder', inputs: { folder: dir } };
+      g.dataset = { class_type: 'MakeTrainingDataset', inputs: { images: ['folder', 0], vae: ['vae', 0], clip: ['clip', 0], texts: ['folder', 1] } };
+    } else {
+      g.dataset = { class_type: 'MakeTrainingDataset', inputs: { images: batch, vae: ['vae', 0], clip: ['clip', 0], texts: ['caption', 0] } };
+    }
     g.train = {
       class_type: 'TrainLoraNode',
       inputs: {
@@ -107,8 +145,8 @@ export const loraTrainTool: Tool = {
     const final = `${name}.safetensors`;
     await sshRun(`sudo mkdir -p ${MODELS_DIR}/loras/hawkes && sudo cp '${found}' ${MODELS_DIR}/loras/hawkes/'${final}' && echo ok`, c.server.id);
     const data = await c.download({ filename: file, subfolder: path.posix.dirname(prefix), type: 'output' });
-    await ctx.emit({ data, ext: '.safetensors', mime: 'application/octet-stream', title: `${name} LoRA`, meta: { lora: final, trigger, steps, images: images.length, base: 'z_image_turbo_bf16' } });
-    ctx.result({ lora: final, trigger, steps, images: images.length, note: `Use image.character with lora = this asset id; prompts start with "${trigger}".` });
+    await ctx.emit({ data, ext: '.safetensors', mime: 'application/octet-stream', title: `${name} LoRA`, meta: { lora: final, trigger, steps, images: images.length, captions: captions ? 'per image' : 'one for all', base: 'z_image_turbo_bf16' } });
+    ctx.result({ lora: final, trigger, steps, images: images.length, captions, note: `Use image.character with lora = this asset id; prompts start with "${trigger}".` });
   },
 };
 

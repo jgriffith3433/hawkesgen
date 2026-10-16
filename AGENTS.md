@@ -20,7 +20,10 @@ after `npm run typecheck` and `npm test`; commit only your own files (other sess
 
 The owner is **J**. Do not commit unless asked. Anything that costs money needs J's OK first: launching or
 starting GPU servers, syncing core models, big generation batches. A single test run on a server that is
-already running costs cents.
+already running costs cents. **Price it first:** `POST /v1/estimate` (MCP `hawkesgen_estimate`) turns a planned batch into
+GPU hours and dollars from this service's own job history (`src/estimate.ts`); put that number in the question to J.
+**Never pay twice:** submit with `reuse` (asset.make does on every step) so a recipe the library already has comes back
+from it.
 
 ## Run
 
@@ -52,7 +55,8 @@ each job).
 | `src/presets.ts` | Loading and applying presets |
 | `src/providers/comfy/` | `fleet.ts` (AWS launch/start/stop/adopt, SSH, model install/prune), `client.ts` (ComfyUI HTTP), `graphs.ts` (the code-built graphs), `retry.ts` (keep trying) |
 | `src/providers/builder/builder.ts` | The Unity build server: launch (Windows + Unity via `server/builder/bootstrap.ps1`), start/stop, SSH, incremental sync of `C:\Projects` folders, detached builds (`server/builder/build.ps1`), pulling the build back |
-| `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N) |
+| `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
+| `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |
 | `src/providers/elevenlabs.ts`, `anthropic.ts` | API clients |
 | `src/library.ts`, `usage.ts`, `auth.ts`, `config.ts`, `db.ts` | Assets and recipes, costs, API keys and roles, settings and paths, SQLite (node:sqlite) |
 | `src/mcp.ts`, `mcp-tools.ts`, `mcp-http.ts`, `mcp-core.ts` | The MCP server: stdio (`mcp.ts`, talks to the running service over HTTP) and `/mcp` over HTTPS with the caller's API key (`mcp-http.ts`); both share the tools (`mcp-tools.ts`). `mcp-core.ts` is the same file as in hawkesstudio. Setup for Claude anywhere: `hawkesstudio/docs/cloud.md` |

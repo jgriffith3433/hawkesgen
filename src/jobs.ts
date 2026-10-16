@@ -20,7 +20,7 @@ import { paths, loadSettings, ROOT } from './config.ts';
 import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
-import { putAsset, getAsset, blobPath, type Recipe } from './library.ts';
+import { putAsset, getAsset, blobPath, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, type Client } from './auth.ts';
@@ -74,6 +74,11 @@ export type JobSpec = {
   /** A preset name ("enemy" in this project, or "project/name"): the project's art direction. */
   preset?: string; project: string; params?: Record<string, unknown>; inputs?: Record<string, unknown>;
   labels?: Record<string, unknown>; key?: string; priority?: number;
+  /**
+   * Hand back a finished job that already made exactly this recipe (same tool version, params and inputs; any seed)
+   * instead of paying for it again. `exclude` lists asset ids the caller already has (other takes of a best-of-N).
+   */
+  reuse?: boolean | { exclude?: string[] };
 };
 
 /** Turns an input reference into a local path: a path (local callers only), "asset:<id>" or "blob:<sha256>". */
@@ -134,7 +139,32 @@ export function submit(client: Client, spec0: JobSpec): Job {
   }
   const params = validateParams(tool, spec.params ?? {});
   const inputs = resolveInputs(client, tool, spec.inputs ?? {});
+  if (spec.reuse) {
+    const found = reusable(tool, project, params, inputs, typeof spec.reuse === 'object' ? spec.reuse.exclude ?? [] : []);
+    if (found) return found;
+  }
   return createJob(client, tool, { project, params, inputs, labels: spec.labels, key: spec.key, priority: spec.priority });
+}
+
+const sha256Sync = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+/** The recipe key a job with these params and inputs would give its outputs (as runJob computes it). */
+export function jobRecipeKey(tool: Tool, params: Record<string, any>, inputs: Record<string, string | string[]>) {
+  const hashes: Record<string, string | string[]> = {};
+  for (const [k, v] of Object.entries(inputs)) hashes[k] = Array.isArray(v) ? v.map(sha256Sync) : sha256Sync(v);
+  return recipeKey({ tool: tool.id, version: tool.version, params, inputs: hashes, models: tool.models?.(params) } as Recipe);
+}
+
+/** A finished job in this project whose first output has this recipe and isn't one the caller already has. */
+function reusable(tool: Tool, project: string, params: Record<string, any>, inputs: Record<string, string | string[]>, exclude: string[]): Job | null {
+  const skip = new Set(exclude.map((x) => String(x).replace(/^asset:/, '')));
+  for (const a of findAllByRecipe(jobRecipeKey(tool, params, inputs), project)) {
+    if (skip.has(a.id) || !a.job) continue;
+    const j = getJob(a.job);
+    if (!j || j.status !== 'done' || j.outputs?.[0]?.asset !== a.id) continue;
+    return { ...j, reused: true } as Job;
+  }
+  return null;
 }
 
 function createJob(client: Client, tool: Tool, s: { project: string; params: Record<string, any>; inputs: Record<string, any>; labels?: Record<string, unknown>; key?: string; priority?: number }): Job {

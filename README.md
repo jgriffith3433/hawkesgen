@@ -46,7 +46,7 @@ Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
 | Area | Tools |
 |---|---|
 | Images | `image.generate` (Z-Image Turbo text-to-image; `seamless` for textures), `image.edit` (Qwen-Image-Edit), `image.paint` (paint styled on references), `image.control` (paint over a render or sketch with ControlNet: grey-box to finished art), `image.relight`, `image.angles` (a character from 8 camera angles), `image.upscale` (Real-ESRGAN), `image.restore` (SeedVR2, finer), `image.panorama` (360° skies) |
-| Characters | `lora.train` (train a character LoRA on its poses, on the GPU fleet), `image.character` (draw that character on-model in any pose or scene) |
+| Characters | `lora.train` (train a character LoRA on its poses, with per-image captions or Claude-written ones, on the GPU fleet), `image.character` (draw that character on-model in any pose or scene) |
 | Analysis and masks | `image.remove-background` (BiRefNet on the GPU), `image.segment` (SAM 3, find by text), `image.layers` (split into RGBA layers), `image.pose` / `video.pose` (SDPose whole-body pose maps), `image.depth` (Depth Anything 3), `image.normals` and `image.albedo` (Marigold v2) |
 | Video | `video.i2v` (Wan 2.2 image-to-video and first-last-frame loops), `video.animate` and `video.motion` (motion transfer; Wan Animate 2), `video.talk` (InfiniteTalk: a character speaks or sings a voice track), `video.t2v` (Wan 2.2 text-to-video), `video.upscale`, `video.interpolate` (FILM) |
 | 3D | `mesh.from-image` (Hunyuan3D 2.1 shape), `mesh.from-views` (Hunyuan3D multi-view: front + side), `mesh.textured` (Pixal3D / TRELLIS 2 with PBR textures) |
@@ -55,7 +55,7 @@ Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
 | On this PC | `image.cutout`, `image.frame`, `image.tile`, `texture.maps`, `video.fit`, `media.probe`, `file.import` (a file into the library as it is) |
 | Builds | `unity.build` (Unity WebGL on the AWS build server, incremental: keeps each project's Library) |
 | Playtests | `playtest.run` (play a game in Chromium through its playtest contract, or smoke-test or crawl a site; video, screenshots, console, fps), `playtest.review` (Claude watches it and files a few new findings: capped, told the known ones, a mode per run kind, judged against the product's quality bar) |
-| Pipelines | `asset.make` (a chain of tools as one recipe, with best-of-N picked by Claude) |
+| Pipelines | `asset.make` (a chain of tools as one recipe; best-of-N images or videos picked by Claude against the art direction, canon and on-model references; takes the library already has are reused) |
 | Anything else | `comfy.graph` (run a raw graph), or import a workflow (dashboard → Workflows) |
 
 ## Use it
@@ -63,7 +63,7 @@ Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
 **From an agent** (Claude Code, Cursor): every project folder's `.mcp.json` has the `hawkesgen` server.
 - Ask for "a seamless lab-tile texture for PH Origins". The agent reads the project's presets and runs the tool.
 - MCP tools: `hawkesgen_tools`, `hawkesgen_run`, `hawkesgen_presets`, `hawkesgen_library`, `hawkesgen_jobs`,
-  `hawkesgen_job`, `hawkesgen_cancel`, `hawkesgen_fleet`, `hawkesgen_templates`, `hawkesgen_import_workflow`.
+  `hawkesgen_job`, `hawkesgen_cancel`, `hawkesgen_fleet`, `hawkesgen_estimate` (what a batch costs, before starting servers), `hawkesgen_templates`, `hawkesgen_import_workflow`.
 
 **From the command line:**
 

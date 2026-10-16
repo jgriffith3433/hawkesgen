@@ -11,6 +11,7 @@ import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workf
 import { objectInfo, refreshCatalog, templates, templateWorkflow, templateThumb, importWorkflow } from './workflows/catalog.ts';
 import { convertUiWorkflow, checkGraph } from './workflows/convert.ts';
 import { validateParams } from './tools/validate.ts';
+import { estimate } from './estimate.ts';
 import { submit, getJob, listJobs, cancel, rerun, clearFinished, events, summary, queue, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, findByRecipe, recipeKey } from './library.ts';
 import { usageSummary } from './usage.ts';
@@ -230,6 +231,17 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (!data.length) throw new GenError('Send the file as the request body');
       const ext = path.extname(String(req.headers['x-filename'] ?? '')).toLowerCase().replace(/[^.a-z0-9]/g, '');
       return send(res, 200, { blob: `blob:${putBlob(data, ext)}`, bytes: data.length });
+    }
+    if (route === '/v1/estimate' && method === 'POST') {
+      // What a batch would cost before anyone pays for it (src/estimate.ts).
+      const body = await readJson(req);
+      const project = String(body.project ?? '');
+      if (!canProject(client, project)) throw new GenError(`No access to project ${project}`, { status: 403 });
+      let running = 0;
+      try {
+        running = (await fleet.comfyEndpoints()).length;
+      } catch {}
+      return send(res, 200, estimate(project, body.items, { servers: body.servers, running }));
     }
     if (route === '/v1/recipes/check' && method === 'POST') {
       // Is there an asset made from exactly this tool version, params and inputs (any seed)?

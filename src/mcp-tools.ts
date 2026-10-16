@@ -67,16 +67,27 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
         preset: str('Preset name (optional)'),
         labels: { type: 'object', description: 'Project meaning to attach (fighter, level...)' },
         save_to: str('Folder to copy the outputs into (optional)'),
+        reuse: { type: 'boolean', description: 'Hand back a finished job of exactly this recipe (any seed) from the library instead of paying again (default true; false for a new take)' },
         wait: { type: 'boolean', description: 'Wait for it to finish (default true). False returns the job id.' },
         timeout_minutes: { type: 'number', description: 'How long to wait (default 30)' },
       }, ['project']),
       run: async (a) => {
         if (remote) for (const v of Object.values<any>(a.inputs ?? {}).flat()) if (typeof v !== 'string' || !/^(asset|blob):/.test(v)) throw new Error('Over the remote MCP endpoint, inputs must be asset:<id> or blob:<sha> (upload files with POST /v1/blobs first).');
-        const job = await gen.submit(a.tool, { project: a.project, params: a.params ?? {}, inputs: a.inputs ?? {}, labels: a.labels, preset: a.preset });
+        const job = await gen.submit(a.tool, { project: a.project, params: a.params ?? {}, inputs: a.inputs ?? {}, labels: a.labels, preset: a.preset, reuse: a.reuse !== false });
         if (a.wait === false) return summarizeJob(job);
         const done = await gen.wait(job.id, { timeoutMs: (a.timeout_minutes ?? 30) * 60000, throwOnFail: false });
         return withFiles(done, a.save_to);
       },
+    },
+    {
+      name: 'hawkesgen_estimate',
+      description: 'What a batch of generation would cost before running it: GPU hours (from past jobs of each tool), model loads, server boots, API costs, dollars, wall time, and the idle tail if servers are left on. Items are { tool | preset, params, count, label }; asset.make items expand into their steps and candidates. Show J this before starting servers or a big batch.',
+      inputSchema: obj({
+        project: str('Project name'),
+        items: { type: 'array', items: { type: 'object' }, description: '[{ tool | preset, params, count, label }]' },
+        servers: { type: 'number', description: 'At most this many servers (default: the fleet cap)' },
+      }, ['project', 'items']),
+      run: async (a) => gen.estimate(a.items, { project: a.project, servers: a.servers }),
     },
     {
       name: 'hawkesgen_job',
