@@ -40,7 +40,7 @@ export type ImageBuild = {
   from?: string; launched: boolean; region?: string;
   image?: string; copies: Record<string, string>; usedGb?: number;
   prep?: { removed: string[]; fixed: string[] };
-  starts: number; errors: number; started: string; updated: string; ended?: string; error?: string;
+  starts: number; errors: number; capacityMisses?: number; capacitySince?: string; started: string; updated: string; ended?: string; error?: string;
   log: { at: string; msg: string }[];
 };
 
@@ -160,6 +160,16 @@ async function tick() {
     const next = await step(current);
     if (next === 'now') wait = 1_000;
   } catch (e: any) {
+    if (e.kind === 'capacity' && !e.fatal) {
+      // AWS has no machine free in the server's zone: not a failure, keep trying (a stopped server can't change zone).
+      current.capacityMisses = (current.capacityMisses ?? 0) + 1;
+      if (current.capacityMisses === 1 || current.capacityMisses % 15 === 0) note(`${current.phase}: AWS has no machine free in the server's zone; trying every 2 minutes (${current.capacityMisses} tries so far)`);
+      else save();
+      if (Date.now() - Date.parse(current.capacitySince ??= new Date().toISOString()) > 8 * 3600_000) fail(`AWS had no machine free for 8 hours: ${e.message}`);
+      ticking = false;
+      if (current?.active) schedule(120_000);
+      return;
+    }
     current.errors++;
     note(`${current.phase}: ${e.message}${current.errors < TRIES ? ` (try ${current.errors} of ${TRIES})` : ''}`);
     if (current.errors >= TRIES || e.fatal) fail(e.message);
@@ -288,9 +298,11 @@ async function step(b: ImageBuild): Promise<'now' | 'wait'> {
 
 async function restart(b: ImageBuild, why: string) {
   if (b.starts >= 3) throw fatal(`${b.from} was started ${b.starts} times and still isn't ready`);
-  b.starts++;
-  note(why);
+  if (!b.capacityMisses) note(why);
   await startServer(b.from);
+  b.starts++;
+  Object.assign(b, { capacityMisses: 0, capacitySince: undefined });
+  note(`started ${b.from}`);
   return 'wait' as const;
 }
 
