@@ -80,7 +80,31 @@ test('first boot from the image sets the password and idle time, starts ComfyUI 
   assert.equal(st.stage, 'ready');
   assert.equal(st.image, 'ami-0123');
   assert.ok(s.has('var/lib/gen/last_busy'));
-  assert.equal(s.read('var/lib/gen/warm.txt').trim().split('\n').length, loadManifest().models.length);
+  assert.equal(s.read('var/lib/gen/core.txt').trim().split('\n').length, loadManifest().models.length);
+});
+
+test('first boot cleans an image made as is: leftovers, non-core models and a wrong-sized core model go', { skip }, () => {
+  const s = sandbox({ htpasswd: '', chown: '', systemctl: '', curl: 'exit 0', 'systemd-run': '', sleep: '' });
+  s.put('usr/local/bin/gen-idle.sh', 'IDLE_MINUTES=20\n');
+  s.put('etc/nginx/x', '');
+  s.put('var/log/x', '');
+  const [a, b] = loadManifest().models;
+  s.put(`opt/comfy/models/${a.dir}/${a.file}`, 'good');
+  s.put(`opt/comfy/models/${b.dir}/${b.file}`, 'go'); // truncated by a restart
+  s.put('opt/comfy/models/diffusion_models/z_image_turbo_bf16.safetensors', 'partial');
+  s.put('opt/comfy/models/vae/x.safetensors.aria2', 'ctl');
+  s.put('opt/comfy/models/checkpoints/put_checkpoints_here', '');
+  s.put('opt/comfy.partial/models/big', 'x');
+  const sizes = { [`${a.dir}/${a.file}`]: 4, [`${b.dir}/${b.file}`]: 4 };
+  const r = s.run(zlib.gunzipSync(Buffer.from(imageUserData('TOK', 20, 'ami-1', sizes), 'base64')).toString());
+  assert.equal(r.code, 0, r.out + s.read('var/log/gen-bootstrap.log'));
+  assert.ok(s.has(`opt/comfy/models/${a.dir}/${a.file}`));
+  for (const gone of [`opt/comfy/models/${b.dir}/${b.file}`, 'opt/comfy/models/diffusion_models/z_image_turbo_bf16.safetensors', 'opt/comfy/models/vae/x.safetensors.aria2', 'opt/comfy.partial']) {
+    assert.ok(!s.has(gone), `${gone} should be gone`);
+  }
+  assert.ok(s.has('opt/comfy/models/checkpoints/put_checkpoints_here'));
+  assert.equal(s.read('var/lib/gen/warm.txt').trim(), `${a.dir}/${a.file}`);
+  assert.equal(JSON.parse(s.read('var/lib/gen/status.json')).stage, 'ready');
 });
 
 test('first boot that cannot start ComfyUI fails (the idle stop then powers it off: terminated when disposable)', { skip }, () => {

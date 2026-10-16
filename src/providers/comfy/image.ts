@@ -2,7 +2,9 @@
 // that new servers launch from, so they are ready in minutes instead of installing for 30-45 (fleet.ts
 // launchServer; server/firstboot.sh). Servers launched from it are disposable: idle, they are terminated.
 //
-// A build turns a ready server into the image:
+// A build turns a ready server into the image ("as is": a stopped ready server imaged without starting it, no prep,
+// for when AWS has no machine free to start it; firstboot.sh then removes leftovers and wrong-sized models on every
+// server launched from it, and the source stays a normal server):
 //   launching   (no source given) a new server installs itself from server/bootstrap.sh, the way images are built
 //   installing  waits for it to be ready (starting it again if its install powered it off: installs resume)
 //   preparing   server/image-prep.sh over SSH: leftovers and non-core models removed, every core model's size
@@ -38,6 +40,8 @@ export type ImageBuild = {
   id: string; phase: Phase; active: boolean; key: string; comfy: string;
   /** The server being imaged; launched: this build launched it (so it terminates it at the end). */
   from?: string; launched: boolean; region?: string;
+  /** Imaged without image-prep.sh (firstboot.sh cleans up instead); the source stays a normal server. */
+  asIs?: boolean;
   image?: string; copies: Record<string, string>; usedGb?: number;
   prep?: { removed: string[]; fixed: string[] };
   starts: number; errors: number; capacityMisses?: number; capacitySince?: string; started: string; updated: string; ended?: string; error?: string;
@@ -104,13 +108,15 @@ export async function imageStatus() {
  * Builds a new image. from: a ready (or stopped, ready) Gen server to image as it is; otherwise one is launched and
  * installs itself first. Costs money: the server's time and the image's storage. The caller has the owner's OK.
  */
-export async function startImageBuild({ from, region }: { from?: string; region?: string } = {}) {
+export async function startImageBuild({ from, region, asIs = false }: { from?: string; region?: string; asIs?: boolean } = {}) {
+  if (asIs && !from) throw new GenError('"as is" images an existing server: give its id (from).', { status: 400 });
   if (current?.active) throw new GenError(`An image build is already running (${current.phase}, ${current.id}).`, { status: 409 });
   if (from) {
     const st = await serverStatus(from);
     if (!st.exists || st.id !== from) throw new GenError(`There is no GPU server ${from}.`, { status: 404 });
     if (st.flavor !== 'gen') throw new GenError(`${from} is a Dose Of Destruction server: image a Gen server (its install matches bootstrap.sh).`, { status: 409 });
     if (st.purpose && st.purpose !== 'image-build') throw new GenError(`${from} is a ${st.purpose} server.`, { status: 409 });
+    if (asIs && !['stopped', 'running'].includes(st.state ?? '')) throw new GenError(`${from} is ${st.state}; image it once it's stopped.`, { status: 409 });
     if (serverRecord(from).imageSource) throw new GenError(`${from} was already cleaned for an image; build from a fresh install instead.`, { status: 409 });
     const ready = st.boot?.stage === 'ready' || (st.state === 'stopped' && serverRecord(from).lastBoot?.stage === 'ready');
     if (!ready) throw new GenError(`${from} hasn't finished installing (${st.boot?.stage ?? st.state}).`, { status: 409 });
@@ -119,10 +125,10 @@ export async function startImageBuild({ from, region }: { from?: string; region?
   if (from) saveServerRecord(from, { purpose: 'image-build' });
   const now = new Date().toISOString();
   current = {
-    id: `img_${Date.now().toString(36)}`, phase: from ? 'preparing' : 'launching', active: true, key: manifestKey(), comfy: loadManifest().comfyui.tag,
+    id: `img_${Date.now().toString(36)}`, phase: asIs ? 'stopping' : from ? 'preparing' : 'launching', active: true, asIs, key: manifestKey(), comfy: loadManifest().comfyui.tag,
     from, launched: false, region: from ? (await findServer(from))?.region : region, copies: {}, starts: 0, errors: 0, started: now, updated: now, log: [],
   };
-  note(from ? `building an image from ${from}` : 'building an image from a fresh install');
+  note(asIs ? `imaging ${from} as it is (no prep: servers launched from it clean up at first boot)` : from ? `building an image from ${from}` : 'building an image from a fresh install');
   schedule(0);
   return current;
 }
@@ -282,6 +288,9 @@ async function step(b: ImageBuild): Promise<'now' | 'wait'> {
       if (b.launched && b.from) {
         await terminateServer(b.from).catch((e) => note(`couldn't terminate the build server ${b.from}: ${e.message}`));
         note(`terminated the build server ${b.from}`);
+      } else if (b.from && b.asIs) {
+        saveServerRecord(b.from, { purpose: undefined });
+        note(`${b.from} is a normal server again (stopped, unchanged)`);
       } else if (b.from) {
         note(`${b.from} stays stopped as the image's source (its disk costs ~$20/month): terminating it is J's call`);
       }
@@ -309,7 +318,7 @@ async function restart(b: ImageBuild, why: string) {
 function imageTags(b: ImageBuild) {
   return [
     { Key: 'Project', Value: PROFILES_GEN.project }, { Key: 'Role', Value: IMAGE_ROLE }, { Key: 'Name', Value: `hawkesgen-comfy-image-${b.comfy}` },
-    { Key: 'ModelsKey', Value: b.key }, { Key: 'ComfyUI', Value: b.comfy }, { Key: 'Source', Value: b.from ?? '' }, { Key: 'Build', Value: b.id },
+    { Key: 'ModelsKey', Value: b.key }, { Key: 'Prep', Value: b.asIs ? 'first-boot' : 'image-prep' }, { Key: 'ComfyUI', Value: b.comfy }, { Key: 'Source', Value: b.from ?? '' }, { Key: 'Build', Value: b.id },
     ...(b.usedGb ? [{ Key: 'UsedGb', Value: String(b.usedGb) }] : []),
   ];
 }

@@ -8,7 +8,7 @@
 //   hawkesgen jobs [--project P] [--status running]    hawkesgen job <id>    hawkesgen cancel <id>
 //   hawkesgen library [--project P] [--kind image]     hawkesgen get <asset id> <file>
 //   hawkesgen fleet [status|start [id]|stop [id]|stop-all|launch|sync [id]|access|adopt <dir>|set k=v] [--yes]
-//   hawkesgen fleet image [status|build [--from <id>] [region=r]|prune [--dry-run]|cancel] [--yes]
+//   hawkesgen fleet image [status|build [--from <id> [--as-is]] [region=r]|prune [--dry-run]|cancel] [--yes]
 //   hawkesgen playtester [status|launch|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [--yes]
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
 //   hawkesgen usage [--days 30] [--by project]
@@ -198,11 +198,14 @@ async function main() {
         if (sub === 'build') {
           const i = rest.indexOf('--from');
           const from = i >= 0 ? rest[i + 1] : undefined;
-          const ask = from
+          const asIs = rest.includes('--as-is');
+          const ask = from && asIs
+            ? `Image ${from} as it is, without starting it (it is stopped first if running; no cleanup: servers launched from it clean up at first boot), then copy it to every fleet region (~$8-9/month per region for the snapshot, ~$3-4 once per copy)? ${from} stays a normal server.`
+            : from
             ? `Image ${from}? It is started if stopped (a few minutes at ~$1.86/hr), cleaned (non-core models removed, its password and keys stripped: it can't take jobs afterwards), stopped and imaged, then copied to every fleet region (~$8-9/month per region for the snapshot, ~$3-4 once per copy).`
             : 'Build a new image from a fresh install? A new GPU server installs itself (30-45 min at ~$1.86/hr), is cleaned, stopped and imaged, copied to every fleet region (~$8-9/month per region), then terminated; older images are deleted.';
           if (!(await confirm(ask))) return console.log('cancelled');
-          return console.log(JSON.stringify(await gen.request('/fleet/image/build', { method: 'POST', body: { confirm: true, from, ...kv(rest.slice(2).filter((x, k, a) => x !== '--from' && a[k - 1] !== '--from')) } }), null, 2));
+          return console.log(JSON.stringify(await gen.request('/fleet/image/build', { method: 'POST', body: { confirm: true, from, asIs, ...kv(rest.slice(2).filter((x, k, a) => x !== '--from' && x !== '--as-is' && a[k - 1] !== '--from')) } }), null, 2));
         }
         throw new Error('fleet image status|build [--from <id>]|prune [--dry-run]|cancel');
       }

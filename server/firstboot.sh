@@ -7,7 +7,11 @@
 #   password     nginx's basic auth (user gen) gets this server's token
 #   idle stop    gen-idle.sh gets __IDLE_MINUTES__; the clock starts now. A server launched as disposable has
 #                shutdown behavior "terminate", so powering itself off deletes it (and its disk)
-#   SSH          cloud-init makes new host keys and installs this launch's key (the image has neither)
+#   SSH          cloud-init makes new host keys and installs this launch's key (a new instance id is a new instance)
+#   models       leftovers go (/opt/comfy.partial, aria2 control files, every non-core model: workflow models download
+#                again on first use), and a core model whose size isn't Hugging Face's is deleted (a job that needs it
+#                downloads it again). An image made straight from a stopped server (image.ts "as is") relies on this;
+#                one cleaned by image-prep.sh has nothing to remove
 #   ComfyUI      started, then status.json says ready
 #   warming      the image's disk loads lazily from S3, so the first read of each model is slow. A background
 #                unit (gen-warm) reads every core model once, four at a time; status.json "warm" counts them
@@ -35,6 +39,34 @@ fail() {
 
 status installing "setting up from the image (__IMAGE__)"
 touch "$STATE/last_busy"
+systemctl stop comfyui 2>/dev/null
+
+# "dir/file bytes" per core model (bytes 0: unknown, not checked).
+cat > "$STATE/core.txt" <<'CORE'
+__MODELS__
+CORE
+status installing "checking models"
+rm -rf /opt/comfy.partial /opt/comfy.clone
+declare -A CORE
+while read -r rel size; do [ -n "${rel:-}" ] && CORE["$rel"]=${size:-0}; done < "$STATE/core.txt"
+while IFS= read -r -d '' f; do
+  rel=${f#"$COMFY/models/"}
+  case "$rel" in */put_*_here|put_*_here) continue ;; esac
+  if [[ "$rel" == *.aria2 ]] || [ -z "${CORE[$rel]+x}" ]; then
+    echo "remove $rel (not core)"
+    rm -f "$f"
+  fi
+done < <(find "$COMFY/models" -type f -print0)
+for rel in "${!CORE[@]}"; do
+  want=${CORE[$rel]}
+  have=$(stat -c %s "$COMFY/models/$rel" 2>/dev/null || echo missing)
+  if [ "$have" = missing ]; then
+    echo "core model missing: $rel (a job that needs it downloads it)"
+  elif [ "$want" != 0 ] && [ "$have" != "$want" ]; then
+    echo "remove $rel: $have bytes, want $want (a job that needs it downloads it again)"
+    rm -f "$COMFY/models/$rel"
+  fi
+done
 htpasswd -bc /etc/nginx/gen.htpasswd gen '__TOKEN__' || fail "htpasswd"
 chmod 640 /etc/nginx/gen.htpasswd
 chown root:www-data /etc/nginx/gen.htpasswd
@@ -55,9 +87,7 @@ curl -sf http://127.0.0.1:8188/system_stats > /dev/null || fail "ComfyUI did not
 
 # Warm the disk in the background: every core model read once (jobs can run meanwhile; a model they read first
 # loads at the lazy speed). status.json keeps saying ready, with "warm": "n of N".
-cat > "$STATE/warm.txt" <<'WARM'
-__MODELS__
-WARM
+for rel in "${!CORE[@]}"; do [ -f "$COMFY/models/$rel" ] && echo "$rel"; done > "$STATE/warm.txt"
 cat > /usr/local/sbin/gen-warm.sh <<'SH'
 #!/bin/bash
 # Reads every core model once, four at a time, counting in /var/lib/gen/warm and status.json.

@@ -304,7 +304,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (body.confirm !== true) throw new GenError(`image ${m[1]} needs { "confirm": true }`);
       if (m[1] === 'prune') return send(res, 200, { ok: true, removed: await fleetImage.pruneImages() });
       const from = typeof body.from === 'string' && /^i-[0-9a-f]+$/.test(body.from) ? body.from : undefined;
-      return send(res, 200, { ok: true, build: await fleetImage.startImageBuild({ from, region: typeof body.region === 'string' ? body.region : undefined }) });
+      return send(res, 200, { ok: true, build: await fleetImage.startImageBuild({ from, region: typeof body.region === 'string' ? body.region : undefined, asIs: body.asIs === true }) });
     }
     if (route === '/v1/fleet/regions' && method === 'GET') return send(res, 200, { regions: await fleet.regionsInfo({ force: q('refresh') === '1' }) });
     if (route === '/v1/fleet/capacity' && method === 'GET') return send(res, 200, { scores: await fleet.capacityScores(Object.keys(fleet.TYPES)) });

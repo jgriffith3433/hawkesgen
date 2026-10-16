@@ -611,8 +611,20 @@ export async function imageAvailable() {
   return false;
 }
 
-/** firstboot.sh with the token, idle time, image and core models filled in, gzipped for EC2 user data. */
-export function imageUserData(token: string, idleMinutes: number, imageId: string) {
+let sizeCache: { at: number; value: Record<string, number> } | null = null;
+
+/** Each core model's size on Hugging Face ("dir/file" -> bytes; 0 when unknown). Cached for a day. */
+export async function coreSizes() {
+  if (sizeCache && Date.now() - sizeCache.at < 24 * 3600_000) return sizeCache.value;
+  const m = loadManifest();
+  const sizes = await Promise.all(m.models.map((x) => remoteSize(x.url)));
+  const value = Object.fromEntries(m.models.map((x, i) => [`${x.dir}/${x.file}`, sizes[i]]));
+  if (sizes.every(Boolean)) sizeCache = { at: Date.now(), value };
+  return value;
+}
+
+/** firstboot.sh with the token, idle time, image and core models (with their sizes, checked at first boot) filled in, gzipped for EC2 user data. */
+export function imageUserData(token: string, idleMinutes: number, imageId: string, sizes: Record<string, number> = {}) {
   const m = loadManifest();
   const script = fs.readFileSync(path.join(paths.server, 'firstboot.sh'), 'utf8')
     .replace(/\r\n/g, '\n')
@@ -620,7 +632,7 @@ export function imageUserData(token: string, idleMinutes: number, imageId: strin
     .replaceAll('__IDLE_MINUTES__', String(idleMinutes))
     .replaceAll('__IMAGE__', imageId)
     .replaceAll('__COMFY_TAG__', m.comfyui.tag)
-    .replace('__MODELS__', m.models.map((x) => `${x.dir}/${x.file}`).join('\n'));
+    .replace('__MODELS__', m.models.map((x) => `${x.dir}/${x.file} ${sizes[`${x.dir}/${x.file}`] ?? 0}`).join('\n'));
   return zlib.gzipSync(Buffer.from(script)).toString('base64');
 }
 
@@ -683,7 +695,7 @@ export async function launchServer({ idleMinutes = loadSettings().fleet.idleMinu
         const vpc = await defaultVpc(r);
         const subnets = await ec2(r).send(new DescribeSubnetsCommand({ Filters: [{ Name: 'vpc-id', Values: [vpc] }, { Name: 'default-for-az', Values: ['true'] }] }));
         const disposable = Boolean(fleetImage) && disposableSetting && !purpose;
-        const data = fleetImage ? imageUserData(token, idleMinutes, fleetImage.id) : userData(token, idleMinutes);
+        const data = fleetImage ? imageUserData(token, idleMinutes, fleetImage.id, await coreSizes()) : userData(token, idleMinutes);
         const tags = [
           { Key: 'Project', Value: prof.project }, { Key: 'Name', Value: prof.name },
           ...(fleetImage ? [{ Key: 'Image', Value: fleetImage.id }] : []), ...(disposable ? [{ Key: 'Disposable', Value: 'yes' }] : []), ...(purpose ? [{ Key: 'Purpose', Value: purpose }] : []),
