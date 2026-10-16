@@ -1,0 +1,41 @@
+{
+  "id": "video.pose",
+  "version": 1,
+  "title": "Pose maps from a video",
+  "description": "Pose maps for every frame of a video (SDPose whole body). Turns reference footage into a pose video for motion transfer (video.motion) or animation checks.",
+  "family": "sdpose",
+  "output": "video",
+  "models": [
+    {
+      "file": "sdpose_wholebody_fp16.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "video": {
+      "kind": "video",
+      "required": true,
+      "description": "The video with people or characters",
+      "targets": [
+        [
+          "679",
+          "file"
+        ]
+      ]
+    }
+  },
+  "params": {},
+  "outputs": [
+    "680"
+  ],
+  "source": {
+    "template": "utility_sdpose_ood_video_to_pose_map",
+    "size": 1932735283
+  },
+  "tags": [
+    "video",
+    "pose",
+    "analysis"
+  ]
+}

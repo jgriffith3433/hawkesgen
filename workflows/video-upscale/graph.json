@@ -1,0 +1,83 @@
+{
+ "1": {
+  "class_type": "UpscaleModelLoader",
+  "inputs": {
+   "model_name": "RealESRGAN_x4plus.safetensors"
+  },
+  "_meta": {
+   "title": "Load Upscale Model"
+  }
+ },
+ "2": {
+  "class_type": "ImageUpscaleWithModel",
+  "inputs": {
+   "upscale_model": [
+    "1",
+    0
+   ],
+   "image": [
+    "10",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Upscale Image (using Model)"
+  }
+ },
+ "9": {
+  "class_type": "LoadVideo",
+  "inputs": {
+   "file": "gan_input.mp4"
+  },
+  "_meta": {
+   "title": "Load Video"
+  }
+ },
+ "10": {
+  "class_type": "GetVideoComponents",
+  "inputs": {
+   "video": [
+    "9",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Get Video Components"
+  }
+ },
+ "11": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "fps": [
+    "10",
+    2
+   ],
+   "images": [
+    "2",
+    0
+   ],
+   "audio": [
+    "10",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "Create Video"
+  }
+ },
+ "12": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "filename_prefix": "video/ComfyUI",
+   "format": "auto",
+   "format.codec": "auto",
+   "video": [
+    "11",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Save Video"
+  }
+ }
+}

@@ -1,0 +1,198 @@
+{
+  "id": "mesh.textured",
+  "version": 2,
+  "title": "Image to textured 3D model",
+  "description": "Pixal3D (or TRELLIS 2) with PBR texture baking: a textured GLB (base color, metallic-roughness, normal, occlusion) from one image, ready for Babylon.js or Unity. faces sets the mesh budget (100k by default for the web). Background is removed for you.",
+  "family": "trellis2",
+  "output": "mesh",
+  "models": [
+    {
+      "file": "trellis_2_texture_vae_bf16.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/vae/trellis_2_texture_vae_bf16.safetensors"
+    },
+    {
+      "file": "dino_v3_L_naf_fp32.safetensors",
+      "dir": "clip_vision",
+      "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/clip_vision/dino_v3_L_naf_fp32.safetensors"
+    },
+    {
+      "file": "trellis_2_shape_vae_bf16.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/vae/trellis_2_shape_vae_bf16.safetensors"
+    },
+    {
+      "file": "moge_2_vitl_normal_fp16.safetensors",
+      "dir": "geometry_estimation",
+      "url": "https://huggingface.co/Comfy-Org/MoGe/resolve/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors"
+    },
+    {
+      "file": "birefnet.safetensors",
+      "dir": "background_removal",
+      "url": "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors"
+    },
+    {
+      "file": "trellis_2_int8_convrot.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/diffusion_models/trellis_2_int8_convrot.safetensors"
+    },
+    {
+      "file": "pixal3d_int8_convrot.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/diffusion_models/pixal3d_int8_convrot.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "122",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first take; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "3",
+          "seed"
+        ],
+        [
+          "12",
+          "seed"
+        ],
+        [
+          "18",
+          "seed"
+        ],
+        [
+          "23",
+          "seed"
+        ]
+      ]
+    },
+    "texture": {
+      "type": "integer",
+      "min": 512,
+      "max": 4096,
+      "default": 2048,
+      "description": "Texture size in pixels.",
+      "targets": [
+        [
+          "288",
+          "value"
+        ]
+      ]
+    },
+    "faces": {
+      "type": "integer",
+      "min": 5000,
+      "max": 1000000,
+      "default": 100000,
+      "description": "Target face count after decimation (web: 50k-150k; the template's 700k is for offline use).",
+      "targets": [
+        [
+          "186",
+          "target_face_count"
+        ]
+      ]
+    },
+    "remove_background": {
+      "type": "boolean",
+      "default": true,
+      "description": "Cut the subject out first.",
+      "advanced": true,
+      "targets": [
+        [
+          "248",
+          "switch"
+        ]
+      ]
+    },
+    "trellis2": {
+      "type": "boolean",
+      "default": false,
+      "description": "Use TRELLIS 2 for the shape instead of Pixal3D.",
+      "advanced": true,
+      "targets": [
+        [
+          "316",
+          "value"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 4,
+      "max": 60,
+      "default": 12,
+      "advanced": true,
+      "targets": [
+        [
+          "3",
+          "steps"
+        ],
+        [
+          "12",
+          "steps"
+        ],
+        [
+          "18",
+          "steps"
+        ],
+        [
+          "23",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 1,
+      "max": 15,
+      "default": 7.5,
+      "advanced": true,
+      "targets": [
+        [
+          "3",
+          "cfg"
+        ],
+        [
+          "12",
+          "cfg"
+        ],
+        [
+          "18",
+          "cfg"
+        ],
+        [
+          "23",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "322"
+  ],
+  "source": {
+    "template": "3d_pixal3d_trellis2_image_to_model",
+    "size": 15354508083
+  },
+  "tags": [
+    "3d",
+    "mesh",
+    "image-to-3d",
+    "pbr"
+  ],
+  "seconds": 240
+}

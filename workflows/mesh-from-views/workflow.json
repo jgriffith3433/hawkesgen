@@ -1,0 +1,91 @@
+{
+  "id": "mesh.from-views",
+  "version": 1,
+  "title": "3D mesh from several views",
+  "description": "A 3D mesh (GLB) from several views of the same object (Hunyuan3D 2.0 multi-view). Better shape than mesh.from-image when you have a front and a side, e.g. from image.angles. Shape only; texture it with mesh.textured or in Blender.",
+  "family": "hunyuan3d-mv",
+  "output": "mesh",
+  "models": [
+    {
+      "file": "hunyuan3d-dit-v2-mv_fp16.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Comfy-Org/hunyuan3D_2.0_repackaged/resolve/main/split_files/hunyuan3d-dit-v2-mv_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The front view",
+      "targets": [
+        [
+          "56",
+          "image"
+        ]
+      ]
+    },
+    "image2": {
+      "kind": "image",
+      "required": true,
+      "description": "Another view (side or back)",
+      "targets": [
+        [
+          "80",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first output; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "3",
+          "seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "default": 20,
+      "advanced": true,
+      "targets": [
+        [
+          "3",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "default": 7.5,
+      "advanced": true,
+      "targets": [
+        [
+          "3",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "83"
+  ],
+  "source": {
+    "template": "3d_hunyuan3d_multiview_to_model",
+    "size": 4928474972
+  },
+  "tags": [
+    "3d",
+    "mesh",
+    "multiview"
+  ]
+}

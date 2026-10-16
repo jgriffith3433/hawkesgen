@@ -1,0 +1,21 @@
+{
+  "project": "theplacedepartment",
+  "title": "The Place Department",
+  "style": "Moonlit grassy hollow at night, stylized low-poly, soft lantern light and mist.",
+  "negative": "text, watermark, tiny sparks, glitter, embers, fireflies",
+  "notes": "Unity source is breakingthrough (AGENTS.md has J's art rules: no camera shake; no tiny spark, glitter, ember or firefly particles; effects stay soft: flashes, smoke, a few feathers, rings). Warrok defends a pirate playing the piano from waves of birds.",
+  "presets": {
+    "bird-concept": {
+      "tool": "image.generate",
+      "description": "A new bird species for the waves (concept, side view).",
+      "prompt": "A {prompt}, a bird enemy, full body side view on a plain background, {style}",
+      "params": { "width": 1024, "height": 1024 }
+    },
+    "piano-theme": {
+      "tool": "audio.music",
+      "description": "Music the pirate plays on the piano.",
+      "prompt": "{prompt}, solo piano, pirate shanty feel, moonlit, loopable, instrumental",
+      "params": { "lyrics": "[Instrumental]", "seconds": 90 }
+    }
+  }
+}

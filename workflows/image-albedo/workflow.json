@@ -1,0 +1,57 @@
+{
+  "id": "image.albedo",
+  "version": 2,
+  "title": "Albedo (lighting removed)",
+  "description": "Marigold v2: the base color of a photo or render with the lighting and shadows taken out, for clean textures and relighting.",
+  "family": "marigold",
+  "output": "image",
+  "models": [
+    {
+      "file": "qwen_image_edit_2509_int8_convrot.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/diffusion_models/qwen_image_edit_2509_int8_convrot.safetensors"
+    },
+    {
+      "file": "marigold_v2_albedo.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_albedo.safetensors"
+    },
+    {
+      "file": "marigold_v2_albedo_conditioning.safetensors",
+      "dir": "embeddings",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_albedo_conditioning.safetensors"
+    },
+    {
+      "file": "marigold_v2_albedo_vae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_albedo_vae.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "12",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {},
+  "outputs": [
+    "23"
+  ],
+  "source": {
+    "template": "image_marigold_v2_albedo_estimation",
+    "size": 22441204122
+  },
+  "tags": [
+    "image",
+    "material",
+    "pbr"
+  ],
+  "seconds": 12
+}

@@ -1,0 +1,601 @@
+// Hawkes Gen dashboard: plain JS over the /v1 API. Live job updates come from
+// /v1/events (server-sent events).
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const money = (n) => (n == null ? '—' : n < 0.01 && n > 0 ? `$${n.toFixed(4)}` : `$${Number(n).toFixed(2)}`);
+const ago = (t) => {
+  if (!t) return '—';
+  const s = Math.round((Date.now() - t) / 1000);
+  return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : new Date(t).toLocaleDateString();
+};
+const dur = (a, b) => (a ? `${Math.round(((b ?? Date.now()) - a) / 1000)}s` : '');
+
+async function api(path, opts = {}) {
+  const r = await fetch(`/v1${path}`, { ...opts, headers: { ...(opts.body && !(opts.body instanceof Blob) ? { 'Content-Type': 'application/json' } : {}), ...(opts.headers ?? {}) } });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), body);
+  return body;
+}
+const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body ?? {}) });
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('on');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove('on'), 3500);
+}
+const fail = (e) => toast(e.message ?? String(e));
+
+function modal(html) {
+  $('#modalBody').innerHTML = html;
+  const d = $('#modal');
+  if (!d.open) d.showModal();
+  return $('#modalBody');
+}
+$('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') e.target.close(); });
+
+// ---------------------------------------------------------------- tabs
+let current = location.hash.slice(1) || 'overview';
+function show(tab) {
+  current = tab;
+  for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
+  for (const s of document.querySelectorAll('.tab')) s.classList.toggle('on', s.id === tab);
+  history.replaceState(null, '', `#${tab}`);
+  render[tab]?.().catch(fail);
+}
+for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => show(b.dataset.tab);
+window.addEventListener('hashchange', () => { const t = location.hash.slice(1); if (t && t !== current && render[t]) show(t); });
+
+const state = { jobs: new Map(), tools: [], projects: new Set() };
+
+// ---------------------------------------------------------------- live
+function connect() {
+  const es = new EventSource('/v1/events');
+  es.onopen = () => { $('#live').textContent = 'live'; $('#live').className = 'pill ok'; };
+  es.onerror = () => { $('#live').textContent = 'reconnecting…'; $('#live').className = 'pill warn'; };
+  es.addEventListener('job', (e) => {
+    const j = JSON.parse(e.data);
+    state.jobs.set(j.id, j);
+    state.projects.add(j.project);
+    if (current === 'jobs' || current === 'overview') scheduleRender();
+    const open = $('#modalBody [data-job]');
+    if (open?.dataset.job === j.id && $('#modal').open) showJob(j.id, true);
+  });
+}
+let pending = null;
+function scheduleRender() {
+  if (pending) return;
+  pending = setTimeout(() => { pending = null; render[current]?.().catch(fail); }, 400);
+}
+
+// ---------------------------------------------------------------- jobs
+const statusCell = (j) => `<span class="status s-${j.status}">${j.status}</span>`;
+function jobRow(j) {
+  const tool = state.tools.find((t) => t.id === j.tool);
+  return `<tr class="click" data-open="${j.id}">
+    <td>${statusCell(j)}<div class="small muted">${esc(ago(j.created))}</div></td>
+    <td><b>${esc(tool?.title ?? j.tool)}</b><div class="small muted">${esc(j.tool)}</div></td>
+    <td>${esc(j.project)}${Object.keys(j.labels ?? {}).length ? `<div class="chips">${Object.entries(j.labels).map(([k, v]) => `<span class="chip">${esc(k)}: ${esc(v)}</span>`).join('')}</div>` : ''}</td>
+    <td class="small">${esc(j.detail)}</td>
+    <td class="num">${j.outputs?.length ?? 0}</td>
+    <td class="num small">${j.gpu_seconds ? `${Math.round(j.gpu_seconds)}s GPU<br>` : ''}${j.cost ? money(j.cost) : ''}</td>
+  </tr>`;
+}
+function bindRows(root) {
+  for (const tr of root.querySelectorAll('[data-open]')) tr.onclick = () => showJob(tr.dataset.open);
+}
+
+async function loadJobs(params = '') {
+  const { jobs } = await api(`/jobs?limit=200${params}`);
+  for (const j of jobs) { state.jobs.set(j.id, j); state.projects.add(j.project); }
+  return jobs;
+}
+
+function mediaTag(a, controls = false) {
+  const src = `/v1/files/${a.asset ?? a.id}`;
+  if (a.kind === 'image') return `<img src="${src}" loading="lazy" alt="">`;
+  if (a.kind === 'video') return `<video src="${src}" ${controls ? 'controls' : 'muted loop'} preload="metadata"${controls ? '' : ' onmouseenter="this.play()" onmouseleave="this.pause()"'}></video>`;
+  if (a.kind === 'audio') return controls ? `<audio src="${src}" controls></audio>` : '<div class="glyph">♪</div>';
+  if (a.kind === 'mesh') return `<model-viewer src="${src}" ${controls ? 'camera-controls auto-rotate style="width:100%;height:60vh"' : 'auto-rotate style="width:100%;height:100%"'} shadow-intensity="1" exposure="1.1"></model-viewer>`;
+  return '<div class="glyph">▣</div>';
+}
+
+async function showJob(id, refresh = false) {
+  const j = await api(`/jobs/${id}`);
+  const tool = state.tools.find((t) => t.id === j.tool);
+  const body = modal(`<div data-job="${j.id}">
+    <div class="row spread"><h2>${esc(tool?.title ?? j.tool)} ${statusCell(j)}</h2>
+      <div class="row">${['queued', 'running'].includes(j.status) ? '<button class="danger" data-act="cancel">Cancel</button>' : ''}
+      <button data-act="rerun">Run again</button><button data-act="rerun-same">Same seed</button><button data-act="close">Close</button></div></div>
+    <p class="muted">${esc(j.detail)}${j.error ? `<br><b style="color:var(--bad)">${esc(j.error)}</b>` : ''}</p>
+    <div class="row small muted">${esc(j.id)} · ${esc(j.project)} · ${esc(j.client)} · created ${esc(ago(j.created))}${j.started ? ` · ran ${dur(j.started, j.finished)}` : ''}${j.server ? ` · ${esc(j.server)}` : ''}${j.gpu_seconds ? ` · ${Math.round(j.gpu_seconds)}s GPU` : ''}${j.cost ? ` · ${money(j.cost)}` : ''}</div>
+    ${j.outputs?.length ? `<h3 style="margin-top:14px">Outputs</h3><div class="lib">${j.outputs.map((o) => `<div class="asset"><div class="media" data-asset="${o.asset}">${mediaTag(o)}</div><div class="meta"><span>${esc(o.title ?? o.kind)}${o.seed ? ` · seed ${o.seed}` : ''}</span><a href="/v1/files/${o.asset}?download=1">download</a></div></div>`).join('')}</div>` : ''}
+    ${j.result ? `<h3 style="margin-top:14px">Result</h3><pre>${esc(typeof j.result === 'string' ? j.result : JSON.stringify(j.result, null, 2))}</pre>` : ''}
+    <details><summary>Params</summary><pre>${esc(JSON.stringify(j.params, null, 2))}</pre></details>
+    <details><summary>Inputs</summary><pre>${esc(JSON.stringify(j.inputs, null, 2))}</pre></details>
+    ${j.graphs?.length ? `<details><summary>ComfyUI graphs (${j.graphs.length})</summary>${j.graphs.map((g) => `<div><a href="/v1/jobs/${j.id}/graphs/${g}">${esc(g)}</a></div>`).join('')}<p class="small muted">Drag one into ComfyUI to load it.</p></details>` : ''}
+    <details ${refresh ? 'open' : ''}><summary>Log (${j.log?.length ?? 0})</summary><pre>${esc((j.log ?? []).join('\n'))}</pre></details>
+  </div>`);
+  body.querySelector('[data-act="close"]').onclick = () => $('#modal').close();
+  body.querySelector('[data-act="cancel"]')?.addEventListener('click', () => post(`/jobs/${j.id}/cancel`).then(() => showJob(j.id)).catch(fail));
+  body.querySelector('[data-act="rerun"]').onclick = () => post(`/jobs/${j.id}/rerun`).then((n) => showJob(n.id)).catch(fail);
+  body.querySelector('[data-act="rerun-same"]').onclick = () => post(`/jobs/${j.id}/rerun`, { sameSeed: true }).then((n) => showJob(n.id)).catch(fail);
+  for (const m of body.querySelectorAll('[data-asset]')) m.onclick = () => showAsset(m.dataset.asset);
+}
+
+const render = {};
+
+render.overview = async () => {
+  const [health, jobs, usage] = await Promise.all([api('/health'), loadJobs(), api(`/usage?since=${Date.now() - 30 * 86400000}`)]);
+  let fleet = null;
+  try { fleet = await api('/fleet'); } catch { /* AWS not set up */ }
+  const running = jobs.filter((j) => j.status === 'running').length;
+  const queued = jobs.filter((j) => j.status === 'queued').length;
+  const ready = fleet?.servers?.filter((s) => s.state === 'running' && s.boot?.stage === 'ready').length ?? 0;
+  const prov = Object.entries(health.providers).map(([k, v]) => `<span class="pill ${v ? 'ok' : 'bad'}">${k} ${v ? '✓' : 'not set up'}</span>`).join(' ');
+  $('#overview').innerHTML = `
+    <div class="grid">
+      <div class="card stat"><b>${running}</b><span>jobs running</span></div>
+      <div class="card stat"><b>${queued}</b><span>jobs waiting</span></div>
+      <div class="card stat"><b>${ready} / ${fleet?.servers?.length ?? 0}</b><span>GPU servers ready</span></div>
+      <div class="card stat"><b>${money(usage.total)}</b><span>spent in the last 30 days</span></div>
+    </div>
+    <div class="card"><div class="row spread"><h3>Providers</h3><span class="small muted">v${esc(health.version)}</span></div><div class="row">${prov}</div>
+      ${fleet?.error ? `<p class="small" style="color:var(--bad)">${esc(fleet.error)}</p>` : ''}</div>
+    <div class="card"><div class="row spread"><h3>Recent jobs</h3><button data-go="jobs">All jobs</button></div>
+      ${jobs.length ? `<table><thead><tr><th>Status</th><th>Tool</th><th>Project</th><th>Detail</th><th class="num">Out</th><th class="num">Cost</th></tr></thead><tbody>${jobs.slice(0, 12).map(jobRow).join('')}</tbody></table>` : '<div class="empty">No jobs yet. Try a tool in the Tools tab, or call the API from a game.</div>'}</div>`;
+  bindRows($('#overview'));
+  $('#overview [data-go]').onclick = () => show('jobs');
+};
+
+render.jobs = async () => {
+  const f = render.jobs.filter ?? { project: '', status: '' };
+  const jobs = await loadJobs(`${f.project ? `&project=${encodeURIComponent(f.project)}` : ''}${f.status ? `&status=${f.status}` : ''}`);
+  $('#jobs').innerHTML = `
+    <div class="row spread"><h2>Jobs</h2><div class="row">
+      <select id="jp"><option value="">All projects</option>${[...state.projects].sort().map((p) => `<option ${p === f.project ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      <select id="js"><option value="">Any status</option>${['queued', 'running', 'done', 'failed', 'cancelled'].map((s) => `<option ${s === f.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <button id="jclear">Clear finished</button></div></div>
+    <div class="card">${jobs.length ? `<table><thead><tr><th>Status</th><th>Tool</th><th>Project</th><th>Detail</th><th class="num">Out</th><th class="num">Cost</th></tr></thead><tbody>${jobs.map(jobRow).join('')}</tbody></table>` : '<div class="empty">No jobs.</div>'}</div>`;
+  $('#jp').onchange = (e) => { render.jobs.filter = { ...f, project: e.target.value }; render.jobs(); };
+  $('#js').onchange = (e) => { render.jobs.filter = { ...f, status: e.target.value }; render.jobs(); };
+  $('#jclear').onclick = () => confirm('Remove finished, failed and cancelled jobs from the list? Their files stay in the library.') && post('/jobs/clear', { project: f.project || undefined }).then(() => render.jobs()).catch(fail);
+  bindRows($('#jobs'));
+};
+
+// ---------------------------------------------------------------- library
+async function showAsset(id) {
+  const a = await api(`/assets/${id}`);
+  const body = modal(`<div class="row spread"><h2>${esc(a.title ?? `${a.tool} · ${a.kind}`)}</h2><div class="row">
+      <button class="star ${a.starred ? 'on' : ''}" data-act="star">★</button><a href="/v1/files/${a.id}?download=1"><button>Download</button></a><button data-act="copy">Copy id</button><button class="danger" data-act="delete">Delete</button><button data-act="close">Close</button></div></div>
+    <div class="preview">${mediaTag(a, true)}</div>
+    <div class="form" style="margin-top:12px">
+      <label><span>Title</span><input id="at" value="${esc(a.title ?? '')}"></label>
+      <label><span>Tags (comma separated)</span><input id="ag" value="${esc((a.tags ?? []).join(', '))}"></label>
+    </div>
+    <div class="row" style="margin-top:8px"><button class="primary" data-act="save">Save</button><span class="small muted">${esc(a.id)} · ${esc(a.project)} · ${esc(a.mime)} · ${(a.bytes / 1024).toFixed(0)} KB · ${esc(ago(a.created))}${a.seed ? ` · seed ${a.seed}` : ''}${a.job ? ` · job <a href="#" data-job-link="${a.job}">${esc(a.job)}</a>` : ''}</span></div>
+    ${Object.keys(a.labels ?? {}).length ? `<div class="chips" style="margin-top:8px">${Object.entries(a.labels).map(([k, v]) => `<span class="chip">${esc(k)}: ${esc(v)}</span>`).join('')}</div>` : ''}
+    <details><summary>Recipe (what made it)</summary><pre>${esc(JSON.stringify(a.recipe, null, 2))}</pre></details>
+    <p class="small muted">Use it in another job as <code>asset:${esc(a.id)}</code>.</p>`);
+  body.querySelector('[data-act="close"]').onclick = () => $('#modal').close();
+  body.querySelector('[data-act="copy"]').onclick = () => navigator.clipboard.writeText(`asset:${a.id}`).then(() => toast('Copied'));
+  body.querySelector('[data-act="star"]').onclick = () => api(`/assets/${a.id}`, { method: 'PATCH', body: JSON.stringify({ starred: !a.starred }) }).then(() => { showAsset(a.id); if (current === 'library') render.library(); }).catch(fail);
+  body.querySelector('[data-act="save"]').onclick = () => api(`/assets/${a.id}`, { method: 'PATCH', body: JSON.stringify({ title: $('#at').value || null, tags: $('#ag').value.split(',').map((s) => s.trim()).filter(Boolean) }) }).then(() => { toast('Saved'); if (current === 'library') render.library(); }).catch(fail);
+  body.querySelector('[data-act="delete"]').onclick = () => confirm('Delete this file from the library for good?') && api(`/assets/${a.id}`, { method: 'DELETE' }).then(() => { $('#modal').close(); render.library(); }).catch(fail);
+  body.querySelector('[data-job-link]')?.addEventListener('click', (e) => { e.preventDefault(); showJob(a.job); });
+}
+
+render.library = async () => {
+  const f = render.library.filter ?? { project: '', kind: '', q: '', starred: false, offset: 0 };
+  const qs = new URLSearchParams({ limit: '60', offset: String(f.offset) });
+  if (f.project) qs.set('project', f.project);
+  if (f.kind) qs.set('kind', f.kind);
+  if (f.q) qs.set('q', f.q);
+  if (f.starred) qs.set('starred', '1');
+  const { items, total } = await api(`/assets?${qs}`);
+  for (const a of items) state.projects.add(a.project);
+  $('#library').innerHTML = `
+    <div class="row spread"><h2>Library <span class="muted small">${total} files</span></h2><div class="row">
+      <input id="lq" placeholder="Search titles, labels, prompts" value="${esc(f.q)}">
+      <select id="lp"><option value="">All projects</option>${[...state.projects].sort().map((p) => `<option ${p === f.project ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      <select id="lk"><option value="">All kinds</option>${['image', 'video', 'audio', 'mesh', 'text', 'file'].map((k) => `<option ${k === f.kind ? 'selected' : ''}>${k}</option>`).join('')}</select>
+      <label class="row small"><input type="checkbox" id="ls" ${f.starred ? 'checked' : ''}> starred</label></div></div>
+    ${items.length ? `<div class="lib">${items.map((a) => `<div class="asset"><div class="media" data-asset="${a.id}">${mediaTag(a)}</div><div class="meta">
+      <div class="row spread"><span class="t">${esc(a.title ?? Object.values(a.labels ?? {}).join(' · ') ?? a.tool) || esc(a.tool)}</span><button class="star ${a.starred ? 'on' : ''}" data-star="${a.id}" data-on="${a.starred}">★</button></div>
+      <span class="muted">${esc(a.project)} · ${esc(a.tool)} · ${esc(ago(a.created))}</span></div></div>`).join('')}</div>` : '<div class="card empty">Nothing here yet.</div>'}
+    <div class="row" style="margin-top:12px">${f.offset ? '<button id="lprev">Newer</button>' : ''}${f.offset + items.length < total ? '<button id="lnext">Older</button>' : ''}</div>`;
+  const set = (patch) => { render.library.filter = { ...f, offset: 0, ...patch }; render.library().catch(fail); };
+  $('#lq').onchange = (e) => set({ q: e.target.value });
+  $('#lp').onchange = (e) => set({ project: e.target.value });
+  $('#lk').onchange = (e) => set({ kind: e.target.value });
+  $('#ls').onchange = (e) => set({ starred: e.target.checked });
+  $('#lprev')?.addEventListener('click', () => set({ offset: Math.max(0, f.offset - 60) }));
+  $('#lnext')?.addEventListener('click', () => set({ offset: f.offset + 60 }));
+  for (const m of document.querySelectorAll('#library [data-asset]')) m.onclick = () => showAsset(m.dataset.asset);
+  for (const s of document.querySelectorAll('#library [data-star]')) s.onclick = () => api(`/assets/${s.dataset.star}`, { method: 'PATCH', body: JSON.stringify({ starred: s.dataset.on !== '1' }) }).then(() => render.library()).catch(fail);
+};
+
+// ---------------------------------------------------------------- fleet
+/** The Unity build server card (builds Unity games for WebGL; see src/providers/builder). */
+async function renderBuilder() {
+  const el = $('#fl-builder');
+  if (!el) return;
+  let b;
+  try { b = await api('/builder'); } catch (e) { el.innerHTML = `<h3>Unity build server</h3><p class="small">${esc(e.message)}</p>`; return; }
+  const bact = (a, body = {}) => post(`/builder/${a}`, body).then((r) => { toast(`build server: ${a}`); renderBuilder(); return r; }).catch((e) => { fail(e); renderBuilder(); });
+  if (!b.exists) {
+    el.innerHTML = `<h3>Unity build server</h3><p class="small muted">Builds Unity games for WebGL on a Windows machine that keeps each project's Library, so builds are incremental. About ${money(b.types['m7i.2xlarge'].price)}/hr while it runs (it stops itself when idle) plus ${money(b.diskPerMonth)}/month for its ${b.diskGb} GB disk.</p><button class="primary" id="bl-launch">Launch build server…</button>`;
+    $('#bl-launch').onclick = () => confirm('Launch the Unity build server? It costs money while it runs.') && bact('launch', { confirm: true });
+    return;
+  }
+  el.innerHTML = `<div class="row spread"><h3>Unity build server</h3><div class="row">
+      ${b.state === 'stopped' ? '<button data-b="start">Start</button>' : ''}${['running', 'pending'].includes(b.state) ? '<button data-b="stop">Stop</button>' : ''}
+      ${b.state === 'running' ? '<button data-b="rdp">Remote Desktop file</button>' : ''}<button data-b="access">Refresh access</button><button class="danger" data-b="terminate">Terminate</button></div></div>
+    <table><tbody>
+      <tr><td>Server</td><td><b>${esc(b.id)}</b> · ${esc(b.type)} · ${esc(b.region)} · ${money(b.pricePerHour)}/hr${b.idleMinutes ? ` · stops after ${b.idleMinutes} idle min` : ''}</td></tr>
+      <tr><td>State</td><td>${esc(b.state)}${b.stage ? ` · <b>${esc(b.stage.stage)}</b>: ${esc(b.stage.detail ?? '')}` : ''}</td></tr>
+      ${b.stage?.stage === 'license' ? `<tr><td>To do</td><td style="color:var(--warn)">Open the Remote Desktop file, sign in as Administrator (password in ${esc(b.passwordFile ?? 'the builder folder')}), open Unity Hub and sign in once. Then builds can run.</td></tr>` : ''}
+      ${b.rdpFile ? `<tr><td>Remote Desktop</td><td class="small">${esc(b.rdpFile)}</td></tr>` : ''}
+    </tbody></table>`;
+  for (const btn of el.querySelectorAll('[data-b]')) {
+    btn.onclick = () => {
+      const a = btn.dataset.b;
+      if (a === 'terminate' && !confirm('Delete the build server and its disk? Every project Library goes with it (the next builds are clean ones).')) return;
+      if (a === 'start' && !confirm('Start the build server? About $0.77/hr while it runs.')) return;
+      bact(a, ['start', 'terminate'].includes(a) ? { confirm: true } : {}).then((r) => { if (a === 'rdp' && r) toast(`Saved ${r.rdpFile}`); });
+    };
+  }
+}
+
+function bootCell(s) {
+  if (s.state !== 'running') return `<span class="status s-${s.state}">${esc(s.state)}</span>${s.reason ? `<div class="small muted">${esc(s.reason)}</div>` : ''}`;
+  const stage = s.boot?.stage ?? 'booting';
+  return `<span class="status s-${stage === 'ready' ? 'ready' : stage === 'failed' || stage === 'locked out' ? 'failed' : 'booting'}">${esc(stage)}</span><div class="small muted">${esc(s.boot?.detail ?? '')}</div>`;
+}
+
+render.fleet = async () => {
+  let f;
+  try {
+    f = await api('/fleet');
+  } catch (e) {
+    $('#fleet').innerHTML = `<div class="card"><h3>GPU fleet</h3><p>${esc(e.message)}</p><p class="muted">Put AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_DEFAULT_REGION in hawkesgen/.env.</p></div>`;
+    return;
+  }
+  const s = f.settings;
+  $('#fleet').innerHTML = `
+    <div class="row spread"><h2>GPU fleet</h2><div class="row">
+      <button id="fl-access">Refresh access</button><button id="fl-scale">Start servers…</button><button id="fl-launch">Launch new…</button><button class="danger" id="fl-stopall">Stop all</button></div></div>
+    ${f.error ? `<div class="card" style="color:var(--bad)">${esc(f.error)}</div>` : ''}
+    ${f.lastFailure ? `<div class="card"><b style="color:var(--warn)">Last start/launch failed (${esc(f.lastFailure.kind)}):</b> ${esc(f.lastFailure.message)}</div>` : ''}
+    ${f.retry?.active ? `<div class="card"><div class="row spread"><span>Keep trying to <b>${esc(f.retry.action)}</b>: try ${f.retry.tries}, next ${f.retry.next ? new Date(f.retry.next).toLocaleTimeString() : '—'}, until ${new Date(f.retry.until).toLocaleTimeString()}</span><button id="fl-rstop">Stop trying</button></div><div class="small muted">${esc(f.retry.log?.at(-1)?.message ?? '')}</div></div>` : ''}
+    <div class="card">${f.servers.length ? `<table><thead><tr><th>Server</th><th>State</th><th>Loaded / busy</th><th class="num">$/hr</th><th></th></tr></thead><tbody>${f.servers.map((sv) => `<tr>
+      <td><b>${esc(sv.id)}</b><div class="small muted">${esc(sv.type)} · ${esc(sv.zone ?? sv.region)} · ${esc(sv.flavor)}${sv.idleMinutes ? ` · stops after ${sv.idleMinutes} idle min` : ''}</div></td>
+      <td>${bootCell(sv)}</td>
+      <td class="small">${esc(f.families[sv.id] ?? '—')}${f.busy[sv.id] ? `<br><a href="#" data-job-link="${f.busy[sv.id]}">${esc(f.busy[sv.id])}</a>` : ''}</td>
+      <td class="num">${money(sv.pricePerHour)}</td>
+      <td><div class="row">${sv.state === 'stopped' ? `<button data-sv="start" data-id="${sv.id}">Start</button>` : ''}${['running', 'pending'].includes(sv.state) ? `<button data-sv="stop" data-id="${sv.id}">Stop</button>` : ''}${sv.state === 'running' ? `<button data-sv="health" data-id="${sv.id}">Health</button><button data-sv="log" data-id="${sv.id}">Log</button><button data-sv="models" data-id="${sv.id}">Models</button><button data-sv="sync" data-id="${sv.id}">Sync core models</button>` : ''}<button class="danger" data-sv="terminate" data-id="${sv.id}">Terminate</button></div></td>
+    </tr>`).join('')}</tbody></table>` : '<div class="empty">No GPU servers. Launch one, or adopt existing ones (Settings).</div>'}</div>
+    <div class="card"><h3>Scaling</h3><div class="form">
+      <label><span><b>Servers</b>: most servers, and GPU jobs at once</span><input type="number" id="fs-servers" min="1" max="${s.max}" value="${s.servers}"></label>
+      <label><span><b>Idle stop</b>: minutes before an idle server powers off</span><input type="number" id="fs-idle" min="10" max="240" value="${s.idleMinutes}"></label>
+      <label><span><b>Start servers by themselves</b> when jobs wait (costs money)</span><select id="fs-auto"><option value="false" ${!s.auto ? 'selected' : ''}>Off</option><option value="true" ${s.auto ? 'selected' : ''}>On</option></select></label>
+    </div><div class="row" style="margin-top:10px"><button class="primary" id="fs-save">Save</button><span class="small muted">Each server's disk costs about ${money(f.diskPerMonth)} a month until it's terminated.</span></div></div>
+    <div class="card" id="fl-builder"><h3>Unity build server</h3><div class="small muted">Loading…</div></div>
+    <details class="card"><summary>Regions and GPU quota</summary><div id="fl-regions" class="small muted">Loading…</div></details>
+    ${f.account ? `<p class="small muted">AWS account ${esc(f.account.account ?? '?')} · home region ${esc(f.account.region ?? '?')} · on-demand GPU quota ${esc(f.account.gpuQuota ?? '?')} vCPUs</p>` : ''}`;
+
+  const act = (a, body = {}) => post(`/fleet/${a}`, body).then((r) => { toast(`${a}: ok`); render.fleet(); return r; }).catch((e) => { fail(e); render.fleet(); });
+  renderBuilder().catch(() => {});
+  $('#fl-access').onclick = () => act('access');
+  $('#fl-stopall').onclick = () => confirm('Stop every running GPU server? Running jobs fail.') && act('stop-all');
+  $('#fl-rstop')?.addEventListener('click', () => act('retry-stop'));
+  $('#fl-scale').onclick = () => {
+    const n = prompt(`Start stopped servers until this many run (up to ${s.servers}). Each costs about $1.86–$4 an hour while running.`, String(s.servers));
+    if (n) act('scale', { confirm: true, count: Number(n) });
+  };
+  $('#fl-launch').onclick = () => launchDialog(f);
+  $('#fs-save').onclick = () => post('/fleet/settings', { servers: Number($('#fs-servers').value), idleMinutes: Number($('#fs-idle').value), auto: $('#fs-auto').value === 'true' }).then(() => { toast('Saved'); render.fleet(); }).catch(fail);
+  for (const b of document.querySelectorAll('#fleet [data-sv]')) {
+    b.onclick = async () => {
+      const id = b.dataset.id;
+      const a = b.dataset.sv;
+      if (a === 'start') return confirm(`Start ${id}? It costs money while it runs.`) && act('start', { id, confirm: true });
+      if (a === 'stop') return act('stop', { id });
+      if (a === 'terminate') return confirm(`Terminate ${id}? This deletes the server and its disk (about 90 GB of models). Launching again re-downloads everything.`) && act('terminate', { id, confirm: true });
+      if (a === 'sync') return confirm(`Download any models and nodes ${id} is missing (from server/models.json)? This can take a while.`) && act('sync', { id, confirm: true }).then((r) => r && toast(`Synced: ${r.models.length} models, ${r.nodes.length} nodes`));
+      if (a === 'health') return api(`/fleet/health?id=${id}`).then((h) => modal(`<h2>Health: ${esc(id)}</h2><pre>${esc(JSON.stringify(h, null, 2))}</pre>${h.ok ? '' : `<button class="primary" id="fixit">Put ComfyUI on the flags that work</button>`}`)).then((m) => m.querySelector('#fixit')?.addEventListener('click', () => act('fix', { id, confirm: true }))).catch(fail);
+      if (a === 'log') return api(`/fleet/log?id=${id}&lines=80`).then((l) => modal(`<h2>Log: ${esc(id)}</h2><pre>${esc(l.log)}</pre>`)).catch(fail);
+      if (a === 'models') return showModels(id);
+    };
+  }
+  for (const l of document.querySelectorAll('#fleet [data-job-link]')) l.onclick = (e) => { e.preventDefault(); showJob(l.dataset.jobLink); };
+  $('#fleet details').addEventListener('toggle', async (e) => {
+    if (!e.target.open) return;
+    try {
+      const { regions } = await api('/fleet/regions');
+      $('#fl-regions').innerHTML = `<table><thead><tr><th>Region</th><th class="num">GPU quota (vCPUs)</th><th>Open requests</th><th>Zones offering</th></tr></thead><tbody>${regions.map((r) => `<tr><td>${esc(r.region)}</td><td class="num">${esc(r.quota ?? '?')}</td><td>${esc(r.requests.map((q) => `${q.value} ${q.status}`).join('; ') || '—')}</td><td>${esc(Object.entries(r.zones).map(([t, z]) => `${t}: ${z.length}`).join(', ') || '—')}${r.error ? ` (${esc(r.error)})` : ''}</td></tr>`).join('')}</tbody></table>`;
+    } catch (err) {
+      $('#fl-regions').textContent = err.message;
+    }
+  });
+};
+
+async function showModels(id) {
+  const m = await api(`/fleet/models?id=${id}&refresh=1`).catch(fail);
+  if (!m) return;
+  const gb = (b) => `${(b / 1e9).toFixed(1)} GB`;
+  const body = modal(`<h2>Models on ${esc(id)}</h2><p class="muted">${gb(m.free)} free. Workflow tools install their models the first time a job needs them; when space runs short, the least recently used ones are removed automatically (core models never are).</p>
+    <table><thead><tr><th></th><th>File</th><th class="num">Size</th><th>Used by</th></tr></thead><tbody>${m.models.map((x) => `<tr><td>${x.core ? '<span class="chip">core</span>' : `<input type="checkbox" data-f="${esc(x.file)}">`}</td><td class="small">${esc(x.file)}</td><td class="num">${gb(x.bytes)}</td><td class="small">${esc(x.usedBy.join(', ') || (x.core ? 'built-in tools' : '—'))}</td></tr>`).join('')}</tbody></table>
+    <div class="row" style="margin-top:10px"><button class="danger" id="mprune">Remove selected</button><button id="mclose">Close</button></div>`);
+  body.querySelector('#mclose').onclick = () => $('#modal').close();
+  body.querySelector('#mprune').onclick = () => {
+    const files = [...body.querySelectorAll('[data-f]:checked')].map((c) => c.dataset.f);
+    if (!files.length || !confirm(`Remove ${files.length} model file(s) from ${id}? They download again when a job needs them.`)) return;
+    post('/fleet/models/prune', { id, files, confirm: true }).then((r) => { toast(`Removed ${r.removed.length}`); showModels(id); }).catch(fail);
+  };
+}
+
+function launchDialog(f) {
+  const types = Object.entries(f.types);
+  const body = modal(`<h2>Launch a new GPU server</h2>
+    <p class="muted">A new server sets itself up (about 12 minutes, ~92 GB of models) and then costs money while it runs, plus about ${money(f.diskPerMonth)} a month for its disk until terminated. Starting a stopped server is cheaper and faster.</p>
+    <div class="form">
+      <label><span>Type</span><select id="lt"><option value="auto">Any 48 GB+ machine (cheapest first)</option>${types.map(([k, t]) => `<option value="${k}" ${k === f.defaultType ? 'selected' : ''}>${k}: ${esc(t.gpu)}, ${money(t.price)}/hr</option>`).join('')}</select></label>
+      <label><span>Region</span><select id="lr"><option value="auto">Any with quota and capacity</option>${f.regions.map((r) => `<option>${r}</option>`).join('')}</select></label>
+      <label><span>Keep trying for (minutes, 0 = once)</span><input type="number" id="lk" value="0" min="0" max="720"></label>
+    </div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="lgo">Launch</button><button id="lno">Cancel</button></div>`);
+  body.querySelector('#lno').onclick = () => $('#modal').close();
+  body.querySelector('#lgo').onclick = () => {
+    const minutes = Number($('#lk').value);
+    post('/fleet/launch', { confirm: true, type: $('#lt').value, region: $('#lr').value, ...(minutes ? { keepTrying: { minutes } } : {}) })
+      .then(() => { $('#modal').close(); toast('Launching'); render.fleet(); })
+      .catch(fail);
+  };
+}
+
+// ---------------------------------------------------------------- tools
+function field(name, spec) {
+  const label = `<span><b>${esc(name)}</b>${spec.required ? ' *' : ''}${spec.description ? ` · ${esc(spec.description)}` : ''}</span>`;
+  const def = spec.default ?? '';
+  if (spec.type === 'text' || spec.type === 'json') return `<label class="wide">${label}<textarea data-p="${name}" data-type="${spec.type}">${esc(spec.type === 'json' && def !== '' ? JSON.stringify(def, null, 2) : def)}</textarea></label>`;
+  if (spec.type === 'enum') return `<label>${label}<select data-p="${name}">${spec.values.map((v) => `<option ${v === def ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`;
+  if (spec.type === 'boolean') return `<label>${label}<select data-p="${name}" data-type="boolean"><option value="false" ${def === true ? '' : 'selected'}>no</option><option value="true" ${def === true ? 'selected' : ''}>yes</option></select></label>`;
+  return `<label>${label}<input data-p="${name}" data-type="${spec.type}" value="${esc(def)}" ${spec.min != null ? `min="${spec.min}"` : ''} ${spec.max != null ? `max="${spec.max}"` : ''} ${['number', 'integer'].includes(spec.type) ? 'type="number" step="any"' : ''}></label>`;
+}
+
+function tryTool(t, opts = {}) {
+  const basic = Object.entries(t.params).filter(([, s]) => !s.advanced);
+  const adv = Object.entries(t.params).filter(([, s]) => s.advanced);
+  const project0 = opts.project ?? localStorage.getItem('hg-project') ?? 'sandbox';
+  const body = modal(`<h2>${esc(t.title)} <span class="small muted">${esc(t.id)} v${t.version}</span></h2><p class="muted">${esc(t.description)}</p>
+    <div class="form">
+      <label><span><b>project</b> *</span><input id="tp" value="${esc(project0)}"></label>
+      <label><span><b>preset</b> · the project's art direction</span><select id="tpre"><option value="">(none)</option></select></label>
+      ${Object.entries(t.inputs).map(([n, s]) => `<label class="wide"><span><b>${esc(n)}</b>${s.required ? ' *' : ''} · ${esc(s.kind)}${s.multiple ? ` (up to ${s.max ?? 'many'})` : ''}${s.description ? ` · ${esc(s.description)}` : ''}</span><input type="file" data-in="${n}" ${s.multiple ? 'multiple' : ''}><input data-in-ref="${n}" placeholder="…or asset:<id> / blob:<sha> (comma separated)"></label>`).join('')}
+      ${basic.map(([n, s]) => field(n, s)).join('')}
+    </div>
+    ${adv.length ? `<details><summary>More settings</summary><div class="form">${adv.map(([n, s]) => field(n, s)).join('')}</div></details>` : ''}
+    <div class="row" style="margin-top:12px"><button class="primary" id="trun">Run</button><button id="tno">Close</button><span id="tmsg" class="small muted"></span></div>`);
+  body.querySelector('#tno').onclick = () => $('#modal').close();
+  const loadPresets = async () => {
+    const sel = body.querySelector('#tpre');
+    sel.innerHTML = '<option value="">(none)</option>';
+    try {
+      const pp = await api(`/presets/${encodeURIComponent($('#tp').value.trim())}`);
+      for (const [name, p] of Object.entries(pp.presets ?? {})) {
+        if (p.tool && p.tool !== t.id) continue;
+        sel.insertAdjacentHTML('beforeend', `<option value="${esc(name)}" ${name === opts.preset ? 'selected' : ''}>${esc(name)}: ${esc(p.description ?? '')}</option>`);
+      }
+    } catch {
+      // no presets for this project
+    }
+  };
+  void loadPresets();
+  body.querySelector('#tp').onchange = loadPresets;
+  body.querySelector('#trun').onclick = async () => {
+    try {
+      $('#tmsg').textContent = 'uploading…';
+      const inputs = {};
+      for (const [n, s] of Object.entries(t.inputs)) {
+        const refs = body.querySelector(`[data-in-ref="${n}"]`).value.split(',').map((x) => x.trim()).filter(Boolean);
+        for (const file of body.querySelector(`[data-in="${n}"]`).files) {
+          const r = await api('/blobs', { method: 'POST', body: file, headers: { 'X-Filename': file.name } });
+          refs.push(r.blob);
+        }
+        if (refs.length) inputs[n] = s.multiple ? refs : refs[0];
+      }
+      const params = {};
+      for (const el of body.querySelectorAll('[data-p]')) {
+        const v = el.value;
+        if (v === '') continue;
+        const type = el.dataset.type;
+        params[el.dataset.p] = type === 'boolean' ? v === 'true' : type === 'number' || type === 'integer' ? Number(v) : type === 'json' ? JSON.parse(v) : v;
+      }
+      // Leave defaults out so the tool's own defaults apply.
+      for (const [n, s] of Object.entries(t.params)) if (s.default !== undefined && JSON.stringify(params[n]) === JSON.stringify(s.default)) delete params[n];
+      const project = $('#tp').value.trim();
+      localStorage.setItem('hg-project', project);
+      const preset = body.querySelector('#tpre').value || undefined;
+      const { jobs } = await post('/jobs', { tool: t.id, project, params, inputs, preset });
+      showJob(jobs[0].id);
+    } catch (e) {
+      $('#tmsg').textContent = e.message;
+    }
+  };
+}
+
+render.tools = async () => {
+  const { tools } = await api('/tools');
+  state.tools = tools;
+  const groups = { comfy: 'GPU (ComfyUI on the AWS fleet)', elevenlabs: 'Voice and sound (ElevenLabs)', anthropic: 'Writing and judgment (Claude)', local: 'On this PC' };
+  $('#tools').innerHTML = `<h2>Tools</h2><p class="muted">Every tool is one API call: <code>POST /v1/jobs {"tool": "…", "project": "…", "params": {…}, "inputs": {…}}</code>. Try one here.</p>
+    ${Object.entries(groups).map(([p, label]) => `<div class="card"><h3>${label}</h3><table><tbody>${tools.filter((t) => t.provider === p).map((t) => `<tr><td style="width:28%"><b>${esc(t.title)}</b><div class="small muted">${esc(t.id)} → ${esc(t.output)}</div></td><td class="small">${esc(t.description)}</td><td><button data-try="${t.id}">Try</button></td></tr>`).join('')}</tbody></table></div>`).join('')}`;
+  for (const b of document.querySelectorAll('[data-try]')) b.onclick = () => tryTool(tools.find((t) => t.id === b.dataset.try));
+};
+
+// ---------------------------------------------------------------- presets
+render.presets = async () => {
+  const [{ projects }, { tools }] = await Promise.all([api('/presets'), api('/tools')]);
+  state.tools = tools;
+  $('#presets').innerHTML = `<h2>Presets</h2><p class="muted">Each project's art direction: a style line and named presets (a tool, a prompt template with {prompt} and {style}, and params). Jobs name one with <code>"preset": "name"</code>; games, agents (MCP) and the CLI all use them. Files live in <code>hawkesgen/presets/</code>.</p>
+    ${projects.map((pp) => `<div class="card"><div class="row spread"><h3>${esc(pp.title ?? pp.project)} <span class="small muted">${esc(pp.project)}</span></h3><button data-edit="${esc(pp.project)}">Edit</button></div>
+      ${pp.style ? `<p><b>Style:</b> ${esc(pp.style)}</p>` : '<p class="muted">No style line yet.</p>'}
+      ${pp.notes ? `<p class="small muted">${esc(pp.notes)}</p>` : ''}
+      <table><tbody>${Object.entries(pp.presets ?? {}).map(([name, p]) => `<tr><td style="width:22%"><b>${esc(name)}</b><div class="small muted">${esc(p.tool ?? '')}</div></td><td class="small">${esc(p.description ?? '')}${p.prompt ? `<div class="muted">${esc(p.prompt)}</div>` : ''}</td><td><button data-use="${esc(pp.project)}|${esc(name)}|${esc(p.tool ?? '')}">Use</button></td></tr>`).join('')}</tbody></table></div>`).join('')}`;
+  for (const b of document.querySelectorAll('#presets [data-use]')) {
+    b.onclick = () => {
+      const [project, name, toolId] = b.dataset.use.split('|');
+      const t = tools.find((x) => x.id === toolId);
+      if (t) tryTool(t, { project, preset: name });
+    };
+  }
+  for (const b of document.querySelectorAll('#presets [data-edit]')) {
+    b.onclick = async () => {
+      const pp = await api(`/presets/${b.dataset.edit}`);
+      const body = modal(`<h2>Presets: ${esc(pp.project)}</h2><textarea id="pj" style="min-height:60vh;font-family:ui-monospace,monospace;font-size:12px">${esc(JSON.stringify(pp, null, 2))}</textarea>
+        <div class="row" style="margin-top:10px"><button class="primary" id="psave">Save</button><button id="pno">Close</button><span id="pmsg" class="small muted"></span></div>`);
+      body.querySelector('#pno').onclick = () => $('#modal').close();
+      body.querySelector('#psave').onclick = async () => {
+        try {
+          await api(`/presets/${pp.project}`, { method: 'PUT', body: $('#pj').value });
+          $('#modal').close();
+          toast('Saved');
+          render.presets();
+        } catch (e) {
+          $('#pmsg').textContent = e.message;
+        }
+      };
+    };
+  }
+};
+
+// ---------------------------------------------------------------- workflows
+render.workflows = async () => {
+  const q = render.workflows.q ?? '';
+  const [{ workflows }, { templates }] = await Promise.all([api('/workflows'), api(`/comfy/templates${q ? `?q=${encodeURIComponent(q)}` : ''}`)]);
+  const gb = (b) => (b ? `${(b / 1e9).toFixed(1)} GB` : '');
+  $('#workflows').innerHTML = `<div class="row spread"><h2>Workflows</h2><div class="row"><button id="wfup">Import my ComfyUI workflow…</button><button id="wfref">Refresh catalog from a server</button></div></div>
+    <p class="muted">Any ComfyUI workflow can become a Hawkes Gen tool: its inputs, prompts, seeds, sizes and outputs are found automatically, and its models install on a GPU server the first time a job needs them. Folders live in <code>hawkesgen/workflows/</code>.</p>
+    <div class="card"><h3>Installed (${workflows.length})</h3><table><tbody>${workflows.map((w) => `<tr><td style="width:24%"><b>${esc(w.title)}</b><div class="small muted">${esc(w.id)} · v${w.version} · ${esc(w.family)}</div></td><td class="small">${esc(w.description)}<div class="muted">${w.models.length} model file(s)${w.source?.template ? ` · from template ${esc(w.source.template)}` : ''}</div></td><td><div class="row"><button data-wtry="${esc(w.id)}">Try</button><button data-wedit="${esc(w.id)}">Edit</button></div></td></tr>`).join('')}</tbody></table></div>
+    <div class="card"><div class="row spread"><h3>ComfyUI template library (${templates.length})</h3><input id="wq" placeholder="Search: upscale, 3d, music, panorama…" value="${esc(q)}"></div>
+      <div class="lib">${templates.slice(0, 120).map((t) => `<div class="asset"><div class="media" data-wprev="${esc(t.name)}"><img src="/v1/comfy/templates/${encodeURIComponent(t.name)}/thumb" loading="lazy" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'glyph',textContent:'◇'}))"></div>
+        <div class="meta"><span class="t">${esc(t.title)}</span><span class="muted">${esc(t.tags.slice(0, 3).join(' · '))}${t.size ? ` · ${gb(t.size)}` : ''}</span>${t.installed ? `<span class="chip">installed as ${esc(t.installed)}</span>` : ''}</div></div>`).join('')}</div></div>`;
+  $('#wq').onchange = (e) => { render.workflows.q = e.target.value; render.workflows().catch(fail); };
+  $('#wfref').onclick = () => post('/comfy/refresh').then((r) => { toast(`Catalog: ${r.templates} templates, ${r.nodes} nodes`); render.workflows(); }).catch(fail);
+  $('#wfup').onclick = () => importDialog({});
+  for (const b of document.querySelectorAll('[data-wtry]')) b.onclick = async () => tryTool(await api(`/tools/${b.dataset.wtry}`));
+  for (const b of document.querySelectorAll('[data-wedit]')) b.onclick = () => editWorkflow(b.dataset.wedit);
+  for (const m of document.querySelectorAll('[data-wprev]')) m.onclick = () => previewTemplate(m.dataset.wprev);
+};
+
+async function previewTemplate(name) {
+  const body = modal(`<h2>${esc(name)}</h2><p class="muted">Converting…</p>`);
+  try {
+    const r = await api(`/comfy/templates/${encodeURIComponent(name)}`);
+    const d = r.draft;
+    body.innerHTML = `<h2>${esc(r.template?.title ?? name)}</h2><p class="muted">${esc(r.template?.description ?? '')}</p>
+      ${r.problems.length ? `<div class="card" style="color:var(--bad)">${r.problems.map(esc).join('<br>')}</div>` : '<p class="small" style="color:var(--ok)">Converts cleanly for the servers.</p>'}
+      <div class="grid"><div><h3>Inputs</h3>${Object.entries(d.inputs).map(([k, v]) => `<div class="small"><b>${esc(k)}</b> · ${esc(v.kind)}</div>`).join('') || '<div class="small muted">none</div>'}</div>
+      <div><h3>Params</h3>${Object.entries(d.params).map(([k, v]) => `<div class="small"><b>${esc(k)}</b> · ${esc(v.type)}${v.default !== undefined ? ` = ${esc(String(v.default).slice(0, 40))}` : ''}</div>`).join('') || '<div class="small muted">none</div>'}</div>
+      <div><h3>Models</h3>${r.models.map((m) => `<div class="small">${esc(m.dir)}/${esc(m.file)}</div>`).join('') || '<div class="small muted">none found</div>'}</div></div>
+      <div id="impform"></div>`;
+    importDialog({ template: name, title: r.template?.title, description: r.template?.description, mount: body.querySelector('#impform'), disabled: r.problems.length > 0 });
+  } catch (e) {
+    body.innerHTML = `<h2>${esc(name)}</h2><p style="color:var(--bad)">${esc(e.message)}</p>`;
+  }
+}
+
+function importDialog({ template, title, description, mount, disabled }) {
+  const html = `<h3>Import as a tool</h3><div class="form">
+      <label><span><b>tool id</b> (area.name, e.g. image.relight)</span><input id="iid" placeholder="image.something"></label>
+      <label><span><b>title</b></span><input id="ititle" value="${esc(title ?? '')}"></label>
+      <label class="wide"><span><b>description</b></span><textarea id="idesc">${esc(description ?? '')}</textarea></label>
+      ${template ? '' : '<label class="wide"><span><b>workflow</b> (.json saved or exported from ComfyUI, UI or API format)</span><input type="file" id="ifile" accept=".json"></label>'}
+    </div><div class="row" style="margin-top:10px"><button class="primary" id="igo" ${disabled ? 'disabled' : ''}>Import</button><span id="imsg" class="small muted"></span></div>`;
+  const root = mount ?? modal(`<h2>Import a ComfyUI workflow</h2>${html}`);
+  if (mount) mount.innerHTML = html;
+  root.querySelector('#igo').onclick = async () => {
+    try {
+      const body = { id: root.querySelector('#iid').value.trim(), title: root.querySelector('#ititle').value.trim() || undefined, description: root.querySelector('#idesc').value.trim() || undefined };
+      if (template) body.template = template;
+      else body.workflow = JSON.parse(await root.querySelector('#ifile').files[0].text());
+      const r = await post('/workflows/import', body);
+      $('#modal').close();
+      toast(r.note ?? `Imported ${r.manifest.id}`);
+      render.workflows();
+    } catch (e) {
+      root.querySelector('#imsg').textContent = e.message;
+    }
+  };
+}
+
+async function editWorkflow(toolId) {
+  const w = await api(`/workflows/${toolId}`);
+  const body = modal(`<h2>${esc(w.manifest.title)} <span class="small muted">${esc(toolId)}</span></h2>
+    <p class="muted small">The manifest: which graph fields each input and param sets (targets), defaults, limits, models with their download links, and the outputs. Bump version when results change. ${w.check?.problems?.length ? `<b style="color:var(--bad)">Graph problems: ${esc(w.check.problems.join('; '))}</b>` : ''}</p>
+    <textarea id="wj" style="min-height:55vh;font-family:ui-monospace,monospace;font-size:12px">${esc(JSON.stringify(w.manifest, null, 2))}</textarea>
+    <details><summary>Graph (${Object.keys(w.graph).length} nodes)</summary><pre>${esc(Object.entries(w.graph).map(([k, n]) => `${k}  ${n.class_type}  ${n._meta?.title ?? ''}`).join('\n'))}</pre></details>
+    <div class="row" style="margin-top:10px"><button class="primary" id="wsave">Save</button><button class="danger" id="wdel">Delete tool</button><button id="wno">Close</button><span id="wmsg" class="small muted"></span></div>`);
+  body.querySelector('#wno').onclick = () => $('#modal').close();
+  body.querySelector('#wsave').onclick = async () => {
+    try {
+      await api(`/workflows/${toolId}`, { method: 'PUT', body: JSON.stringify({ manifest: JSON.parse($('#wj').value) }) });
+      toast('Saved');
+      $('#modal').close();
+      render.workflows();
+    } catch (e) {
+      $('#wmsg').textContent = e.message;
+    }
+  };
+  body.querySelector('#wdel').onclick = async () => {
+    if (!confirm(`Delete the ${toolId} tool (its workflows/ folder)?`)) return;
+    await api(`/workflows/${toolId}`, { method: 'DELETE', body: JSON.stringify({ confirm: true }) }).then(() => { $('#modal').close(); render.workflows(); }).catch(fail);
+  };
+}
+
+// ---------------------------------------------------------------- usage
+render.usage = async () => {
+  const days = render.usage.days ?? 30;
+  const by = render.usage.by ?? 'project';
+  const u = await api(`/usage?since=${Date.now() - days * 86400000}&by=${by}`);
+  $('#usage').innerHTML = `<div class="row spread"><h2>Usage <span class="muted small">${money(u.total)} in ${days} days</span></h2><div class="row">
+      <select id="ud">${[1, 7, 30, 90, 365].map((d) => `<option value="${d}" ${d === days ? 'selected' : ''}>last ${d} day${d > 1 ? 's' : ''}</option>`).join('')}</select>
+      <select id="ub">${['project', 'client', 'provider', 'day'].map((b) => `<option ${b === by ? 'selected' : ''}>${b}</option>`).join('')}</select></div></div>
+    <div class="card">${u.rows.length ? `<table><thead><tr><th>${esc(by)}</th><th>Provider</th><th class="num">Amount</th><th class="num">Jobs</th><th class="num">Cost</th></tr></thead><tbody>${u.rows.map((r) => `<tr><td>${esc(r.grp)}</td><td>${esc(r.provider)}</td><td class="num">${Math.round(r.amount).toLocaleString()} ${esc(r.unit.replace('_', ' '))}</td><td class="num">${r.jobs}</td><td class="num">${money(r.cost)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No usage yet.</div>'}</div>
+    <p class="small muted">GPU cost is server time while a job runs, at list price. Idle time between jobs and disks aren't counted here; your AWS bill is the authority.</p>`;
+  $('#ud').onchange = (e) => { render.usage.days = Number(e.target.value); render.usage(); };
+  $('#ub').onchange = (e) => { render.usage.by = e.target.value; render.usage(); };
+};
+
+// ---------------------------------------------------------------- settings
+render.settings = async () => {
+  const [s, me] = await Promise.all([api('/settings'), api('/me')]);
+  let clients = [];
+  if (me.role === 'owner') clients = (await api('/clients')).clients;
+  $('#settings').innerHTML = `<h2>Settings</h2>
+    <div class="card"><h3>API keys</h3><p class="muted small">Each game, site or customer gets its own key, so its jobs and costs are tracked separately. Send it as <code>Authorization: Bearer hg_…</code>. You are <b>${esc(me.name)}</b> (${esc(me.role)}).</p>
+      ${clients.length ? `<table><thead><tr><th>Name</th><th>Key</th><th>Role</th><th>Projects</th><th>Last used</th><th></th></tr></thead><tbody>${clients.map((c) => `<tr><td>${esc(c.name)}</td><td><code>${esc(c.prefix)}…</code></td><td>${esc(c.role)}</td><td>${esc(c.projects.join(', '))}</td><td>${esc(ago(c.last_used))}</td><td><button data-cl="${c.id}" data-dis="${c.disabled}">${c.disabled ? 'Enable' : 'Disable'}</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted">No keys yet. Local requests from this PC act as the owner.</p>'}
+      <div class="form" style="margin-top:10px"><label><span>Name</span><input id="cn" placeholder="doseofdestruction"></label><label><span>Role</span><select id="cr"><option>user</option><option>admin</option><option>owner</option></select></label><label><span>Projects (comma separated, * for all)</span><input id="cp" value="*"></label></div>
+      <div class="row" style="margin-top:8px"><button id="cadd">Create key</button></div></div>
+    <div class="card"><h3>Service</h3><div class="form">
+      <label><span><b>Local requests act as the owner</b> (turn off before exposing the service beyond this PC)</span><select id="slo"><option value="true" ${s.localOpen ? 'selected' : ''}>On</option><option value="false" ${!s.localOpen ? 'selected' : ''}>Off</option></select></label>
+      <label><span>ElevenLabs jobs at once</span><input type="number" id="sce" value="${s.concurrency.elevenlabs}" min="1" max="16"></label>
+      <label><span>Claude jobs at once</span><input type="number" id="sca" value="${s.concurrency.anthropic}" min="1" max="16"></label>
+      <label><span>Local jobs at once</span><input type="number" id="scl" value="${s.concurrency.local}" min="1" max="8"></label>
+      <label><span>ElevenLabs $ per 1,000 characters (for usage reports)</span><input type="number" step="any" id="sre" value="${s.rates.elevenlabsPer1kChars}"></label>
+    </div><div class="row" style="margin-top:10px"><button class="primary" id="ssave">Save</button></div></div>
+    <div class="card"><h3>Adopt GPU servers</h3><p class="muted small">Take over servers another project launched (their tokens and SSH keys), e.g. Dose Of Destruction's <code>.cache/gpu</code>.</p>
+      <div class="row"><input id="adf" style="flex:1" value="C:\\Projects\\doseofdestructionwebsite\\.cache\\gpu"><button id="adgo">Adopt</button></div></div>`;
+  $('#cadd').onclick = () => post('/clients', { name: $('#cn').value, role: $('#cr').value, projects: $('#cp').value.split(',').map((x) => x.trim()).filter(Boolean) })
+    .then((r) => { modal(`<h2>Key for ${esc(r.client.name)}</h2><p>Copy it now. It isn't shown again.</p><pre>${esc(r.key)}</pre>`); render.settings(); }).catch(fail);
+  for (const b of document.querySelectorAll('[data-cl]')) b.onclick = () => post(`/clients/${b.dataset.cl}/${b.dataset.dis === '1' ? 'enable' : 'disable'}`).then(() => render.settings()).catch(fail);
+  $('#ssave').onclick = () => post('/settings', { localOpen: $('#slo').value === 'true', concurrency: { elevenlabs: Number($('#sce').value), anthropic: Number($('#sca').value), local: Number($('#scl').value) }, rates: { elevenlabsPer1kChars: Number($('#sre').value) } }).then(() => toast('Saved')).catch(fail);
+  $('#adgo').onclick = () => confirm('Copy that folder\'s server tokens and SSH keys into Hawkes Gen?') && post('/fleet/adopt', { confirm: true, from: $('#adf').value }).then((r) => toast(`Adopted ${r.servers.length} servers, ${r.keys.length} keys`)).catch(fail);
+};
+
+// ---------------------------------------------------------------- start
+api('/tools').then((r) => { state.tools = r.tools; }).catch(() => {}).finally(() => { connect(); show(current); });
+setInterval(() => { if (current === 'fleet' && !$('#modal').open) render.fleet().catch(() => {}); }, 15000);

@@ -1,0 +1,97 @@
+# Hawkes Gen
+
+The generative R&D floor of Hawkes Biomedical: one local service that every game and site uses for custom
+generative AI, so projects never deal with GPU servers, ComfyUI, models or API keys.
+
+- **A Unity build server on AWS** (Windows, Unity 6 + WebGL) that keeps every project's Library, so WebGL builds are
+  incremental. Hawkes Studio (`C:\Projects\hawkesstudio`) drives it with the playtest and review tools every day.
+- **A GPU fleet on AWS running ComfyUI.** Hawkes Gen launches, starts and stops the servers and shares them
+  between projects through one queue. It installs each workflow's models the first time a job needs them,
+  and frees disk when space runs short.
+- **Workflows as data.** Any ComfyUI workflow becomes a tool: browse ComfyUI's 245 open-source templates
+  (or drop in your own export) and import it. Its inputs, prompts, seeds, sizes, outputs and model download
+  links are found for you.
+- **ElevenLabs** for voice lines and sound effects. **Claude** for writing, JSON designs and art review.
+- **Local tools** on this PC: cutouts, framing, seamless tiling, material maps, video prep.
+- **Presets**: each project's art direction (a style line plus named recipes), shared by games, agents and
+  people.
+- **A library** of everything made, with the recipe that made it, browsable across projects.
+- **Usage and cost** per project and per API key.
+- **Clients for everything:**
+  - JS and Python libraries
+  - a Unity editor package
+  - a CLI
+  - an MCP server, so Claude Code (or any agent) in any project folder can use it directly
+
+## Start
+
+```bash
+auto-start.bat
+```
+
+This opens the dashboard at http://127.0.0.1:8790. The first run installs Node packages and a Python `.venv`.
+Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
+- Overview
+- Jobs
+- Library (with 3D previews)
+- GPU fleet (servers, models per server, costs)
+- Tools (try any tool)
+- Presets
+- Workflows (the template library and your workflows)
+- Usage
+- Settings (API keys)
+
+## Tools
+
+| Area | Tools |
+|---|---|
+| Images | `image.generate` (Z-Image Turbo text-to-image; `seamless` for textures), `image.edit` (Qwen-Image-Edit), `image.paint` (paint styled on references), `image.control` (paint over a render or sketch with ControlNet: grey-box to finished art), `image.relight`, `image.angles` (a character from 8 camera angles), `image.upscale` (Real-ESRGAN), `image.restore` (SeedVR2, finer), `image.panorama` (360° skies) |
+| Characters | `lora.train` (train a character LoRA on its poses, on the GPU fleet), `image.character` (draw that character on-model in any pose or scene) |
+| Analysis and masks | `image.remove-background` (BiRefNet on the GPU), `image.segment` (SAM 3, find by text), `image.layers` (split into RGBA layers), `image.pose` / `video.pose` (SDPose whole-body pose maps), `image.depth` (Depth Anything 3), `image.normals` and `image.albedo` (Marigold v2) |
+| Video | `video.i2v` (Wan 2.2 image-to-video and first-last-frame loops), `video.animate` and `video.motion` (motion transfer; Wan Animate 2), `video.talk` (InfiniteTalk: a character speaks or sings a voice track), `video.t2v` (Wan 2.2 text-to-video), `video.upscale`, `video.interpolate` (FILM) |
+| 3D | `mesh.from-image` (Hunyuan3D 2.1 shape), `mesh.from-views` (Hunyuan3D multi-view: front + side), `mesh.textured` (Pixal3D / TRELLIS 2 with PBR textures) |
+| Audio | `audio.music` (ACE-Step 1.5 songs and loops), `audio.voice` and `audio.sfx` (ElevenLabs), `audio.voice-design` + `audio.voice-save` (ElevenLabs Voice Design: candidates, then save one to the voice library) |
+| Language | `llm.text` and `llm.json` (Claude, with images for vision) |
+| On this PC | `image.cutout`, `image.frame`, `image.tile`, `texture.maps`, `video.fit`, `media.probe` |
+| Builds | `unity.build` (Unity WebGL on the AWS build server, incremental: keeps each project's Library) |
+| Playtests | `playtest.run` (play a game in Chromium through its playtest contract, or smoke-test or crawl a site; video, screenshots, console, fps), `playtest.review` (Claude watches it and files findings) |
+| Pipelines | `asset.make` (a chain of tools as one recipe, with best-of-N picked by Claude) |
+| Anything else | `comfy.graph` (run a raw graph), or import a workflow (dashboard → Workflows) |
+
+## Use it
+
+**From an agent** (Claude Code, Cursor): every project folder's `.mcp.json` has the `hawkesgen` server.
+- Ask for "a seamless lab-tile texture for PH Origins". The agent reads the project's presets and runs the tool.
+- MCP tools: `hawkesgen_tools`, `hawkesgen_run`, `hawkesgen_presets`, `hawkesgen_library`, `hawkesgen_jobs`,
+  `hawkesgen_job`, `hawkesgen_cancel`, `hawkesgen_fleet`, `hawkesgen_templates`, `hawkesgen_import_workflow`.
+
+**From the command line:**
+
+```bash
+hawkesgen.cmd tools
+hawkesgen.cmd run - --project phorigins --preset sky --param prompt="night city from the 58th floor, rain" --out out/
+hawkesgen.cmd run image.generate --project sandbox --param prompt="cracked hospital tiles" --param seamless=true --out out/
+hawkesgen.cmd fleet status
+```
+
+**From code** (copy `clients/js/hawkesgen.mjs` or `clients/python/hawkesgen.py` into the project):
+
+```js
+import { HawkesGen } from './hawkesgen.mjs';
+const gen = new HawkesGen({ project: 'sickofit' });
+const job = await gen.run(null, { preset: 'enemy-concept', params: { prompt: 'a hell imp with an ember' } });
+await gen.download(job.outputs[0].asset, 'imp.png');
+```
+
+**From Unity:** add `"com.hawkes.gen": "file:C:/Projects/hawkesgen/clients/unity/com.hawkes.gen"` to
+`Packages/manifest.json`, then open Window > Hawkes Gen. Results import into `Assets/HawkesGen/`.
+
+## Docs
+
+| File | What |
+|---|---|
+| `AGENTS.md` | How it's built, the rules, adding tools |
+| `docs/workflows.md` | Turning ComfyUI workflows into tools, and the manifest format |
+| `docs/api.md` | Every API route |
+| `docs/comfyui.md` | What works on the GPU servers (and what hangs them) |
+| `DESIGN.md` | J's decisions and the roadmap |

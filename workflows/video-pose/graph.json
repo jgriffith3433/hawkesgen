@@ -1,0 +1,122 @@
+{
+ "679": {
+  "class_type": "LoadVideo",
+  "inputs": {
+   "file": "man_in_the_rain.mp4"
+  },
+  "_meta": {
+   "title": "Load Video"
+  }
+ },
+ "680": {
+  "class_type": "SaveVideo",
+  "inputs": {
+   "filename_prefix": "video/ComfyUI",
+   "format": "auto",
+   "format.codec": "auto",
+   "video": [
+    "681",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Save Video"
+  }
+ },
+ "681": {
+  "class_type": "CreateVideo",
+  "inputs": {
+   "fps": [
+    "675:677",
+    2
+   ],
+   "images": [
+    "675:672",
+    0
+   ],
+   "audio": [
+    "675:677",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "Create Video"
+  }
+ },
+ "675:673": {
+  "class_type": "CheckpointLoaderSimple",
+  "inputs": {
+   "ckpt_name": "sdpose_wholebody_fp16.safetensors"
+  },
+  "_meta": {
+   "title": "Load Checkpoint"
+  }
+ },
+ "675:674": {
+  "class_type": "ResizeImageMaskNode",
+  "inputs": {
+   "resize_type": "scale longer dimension",
+   "resize_type.longer_size": 1024,
+   "scale_method": "lanczos",
+   "input": [
+    "675:677",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Resize Image/Mask"
+  }
+ },
+ "675:671": {
+  "class_type": "SDPoseKeypointExtractor",
+  "inputs": {
+   "batch_size": 16,
+   "model": [
+    "675:673",
+    0
+   ],
+   "vae": [
+    "675:673",
+    2
+   ],
+   "image": [
+    "675:674",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "SDPose Keypoint Extractor"
+  }
+ },
+ "675:672": {
+  "class_type": "SDPoseDrawKeypoints",
+  "inputs": {
+   "draw_body": true,
+   "draw_hands": true,
+   "draw_face": true,
+   "draw_feet": true,
+   "stick_width": 4,
+   "face_point_size": 2,
+   "score_threshold": 0.5,
+   "keypoints": [
+    "675:671",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "SDPose Draw Keypoints"
+  }
+ },
+ "675:677": {
+  "class_type": "GetVideoComponents",
+  "inputs": {
+   "video": [
+    "679",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Get Video Components"
+  }
+ }
+}

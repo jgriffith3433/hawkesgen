@@ -1,0 +1,211 @@
+{
+  "id": "video.talk",
+  "version": 1,
+  "title": "Talking character from audio (InfiniteTalk)",
+  "description": "EXPERIMENTAL (first live test rendered black frames; needs debugging): A talking (or singing) character from one image and a voice track (InfiniteTalk on Wan 2.1): lips, head and body move with the audio. Use it for story scenes, trailers and Imagine Live TV dialogue. Pair with audio.voice for the line. For one speaker give the same audio twice.",
+  "family": "wan-infinitetalk",
+  "output": "video",
+  "models": [
+    {
+      "file": "Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled/resolve/main/I2V/Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors"
+    },
+    {
+      "file": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    },
+    {
+      "file": "Wan2_1_VAE_bf16.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors"
+    },
+    {
+      "file": "wan2.1_infiniteTalk_multi_fp16.safetensors",
+      "dir": "model_patches",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/model_patches/wan2.1_infiniteTalk_multi_fp16.safetensors"
+    },
+    {
+      "file": "wav2vec2-chinese-base_fp16.safetensors",
+      "dir": "audio_encoders",
+      "url": "https://huggingface.co/Kijai/wav2vec2_safetensors/resolve/main/wav2vec2-chinese-base_fp16.safetensors"
+    },
+    {
+      "file": "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
+    }
+  ],
+  "inputs": {
+    "audio": {
+      "kind": "audio",
+      "required": true,
+      "description": "The voice line (speaker 1)",
+      "targets": [
+        [
+          "24",
+          "audio"
+        ]
+      ]
+    },
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The character (front-facing works best)",
+      "targets": [
+        [
+          "32",
+          "image"
+        ]
+      ]
+    },
+    "audio2": {
+      "kind": "audio",
+      "required": true,
+      "description": "Speaker 2 (for one speaker, the same file again)",
+      "targets": [
+        [
+          "90",
+          "audio"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "The scene and how they move",
+      "targets": [
+        [
+          "188:14",
+          "text"
+        ],
+        [
+          "324:312",
+          "text"
+        ]
+      ],
+      "example": "the character talks to camera, natural head movement, plain studio background"
+    },
+    "width": {
+      "type": "integer",
+      "default": 832,
+      "description": "Width",
+      "targets": [
+        [
+          "149",
+          "value"
+        ]
+      ]
+    },
+    "height": {
+      "type": "integer",
+      "default": 480,
+      "description": "Height",
+      "targets": [
+        [
+          "150",
+          "value"
+        ]
+      ]
+    },
+    "frames": {
+      "type": "integer",
+      "min": 1,
+      "max": 1000,
+      "default": 81,
+      "description": "Frame count.",
+      "targets": [
+        [
+          "188:129",
+          "length"
+        ],
+        [
+          "324:311",
+          "length"
+        ]
+      ]
+    },
+    "fps": {
+      "type": "number",
+      "min": 1,
+      "max": 60,
+      "default": 25,
+      "targets": [
+        [
+          "138",
+          "fps"
+        ],
+        [
+          "140",
+          "fps"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first output; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "188:193",
+          "noise_seed"
+        ],
+        [
+          "324:321",
+          "noise_seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "default": 6,
+      "advanced": true,
+      "targets": [
+        [
+          "188:192",
+          "steps"
+        ],
+        [
+          "324:320",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "default": 1,
+      "advanced": true,
+      "targets": [
+        [
+          "188:191",
+          "cfg"
+        ],
+        [
+          "324:319",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "141"
+  ],
+  "source": {
+    "template": "video_wan2_1_infinitetalk",
+    "size": 29635274342
+  },
+  "tags": [
+    "video",
+    "lipsync",
+    "talking",
+    "experimental"
+  ]
+}

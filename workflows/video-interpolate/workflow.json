@@ -1,0 +1,55 @@
+{
+  "id": "video.interpolate",
+  "version": 1,
+  "title": "Smooth a video (frame interpolation)",
+  "description": "FILM frame interpolation: adds in-between frames so animation clips and Wan videos play smoothly. The frame rate rises with the multiplier, so the length stays the same.",
+  "family": "film",
+  "output": "video",
+  "models": [
+    {
+      "file": "film_net_fp16.safetensors",
+      "dir": "frame_interpolation",
+      "url": "https://huggingface.co/Comfy-Org/frame_interpolation/resolve/main/frame_interpolation/film_net_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "video": {
+      "kind": "video",
+      "required": true,
+      "description": "Load Video",
+      "targets": [
+        [
+          "4",
+          "file"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "multiplier": {
+      "type": "integer",
+      "min": 2,
+      "max": 8,
+      "default": 2,
+      "description": "Frames per original frame (2 doubles the frame rate).",
+      "targets": [
+        [
+          "16:9",
+          "value"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "7"
+  ],
+  "source": {
+    "template": "utility_video_frame_interpolation",
+    "size": 107374182
+  },
+  "tags": [
+    "video",
+    "interpolation"
+  ],
+  "seconds": 30
+}

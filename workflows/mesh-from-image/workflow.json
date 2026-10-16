@@ -1,0 +1,94 @@
+{
+  "id": "mesh.from-image",
+  "version": 1,
+  "title": "Image to 3D shape",
+  "description": "Hunyuan3D 2.1: a clean untextured 3D mesh (GLB) from one image of an object on a plain background. For props and blockouts; use mesh.textured for a textured model.",
+  "family": "hunyuan3d",
+  "output": "mesh",
+  "models": [
+    {
+      "file": "hunyuan_3d_v2.1.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Comfy-Org/hunyuan3D_2.1_repackaged/resolve/main/hunyuan_3d_v2.1.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "One object, centered, on a plain background (cut it out first for best results).",
+      "targets": [
+        [
+          "2",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first take; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "7",
+          "seed"
+        ]
+      ]
+    },
+    "detail": {
+      "type": "integer",
+      "min": 128,
+      "max": 512,
+      "default": 256,
+      "description": "Mesh resolution (octree). 384+ is finer and slower.",
+      "targets": [
+        [
+          "8",
+          "octree_resolution"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 5,
+      "max": 100,
+      "default": 30,
+      "advanced": true,
+      "targets": [
+        [
+          "7",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 1,
+      "max": 15,
+      "default": 5,
+      "advanced": true,
+      "targets": [
+        [
+          "7",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "10"
+  ],
+  "source": {
+    "template": "3d_hunyuan3d-v2.1",
+    "size": 4928474972
+  },
+  "tags": [
+    "3d",
+    "mesh",
+    "image-to-3d"
+  ],
+  "seconds": 60
+}

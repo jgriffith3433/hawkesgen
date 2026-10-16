@@ -1,0 +1,31 @@
+{
+  "project": "doseofdestruction",
+  "title": "Dose Of Destruction",
+  "style": "Stylized 3D cartoon render matching the existing roster: clean shapes, bold readable silhouette, saturated colors, soft studio light.",
+  "negative": "text, watermark, extra limbs",
+  "notes": "Fighter art lives in C:\\Projects\\AllTheCharacters\\<Folder>. DoD's devtools tune its own side-view, pose and clip prompts (content/generation.json); these presets are for one-off art outside that pipeline. Stage art: say 'game environment art, an empty scene: nobody in it' or Qwen paints fighters (docs/comfyui.md).",
+  "presets": {
+    "fighter-concept": {
+      "tool": "image.generate",
+      "description": "A new fighter, full body, front three-quarter view, on green for keying.",
+      "prompt": "{prompt}. Full-body character, standing in a fighting stance, facing three-quarters toward the camera. {style} Plain flat pure green background, no floor, no shadow, even studio lighting.",
+      "params": { "width": 1024, "height": 1024 }
+    },
+    "fighter-turnaround": {
+      "tool": "image.angles",
+      "description": "Eight camera angles of a fighter from one image (reference sheet for poses and clips)."
+    },
+    "stage-backdrop": {
+      "tool": "image.generate",
+      "description": "A stage backdrop: game environment art, nobody in it.",
+      "prompt": "Game environment art for a 2D platform fighter stage, an empty scene: nobody in it. {prompt}. Wide side-on view, readable depth, {style}",
+      "params": { "width": 1568, "height": 672 }
+    },
+    "stage-theme": {
+      "tool": "audio.music",
+      "description": "A looping stage theme.",
+      "prompt": "{prompt}, energetic fighting game stage theme, loopable, instrumental",
+      "params": { "lyrics": "[Instrumental]", "seconds": 90 }
+    }
+  }
+}

@@ -1,0 +1,139 @@
+{
+  "id": "image.layers",
+  "version": 2,
+  "title": "Split an image into layers",
+  "description": "Splits an image into separate RGBA layers (background, characters, props, text) with Qwen-Image-Layered. Use it to pull stage art apart for parallax, recolor one element, or cut a character from a busy scene. The prompt describes the image; outputs are the layers.",
+  "family": "qwen-layered",
+  "output": "image",
+  "models": [
+    {
+      "file": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/HunyuanVideo_1.5_repackaged/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+    },
+    {
+      "file": "qwen_image_layered_vae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image-Layered_ComfyUI/resolve/main/split_files/vae/qwen_image_layered_vae.safetensors"
+    },
+    {
+      "file": "qwen_image_layered_bf16.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image-Layered_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_layered_bf16.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The image to split",
+      "targets": [
+        [
+          "74",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "What the image shows (helps the split)",
+      "targets": [
+        [
+          "116",
+          "value"
+        ]
+      ],
+      "example": "a city rooftop at night with a neon sign and a character in the foreground"
+    },
+    "negative": {
+      "type": "text",
+      "default": "",
+      "advanced": true,
+      "targets": [
+        [
+          "83:7",
+          "text"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first output; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "83:3",
+          "seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "default": 20,
+      "advanced": true,
+      "targets": [
+        [
+          "83:3",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "default": 2.5,
+      "advanced": true,
+      "targets": [
+        [
+          "83:3",
+          "cfg"
+        ]
+      ]
+    },
+    "layers": {
+      "type": "integer",
+      "default": 4,
+      "min": 2,
+      "max": 8,
+      "description": "How many layers to split into (background counts as one)",
+      "targets": [
+        [
+          "83:118",
+          "layers"
+        ]
+      ]
+    },
+    "size": {
+      "type": "integer",
+      "default": 1024,
+      "min": 512,
+      "max": 1536,
+      "description": "Longest side of the result in pixels (bigger is slower)",
+      "targets": [
+        [
+          "82",
+          "largest_size"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "60"
+  ],
+  "source": {
+    "template": "image_qwen_image_layered",
+    "size": 50465865728
+  },
+  "tags": [
+    "image",
+    "layers",
+    "decompose"
+  ]
+}

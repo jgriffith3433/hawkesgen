@@ -1,0 +1,177 @@
+{
+ "3": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 502126049100058,
+   "steps": 20,
+   "cfg": 7.5,
+   "sampler_name": "euler",
+   "scheduler": "normal",
+   "denoise": 1,
+   "model": [
+    "70",
+    0
+   ],
+   "positive": [
+    "65",
+    0
+   ],
+   "negative": [
+    "65",
+    1
+   ],
+   "latent_image": [
+    "66",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "KSampler"
+  }
+ },
+ "51": {
+  "class_type": "CLIPVisionEncode",
+  "inputs": {
+   "crop": "none",
+   "clip_vision": [
+    "54",
+    1
+   ],
+   "image": [
+    "56",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "CLIP Vision Encode"
+  }
+ },
+ "54": {
+  "class_type": "ImageOnlyCheckpointLoader",
+  "inputs": {
+   "ckpt_name": "hunyuan3d-dit-v2-mv_fp16.safetensors"
+  },
+  "_meta": {
+   "title": "Load Checkpoint Image Only (img2vid model)"
+  }
+ },
+ "56": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "3d_hunyuan3d_multiview_to_model_front_image.png"
+  },
+  "_meta": {
+   "title": "Load Image"
+  }
+ },
+ "61": {
+  "class_type": "VAEDecodeHunyuan3D",
+  "inputs": {
+   "num_chunks": 8000,
+   "octree_resolution": 256,
+   "samples": [
+    "3",
+    0
+   ],
+   "vae": [
+    "54",
+    2
+   ]
+  },
+  "_meta": {
+   "title": "Hunyuan 3D VAE Decode"
+  }
+ },
+ "65": {
+  "class_type": "Hunyuan3Dv2ConditioningMultiView",
+  "inputs": {
+   "front": [
+    "51",
+    0
+   ],
+   "back": [
+    "81",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Hunyuan3Dv2ConditioningMultiView"
+  }
+ },
+ "66": {
+  "class_type": "EmptyLatentHunyuan3Dv2",
+  "inputs": {
+   "resolution": 3072,
+   "batch_size": 1
+  },
+  "_meta": {
+   "title": "Empty Hunyuan 3D v2 Latent"
+  }
+ },
+ "70": {
+  "class_type": "ModelSamplingAuraFlow",
+  "inputs": {
+   "shift": 1.0000000000000002,
+   "model": [
+    "54",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "ModelSamplingAuraFlow"
+  }
+ },
+ "80": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "3d_hunyuan3d_multiview_to_model_back_image.png"
+  },
+  "_meta": {
+   "title": "Load Image"
+  }
+ },
+ "81": {
+  "class_type": "CLIPVisionEncode",
+  "inputs": {
+   "crop": "none",
+   "clip_vision": [
+    "54",
+    1
+   ],
+   "image": [
+    "80",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "CLIP Vision Encode"
+  }
+ },
+ "82": {
+  "class_type": "VoxelToMesh",
+  "inputs": {
+   "algorithm": "surface net",
+   "threshold": 0.6,
+   "voxel": [
+    "61",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Voxel to Mesh"
+  }
+ },
+ "83": {
+  "class_type": "SaveGLB",
+  "inputs": {
+   "filename_prefix": "mesh/ComfyUI",
+   "mesh": [
+    "82",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Save 3D Model"
+  }
+ }
+}

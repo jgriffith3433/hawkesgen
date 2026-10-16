@@ -1,0 +1,41 @@
+{
+  "id": "video.upscale",
+  "version": 1,
+  "title": "Upscale a video (4x)",
+  "description": "Real-ESRGAN x4 on every frame, keeping the frame rate and the audio. Run before video.interpolate for the smoothest result.",
+  "family": "esrgan",
+  "output": "video",
+  "models": [
+    {
+      "file": "RealESRGAN_x4plus.safetensors",
+      "dir": "upscale_models",
+      "url": "https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged/resolve/main/RealESRGAN_x4plus.safetensors"
+    }
+  ],
+  "inputs": {
+    "video": {
+      "kind": "video",
+      "required": true,
+      "description": "The video to upscale.",
+      "targets": [
+        [
+          "9",
+          "file"
+        ]
+      ]
+    }
+  },
+  "params": {},
+  "outputs": [
+    "12"
+  ],
+  "source": {
+    "template": "utility-gan_upscaler",
+    "size": null
+  },
+  "tags": [
+    "video",
+    "upscale"
+  ],
+  "seconds": 90
+}

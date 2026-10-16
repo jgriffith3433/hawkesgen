@@ -1,0 +1,102 @@
+{
+ "17": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "the_lily_veil.png"
+  },
+  "_meta": {
+   "title": "Load Image"
+  }
+ },
+ "20": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "20:image",
+    0
+   ],
+   "filename_prefix": "hawkesgen/mask"
+  },
+  "_meta": {
+   "title": "mask"
+  }
+ },
+ "19:13": {
+  "class_type": "RemoveBackground",
+  "inputs": {
+   "image": [
+    "17",
+    0
+   ],
+   "bg_removal_model": [
+    "19:14",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Remove Background"
+  }
+ },
+ "19:14": {
+  "class_type": "LoadBackgroundRemovalModel",
+  "inputs": {
+   "bg_removal_name": "birefnet.safetensors"
+  },
+  "_meta": {
+   "title": "Load Background Removal Model"
+  }
+ },
+ "cut": {
+  "class_type": "JoinImageWithAlpha",
+  "inputs": {
+   "image": [
+    "17",
+    0
+   ],
+   "alpha": [
+    "inv",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Cutout"
+  }
+ },
+ "inv": {
+  "class_type": "InvertMask",
+  "inputs": {
+   "mask": [
+    "19:13",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Invert mask"
+  }
+ },
+ "save": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "cut",
+    0
+   ],
+   "filename_prefix": "hawkesgen/cutout"
+  },
+  "_meta": {
+   "title": "cutout"
+  }
+ },
+ "20:image": {
+  "class_type": "MaskToImage",
+  "inputs": {
+   "mask": [
+    "19:13",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Mask to image"
+  }
+ }
+}

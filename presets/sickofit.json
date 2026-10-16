@@ -1,0 +1,32 @@
+{
+  "project": "sickofit",
+  "title": "Sick Of It",
+  "style": "Dark fantasy video game character art: painterly, detailed, gritty, warm rim light from hellfire, readable silhouette.",
+  "negative": "text, watermark, slime enemy",
+  "notes": "Story first (sickofitgame-unity/Docs/Story.md): the climb through 1,000 floors of Hell, Hell is repetition, slimes are villagers and never enemies, no office or work jokes. Enemy art for the game goes through Tools/Art/art.mjs (it calls Hawkes Gen); these presets are for concepts, backdrops and music. The style line is the one art.mjs uses.",
+  "presets": {
+    "enemy-concept": {
+      "tool": "image.generate",
+      "description": "A Hell enemy concept, full body side view on green (feed it to art.mjs as a reference).",
+      "prompt": "{prompt}. Full-body side profile view, turned to face right, centered with empty space around it; the whole body visible. A single creature, nothing else. {style} Plain flat pure green background, no floor, no shadow.",
+      "params": { "width": 1024, "height": 1024 }
+    },
+    "floor-backdrop": {
+      "tool": "image.generate",
+      "description": "A side-view background for a stretch of Hell's floors.",
+      "prompt": "Side-scrolling video game background, a floor of Hell: {prompt}. Empty of characters, layered depth, {style}",
+      "params": { "width": 1536, "height": 864 }
+    },
+    "floor-music": {
+      "tool": "audio.music",
+      "description": "A floor theme: 90s arcade energy, loopable.",
+      "prompt": "{prompt}, 90s arcade video game soundtrack, driving, loopable, instrumental",
+      "params": { "lyrics": "[Instrumental]", "seconds": 90 }
+    },
+    "announcer": {
+      "tool": "audio.voice",
+      "description": "Hell's announcer line (booming 90s arcade). Set voice to the announcer voice id from audio.json.",
+      "params": { "model": "eleven_v3" }
+    }
+  }
+}

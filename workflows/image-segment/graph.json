@@ -1,0 +1,122 @@
+{
+ "79": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "neon_guitarist.png"
+  },
+  "_meta": {
+   "title": "Load Image"
+  }
+ },
+ "95": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "95:image",
+    0
+   ],
+   "filename_prefix": "hawkesgen/mask"
+  },
+  "_meta": {
+   "title": "mask"
+  }
+ },
+ "99:78": {
+  "class_type": "CLIPTextEncode",
+  "inputs": {
+   "text": "guitar",
+   "clip": [
+    "99:77",
+    1
+   ]
+  },
+  "_meta": {
+   "title": "CLIP Text Encode (Prompt)"
+  }
+ },
+ "99:75": {
+  "class_type": "SAM3_Detect",
+  "inputs": {
+   "threshold": 0.5,
+   "refine_iterations": 2,
+   "individual_masks": false,
+   "model": [
+    "99:77",
+    0
+   ],
+   "image": [
+    "79",
+    0
+   ],
+   "conditioning": [
+    "99:78",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "SAM3 Detect"
+  }
+ },
+ "99:77": {
+  "class_type": "CheckpointLoaderSimple",
+  "inputs": {
+   "ckpt_name": "sam3.1_multiplex_fp16.safetensors"
+  },
+  "_meta": {
+   "title": "Load Checkpoint"
+  }
+ },
+ "inv": {
+  "class_type": "InvertMask",
+  "inputs": {
+   "mask": [
+    "99:75",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Invert mask"
+  }
+ },
+ "cut": {
+  "class_type": "JoinImageWithAlpha",
+  "inputs": {
+   "image": [
+    "79",
+    0
+   ],
+   "alpha": [
+    "inv",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Cutout"
+  }
+ },
+ "save": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "cut",
+    0
+   ],
+   "filename_prefix": "hawkesgen/segment"
+  },
+  "_meta": {
+   "title": "cutout"
+  }
+ },
+ "95:image": {
+  "class_type": "MaskToImage",
+  "inputs": {
+   "mask": [
+    "99:75",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Mask to image"
+  }
+ }
+}

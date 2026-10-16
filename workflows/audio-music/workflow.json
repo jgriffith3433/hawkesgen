@@ -1,0 +1,155 @@
+{
+  "id": "audio.music",
+  "version": 1,
+  "title": "Make music",
+  "description": "ACE-Step 1.5 XL: full songs or instrumentals from style tags and optional lyrics (with [Verse]/[Chorus] sections), up to 4 minutes. Game themes, level loops, credits songs.",
+  "family": "ace-step",
+  "output": "audio",
+  "models": [
+    {
+      "file": "acestep_v1.5_xl_turbo_bf16.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files/resolve/main/split_files/diffusion_models/acestep_v1.5_xl_turbo_bf16.safetensors"
+    },
+    {
+      "file": "ace_1.5_vae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files/resolve/main/split_files/vae/ace_1.5_vae.safetensors"
+    },
+    {
+      "file": "qwen_0.6b_ace15.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files/resolve/main/split_files/text_encoders/qwen_0.6b_ace15.safetensors"
+    },
+    {
+      "file": "qwen_4b_ace15.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/ace_step_1.5_ComfyUI_files/resolve/main/split_files/text_encoders/qwen_4b_ace15.safetensors"
+    }
+  ],
+  "inputs": {},
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "Style tags: genre, instruments, mood, vocals, BPM.",
+      "example": "Dark synthwave, driving bass, arpeggiated synths, retro arcade, 110 BPM, instrumental",
+      "targets": [
+        [
+          "94",
+          "tags"
+        ]
+      ]
+    },
+    "lyrics": {
+      "type": "text",
+      "default": "[Instrumental]",
+      "description": "Lyrics with [Verse], [Chorus]... or [Instrumental].",
+      "targets": [
+        [
+          "94",
+          "lyrics"
+        ]
+      ]
+    },
+    "seconds": {
+      "type": "number",
+      "min": 10,
+      "max": 240,
+      "default": 60,
+      "targets": [
+        [
+          "98",
+          "seconds"
+        ],
+        [
+          "94",
+          "duration"
+        ]
+      ]
+    },
+    "bpm": {
+      "type": "integer",
+      "min": 40,
+      "max": 220,
+      "default": 95,
+      "targets": [
+        [
+          "94",
+          "bpm"
+        ]
+      ]
+    },
+    "key": {
+      "type": "string",
+      "default": "E minor",
+      "description": "Key and scale, e.g. \"A minor\".",
+      "advanced": true,
+      "targets": [
+        [
+          "94",
+          "keyscale"
+        ]
+      ]
+    },
+    "timesignature": {
+      "type": "string",
+      "default": "4",
+      "advanced": true,
+      "targets": [
+        [
+          "94",
+          "timesignature"
+        ]
+      ]
+    },
+    "language": {
+      "type": "string",
+      "default": "en",
+      "advanced": true,
+      "targets": [
+        [
+          "94",
+          "language"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first take; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "109",
+          "value"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 50,
+      "default": 8,
+      "advanced": true,
+      "targets": [
+        [
+          "3",
+          "steps"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "111"
+  ],
+  "source": {
+    "template": "audio_ace_step1_5_xl_turbo",
+    "size": 19864223744
+  },
+  "tags": [
+    "audio",
+    "music"
+  ],
+  "seconds": 30
+}

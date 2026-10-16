@@ -1,0 +1,57 @@
+{
+  "id": "image.normals",
+  "version": 2,
+  "title": "Normal map from a photo",
+  "description": "Marigold v2: a surface normal map estimated from any photo or render. With image.albedo it turns a reference photo into a material.",
+  "family": "marigold",
+  "output": "image",
+  "models": [
+    {
+      "file": "qwen_image_edit_2509_int8_convrot.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/diffusion_models/qwen_image_edit_2509_int8_convrot.safetensors"
+    },
+    {
+      "file": "marigold_v2_normals.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/loras/marigold_v2_normals.safetensors"
+    },
+    {
+      "file": "marigold_v2_normals_conditioning.safetensors",
+      "dir": "embeddings",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/embeddings/marigold_v2_normals_conditioning.safetensors"
+    },
+    {
+      "file": "marigold_v2_normals_vae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/marigold-v2-0/resolve/main/vae/marigold_v2_normals_vae.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "12",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {},
+  "outputs": [
+    "23"
+  ],
+  "source": {
+    "template": "image_marigold_v2_surface_normal_estimation",
+    "size": 22441204122
+  },
+  "tags": [
+    "image",
+    "material",
+    "pbr"
+  ],
+  "seconds": 12
+}

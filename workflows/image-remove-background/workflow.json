@@ -1,0 +1,43 @@
+{
+  "id": "image.remove-background",
+  "version": 1,
+  "title": "Remove the background (GPU)",
+  "description": "BiRefNet on the GPU: a transparent PNG cutout and its mask. Faster than image.cutout (which runs on this PC) when a server is up.",
+  "family": "birefnet",
+  "output": "file",
+  "models": [
+    {
+      "file": "birefnet.safetensors",
+      "dir": "background_removal",
+      "url": "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "17",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {},
+  "outputs": [
+    "save",
+    "20"
+  ],
+  "source": {
+    "template": "utility_birefnet_remove_background",
+    "size": 429496730
+  },
+  "tags": [
+    "image",
+    "cutout",
+    "mask"
+  ],
+  "seconds": 3
+}

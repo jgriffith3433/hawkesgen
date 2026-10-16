@@ -1,0 +1,19 @@
+{
+  "project": "yoobaland",
+  "title": "Yooba Land",
+  "style": "Stylized low-poly fantasy, bright cartoon colors, clean outlines, cartoon grass.",
+  "negative": "text, watermark",
+  "notes": "Unity URP project YoobaLand/YoobaLand (LowPolyFantasy assets, OmniShade, Linework outlines). Yooba's origin: eat, grow, and find the way home. Yooba's art is in AllTheCharacters/Yooba.",
+  "presets": {
+    "scene-concept": {
+      "tool": "image.generate",
+      "description": "A concept for a place in Yooba Land.",
+      "prompt": "{prompt}. {style}",
+      "params": { "width": 1536, "height": 864 }
+    },
+    "prop": {
+      "tool": "mesh.textured",
+      "description": "A textured GLB prop from a concept image (import into Unity)."
+    }
+  }
+}

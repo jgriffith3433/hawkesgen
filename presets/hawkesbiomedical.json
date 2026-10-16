@@ -1,0 +1,21 @@
+{
+  "project": "hawkesbiomedical",
+  "title": "Hawkes Biomedical",
+  "style": "Daylight low-poly photograph, light and spare, clean corporate architecture, soft daylight.",
+  "negative": "night, dark background, text, watermark, people's faces close up",
+  "notes": "The corporate front (hawkesbiomedicalnew/AGENTS.md): a light page, spare on purpose, daylight low-poly photographs. Never the night city, B3, the vat, the creature or gameplay. The public line is category ownership, not a cure.",
+  "presets": {
+    "brand-photo": {
+      "tool": "image.generate",
+      "description": "Brand photography for the corporate site (Hawkes Tower, lobby, labs as the public sees them).",
+      "prompt": "{prompt}. {style}",
+      "params": { "width": 1600, "height": 900 }
+    },
+    "product-hero": {
+      "tool": "image.generate",
+      "description": "A clean product hero image for a 'medical product' card on products.html.",
+      "prompt": "Minimal pharmaceutical product shot: {prompt}. {style}",
+      "params": { "width": 1200, "height": 1200 }
+    }
+  }
+}

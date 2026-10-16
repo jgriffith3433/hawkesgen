@@ -1,0 +1,167 @@
+{
+  "id": "video.motion",
+  "version": 1,
+  "title": "Motion transfer (Wan Animate 2)",
+  "description": "Animates a still character with the motion of a driving video (Wan Animate 2, distilled): dance, fight moves, walk cycles. Give the character image and a video of the move (real footage or a pose video from video.pose). Newer than video.animate; try both.",
+  "family": "wan-animate2",
+  "output": "video",
+  "models": [
+    {
+      "file": "wan_animate_2_distill_int8_convrot.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/diffusion_models/wan_animate_2_distill_int8_convrot.safetensors"
+    },
+    {
+      "file": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    },
+    {
+      "file": "clip_vision_h.safetensors",
+      "dir": "clip_vision",
+      "url": "https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/clip_vision/clip_vision_h.safetensors"
+    },
+    {
+      "file": "Wan2_1_VAE_bf16.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/vae/Wan2_1_VAE_bf16.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The character (a clean full-body image)",
+      "targets": [
+        [
+          "189",
+          "image"
+        ]
+      ]
+    },
+    "video": {
+      "kind": "video",
+      "required": true,
+      "description": "The driving video (the motion)",
+      "targets": [
+        [
+          "240",
+          "file"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "The action and scene",
+      "targets": [
+        [
+          "604",
+          "value"
+        ]
+      ],
+      "example": "the character does an energetic street dance on a plain background"
+    },
+    "negative": {
+      "type": "text",
+      "default": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+      "advanced": true,
+      "targets": [
+        [
+          "261:4",
+          "text"
+        ]
+      ]
+    },
+    "frames": {
+      "type": "integer",
+      "min": 1,
+      "max": 1000,
+      "default": 81,
+      "description": "Frame count.",
+      "targets": [
+        [
+          "261:247",
+          "length"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first output; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "261:19",
+          "noise_seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "default": 10,
+      "advanced": true,
+      "targets": [
+        [
+          "261:18",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "default": 1,
+      "advanced": true,
+      "targets": [
+        [
+          "261:19",
+          "cfg"
+        ]
+      ]
+    },
+    "character": {
+      "type": "text",
+      "default": "",
+      "description": "What the character looks like (keeps it on-model)",
+      "targets": [
+        [
+          "605",
+          "value"
+        ]
+      ],
+      "example": "a small round blue creature with big eyes and stubby arms"
+    },
+    "switch": {
+      "type": "boolean",
+      "default": false,
+      "targets": [
+        [
+          "261:297",
+          "value"
+        ]
+      ],
+      "description": "The template's If/Else switch (leave off unless you know the graph)",
+      "advanced": true
+    }
+  },
+  "outputs": [
+    "246",
+    "292"
+  ],
+  "source": {
+    "template": "video_wan_animate2_distilled",
+    "size": 24910810317
+  },
+  "tags": [
+    "video",
+    "animation",
+    "motion-transfer"
+  ]
+}

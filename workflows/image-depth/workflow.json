@@ -1,0 +1,57 @@
+{
+  "id": "image.depth",
+  "version": 1,
+  "title": "Depth map",
+  "description": "Depth Anything 3: a depth map (near is bright) for parallax layers, fog, relighting, displacement and 3D placement.",
+  "family": "depth-anything-3",
+  "output": "image",
+  "models": [
+    {
+      "file": "depth_anything_3_mono_large.safetensors",
+      "dir": "geometry_estimation",
+      "url": "https://huggingface.co/Comfy-Org/Depth-Anything-3/resolve/main/geometry_estimation/depth_anything_3_mono_large.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "85",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "resolution": {
+      "type": "integer",
+      "min": 252,
+      "max": 2016,
+      "default": 504,
+      "description": "Processing resolution (multiples of 14).",
+      "advanced": true,
+      "targets": [
+        [
+          "14:5",
+          "resolution"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "6"
+  ],
+  "source": {
+    "template": "utility_depth_anything3_image_depth_estimation",
+    "size": 1288490189
+  },
+  "tags": [
+    "image",
+    "depth",
+    "3d"
+  ],
+  "seconds": 5
+}

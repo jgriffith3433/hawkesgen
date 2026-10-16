@@ -1,0 +1,118 @@
+{
+  "id": "image.generate",
+  "version": 1,
+  "title": "Generate an image",
+  "description": "Z-Image Turbo: fast, sharp text-to-image in 8 steps. Concept art, backgrounds, signs, posters, props, portraits. seamless: true makes it tile (textures). To change an existing image use image.edit; to paint in the style of reference images use image.paint.",
+  "family": "z-image",
+  "output": "image",
+  "models": [
+    {
+      "file": "qwen_3_4b.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors"
+    },
+    {
+      "file": "ae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors"
+    },
+    {
+      "file": "z_image_turbo_bf16.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors"
+    }
+  ],
+  "inputs": {},
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "What to make. Describe subject, style, light and framing.",
+      "example": "Dark walnut wall paneling, flat front-on photo, even soft light",
+      "targets": [
+        [
+          "57:27",
+          "text"
+        ]
+      ]
+    },
+    "width": {
+      "type": "integer",
+      "min": 256,
+      "max": 2048,
+      "default": 1024,
+      "targets": [
+        [
+          "57:13",
+          "width"
+        ]
+      ]
+    },
+    "height": {
+      "type": "integer",
+      "min": 256,
+      "max": 2048,
+      "default": 1024,
+      "targets": [
+        [
+          "57:13",
+          "height"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first take; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "57:3",
+          "seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 50,
+      "default": 8,
+      "advanced": true,
+      "targets": [
+        [
+          "57:3",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 10,
+      "default": 1,
+      "advanced": true,
+      "targets": [
+        [
+          "57:3",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "9"
+  ],
+  "source": {
+    "template": "image_z_image_turbo",
+    "size": 20830591386
+  },
+  "tags": [
+    "image",
+    "text-to-image",
+    "texture"
+  ],
+  "seconds": 8,
+  "post": [
+    "seamless"
+  ]
+}

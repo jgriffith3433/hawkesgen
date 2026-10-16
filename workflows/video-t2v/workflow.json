@@ -1,0 +1,149 @@
+{
+  "id": "video.t2v",
+  "version": 1,
+  "title": "Text to video",
+  "description": "Wan 2.2 14B: a short video clip from a prompt (default 5 s at 16 fps, 640x640). fast uses the 4-step Lightning LoRAs. For animating a specific image, use video.i2v.",
+  "family": "wan-t2v",
+  "output": "video",
+  "models": [
+    {
+      "file": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    },
+    {
+      "file": "wan_2.1_vae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors"
+    },
+    {
+      "file": "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors"
+    },
+    {
+      "file": "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors"
+    },
+    {
+      "file": "wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_high_noise.safetensors"
+    },
+    {
+      "file": "wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_t2v_lightx2v_4steps_lora_v1.1_low_noise.safetensors"
+    }
+  ],
+  "inputs": {},
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "What happens, who, where, camera.",
+      "targets": [
+        [
+          "128:89",
+          "text"
+        ]
+      ]
+    },
+    "seconds": {
+      "type": "number",
+      "min": 1,
+      "max": 10,
+      "default": 5,
+      "targets": [
+        [
+          "128:126",
+          "value"
+        ]
+      ]
+    },
+    "width": {
+      "type": "integer",
+      "min": 256,
+      "max": 1280,
+      "default": 640,
+      "targets": [
+        [
+          "128:74",
+          "width"
+        ]
+      ]
+    },
+    "height": {
+      "type": "integer",
+      "min": 256,
+      "max": 1280,
+      "default": 640,
+      "targets": [
+        [
+          "128:74",
+          "height"
+        ]
+      ]
+    },
+    "fps": {
+      "type": "number",
+      "min": 8,
+      "max": 24,
+      "default": 16,
+      "advanced": true,
+      "targets": [
+        [
+          "128:125",
+          "value"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first take; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "128:81",
+          "noise_seed"
+        ]
+      ]
+    },
+    "fast": {
+      "type": "boolean",
+      "default": true,
+      "description": "4 steps with the Lightning LoRAs (off: 20 steps, slower and finer).",
+      "targets": [
+        [
+          "128:129",
+          "value"
+        ]
+      ]
+    },
+    "negative": {
+      "type": "text",
+      "default": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走，裸露，NSFW",
+      "advanced": true,
+      "targets": [
+        [
+          "128:72",
+          "text"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "80"
+  ],
+  "source": {
+    "template": "video_wan2_2_14B_t2v",
+    "size": 38031935406
+  },
+  "tags": [
+    "video",
+    "text-to-video"
+  ],
+  "seconds": 120
+}

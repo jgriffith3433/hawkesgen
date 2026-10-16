@@ -1,0 +1,251 @@
+{
+ "11": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "warm_living_room.png"
+  },
+  "_meta": {
+   "title": "Load Image"
+  }
+ },
+ "12": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "filename_prefix": "ComfyUI",
+   "images": [
+    "10:8",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Save Image"
+  }
+ },
+ "14": {
+  "class_type": "StringConcatenate",
+  "inputs": {
+   "string_a": "重新照明,",
+   "string_b": [
+    "15",
+    0
+   ],
+   "delimiter": ""
+  },
+  "_meta": {
+   "title": "LoRA trigger word"
+  }
+ },
+ "15": {
+  "class_type": "PrimitiveStringMultiline",
+  "inputs": {
+   "value": " relight the image using twilight light (with a warm color temperature, soft light, and blurred shadows)"
+  },
+  "_meta": {
+   "title": "Prompt"
+  }
+ },
+ "10:75": {
+  "class_type": "CFGNorm",
+  "inputs": {
+   "strength": 1,
+   "pre_cfg": false,
+   "model": [
+    "10:66",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "CFGNorm"
+  }
+ },
+ "10:39": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "qwen_image_vae.safetensors"
+  },
+  "_meta": {
+   "title": "Load VAE"
+  }
+ },
+ "10:38": {
+  "class_type": "CLIPLoader",
+  "inputs": {
+   "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+   "type": "qwen_image",
+   "device": "default"
+  },
+  "_meta": {
+   "title": "Load CLIP"
+  }
+ },
+ "10:37": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+   "weight_dtype": "default"
+  },
+  "_meta": {
+   "title": "Load Diffusion Model"
+  }
+ },
+ "10:110": {
+  "class_type": "TextEncodeQwenImageEditPlus",
+  "inputs": {
+   "prompt": "",
+   "clip": [
+    "10:38",
+    0
+   ],
+   "vae": [
+    "10:39",
+    0
+   ],
+   "image1": [
+    "10:117",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Text Encode Qwen Image Edit Plus"
+  }
+ },
+ "10:66": {
+  "class_type": "ModelSamplingAuraFlow",
+  "inputs": {
+   "shift": 3,
+   "model": [
+    "10:118",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "ModelSamplingAuraFlow"
+  }
+ },
+ "10:111": {
+  "class_type": "TextEncodeQwenImageEditPlus",
+  "inputs": {
+   "prompt": [
+    "14",
+    0
+   ],
+   "clip": [
+    "10:38",
+    0
+   ],
+   "vae": [
+    "10:39",
+    0
+   ],
+   "image1": [
+    "10:117",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Text Encode Qwen Image Edit Plus"
+  }
+ },
+ "10:88": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "10:117",
+    0
+   ],
+   "vae": [
+    "10:39",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAE Encode"
+  }
+ },
+ "10:8": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "10:3",
+    0
+   ],
+   "vae": [
+    "10:39",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAE Decode"
+  }
+ },
+ "10:3": {
+  "class_type": "KSampler",
+  "inputs": {
+   "seed": 1118877715456453,
+   "steps": 4,
+   "cfg": 1,
+   "sampler_name": "euler",
+   "scheduler": "simple",
+   "denoise": 1,
+   "model": [
+    "10:75",
+    0
+   ],
+   "positive": [
+    "10:111",
+    0
+   ],
+   "negative": [
+    "10:110",
+    0
+   ],
+   "latent_image": [
+    "10:88",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "KSampler"
+  }
+ },
+ "10:117": {
+  "class_type": "FluxKontextImageScale",
+  "inputs": {
+   "image": [
+    "11",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "FluxKontextImageScale"
+  }
+ },
+ "10:89": {
+  "class_type": "LoraLoaderModelOnly",
+  "inputs": {
+   "lora_name": "Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+   "strength_model": 1,
+   "model": [
+    "10:37",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Load LoRA"
+  }
+ },
+ "10:118": {
+  "class_type": "LoraLoaderModelOnly",
+  "inputs": {
+   "lora_name": "Qwen-Image-Edit-2509-Relight.safetensors",
+   "strength_model": 1,
+   "model": [
+    "10:89",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Load LoRA"
+  }
+ }
+}

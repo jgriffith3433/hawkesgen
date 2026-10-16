@@ -1,0 +1,144 @@
+{
+  "id": "image.angles",
+  "version": 1,
+  "title": "Character from 8 angles",
+  "description": "Qwen-Image-Edit 2511 with the multiple-angles LoRA: the same character or object from 8 camera angles (close-up, wide, aerial, low angle, 45° and 90° left and right). Turnarounds and reference sheets for animation and 3D.",
+  "family": "qwen-edit",
+  "output": "image",
+  "models": [
+    {
+      "file": "qwen_image_vae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors"
+    },
+    {
+      "file": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning/resolve/main/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+    },
+    {
+      "file": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/HunyuanVideo_1.5_repackaged/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+    },
+    {
+      "file": "qwen-image-edit-2511-multiple-angles-lora.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA/resolve/main/qwen-image-edit-2511-multiple-angles-lora.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The character or object (one subject, clear view).",
+      "targets": [
+        [
+          "25",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first take; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "427:221:169",
+          "seed"
+        ],
+        [
+          "427:246:242",
+          "seed"
+        ],
+        [
+          "427:271:267",
+          "seed"
+        ],
+        [
+          "427:296:292",
+          "seed"
+        ],
+        [
+          "427:321:317",
+          "seed"
+        ],
+        [
+          "427:346:342",
+          "seed"
+        ],
+        [
+          "427:371:367",
+          "seed"
+        ],
+        [
+          "427:423:419",
+          "seed"
+        ]
+      ]
+    },
+    "fast": {
+      "type": "boolean",
+      "default": true,
+      "description": "4 steps with the Lightning LoRA.",
+      "targets": [
+        [
+          "427:221:168",
+          "value"
+        ],
+        [
+          "427:246:239",
+          "value"
+        ],
+        [
+          "427:271:264",
+          "value"
+        ],
+        [
+          "427:296:289",
+          "value"
+        ],
+        [
+          "427:321:314",
+          "value"
+        ],
+        [
+          "427:346:339",
+          "value"
+        ],
+        [
+          "427:371:364",
+          "value"
+        ],
+        [
+          "427:423:416",
+          "value"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "373",
+    "374",
+    "376",
+    "377",
+    "379",
+    "380",
+    "381",
+    "424"
+  ],
+  "source": {
+    "template": "templates-1_click_multiple_character_angles-v1.0",
+    "size": 31245887078
+  },
+  "tags": [
+    "image",
+    "character",
+    "turnaround"
+  ],
+  "seconds": 90
+}

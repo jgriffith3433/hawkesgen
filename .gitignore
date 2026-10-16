@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Everything Gen makes: hawkesgen.db, library/, blobs/, fleet/ and builder/ keys, graphs/, comfy-cache/, tmp/
+.data/
+
+# Secrets (.env.example lists them and is committed)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_ed25519*
+*_ed25519
+
+# Local noise
+*.log
+.DS_Store
+Thumbs.db

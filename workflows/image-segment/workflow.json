@@ -1,0 +1,69 @@
+{
+  "id": "image.segment",
+  "version": 1,
+  "title": "Find and mask by text (SAM 3)",
+  "description": "SAM 3: finds what you name in an image (\"the guitar\", \"every window\") and returns its mask and a cutout. For inpainting masks, props to lift out, or splitting a scene into layers.",
+  "family": "sam3",
+  "output": "file",
+  "models": [
+    {
+      "file": "sam3.1_multiplex_fp16.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "79",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "What to find.",
+      "example": "the guitar",
+      "targets": [
+        [
+          "99:78",
+          "text"
+        ]
+      ]
+    },
+    "threshold": {
+      "type": "number",
+      "min": 0.05,
+      "max": 0.95,
+      "default": 0.5,
+      "description": "Lower finds more, higher is stricter.",
+      "targets": [
+        [
+          "99:75",
+          "threshold"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "save",
+    "95"
+  ],
+  "source": {
+    "template": "utility_image_segment_sam3",
+    "size": 1717986918
+  },
+  "tags": [
+    "image",
+    "mask",
+    "segmentation"
+  ],
+  "seconds": 4
+}

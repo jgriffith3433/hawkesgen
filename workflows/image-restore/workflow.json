@@ -1,0 +1,85 @@
+{
+  "id": "image.restore",
+  "version": 1,
+  "title": "Upscale and restore (SeedVR2)",
+  "description": "Upscales and restores an image with SeedVR2 (one-step diffusion): sharper detail and fewer artifacts than image.upscale, for finished art, textures and screenshots. Slower than image.upscale; use that for quick previews.",
+  "family": "seedvr2",
+  "output": "image",
+  "models": [
+    {
+      "file": "seedvr2_ema_vae_fp16.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/vae/seedvr2_ema_vae_fp16.safetensors"
+    },
+    {
+      "file": "seedvr2_3b_int8_convrot.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/SeedVR2/resolve/main/diffusion_models/seedvr2_3b_int8_convrot.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The image to upscale",
+      "targets": [
+        [
+          "1",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first output; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "66:54",
+          "seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "default": 1,
+      "advanced": true,
+      "targets": [
+        [
+          "66:54",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "default": 1,
+      "advanced": true,
+      "targets": [
+        [
+          "66:54",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "9"
+  ],
+  "source": {
+    "template": "utility_seedvr2_3b_int8_upscale_image",
+    "size": 3972844749
+  },
+  "tags": [
+    "image",
+    "upscale",
+    "restore"
+  ]
+}

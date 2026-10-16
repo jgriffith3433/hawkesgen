@@ -1,0 +1,107 @@
+{
+  "id": "image.control",
+  "version": 1,
+  "title": "Paint over a render (ControlNet)",
+  "description": "Paints a new image over the structure of another (Z-Image Turbo with the Fun Union ControlNet: canny, HED, depth, pose, MLSD). Use it to turn a grey-box game screenshot into finished art that keeps the layout, or to restyle a sketch. The input is the control image (a render, a depth map, a pose map).",
+  "family": "z-image",
+  "output": "image",
+  "models": [
+    {
+      "file": "qwen_3_4b.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors"
+    },
+    {
+      "file": "z_image_turbo_bf16.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/diffusion_models/z_image_turbo_bf16.safetensors"
+    },
+    {
+      "file": "ae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/vae/ae.safetensors"
+    },
+    {
+      "file": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors",
+      "dir": "model_patches",
+      "url": "https://huggingface.co/alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union/resolve/main/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The control image: a render, sketch, depth or pose map",
+      "targets": [
+        [
+          "58",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "What the result should look like",
+      "targets": [
+        [
+          "70:45",
+          "text"
+        ]
+      ],
+      "example": "a moody hospital corridor at night, painted concept art, teal and amber light"
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first output; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "70:44",
+          "seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 200,
+      "default": 8,
+      "advanced": true,
+      "targets": [
+        [
+          "70:44",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 30,
+      "default": 1,
+      "advanced": true,
+      "targets": [
+        [
+          "70:44",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "9"
+  ],
+  "source": {
+    "template": "image_z_image_turbo_fun_union_controlnet",
+    "size": 23837068493
+  },
+  "tags": [
+    "image",
+    "controlnet",
+    "render-to-art"
+  ]
+}

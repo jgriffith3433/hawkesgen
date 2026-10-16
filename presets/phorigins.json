@@ -1,0 +1,43 @@
+{
+  "project": "phorigins",
+  "title": "PH Origins",
+  "style": "Grounded, cinematic corporate thriller look: one night in Hawkes Tower, cool artificial light, deep shadows, rain-wet city.",
+  "negative": "text, watermark, cartoon",
+  "notes": "Babylon.js game, GLB-only runtime (phoriginswebsite/AGENTS.md). Materials: generate seamless, then texture.maps or image.normals/image.albedo, then compress into assets/textures. Lore for signs and screens: Hawkes Biomedical, Voss Capital, Liberty Square, Midnight Diner. Never show B3, the vat or the creature on public-facing Hawkes signage.",
+  "presets": {
+    "material": {
+      "tool": "image.generate",
+      "description": "A tileable material (walnut, lab tile, painted block...) for the interior kit.",
+      "prompt": "Seamless tileable texture: {prompt}. Flat, straight-on, evenly lit, no shadows, no objects, photographic detail.",
+      "params": { "width": 1024, "height": 1024, "seamless": true }
+    },
+    "sign": {
+      "tool": "image.generate",
+      "description": "A poster, ad, store sign or document for the world (Hawkes Biomedical, Voss Capital...).",
+      "prompt": "{prompt}. Flat, front-on, fills the frame, legible typography, {style}",
+      "params": { "width": 1024, "height": 1536 }
+    },
+    "sky": {
+      "tool": "image.panorama",
+      "description": "A 360° sky / city panorama for a level's skybox.",
+      "prompt": "{prompt}. {style}",
+      "params": { "width": 2048, "height": 1024 }
+    },
+    "screen-loop": {
+      "tool": "video.i2v",
+      "description": "A short loop for a screen (boardroom TV, station ad, CCTV): give the screen's still as start and end.",
+      "prompt": "{prompt}. Subtle looping motion, locked camera.",
+      "params": { "frames": 49 }
+    },
+    "prop": {
+      "tool": "mesh.textured",
+      "description": "A textured GLB prop from a reference image (convert/compress before shipping)."
+    },
+    "bark": {
+      "tool": "llm.json",
+      "description": "Pierce's inner-voice barks for a room, written to the story's tone.",
+      "prompt": "Write short inner-voice barks for Pierce Hawkes (chairman of Hawkes Biomedical, one night in Hawkes Tower) for this moment: {prompt}. Terse, dry, in character. Never mention game mechanics.",
+      "params": { "schema": { "type": "object", "properties": { "barks": { "type": "array", "items": { "type": "string" } } }, "required": ["barks"], "additionalProperties": false } }
+    }
+  }
+}

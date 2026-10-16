@@ -1,0 +1,122 @@
+{
+  "id": "image.panorama",
+  "version": 1,
+  "title": "360° panorama",
+  "description": "Qwen-Image 2512 with a 360° LoRA: an equirectangular panorama (2:1) for skyboxes, environment maps and backdrops. fast uses the 4-step LoRA; turn it off for the best quality (50 steps).",
+  "family": "qwen-image-2512",
+  "output": "image",
+  "models": [
+    {
+      "file": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+    },
+    {
+      "file": "qwen_image_vae.safetensors",
+      "dir": "vae",
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors"
+    },
+    {
+      "file": "qwen_image_2512_fp8_e4m3fn.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_2512_fp8_e4m3fn.safetensors"
+    },
+    {
+      "file": "Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/lightx2v/Qwen-Image-2512-Lightning/resolve/main/Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors"
+    },
+    {
+      "file": "qwen-360-diffusion-2512-int8-bf16-v2.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/ProGamerGov/qwen-360-diffusion/resolve/main/qwen-360-diffusion-2512-int8-bf16-v2.safetensors"
+    }
+  ],
+  "inputs": {},
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "The scene all around the camera.",
+      "example": "A night city skyline from a rooftop, wet streets far below, neon signs, light rain",
+      "targets": [
+        [
+          "269",
+          "value"
+        ]
+      ]
+    },
+    "width": {
+      "type": "integer",
+      "min": 1024,
+      "max": 4096,
+      "default": 2048,
+      "description": "Keep it twice the height.",
+      "targets": [
+        [
+          "238:232",
+          "width"
+        ]
+      ]
+    },
+    "height": {
+      "type": "integer",
+      "min": 512,
+      "max": 2048,
+      "default": 1024,
+      "targets": [
+        [
+          "238:232",
+          "height"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Seed for the first take; the next ones count up. Random when empty.",
+      "targets": [
+        [
+          "238:230",
+          "seed"
+        ]
+      ]
+    },
+    "fast": {
+      "type": "boolean",
+      "default": true,
+      "description": "4 steps with the Lightning LoRA (off: 50 steps, slower and finer).",
+      "targets": [
+        [
+          "238:229",
+          "value"
+        ]
+      ]
+    },
+    "negative": {
+      "type": "text",
+      "default": "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲",
+      "advanced": true,
+      "targets": [
+        [
+          "238:228",
+          "text"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "60"
+  ],
+  "source": {
+    "template": "template_qwen_Image_2512_360_lora",
+    "size": 32534377267
+  },
+  "tags": [
+    "image",
+    "panorama",
+    "skybox"
+  ],
+  "seconds": 90
+}

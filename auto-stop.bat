@@ -1,0 +1,2 @@
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Get-NetTCPConnection -LocalPort 8790 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if ($p) { foreach ($id in $p) { Write-Host \"Stopping Hawkes Gen (PID $id). Running jobs resume on the next start.\"; Stop-Process -Id $id -Force } } else { Write-Host \"Hawkes Gen is not running\" }"

@@ -1,0 +1,27 @@
+{
+  "project": "imaginelivetv",
+  "title": "Imagine Live TV",
+  "style": "Cinematic live-action video still, gritty, low light, handheld feel.",
+  "negative": "text, watermark, cartoon",
+  "notes": "The Final Spark: a choose-your-path video story. You wake in a sewer, found by a rat; each choice is a page with a video (TheFinalSpark/Decision tree.txt). One folder per branch in imaginelivetvwebsite.",
+  "presets": {
+    "branch-still": {
+      "tool": "image.generate",
+      "description": "The opening still for a branch of the story.",
+      "prompt": "{prompt}. {style}",
+      "params": { "width": 1280, "height": 720 }
+    },
+    "branch-clip": {
+      "tool": "video.i2v",
+      "description": "Animate a branch still into its clip (give the still as start).",
+      "prompt": "{prompt}. Slow, tense camera.",
+      "params": { "width": 960, "height": 544, "frames": 81 }
+    },
+    "branch-text": {
+      "tool": "llm.json",
+      "description": "Write a branch: its scene line and two choices, in the story's voice.",
+      "prompt": "Continue The Final Spark, a choose-your-path story that starts with waking in a sewer, found by a rat. Write the next page for: {prompt}. Keep it short and second person.",
+      "params": { "schema": { "type": "object", "properties": { "scene": { "type": "string" }, "question": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } } }, "required": ["scene", "question", "choices"], "additionalProperties": false } }
+    }
+  }
+}

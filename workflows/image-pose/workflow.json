@@ -1,0 +1,41 @@
+{
+  "id": "image.pose",
+  "version": 1,
+  "title": "Pose map from an image",
+  "description": "Finds the pose of every person or character in an image (SDPose whole body: body, hands, face) and draws the pose map. Feed the map to image.control (pose) or use it to check that generated poses match.",
+  "family": "sdpose",
+  "output": "image",
+  "models": [
+    {
+      "file": "sdpose_wholebody_fp16.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The image with people or characters",
+      "targets": [
+        [
+          "667",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {},
+  "outputs": [
+    "669"
+  ],
+  "source": {
+    "template": "utility_sdpose_ood_image_to_pose",
+    "size": 1932735283
+  },
+  "tags": [
+    "image",
+    "pose",
+    "analysis"
+  ]
+}

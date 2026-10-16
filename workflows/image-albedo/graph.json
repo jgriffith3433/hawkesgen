@@ -1,0 +1,197 @@
+{
+ "12": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "flower_with_texture.png"
+  },
+  "_meta": {
+   "title": "Load Image"
+  }
+ },
+ "23": {
+  "class_type": "SaveImageAdvanced",
+  "inputs": {
+   "filename_prefix": "ComfyUI",
+   "format": "png",
+   "format.bit_depth": "8-bit",
+   "format.input_color_space": "sRGB",
+   "images": [
+    "24:17",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "albedo"
+  }
+ },
+ "24:1": {
+  "class_type": "UNETLoader",
+  "inputs": {
+   "unet_name": "qwen_image_edit_2509_int8_convrot.safetensors",
+   "weight_dtype": "default"
+  },
+  "_meta": {
+   "title": "Load Diffusion Model"
+  }
+ },
+ "24:7": {
+  "class_type": "LoraLoaderModelOnly",
+  "inputs": {
+   "lora_name": "marigold_v2_albedo.safetensors",
+   "strength_model": 1,
+   "model": [
+    "24:1",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Load LoRA"
+  }
+ },
+ "24:8": {
+  "class_type": "ModelSamplingAuraFlow",
+  "inputs": {
+   "shift": 1.73,
+   "sampling": "img_to_img_velocity",
+   "model": [
+    "24:7",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "ModelSamplingAuraFlow"
+  }
+ },
+ "24:9": {
+  "class_type": "ConditioningLoader",
+  "inputs": {
+   "conditioning_name": "marigold_v2_albedo_conditioning.safetensors"
+  },
+  "_meta": {
+   "title": "Load Conditioning"
+  }
+ },
+ "24:14": {
+  "class_type": "VAELoader",
+  "inputs": {
+   "vae_name": "marigold_v2_albedo_vae.safetensors"
+  },
+  "_meta": {
+   "title": "Load VAE"
+  }
+ },
+ "24:19": {
+  "class_type": "DisableNoise",
+  "inputs": {},
+  "_meta": {
+   "title": "DisableNoise"
+  }
+ },
+ "24:18": {
+  "class_type": "KSamplerSelect",
+  "inputs": {
+   "sampler_name": "euler"
+  },
+  "_meta": {
+   "title": "KSamplerSelect"
+  }
+ },
+ "24:10": {
+  "class_type": "BasicGuider",
+  "inputs": {
+   "model": [
+    "24:8",
+    0
+   ],
+   "conditioning": [
+    "24:9",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Basic Guider"
+  }
+ },
+ "24:20": {
+  "class_type": "ManualSigmas",
+  "inputs": {
+   "sigmas": "0.5, 0"
+  },
+  "_meta": {
+   "title": "ManualSigmas"
+  }
+ },
+ "24:3": {
+  "class_type": "SamplerCustomAdvanced",
+  "inputs": {
+   "noise": [
+    "24:19",
+    0
+   ],
+   "guider": [
+    "24:10",
+    0
+   ],
+   "sampler": [
+    "24:18",
+    0
+   ],
+   "sigmas": [
+    "24:20",
+    0
+   ],
+   "latent_image": [
+    "24:13",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "SamplerCustomAdvanced"
+  }
+ },
+ "24:13": {
+  "class_type": "VAEEncode",
+  "inputs": {
+   "pixels": [
+    "12",
+    0
+   ],
+   "vae": [
+    "24:14",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAE Encode"
+  }
+ },
+ "24:17": {
+  "class_type": "MarigoldV2PostProcess",
+  "inputs": {
+   "prediction": "albedo",
+   "image": [
+    "24:15",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Marigold V2 Post-Process"
+  }
+ },
+ "24:15": {
+  "class_type": "VAEDecode",
+  "inputs": {
+   "samples": [
+    "24:3",
+    0
+   ],
+   "vae": [
+    "24:14",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "VAE Decode"
+  }
+ }
+}

@@ -1,0 +1,53 @@
+{
+  "id": "image.upscale",
+  "version": 1,
+  "title": "Upscale an image",
+  "description": "Real-ESRGAN x4: sharp, clean upscaling for sprites, textures, concept art and video frames. resize is applied after the 4x model: 1 = 4x, 0.5 = 2x.",
+  "family": "esrgan",
+  "output": "image",
+  "models": [
+    {
+      "file": "RealESRGAN_x4plus.safetensors",
+      "dir": "upscale_models",
+      "url": "https://huggingface.co/Comfy-Org/Real-ESRGAN_repackaged/resolve/main/RealESRGAN_x4plus.safetensors"
+    }
+  ],
+  "tags": [
+    "image",
+    "upscale"
+  ],
+  "seconds": 4,
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "targets": [
+        [
+          "1",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "resize": {
+      "type": "number",
+      "min": 0.125,
+      "max": 1,
+      "default": 0.5,
+      "description": "After the 4x upscale: 1 keeps 4x, 0.5 gives 2x overall.",
+      "targets": [
+        [
+          "4",
+          "scale_by"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "5"
+  ],
+  "source": {
+    "built": "by hand from the Real-ESRGAN template"
+  }
+}
