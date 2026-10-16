@@ -16,7 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { db, parseRow, J } from './db.ts';
-import { paths, loadSettings, ROOT } from './config.ts';
+import { paths, loadSettings, ROOT, DATA_DIR } from './config.ts';
 import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
@@ -293,6 +293,12 @@ class Queue {
       const limit = provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? 6 : settings.concurrency[provider];
       if (lane.size >= limit) {
         this.wait(j, `waiting: ${lane.size} ${provider} jobs already running`);
+        continue;
+      }
+      // A Gen deploy is waiting for the build server to be free (hawkesstudio/deploy/hawkes-pull.mjs drops this file):
+      // don't start another build until it's done, so the deploy gets its moment.
+      if (provider === 'builder' && fs.existsSync(path.join(DATA_DIR, 'deploy-pending'))) {
+        this.wait(j, 'waiting: Hawkes Gen is about to update (a few minutes)');
         continue;
       }
       lane.add(j.id);

@@ -125,6 +125,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           python: fs.existsSync(path.join(paths.post, '..', '.venv')),
         },
         queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),
+        // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
+        // (the deploy script waits for these only; everything else resumes after a restart).
+        building: (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND tool IN ('unity.build', 'unity.test')").get() as any).n,
       });
     }
 
