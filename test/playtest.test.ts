@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { within } from '../src/tools/playtest.ts';
+import { within, settleReview } from '../src/tools/playtest.ts';
 
 test('within: passes a result through, and rejects as stuck past the limit', async () => {
   assert.equal(await within(Promise.resolve(7), 1000, 'quick'), 7);
@@ -72,4 +72,21 @@ test('screencast: an MJPEG stream from the clock becomes a 30 fps mp4 at the vie
   const probe = spawnSync('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v', '-show_entries', 'stream=width,height,r_frame_rate,nb_read_frames', '-of', 'csv=p=0', out], { encoding: 'utf8' });
   assert.equal(probe.stdout.trim(), '1280,722,30/1,60');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('settleReview: worst first, polish only without bugs, capped, mode-limited, known ids only', () => {
+  const f = (severity: string, title: string, regression = false) => ({ severity, title, regression });
+  const r = settleReview({ verdict: 'fix-first', findings: [f('polish', 'p1'), f('bug', 'b1'), f('idea', 'i1'), f('bug', 'b2'), f('blocker', 'x1')], known: [{ id: 'f_1', status: 'fixed' }, { id: 'f_nope', status: 'present' }] }, { maxFindings: 2, known: [{ id: 'f_1', title: 't' }] });
+  assert.deepEqual(r.findings.map((x: any) => x.title), ['x1', 'b1']);
+  assert.equal(r.trimmed, 3);
+  assert.deepEqual(r.known.map((k: any) => k.id), ['f_1']);
+  const polish = settleReview({ verdict: 'fix-first', findings: [f('idea', 'i1'), f('polish', 'p1')] }, {});
+  assert.deepEqual(polish.findings.map((x: any) => x.title), ['p1', 'i1']);
+  const verify = settleReview({ verdict: 'fix-first', findings: [f('bug', 'old'), f('bug', 'worse', true), f('polish', 'p', true)] }, { mode: 'verify' });
+  assert.deepEqual(verify.findings.map((x: any) => x.title), ['worse']);
+  const ship = settleReview({ verdict: 'ship', findings: [f('bug', 'a'), f('bug', 'b'), f('bug', 'c')] }, {});
+  assert.equal(ship.findings.length, 2);
+  const shipBlocked = settleReview({ verdict: 'ship', findings: [f('blocker', 'a')] }, {});
+  assert.equal(shipBlocked.verdict, 'fix-first');
+  assert.deepEqual(settleReview({ verdict: 'ship', findings: [] }, {}).findings, []);
 });

@@ -130,6 +130,11 @@ returns a verdict, scores and findings.
   30 fps, encoded on the control server after the run), about 30 distinct fps even with two playtests on the
   playtester; elsewhere, or if the screencast won't start, Playwright's `recordVideo` (25 fps). `recorder` forces one;
   `result.recorder` says which. Measurements and the alternatives tried (tab capture): `docs/playtest-video.md`.
+- **Reviews converge** (`playtest.review` v3): at most `maxFindings` (default 5) new findings, worst first, polish and ideas
+  only without bugs; `known` (the caller's backlog) is never reported again, and the answer says by id which known ones
+  look fixed or still present; `mode` full / verify / regression (the last two report only regressions and blockers);
+  `bar` (the product's quality bar) is judged as `meetsBar`. `settleReview` enforces the caps and mode on the answer
+  (tested in `test/playtest.test.ts`). Studio's side: `hawkesstudio/docs/daily.md` ("Reviews converge").
 - **Phone:** `mobile: true` plays at 390x844 with touch; the review then scores touch controls, text size and layout.
 - **Visual regression:** `baseline` (the previous run's job) compares screenshots at matching events (load, ready,
   each scene, each page, the end) with `post/visdiff.py` (1 - SSIM). Big changes (>= 25%) become `diff` images and go

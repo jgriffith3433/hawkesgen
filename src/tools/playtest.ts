@@ -745,11 +745,20 @@ function thin<T>(xs: T[], max: number) {
 }
 
 // ----------------------------------------------------------------- review
+//
+// Reviews converge: a review reports at most a few findings (worst first; polish and ideas only when there is nothing
+// worse), never one already in the caller's list of known findings (it says by id which of those look fixed or still
+// there instead), and judges the build against the product's quality bar when one is given. Its mode says what the run
+// is for: "full" (the daily review), "verify" (did this change work, did anything regress) or "regression" (only what
+// got worse, and blockers). The caps and the mode are enforced on the answer too (settleReview), not only asked for.
+
+const SEVERITIES = ['blocker', 'bug', 'polish', 'idea'];
+const SEVERITY_RANK: Record<string, number> = { blocker: 0, bug: 1, polish: 2, idea: 3 };
 
 const REVIEW_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'verdict', 'scores', 'findings'],
+  required: ['summary', 'verdict', 'scores', 'findings', 'known', 'meetsBar', 'changeWorked'],
   properties: {
     summary: { type: 'string', description: 'Two or three sentences: how the run went and what matters most.' },
     verdict: { type: 'string', enum: ['ship', 'fix-first', 'broken'] },
@@ -760,19 +769,36 @@ const REVIEW_SCHEMA = {
     },
     findings: {
       type: 'array',
+      description: 'NEW problems only (none already in KNOWN FINDINGS), worst first, within the limit. An empty list is a fine answer.',
       items: {
         type: 'object', additionalProperties: false,
-        required: ['severity', 'area', 'title', 'detail', 'evidence', 'fix'],
+        required: ['severity', 'area', 'title', 'detail', 'evidence', 'fix', 'regression'],
         properties: {
-          severity: { type: 'string', enum: ['blocker', 'bug', 'polish', 'idea'] },
+          severity: { type: 'string', enum: SEVERITIES },
           area: { type: 'string', description: 'gameplay, ui, art, audio, performance, story, onboarding, tech' },
           title: { type: 'string', description: 'Short, specific: what is wrong where.' },
           detail: { type: 'string' },
           evidence: { type: 'array', items: { type: 'integer' }, description: 'Indexes of the screenshots that show it.' },
           fix: { type: 'string', description: 'What to change, concretely (file or system if known).' },
+          regression: { type: 'boolean', description: 'True only if this worked before and is now worse (the previous review, the visual changes or the change under test show it).' },
         },
       },
     },
+    known: {
+      type: 'array',
+      description: 'Known findings this run says something about, by id: "fixed" when the evidence shows the problem is gone where it used to show, "present" when it is still there. Leave out the ones this run cannot judge.',
+      items: {
+        type: 'object', additionalProperties: false,
+        required: ['id', 'status', 'note'],
+        properties: {
+          id: { type: 'string' },
+          status: { type: 'string', enum: ['fixed', 'present'] },
+          note: { type: 'string', description: 'One line: what in this run shows it.' },
+        },
+      },
+    },
+    meetsBar: { type: 'string', enum: ['yes', 'no', 'no-bar'], description: 'Does this build meet the QUALITY BAR? "no-bar" when none was given.' },
+    changeWorked: { type: 'string', enum: ['yes', 'partly', 'no', 'n/a'], description: 'Verify mode: did the change under test do what it was meant to? Otherwise "n/a".' },
     changes: { type: 'array', items: { type: 'string' }, description: 'What got better or worse than the previous review, if one was given.' },
     phone: {
       type: 'object', additionalProperties: false,
@@ -788,14 +814,22 @@ const REVIEW_SCHEMA = {
   },
 };
 
-const REVIEW_SYSTEM = `You are the QA lead and creative director for a one-person game studio whose games are built by AI agents.
+const REVIEW_SYSTEM = `You are the QA lead for a one-person game studio whose games are built and fixed by AI agents.
 You review an automated playtest: screenshots from a real browser run plus the run's report (the game's own bot played it).
-Players expect polish and no bugs. Be specific and visual: name what you see on screen, where, and when.
+Every finding you report becomes work for an agent, so report what most needs fixing, not everything that could be better.
+A short list that is right is worth more than a long one. "Nothing new" is a valid, good answer.
+Be specific and visual: name what you see on screen, where, and when.
 
 Rules:
 - Report only what the evidence supports (screenshots, console errors, the report's problems and metrics). Don't invent.
-- Blocker: the game can't be played or progressed. Bug: something is wrong. Polish: works but looks or feels unfinished
-  (placeholder art, misaligned or clipped UI, unreadable text, jank, flat feedback). Idea: an improvement worth doing.
+- Blocker: the game can't be played or progressed. Bug: something is wrong (broken, wrong, missing, crashing).
+  Polish: works but looks or feels unfinished. Idea: an improvement worth doing.
+- At most the LIMIT findings, worst first. Polish and ideas only when you found no blocker or bug.
+- Never report a problem that is already in KNOWN FINDINGS (same problem, even in other words): say in "known", by id,
+  whether it looks fixed or is still present, and only when this run actually shows it.
+- When a QUALITY BAR is given, judge against it: it says what "done" means for this product. Something the bar doesn't ask
+  for is not a bug. A build that meets its bar gets "ship" and at most a couple of findings.
+- "ship" comes with few or no findings and never with a blocker.
 - Judge against the product's story and art direction when they are given. Flag anything off-tone.
 - Ignore problems caused only by the automation (the bot's odd movement) unless a player could hit them.
 - Don't comment on the runner's own frame-rate warning unless the screenshots also show stutter or the game reports low fps.
@@ -803,6 +837,15 @@ Rules:
 - Each fix says what to change, as concretely as you can.
 - If VISUAL CHANGES are listed, the same moment looked different in the previous run. Say whether each big change is an
   improvement, a regression, or just a different moment (camera, animation, random content); report regressions.`;
+
+const MODE_RULES: Record<string, string> = {
+  full: `MODE: full review (the daily one). Find the worst new problems, within the limit.`,
+  verify: `MODE: verify. This run checks a change (see FOCUS). Answer two questions: did the change do what it was meant to
+("changeWorked", and "known" for the findings it was meant to fix), and did anything get worse? Report only regressions
+(regression: true) and blockers. No polish, no ideas, no other old problems: this is not a full review.`,
+  regression: `MODE: regression check (e.g. the live site after a deploy). Report only what is broken or got worse:
+regressions (regression: true) and blockers. No polish, no ideas, nothing that was already like this.`,
+};
 
 const PHONE_RULES = `This run was on a PHONE: 390x844 CSS pixels, portrait, touch only (no keyboard or mouse). Judge it as a phone player:
 - Touch controls: is there an on-screen way to do everything the game needs? Are tap targets big enough (about 44 px)
@@ -812,14 +855,41 @@ const PHONE_RULES = `This run was on a PHONE: 390x844 CSS pixels, portrait, touc
   that wastes most of the screen, and anything hidden under the browser's bars.
 Fill "phone" with scores for these, and use area "mobile" for these findings.`;
 
+export type KnownFinding = { id: string; title: string; severity?: string; status?: string };
+
+/**
+ * Holds a review to its mode and limits, whatever the model answered: findings worst first, polish and ideas only when
+ * there is no blocker or bug, only regressions and blockers outside a full review, at most maxFindings (a "ship" verdict
+ * at most 2 and never with a blocker); "known" only for ids that were given. What was cut is counted in review.trimmed.
+ */
+export function settleReview(review: any, { mode = 'full', maxFindings = 5, known = [] as KnownFinding[] } = {}) {
+  const all: any[] = (Array.isArray(review.findings) ? review.findings : []).filter((f: any) => f?.title);
+  let list = [...all].sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
+  if (mode !== 'full') list = list.filter((f) => f.severity === 'blocker' || f.regression === true);
+  if (list.some((f) => f.severity === 'blocker' || f.severity === 'bug')) list = list.filter((f) => f.severity === 'blocker' || f.severity === 'bug');
+  if (review.verdict === 'ship' && list.some((f) => f.severity === 'blocker')) review.verdict = 'fix-first';
+  const cap = Math.max(0, Math.min(maxFindings, review.verdict === 'ship' ? 2 : maxFindings));
+  list = list.slice(0, cap);
+  review.trimmed = all.length - list.length;
+  review.findings = list;
+  const ids = new Set(known.map((k) => k.id));
+  const seen = new Set<string>();
+  review.known = (Array.isArray(review.known) ? review.known : []).filter((k: any) => ids.has(k?.id) && ['fixed', 'present'].includes(k.status) && !seen.has(k.id) && seen.add(k.id));
+  review.mode = mode;
+  return review;
+}
+
 export const playtestReviewTool: Tool = {
   id: 'playtest.review',
-  version: 2,
+  version: 3,
   title: 'Review a playtest (Claude)',
   description:
-    'Claude watches a playtest.run job (its screenshots, report, console and metrics) against the product\'s story and art ' +
-    'direction, and returns scores, a verdict and specific findings (blocker, bug, polish, idea) with the screenshots that ' +
-    'show each one and how to fix it. Give a previous review to hear what changed.',
+    'Claude watches a playtest.run job (its screenshots, report, console and metrics) against the product\'s story, art ' +
+    'direction and quality bar, and returns scores, a verdict and at most maxFindings new findings (blocker, bug, polish, ' +
+    'idea; polish and ideas only when there is nothing worse) with the screenshots that show each one and how to fix it. ' +
+    'Give the known findings (the backlog) and it reports only new problems, saying by id which known ones look fixed or ' +
+    'still present. mode: full (daily), verify (did a change work, did anything regress: regressions and blockers only), ' +
+    'regression (live checks: regressions and blockers only). Give a previous review to hear what changed.',
   provider: 'anthropic',
   output: 'json',
   inputs: {},
@@ -828,7 +898,11 @@ export const playtestReviewTool: Tool = {
     product: { type: 'string', description: 'What the product is (one paragraph): genre, goal, audience' },
     story: { type: 'text', description: 'The story doc or its key points (tone, characters, rules)' },
     focus: { type: 'text', description: 'What J wants checked this time' },
-    previous: { type: 'json', description: 'A previous review of the same scenario, to report what changed', advanced: true },
+    mode: { type: 'enum', values: ['full', 'verify', 'regression'], default: 'full', description: 'full: the daily review. verify: did the change in focus work, and did anything regress. regression: only what got worse, and blockers (live checks)' },
+    maxFindings: { type: 'integer', default: 5, min: 0, max: 20, description: 'At most this many new findings, worst first' },
+    known: { type: 'json', description: 'Findings already known (the backlog, ideas and won\'t-fix): [{ id, title, severity, status }]. Not reported again; the review says which look fixed or are still present', advanced: true },
+    bar: { type: 'text', description: 'The product\'s quality bar: what "done" means for it. The review judges against it and says whether the build meets it' },
+    previous:{ type: 'json', description: 'A previous review of the same scenario, to report what changed', advanced: true },
     frames: { type: 'integer', default: 16, min: 4, max: 40, description: 'How many screenshots Claude sees', advanced: true },
     model: { type: 'string', default: DEFAULT_MODEL, advanced: true },
   },
@@ -862,10 +936,16 @@ export const playtestReviewTool: Tool = {
       console: result.console, failedRequests: result.failedRequests?.slice(0, 15), events: result.events?.slice(-80),
       log: result.log?.slice(-40), pages: result.pages?.slice(0, 60),
     };
+    const known: KnownFinding[] = (Array.isArray(p.known) ? p.known : []).filter((k: any) => k?.id && k?.title).slice(0, 200);
+    const mode = MODE_RULES[p.mode] ? p.mode : 'full';
     const prompt = [
       p.product ? `PRODUCT\n${p.product}` : '',
+      p.bar ? `QUALITY BAR (what "done" means for this product)\n${String(p.bar).slice(0, 3000)}` : '',
       p.story ? `STORY AND ART DIRECTION\n${String(p.story).slice(0, 12000)}` : '',
       p.focus ? `FOCUS THIS TIME\n${p.focus}` : '',
+      MODE_RULES[mode],
+      `LIMIT\nAt most ${p.maxFindings} new findings.`,
+      known.length ? `KNOWN FINDINGS (already in the backlog, the ideas list or marked won't fix: never report these again)\n${known.map((k) => `- ${k.id} [${k.severity ?? '?'}, ${k.status ?? 'open'}] ${String(k.title).slice(0, 160)}`).join('\n')}` : '',
       `PLAYTEST REPORT\n${JSON.stringify(brief, null, 1).slice(0, 30000)}`,
       `SCREENSHOTS (in order; refer to them by index)\n${legend}`,
       p.previous ? `PREVIOUS REVIEW\n${JSON.stringify(p.previous).slice(0, 8000)}` : '',
@@ -876,7 +956,7 @@ export const playtestReviewTool: Tool = {
     ctx.step(`Claude is reviewing ${frames.length} screenshots`);
     const r = await ask({ prompt, system: REVIEW_SYSTEM, images: [...frames.map((a: any) => a.path), ...before.map((b: any) => b.asset.path)], model: p.model, effort: 'high', maxTokens: 16000, schema: REVIEW_SCHEMA }, ctx.signal);
     ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: r.model });
-    const review = JSON.parse(r.text);
+    const review = settleReview(JSON.parse(r.text), { mode, maxFindings: p.maxFindings, known });
     // Evidence indexes -> the library's asset ids, so reports can show the frames.
     const shown = [...frames.map((a: any) => a.id), ...before.map((b: any) => b.asset.id)];
     for (const f of review.findings) f.shots = (f.evidence ?? []).map((i: number) => shown[i]).filter(Boolean);
@@ -887,7 +967,7 @@ export const playtestReviewTool: Tool = {
     review.model = r.model;
     await ctx.emit({ data: Buffer.from(JSON.stringify(review, null, 2)), ext: '.json', mime: 'application/json', title: 'Playtest review' });
     ctx.result(review);
-    ctx.log(`${review.verdict}: ${review.findings.length} findings`);
+    ctx.log(`${review.verdict} (${mode}): ${review.findings.length} findings${review.trimmed ? ` (${review.trimmed} cut)` : ''}, ${review.known.length} known judged${p.bar ? `, bar: ${review.meetsBar}` : ''}`);
   },
 };
 

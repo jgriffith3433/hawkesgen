@@ -54,7 +54,7 @@ Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
 | Language | `llm.text` and `llm.json` (Claude, with images for vision) |
 | On this PC | `image.cutout`, `image.frame`, `image.tile`, `texture.maps`, `video.fit`, `media.probe` |
 | Builds | `unity.build` (Unity WebGL on the AWS build server, incremental: keeps each project's Library) |
-| Playtests | `playtest.run` (play a game in Chromium through its playtest contract, or smoke-test or crawl a site; video, screenshots, console, fps), `playtest.review` (Claude watches it and files findings) |
+| Playtests | `playtest.run` (play a game in Chromium through its playtest contract, or smoke-test or crawl a site; video, screenshots, console, fps), `playtest.review` (Claude watches it and files a few new findings: capped, told the known ones, a mode per run kind, judged against the product's quality bar) |
 | Pipelines | `asset.make` (a chain of tools as one recipe, with best-of-N picked by Claude) |
 | Anything else | `comfy.graph` (run a raw graph), or import a workflow (dashboard → Workflows) |
 
