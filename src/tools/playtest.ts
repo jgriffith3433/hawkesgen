@@ -29,7 +29,7 @@ const FPS_SCRIPT = `(() => {
 
 export const playtestRunTool: Tool = {
   id: 'playtest.run',
-  version: 2,
+  version: 3,
   title: 'Playtest a game in the browser',
   description:
     'Opens a game or site in Chromium and plays it: through the Hawkes playtest contract (window.hawkesPlaytest: the game\'s ' +
@@ -47,6 +47,7 @@ export const playtestRunTool: Tool = {
     mode: { type: 'enum', values: ['auto', 'contract', 'generic', 'site'], default: 'auto', description: 'auto: the contract if the page has it, else the generic smoke test' },
     seed: { type: 'integer', default: 1, min: 0, max: 2147483647 },
     speed: { type: 'number', default: 1, min: 0.25, max: 16, description: 'Asks the game to run faster (if it supports it)' },
+    options: { type: 'json', description: 'Scenario options the game understands, passed to hawkesPlaytest.start with seed and speed: e.g. { "stage": "city-top" } (Dose Of Destruction). Content playtests use this to play the new content (Sick Of It needs none: its scenarios are level-<n>).' },
     timeout: { type: 'integer', min: 10, max: 7200, description: 'Seconds before the run counts as stuck (default: twice the scenario\'s length, or 5 min)' },
     bootTimeout: { type: 'integer', default: 150, min: 5, max: 900, description: 'Seconds to wait for the game to load', advanced: true },
     shotEvery: { type: 'number', default: 5, min: 1, max: 120, description: 'Seconds between screenshots', advanced: true },
@@ -253,13 +254,13 @@ export const playtestRunTool: Tool = {
               const w = window as any;
               w.__hawkesStartError = null;
               try {
-                const r = w.hawkesPlaytest.start(a[0], { seed: a[1], speed: a[2] });
+                const r = w.hawkesPlaytest.start(a[0], { ...(a[3] ?? {}), seed: a[1], speed: a[2] });
                 if (r && typeof r.then === 'function') r.then(null, (e: any) => { w.__hawkesStartError = String(e?.stack ?? e); });
               } catch (e: any) {
                 w.__hawkesStartError = String(e?.stack ?? e);
               }
               return true;
-            }, [p.scenario, p.seed, p.speed], 30_000);
+            }, [p.scenario, p.seed, p.speed, p.options && typeof p.options === 'object' ? p.options : null], 30_000);
             const start = Date.now();
             let nextShot = Date.now() + p.shotEvery * 1000;
             let lastScene: string | undefined;
