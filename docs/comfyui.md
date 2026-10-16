@@ -28,7 +28,15 @@ this before changing server flags, models or workflows.
   - **Build:** `hawkesgen fleet image build` (a fresh install, terminated
     after) or `build --from <id>` (a ready server, left stopped and marked
     "image source": its password and keys are stripped, so it can't take jobs;
-    terminating it is J's call). `server/image-prep.sh` removes leftovers and
+    terminating it is J's call). `build --from <id> --as-is` images a
+    stopped server without starting it (for when AWS has no machine free in
+    its zone; the first image, 2026-10-16, was made this way from
+    i-045c7d231d6dadef6): no prep, the source stays a normal server, and
+    `firstboot.sh` cleans up on every server launched from it (removes
+    `/opt/comfy.partial`, aria2 files and non-core models, and deletes a core
+    model whose size isn't Hugging Face's so a job re-downloads it). Such an
+    image is bigger than it needs to be; rebuild it cleanly when models.json
+    next changes. `server/image-prep.sh` removes leftovers and
     every non-core model, checks every core model's size against Hugging
     Face (re-downloading and sha256-checking a wrong one; still wrong fails
     the build), reports ComfyUI's tag and node commits (checked against
