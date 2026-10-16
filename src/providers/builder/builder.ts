@@ -616,7 +616,7 @@ export async function builderGitHubAccess(slugs: string[]) {
  * matches it as already sent, so syncRoot uploads only the difference. Returns null when the root isn't in a
  * GitHub repo (syncRoot then sends everything, as before).
  */
-export async function seedFromGit(root: string, exclude: string[], log: (s: string) => void = () => {}, from?: string) {
+export async function seedFromGit(root: string, exclude: string[], log: (s: string) => void = () => {}, from?: string, lf = false) {
   const repo = repoOf(root, from);
   if (!repo) return null;
   const remoteDir = `C:\\Projects\\${repo.top.replace(/\//g, '\\')}`;
@@ -639,6 +639,10 @@ export async function seedFromGit(root: string, exclude: string[], log: (s: stri
     // A failed git command doesn't stop PowerShell ($ErrorActionPreference only covers cmdlets): check each one.
     `if (-not (Test-Path '${remoteDir}\\.git')) { throw 'cloning ${repo.slug} failed' }`,
     `${GIT} -C '${remoteDir}'${authArg} fetch -q origin; if ($LASTEXITCODE) { throw 'git fetch failed for ${repo.slug}' }`,
+    // A website's files come back from the server and are committed as they are: check them out with the repo's own
+    // line endings, not Git for Windows' CRLF (else every go live rewrites index.html whole). Dropping the index makes
+    // the checkout below rewrite the files once. A Unity project keeps CRLF (rewriting it would reimport everything).
+    lf ? `if ((${GIT} -C '${remoteDir}' config --local core.autocrlf) -ne 'false') { ${GIT} -C '${remoteDir}' config core.autocrlf false; Remove-Item -Force -ErrorAction SilentlyContinue '${remoteDir}\\.git\\index' }` : '',
     // Checkout downloads Git LFS files (Sick Of It keeps its assets there), which needs the same token.
     `${GIT} -C '${remoteDir}'${authArg} checkout -q -f --detach ${repo.base}; if ($LASTEXITCODE) { throw 'git checkout ${repo.base.slice(0, 7)} failed for ${repo.slug} (Git LFS?)' }`,
     `${GIT} -C '${remoteDir}' clean -q -fd`,
@@ -796,7 +800,7 @@ export async function runBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks
     for (const [root, exclude, from] of roots) {
       const what = from ? `${root} (from ${path.relative(paths.projects, from).replace(/\\/g, '/')})` : root;
       hooks.step(`fetching ${what} from GitHub on the server`);
-      await seedFromGit(root, exclude, hooks.log, from);
+      await seedFromGit(root, exclude, hooks.log, from, root === spec.site);
       hooks.step(`uploading local changes to ${what}`);
       const r = await syncRoot(root, exclude, hooks.log, from);
       if (r.files || r.deleted) hooks.log(`${root}: ${r.files} files (${mb(r.bytes)}) sent, ${r.deleted} deleted`);
