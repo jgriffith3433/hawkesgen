@@ -125,3 +125,22 @@ export const probeTool: Tool = {
     ctx.result(JSON.parse(out));
   },
 };
+
+export const importTool: Tool = {
+  id: 'file.import',
+  version: 1,
+  title: 'Import a file',
+  description: 'Puts a file into the library as it is (a screenshot from a bug report, a reference image), with a title and meta, so it gets an asset id and a /v1/files link like any output. Nothing is generated.',
+  provider: 'local',
+  output: 'file',
+  inputs: { file: { kind: 'file', required: true } },
+  params: {
+    title: { type: 'string', description: 'The asset title.' },
+    meta: { type: 'json', description: 'Anything to keep with it (e.g. { "report": "f_..." }).', advanced: true },
+  },
+  async run(ctx) {
+    const ext = path.extname(ctx.inputs.file).toLowerCase() || undefined;
+    const meta = ctx.params.meta && typeof ctx.params.meta === 'object' ? ctx.params.meta : undefined;
+    await ctx.emit({ data: fs.readFileSync(ctx.inputs.file), ext, title: ctx.params.title ? String(ctx.params.title).slice(0, 200) : undefined, meta });
+  },
+};
