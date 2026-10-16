@@ -72,6 +72,7 @@ hawkesgen.cmd tools
 hawkesgen.cmd run - --project phorigins --preset sky --param prompt="night city from the 58th floor, rain" --out out/
 hawkesgen.cmd run image.generate --project sandbox --param prompt="cracked hospital tiles" --param seamless=true --out out/
 hawkesgen.cmd fleet status
+hawkesgen.cmd fleet image status          # the machine image new servers launch from (build | prune | cancel)
 ```
 
 **From code** (copy `clients/js/hawkesgen.mjs` or `clients/python/hawkesgen.py` into the project):

@@ -9,8 +9,47 @@ this before changing server flags, models or workflows.
   The RAM, not the GPU, is the tight resource.
 - **Disk:** 250 GB gp3. After setup about 45 GB is the OS, 48 GB swap and 90 GB
   models, leaving about 50 GB free.
-- **First setup:** takes about 12 minutes in practice (the 90 GB of models
-  download fast from Hugging Face). Later starts take a couple of minutes.
+- **First setup:** an install from `server/bootstrap.sh` takes 30-45 minutes
+  in practice (it was 12 on a good day; the 90 GB of models come from Hugging
+  Face). Later starts take a couple of minutes. Servers normally launch from
+  the fleet image instead (next point).
+- **The fleet image** (since 2026-10-16, after two broken installs blew a
+  content budget). `src/providers/comfy/image.ts` turns a ready install into
+  an AMI and copies it to every fleet region; `launchServer` uses the newest
+  image whose `ModelsKey` tag is `manifestKey()` (a hash of models.json's
+  ComfyUI tag, nodes and core models) and falls back to bootstrap.sh when
+  none matches. Its user data is `server/firstboot.sh`: this server's
+  password, idle time and a fresh idle clock, ComfyUI started, then a
+  background `gen-warm` unit reads every core model once (the disk loads
+  lazily from S3: no Fast Snapshot Restore, it's about $540/month). Until a
+  model is warm its first load is slow; `status.json` `warm` counts them. The
+  image's servers get a faster gp3 disk (4000 IOPS, 500 MB/s, about $0.02/hr
+  more) for that.
+  - **Build:** `hawkesgen fleet image build` (a fresh install, terminated
+    after) or `build --from <id>` (a ready server, left stopped and marked
+    "image source": its password and keys are stripped, so it can't take jobs;
+    terminating it is J's call). `server/image-prep.sh` removes leftovers and
+    every non-core model, checks every core model's size against Hugging
+    Face (re-downloading and sha256-checking a wrong one; still wrong fails
+    the build), reports ComfyUI's tag and node commits (checked against
+    models.json), and strips per-server state (htpasswd, host keys,
+    authorized keys, machine-id, idle clock, logs, cloud-init). Then the
+    server is stopped and imaged, the image copied to every region, and older
+    images and their snapshots deleted. The build survives a restart
+    (`.data/fleet/image.json`).
+  - **Upkeep:** when models.json or the ComfyUI tag changes, the Fleet tab and
+    `fleet image status` say the images are out of date; build a new one
+    (nothing builds by itself: it costs a server hour and storage).
+    `fleet image prune` deletes images no region launches from.
+  - **Disposable servers** (setting `fleet.disposable`, on by default): a
+    server launched from the image has shutdown behavior "terminate", so its
+    idle power-off deletes it and its disk; Gen's Stop terminates it too.
+    Starting servers then launches from the image (auto start, scale, keep
+    trying). Nothing lives only on a server: outputs and trained LoRAs are
+    pulled into Gen's library (LoRAs are copied back on use), and workflow
+    models download again on first use.
+  - **Costs:** ~$0.05/GB-month per region for the snapshot (~$8-9/month per
+    region at ~170 GB), ~$3-4 once per copy.
 - **Installs resume** (since 2026-10-16, when a server stopped mid-install sat
   idle and paying after a restart). cloud-init runs `server/bootstrap.sh` once;
   it copies itself to `/usr/local/sbin/gen-install.sh` and runs as

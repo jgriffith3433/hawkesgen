@@ -156,6 +156,11 @@ returns a verdict, scores and findings.
 - Installs resume on every boot until ready, and a stuck or failed install powers itself off (`docs/comfyui.md`,
   "Installs resume"; dry run in `test/bootstrap.test.ts`). Keep each `server/bootstrap.sh` step idempotent behind its
   `begin`/`mark` marker.
+- New servers launch from the **fleet image** (an AMI with ComfyUI and the core models, `src/providers/comfy/image.ts`,
+  `server/firstboot.sh`, `server/image-prep.sh`) and are ready in minutes; without a matching image they install from
+  bootstrap.sh. Launched from the image they are **disposable**: idle, they are terminated, not stopped. When
+  models.json or the ComfyUI tag changes, build a new image (`hawkesgen fleet image build`, J's OK: it costs a server
+  hour and storage). `docs/comfyui.md`, "The fleet image".
 - Servers adopted from DoD keep `flavor: dod` (auth user `dod`, `/dod/status.json`); new ones are
   `flavor: gen`. **Never terminate a server without J asking.**
 

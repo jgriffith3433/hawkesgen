@@ -8,6 +8,7 @@
 //   hawkesgen jobs [--project P] [--status running]    hawkesgen job <id>    hawkesgen cancel <id>
 //   hawkesgen library [--project P] [--kind image]     hawkesgen get <asset id> <file>
 //   hawkesgen fleet [status|start [id]|stop [id]|stop-all|launch|sync [id]|access|adopt <dir>|set k=v] [--yes]
+//   hawkesgen fleet image [status|build [--from <id>] [region=r]|prune [--dry-run]|cancel] [--yes]
 //   hawkesgen playtester [status|launch|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [--yes]
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
 //   hawkesgen usage [--days 30] [--by project]
@@ -174,6 +175,37 @@ async function main() {
     }
     case 'fleet': {
       const [action = 'status', arg] = rest;
+      if (action === 'image') {
+        const sub = arg ?? 'status';
+        if (sub === 'status') {
+          const s = await gen.request('/fleet/image');
+          console.log(JSON.stringify({
+            key: s.key, comfy: s.comfy, ready: s.ready, stale: s.stale, disposable: s.disposable, costPerMonth: s.costPerMonth,
+            regions: s.regions.map((r: any) => ({ region: r.region, current: r.current ? `${r.current.id} (${r.current.created.slice(0, 10)}, ${r.current.usedGb ?? '?'} GB)` : null, others: r.others.map((o: any) => `${o.id} ${o.state} key ${o.key}`), error: r.error ?? undefined })),
+            build: s.build ? { id: s.build.id, phase: s.build.phase, active: s.build.active, from: s.build.from, image: s.build.image, error: s.build.error, last: s.build.log.slice(-5).map((l: any) => `${l.at.slice(11, 19)} ${l.msg}`) } : null,
+          }, null, 2));
+          return;
+        }
+        if (sub === 'cancel') return console.log(JSON.stringify(await gen.request('/fleet/image/cancel', { method: 'POST', body: {} }), null, 2));
+        if (sub === 'prune') {
+          const dry = await gen.request('/fleet/image/prune', { method: 'POST', body: { dryRun: true } });
+          if (!dry.removed.length) return console.log('Nothing to prune: every image left is the one its region launches from.');
+          console.log(dry.removed.map((i: any) => `  ${i.region} ${i.id} ${i.name} (${i.snapshots.length} snapshot${i.snapshots.length === 1 ? '' : 's'})`).join('\n'));
+          if (rest.includes('--dry-run')) return;
+          if (!(await confirm(`Delete these ${dry.removed.length} image(s) and their snapshots?`))) return console.log('cancelled');
+          return console.log(JSON.stringify(await gen.request('/fleet/image/prune', { method: 'POST', body: { confirm: true } }), null, 2));
+        }
+        if (sub === 'build') {
+          const i = rest.indexOf('--from');
+          const from = i >= 0 ? rest[i + 1] : undefined;
+          const ask = from
+            ? `Image ${from}? It is started if stopped (a few minutes at ~$1.86/hr), cleaned (non-core models removed, its password and keys stripped: it can't take jobs afterwards), stopped and imaged, then copied to every fleet region (~$8-9/month per region for the snapshot, ~$3-4 once per copy).`
+            : 'Build a new image from a fresh install? A new GPU server installs itself (30-45 min at ~$1.86/hr), is cleaned, stopped and imaged, copied to every fleet region (~$8-9/month per region), then terminated; older images are deleted.';
+          if (!(await confirm(ask))) return console.log('cancelled');
+          return console.log(JSON.stringify(await gen.request('/fleet/image/build', { method: 'POST', body: { confirm: true, from, ...kv(rest.slice(2).filter((x, k, a) => x !== '--from' && a[k - 1] !== '--from')) } }), null, 2));
+        }
+        throw new Error('fleet image status|build [--from <id>]|prune [--dry-run]|cancel');
+      }
       if (action === 'status') {
         const f = await gen.fleet();
         console.log(JSON.stringify({ settings: f.settings, servers: f.servers.map((s: any) => ({ id: s.id, state: s.state, boot: s.boot?.stage, type: s.type, zone: s.zone, flavor: s.flavor, pricePerHour: s.pricePerHour, loaded: f.families[s.id], busy: f.busy[s.id] })), retry: f.retry?.active ? f.retry : undefined, lastFailure: f.lastFailure }, null, 2));
@@ -184,7 +216,7 @@ async function main() {
       }
       const costly: Record<string, string> = {
         start: 'Start a GPU server? It costs about $1.86-$4 an hour while it runs.',
-        launch: 'Launch a NEW GPU server? It sets itself up (~12 min, ~92 GB of models), costs money while running and about $27/month for its disk until terminated.',
+        launch: 'Launch a NEW GPU server? From the fleet image it is ready in minutes and is terminated when idle; without one it installs itself (30-45 min) and keeps a disk (~$20/month) until terminated. About $1.86/hr while it runs.',
         sync: 'Download missing models and nodes onto the server? Can take a while (server time costs money).',
         adopt: 'Copy that folder\'s server tokens and SSH keys into Hawkes Gen?',
         terminate: 'TERMINATE the server and delete its disk (models included)?',
