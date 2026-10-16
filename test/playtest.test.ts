@@ -90,3 +90,10 @@ test('settleReview: worst first, polish only without bugs, capped, mode-limited,
   assert.equal(shipBlocked.verdict, 'fix-first');
   assert.deepEqual(settleReview({ verdict: 'ship', findings: [] }, {}).findings, []);
 });
+
+test('settleCriteria: one answer per criterion, in order, unclear when skipped', async () => {
+  const { settleCriteria } = await import('../src/tools/playtest.ts');
+  const r = settleCriteria({ criteria: [{ criterion: 'B shows', met: 'no', evidence: 'frame 3' }, { criterion: 'A shows', met: 'yes', evidence: 'frame 1' }] }, ['A shows', 'B shows', 'C shows']);
+  assert.deepEqual(r.criteria.map((c: any) => c.met), ['yes', 'no', 'unclear']);
+  assert.equal(settleCriteria({ criteria: [{ met: 'yes' }] }, []).criteria, undefined);
+});

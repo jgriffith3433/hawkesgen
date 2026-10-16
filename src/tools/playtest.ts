@@ -800,6 +800,18 @@ const REVIEW_SCHEMA = {
     meetsBar: { type: 'string', enum: ['yes', 'no', 'no-bar'], description: 'Does this build meet the QUALITY BAR? "no-bar" when none was given.' },
     changeWorked: { type: 'string', enum: ['yes', 'partly', 'no', 'n/a'], description: 'Verify mode: did the change under test do what it was meant to? Otherwise "n/a".' },
     changes: { type: 'array', items: { type: 'string' }, description: 'What got better or worse than the previous review, if one was given.' },
+    criteria: {
+      type: 'array',
+      description: 'Only when ACCEPTANCE CRITERIA were given: one entry per criterion, in the same order.',
+      items: {
+        type: 'object', additionalProperties: false, required: ['criterion', 'met', 'evidence'],
+        properties: {
+          criterion: { type: 'string', description: 'The criterion, as given.' },
+          met: { type: 'string', enum: ['yes', 'no', 'unclear'], description: 'yes: the run shows it; no: it shows it is not met or broken; unclear: the run never got to it.' },
+          evidence: { type: 'string', description: 'What shows it: screenshot indexes, events, log lines (one or two sentences).' },
+        },
+      },
+    },
     phone: {
       type: 'object', additionalProperties: false,
       description: 'Only for a phone run (390x844, touch): how it holds up on a phone.',
@@ -879,9 +891,21 @@ export function settleReview(review: any, { mode = 'full', maxFindings = 5, know
   return review;
 }
 
+/** One answer per acceptance criterion given, in order ("unclear" when the model skipped one). */
+export function settleCriteria(review: any, criteria: string[]) {
+  if (!criteria.length) { delete review.criteria; return review; }
+  const got: any[] = Array.isArray(review.criteria) ? review.criteria : [];
+  review.criteria = criteria.map((c, i) => {
+    const g = got.find((x) => String(x?.criterion ?? '').trim() === c.trim()) ?? got[i];
+    const met = ['yes', 'no', 'unclear'].includes(g?.met) ? g.met : 'unclear';
+    return { criterion: c, met, evidence: String(g?.evidence ?? 'not judged').slice(0, 600) };
+  });
+  return review;
+}
+
 export const playtestReviewTool: Tool = {
   id: 'playtest.review',
-  version: 3,
+  version: 4,
   title: 'Review a playtest (Claude)',
   description:
     'Claude watches a playtest.run job (its screenshots, report, console and metrics) against the product\'s story, art ' +
@@ -889,7 +913,8 @@ export const playtestReviewTool: Tool = {
     'idea; polish and ideas only when there is nothing worse) with the screenshots that show each one and how to fix it. ' +
     'Give the known findings (the backlog) and it reports only new problems, saying by id which known ones look fixed or ' +
     'still present. mode: full (daily), verify (did a change work, did anything regress: regressions and blockers only), ' +
-    'regression (live checks: regressions and blockers only). Give a previous review to hear what changed.',
+    'regression (live checks: regressions and blockers only). Give a previous review to hear what changed. Give acceptance ' +
+    'criteria (a task\'s "done when") and each is judged yes, no or unclear with its evidence (result.criteria).',
   provider: 'anthropic',
   output: 'json',
   inputs: {},
@@ -902,6 +927,7 @@ export const playtestReviewTool: Tool = {
     maxFindings: { type: 'integer', default: 5, min: 0, max: 20, description: 'At most this many new findings, worst first' },
     known: { type: 'json', description: 'Findings already known (the backlog, ideas and won\'t-fix): [{ id, title, severity, status }]. Not reported again; the review says which look fixed or are still present', advanced: true },
     bar: { type: 'text', description: 'The product\'s quality bar: what "done" means for it. The review judges against it and says whether the build meets it' },
+    criteria: { type: 'json', description: 'Acceptance criteria to judge, e.g. ["The main menu shows Training"]: result.criteria says for each yes, no or unclear, with evidence', advanced: true },
     previous:{ type: 'json', description: 'A previous review of the same scenario, to report what changed', advanced: true },
     frames: { type: 'integer', default: 16, min: 4, max: 40, description: 'How many screenshots Claude sees', advanced: true },
     model: { type: 'string', default: DEFAULT_MODEL, advanced: true },
@@ -938,6 +964,7 @@ export const playtestReviewTool: Tool = {
     };
     const known: KnownFinding[] = (Array.isArray(p.known) ? p.known : []).filter((k: any) => k?.id && k?.title).slice(0, 200);
     const mode = MODE_RULES[p.mode] ? p.mode : 'full';
+    const criteria: string[] = (Array.isArray(p.criteria) ? p.criteria : []).map((c: any) => String(c ?? '').trim()).filter(Boolean).slice(0, 20);
     const prompt = [
       p.product ? `PRODUCT\n${p.product}` : '',
       p.bar ? `QUALITY BAR (what "done" means for this product)\n${String(p.bar).slice(0, 3000)}` : '',
@@ -945,6 +972,7 @@ export const playtestReviewTool: Tool = {
       p.focus ? `FOCUS THIS TIME\n${p.focus}` : '',
       MODE_RULES[mode],
       `LIMIT\nAt most ${p.maxFindings} new findings.`,
+      criteria.length ? `ACCEPTANCE CRITERIA (judge each one from this run; fill "criteria", one entry per line, same order; strict: "yes" only when the run shows it, "unclear" when it never got there)\n${criteria.map((c, i) => `${i + 1}. ${c}`).join('\n')}` : '',
       known.length ? `KNOWN FINDINGS (already in the backlog, the ideas list or marked won't fix: never report these again)\n${known.map((k) => `- ${k.id} [${k.severity ?? '?'}, ${k.status ?? 'open'}] ${String(k.title).slice(0, 160)}`).join('\n')}` : '',
       `PLAYTEST REPORT\n${JSON.stringify(brief, null, 1).slice(0, 30000)}`,
       `SCREENSHOTS (in order; refer to them by index)\n${legend}`,
@@ -956,7 +984,7 @@ export const playtestReviewTool: Tool = {
     ctx.step(`Claude is reviewing ${frames.length} screenshots`);
     const r = await ask({ prompt, system: REVIEW_SYSTEM, images: [...frames.map((a: any) => a.path), ...before.map((b: any) => b.asset.path)], model: p.model, effort: 'high', maxTokens: 16000, schema: REVIEW_SCHEMA }, ctx.signal);
     ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: r.model });
-    const review = settleReview(JSON.parse(r.text), { mode, maxFindings: p.maxFindings, known });
+    const review = settleCriteria(settleReview(JSON.parse(r.text), { mode, maxFindings: p.maxFindings, known }), criteria);
     // Evidence indexes -> the library's asset ids, so reports can show the frames.
     const shown = [...frames.map((a: any) => a.id), ...before.map((b: any) => b.asset.id)];
     for (const f of review.findings) f.shots = (f.evidence ?? []).map((i: number) => shown[i]).filter(Boolean);
