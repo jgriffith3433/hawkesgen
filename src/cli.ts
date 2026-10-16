@@ -75,7 +75,7 @@ async function main() {
       console.log(`queue: ${h.queue.running ?? 0} running, ${h.queue.queued ?? 0} waiting`);
       try {
         const f = await gen.fleet();
-        for (const s of f.servers) console.log(`  ${s.id}  ${s.state}${s.state === 'running' ? `/${s.boot?.stage}` : ''}  ${s.type}  ${s.zone ?? s.region}  ${money(s.pricePerHour)}/hr${f.busy[s.id] ? `  busy: ${f.busy[s.id]}` : ''}`);
+        for (const s of f.servers) console.log(`  ${s.id}  ${s.state}${s.state === 'running' ? `/${s.stuck ? `STUCK ${s.stuck.minutes} min` : s.boot?.stage}` : s.unfinished ? ' (install unfinished)' : ''}  ${s.type}  ${s.zone ?? s.region}  ${money(s.pricePerHour)}/hr${f.busy[s.id] ? `  busy: ${f.busy[s.id]}` : ''}`);
         if (!f.servers.length) console.log('  no GPU servers');
         if (f.error) console.log(`  fleet: ${f.error}`);
       } catch (e: any) {

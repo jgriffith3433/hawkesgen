@@ -250,9 +250,13 @@ async function renderBuilder() {
 }
 
 function bootCell(s) {
-  if (s.state !== 'running') return `<span class="status s-${s.state}">${esc(s.state)}</span>${s.reason ? `<div class="small muted">${esc(s.reason)}</div>` : ''}`;
+  const unfinished = s.unfinished ? `<div class="small" style="color:var(--warn)">install unfinished (at: ${esc(s.unfinished.detail)})${s.unfinished.resumable ? '; starting it resumes the install' : '; launched before installs resumed, so starting it is refused'}</div>` : '';
+  if (s.state !== 'running') return `<span class="status s-${s.state}">${esc(s.state)}</span>${s.reason ? `<div class="small muted">${esc(s.reason)}</div>` : ''}${unfinished}`;
   const stage = s.boot?.stage ?? 'booting';
-  return `<span class="status s-${stage === 'ready' ? 'ready' : stage === 'failed' || stage === 'locked out' ? 'failed' : 'booting'}">${esc(stage)}</span><div class="small muted">${esc(s.boot?.detail ?? '')}</div>`;
+  const run = s.boot?.run > 1 ? ` (resumed, run ${s.boot.run})` : '';
+  const stuck = s.stuck ? `<div class="small" style="color:var(--bad)"><b>stuck</b>: no progress for ${s.stuck.minutes} min. It powers itself off after 20 min without progress; check its Log.</div>` : '';
+  const lastFailure = s.boot?.lastFailure && stage !== 'ready' && stage !== 'failed' ? `<div class="small muted">last run: ${esc(s.boot.lastFailure)}</div>` : '';
+  return `<span class="status s-${stage === 'ready' ? 'ready' : stage === 'failed' || stage === 'locked out' || s.stuck ? 'failed' : 'booting'}">${esc(s.stuck ? 'stuck' : stage)}</span><div class="small muted">${esc(s.boot?.detail ?? '')}${esc(run)}</div>${stuck}${lastFailure}${stage === 'booting' ? unfinished : ''}`;
 }
 
 render.fleet = async () => {
@@ -301,7 +305,11 @@ render.fleet = async () => {
     b.onclick = async () => {
       const id = b.dataset.id;
       const a = b.dataset.sv;
-      if (a === 'start') return confirm(`Start ${id}? It costs money while it runs.`) && act('start', { id, confirm: true });
+      if (a === 'start') {
+        const sv = f.servers.find((x) => x.id === id);
+        const resume = sv?.unfinished?.resumable ? ` Its install never finished: it carries on from where it stopped (${sv.unfinished.detail}).` : '';
+        return confirm(`Start ${id}? It costs money while it runs.${resume}`) && act('start', { id, confirm: true }).then((r) => r?.note && toast(`${id}: ${r.note}`));
+      }
       if (a === 'stop') return act('stop', { id });
       if (a === 'terminate') return confirm(`Terminate ${id}? This deletes the server and its disk (about 90 GB of models). Launching again re-downloads everything.`) && act('terminate', { id, confirm: true });
       if (a === 'sync') return confirm(`Download any models and nodes ${id} is missing (from server/models.json)? This can take a while.`) && act('sync', { id, confirm: true }).then((r) => r && toast(`Synced: ${r.models.length} models, ${r.nodes.length} nodes`));

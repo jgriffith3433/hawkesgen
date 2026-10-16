@@ -153,6 +153,9 @@ returns a verdict, scores and findings.
 - Workflow models install on a server on first use (with a disk check). Least-recently-used non-core models
   are pruned when space is short (`fleet.autoPrune`).
 - Concept images get copied when given as content. Pass a blurred mood board for style only.
+- Installs resume on every boot until ready, and a stuck or failed install powers itself off (`docs/comfyui.md`,
+  "Installs resume"; dry run in `test/bootstrap.test.ts`). Keep each `server/bootstrap.sh` step idempotent behind its
+  `begin`/`mark` marker.
 - Servers adopted from DoD keep `flavor: dod` (auth user `dod`, `/dod/status.json`); new ones are
   `flavor: gen`. **Never terminate a server without J asking.**
 

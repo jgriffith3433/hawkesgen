@@ -98,7 +98,13 @@ const quotas = (region: string) => new ServiceQuotasClient({ ...awsConfig(), reg
 
 // ------------------------------------------------------------ local state
 
-type ServerRecord = { region?: string; type?: string; token?: string; idleMinutes?: number; keyName?: string; zone?: string; launchedAt?: string; modelsUsed?: Record<string, number> };
+/** What a server's /gen/status.json says (bootstrap.sh). run counts install runs (one per boot until ready). */
+export type Boot = { stage: string; detail?: string; time?: number; run?: number; started?: number; lastFailure?: string };
+type ServerRecord = {
+  region?: string; type?: string; token?: string; idleMinutes?: number; keyName?: string; zone?: string; launchedAt?: string; modelsUsed?: Record<string, number>;
+  /** The last status the server itself reported, so a stopped server still says whether its install finished. */
+  lastBoot?: Boot; readyAt?: string;
+};
 type State = { servers: Record<string, ServerRecord>; [k: string]: any };
 
 export function localState(): State {
@@ -202,8 +208,50 @@ export function authHeader(token: string, user = 'gen') {
 export type ServerStatus = {
   exists: boolean; id?: string; region?: string; type?: string; state?: string; reason?: string | null; ip?: string | null; zone?: string;
   launched?: string; pricePerHour: number; url?: string | null; user?: string; flavor?: string; hasToken?: boolean; idleMinutes?: number | null;
-  key?: string | null; boot?: { stage: string; detail?: string; time?: number } | null; [k: string]: any;
+  key?: string | null; boot?: Boot | null;
+  /** Installing with no progress (status time unchanged) for STUCK_MINUTES: the server powers itself off at 20. */
+  stuck?: { minutes: number; detail: string } | null;
+  /** Stopped (or not answering) with an install that never finished: starting it resumes the install. */
+  unfinished?: { stage: string; detail: string; resumable: boolean } | null;
+  [k: string]: any;
 };
+
+/** An install whose status hasn't moved for this long is flagged stuck (bootstrap.sh moves it on every bit of progress). */
+export const STUCK_MINUTES = 10;
+const INSTALLING = new Set(['installing', 'downloading']);
+
+/** Is this install stuck? Status time is the server's clock (seconds). */
+export function stuckFor(boot: Boot | null | undefined, now = Date.now()) {
+  if (!boot || !INSTALLING.has(boot.stage) || !boot.time) return null;
+  const minutes = Math.floor((now - boot.time * 1000) / 60_000);
+  return minutes >= STUCK_MINUTES ? { minutes, detail: boot.detail ?? '' } : null;
+}
+
+/**
+ * The install a stopped server left unfinished, from the last status it reported (null when it finished or nothing is
+ * known). resumable: launched with the bootstrap.sh that resumes on boot (its status counts runs); older servers don't.
+ */
+export function unfinishedInstall(rec: { lastBoot?: Boot; readyAt?: string }) {
+  const b = rec.lastBoot;
+  if (!b || b.stage === 'ready') return null;
+  return { stage: b.stage, detail: b.lastFailure || b.detail || b.stage, resumable: typeof b.run === 'number' };
+}
+
+const warnedStuck = new Map<string, number>();
+
+/** Keeps the server's own report (stage changes only, so polling doesn't rewrite the state file), and logs a stuck install once. */
+function noteBoot(instanceId: string, boot: Boot) {
+  const rec = record(instanceId);
+  const prev = rec.lastBoot;
+  if (!prev || prev.stage !== boot.stage || prev.detail !== boot.detail || prev.run !== boot.run) {
+    saveRecord(instanceId, { lastBoot: { stage: boot.stage, detail: boot.detail, time: boot.time, run: boot.run, lastFailure: boot.lastFailure }, ...(boot.stage === 'ready' && !rec.readyAt ? { readyAt: new Date().toISOString() } : {}) });
+  }
+  const stuck = stuckFor(boot);
+  if (stuck && warnedStuck.get(instanceId) !== boot.time) {
+    warnedStuck.set(instanceId, boot.time!);
+    console.warn(`[fleet] ${instanceId} looks stuck installing: no progress for ${stuck.minutes} min (at: ${stuck.detail}). It powers itself off after 20; the next start resumes the install.`);
+  }
+}
 
 async function statusOf({ instance: i, region }: Found): Promise<ServerStatus> {
   const rec = record(i.InstanceId);
@@ -223,9 +271,12 @@ async function statusOf({ instance: i, region }: Found): Promise<ServerStatus> {
     } catch {
       out.boot = { stage: 'booting', detail: 'waiting for the server to answer (if this lasts, your IP may have changed: Refresh access)' };
     }
+    if (out.boot && typeof out.boot.time === 'number' && !['locked out', 'unreachable', 'booting'].includes(out.boot.stage)) noteBoot(i.InstanceId, out.boot);
   } else if (i.State?.Name === 'running' && !rec.token) {
     out.boot = { stage: 'locked out', detail: 'Hawkes Gen has no password for it (DATA_DIR/fleet/server.json): it was launched elsewhere. Adopt its state first.' };
   }
+  out.stuck = i.State?.Name === 'running' ? stuckFor(out.boot) : null;
+  out.unfinished = i.State?.Name !== 'running' || !out.boot || out.boot.stage === 'booting' ? unfinishedInstall(record(i.InstanceId)) : null;
   return out;
 }
 
@@ -606,6 +657,11 @@ async function requireServer(instanceId?: string) {
 
 export async function startServer(instanceId?: string) {
   const { instance: i, region } = await requireServer(instanceId);
+  const unfinished = unfinishedInstall(record(i.InstanceId));
+  if (unfinished && !unfinished.resumable && i.State?.Name === 'stopped') {
+    // Launched before installs resumed: started, it would sit half installed and never stop itself (2026-10-16).
+    throw fleetError(`${i.InstanceId} stopped before its install finished (at: ${unfinished.detail}), and it was launched before installs could resume: started, it would sit idle and paying. Terminate it and launch a new one, or rerun its install by hand.`, 'other');
+  }
   await refreshAccess();
   if (i.State?.Name === 'stopped') {
     try {
@@ -621,7 +677,10 @@ export async function startServer(instanceId?: string) {
   } else if (i.State?.Name !== 'running' && i.State?.Name !== 'pending') {
     throw fleetError(`The server is ${i.State?.Name}; wait for it to finish, then start it.`);
   }
-  return { id: i.InstanceId, region, was: i.State?.Name };
+  // A server stopped mid-install (or after its install failed) carries on from where it stopped: bootstrap.sh runs on every boot until ready.
+  const note = unfinished ? `resuming the install (it stopped at: ${unfinished.detail}); not ready for jobs until it finishes` : undefined;
+  if (note) console.log(`[fleet] starting ${i.InstanceId}: ${note}`);
+  return { id: i.InstanceId, region, was: i.State?.Name, ...(note ? { resuming: true, note } : {}) };
 }
 
 export async function stopServer(instanceId?: string) {

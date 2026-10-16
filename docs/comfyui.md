@@ -11,6 +11,27 @@ this before changing server flags, models or workflows.
   models, leaving about 50 GB free.
 - **First setup:** takes about 12 minutes in practice (the 90 GB of models
   download fast from Hugging Face). Later starts take a couple of minutes.
+- **Installs resume** (since 2026-10-16, when a server stopped mid-install sat
+  idle and paying after a restart). cloud-init runs `server/bootstrap.sh` once;
+  it copies itself to `/usr/local/sbin/gen-install.sh` and runs as
+  `gen-install.service` on every boot until ready. Each step leaves a marker in
+  `/var/lib/gen/done/` (apt, swap, comfy, venv, torch, requirements,
+  `node-<name>`, `model-<dir>-<file>`, `ready`); a pip step cut off part way is
+  redone with `--force-reinstall`, and downloads continue from their partial
+  files (aria2c `-c`). `status.json` has `run` (install runs, one per boot) and
+  `lastFailure`, and its `time` moves whenever the disk moves, so a still
+  `time` means no progress. To redo a step by hand: remove its marker, then
+  `sudo systemctl start gen-install`.
+- **Never stuck paying:** `gen-idle.sh` (every 5 minutes) powers an installing
+  server off after 20 minutes with no progress (status time and disk use
+  unchanged), after 90 minutes of install in one boot, or 30 minutes after the
+  install failed. The reason stays in `status.json` (`lastFailure`); the next
+  start resumes. Ready servers keep the plain idle rule. Hawkes Gen flags an
+  install with no progress for 10 minutes as **stuck** (Fleet tab, CLI, MCP,
+  the service log), and a stopped server whose install never finished as
+  "install unfinished": starting it says it resumes the install. Servers
+  launched before this can't resume, so Gen refuses to start one of those
+  that it saw stop mid-install.
 - **Capacity:** g6e machines are often unavailable. AWS's own error says to
   let it choose the zone, so `launchServer` tries without a zone first, then
   each zone, then each 48 GB type, then each region with quota.
