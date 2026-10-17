@@ -89,6 +89,21 @@ test('import brings folders in; again changes nothing; the library\'s pick stand
   put('DJWontRead/anims/_side.png', 'side C');
   await F.importFolders(gen, m, { adopt: true });
   assert.equal((await gen.current(e.id, 'side')).n, 3);
+
+  // A take the product's tools dropped (moved to an old path) is old in the library.
+  const jabTake = 'DJWontRead/anims/_takes/jab-7.mp4';
+  put(jabTake, 'jab take');
+  await F.importFolders(gen, { ...m, slots: [...m.slots, { slot: 'clip/{name}', takes: 'anims/_takes/{name}-*.mp4' }] });
+  fs.mkdirSync(path.join(root, 'DJWontRead/anims/_old'), { recursive: true });
+  fs.renameSync(path.join(root, jabTake), path.join(root, 'DJWontRead/anims/_old/jab-7.mp4'));
+  const retired = await F.importFolders(gen, m);
+  assert.deepEqual(retired.filter((r: any) => r.action !== 'same').map((r: any) => r.action), ['retired']);
+  assert.equal((await gen.slot(e.id, 'clip/jab')).versions.find((v: any) => v.file.sha256 && v.n === 3).status, 'old');
+
+  // A narrower pattern first claims its files: a discarded take (anims/_old/take-jab-9.mp4) is clip/jab, not clip/take.
+  put('DJWontRead/anims/_old/take-jab-9.mp4', 'jab dropped');
+  const takeFirst = { ...m, slots: [{ slot: 'clip/{name}', old: 'anims/_old/take-{name}-*.mp4' }, ...m.slots] };
+  assert.deepEqual(Object.keys(F.scanFolder(takeFirst, 'DJWontRead')).filter((k) => k.startsWith('clip/')), ['clip/jab']);
 });
 
 test('a flat folder (one file per entity), split between two mappings by name', async () => {
