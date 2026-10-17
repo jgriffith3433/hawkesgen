@@ -173,3 +173,26 @@ A product keeps its game files where its engine wants them; the library is where
 The code is `src/entities.ts` (the model, slot references, recipes, filing job outputs), the routes in `src/api.ts`,
 and the filing in `src/jobs.ts` (`fileJobOutputs` when a job ends, and for reused jobs). The tests are
 `test/library.test.ts` (the model) and `test/library-api.test.ts` (HTTP through the JS client, with a real local job).
+
+## A product's standard integration
+
+A product is wired when its checkout has these:
+
+- **A mapping:** `hawkes.library.json`, or `hawkes.content.json` with `library` (and, optionally, Studio's asset
+  recipes under `assets`).
+- **An MCP server:** `hawkesgen` in `.mcp.json`.
+- **A docs section:** "Generative AI: Hawkes Gen" in AGENTS.md, CLAUDE.md or README.md.
+- **Current SDK copies:** every copy is listed in `clients/js/sdk.json`.
+
+Hawkes Studio checks all of this per product: `GET /api/content/health`, `studio content`, MCP `studio_content`, or the
+Library tab's "Content health" table. The check also reports entities by kind, takes waiting, and unmade slots (a slot
+a kind's recipe can make that has no pick). With `folders=1` it adds what an import would change.
+
+`studio content wire <product> [--kind character --root Art]` (or MCP `studio_content_wire`, admin only) writes the
+missing pieces into a new product:
+- the MCP servers
+- the docs section
+- the mapping
+- an empty `presets/<id>.json`
+
+It never overwrites a file and never commits. Fill in the style from the product's own docs.

@@ -89,7 +89,7 @@ function jobVisible(c: Client, j: { project: string }) {
 const STATIC: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 // The SDK versions callers send. js and py share CLIENT_VERSION; Unity has its package version.
-const SDK_CURRENT = { js: Number(/CLIENT_VERSION = (\d+)/.exec(fs.readFileSync(path.join(paths.server, '..', 'clients', 'js', 'hawkesgen.mjs'), 'utf8'))?.[1] ?? 0), unity: JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'clients', 'unity', 'com.hawkes.gen', 'package.json'), 'utf8')).version as string };
+const SDK_CURRENT = { js: Number(/CLIENT_VERSION = (\d+)/.exec(fs.readFileSync(path.join(paths.server, '..', 'clients', 'js', 'hawkesgen.mjs'), 'utf8'))?.[1] ?? 0), ui: Number(/UI_VERSION = (\d+)/.exec(fs.readFileSync(path.join(paths.server, '..', 'clients', 'js', 'hawkesgen-ui.mjs'), 'utf8'))?.[1] ?? 0), unity: JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'clients', 'unity', 'com.hawkes.gen', 'package.json'), 'utf8')).version as string };
 const SDK_MIN = { js: 4 };
 const clientsSeen = new Map<string, { agent: string; version: string; from: string; behind: boolean; at: number }>();
 function noteClient(req: IncomingMessage) {
