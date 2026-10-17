@@ -11,6 +11,7 @@
 //   hawkesgen fleet image [status|build [--from <id> [--as-is]] [region=r]|prune [--dry-run]|cancel] [--yes]
 //   hawkesgen playtester [status|launch|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [--yes]
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
+//   hawkesgen storage [status|backfill|restore]      the library's files in S3
 //   hawkesgen usage [--days 30] [--by project]
 //   hawkesgen key <name> [--role user|admin|owner] [--projects a,b]
 //
@@ -230,6 +231,16 @@ async function main() {
       else if (arg) body.id = arg;
       if (action === 'launch') Object.assign(body, kv(rest.slice(1)));
       console.log(JSON.stringify(await gen.fleetAction(action, body), null, 2));
+      return;
+    }
+    case 'storage': {
+      const sub = rest[0] ?? 'status';
+      const r = sub === 'status' ? await gen.request('/storage') : await gen.request(`/storage/${sub}`, { method: 'POST', body: {} });
+      const gb = (b: number) => `${(b / 1073741824).toFixed(2)} GB`;
+      if (sub === 'restore') return console.log(`checked ${r.checked}, restored ${r.restored}, missing ${r.missing}`);
+      console.log(`bucket: ${r.bucket ?? 'none (settings.storage.bucket)'}`);
+      console.log(`${r.backedUp} of ${r.files} files backed up (${gb(r.backedUpBytes)} of ${gb(r.bytes)}), ${r.queued} uploading${r.failures ? `, ${r.failures} failed (${r.lastError})` : ''}`);
+      if (sub === 'backfill') console.log(`queued ${r.added} more`);
       return;
     }
     case 'usage': {

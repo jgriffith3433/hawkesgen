@@ -79,6 +79,18 @@ A finished job has `outputs: [{ asset, seed, mime, kind, title }]` and/or `resul
 Job inputs and chain steps take `slot:<project>/<slug>/<slot>[@n|@latest]` and, in an entity's own recipes, `slot:./<slot>`.
 `GET /v1/events` also streams `library` events.
 
+## Library storage (S3)
+
+| Route | What |
+|---|---|
+| `GET /v1/storage` | The bucket, how many library files are backed up (and bytes), uploads in flight, failures |
+| `POST /v1/storage/backfill` | (admin) Queue every file not backed up yet |
+| `POST /v1/storage/restore` | (admin) Bring back every library file missing on this disk |
+
+On when `settings.storage.bucket` (or `HAWKESGEN_LIBRARY_BUCKET`) is set: each new file is uploaded by content in the
+background, and a missing file comes back from S3 when a job or a download needs it. CLI: `hawkesgen storage
+[status|backfill|restore]`.
+
 ## Presets
 
 | Route | |

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { db, parseRow, J } from './db.ts';
 import { paths } from './config.ts';
 import { id, sha256, kindOf, mimeOf, extOf, stableStringify, GenError } from './util.ts';
+import { backup } from './storage.ts';
 
 export type Recipe = {
   tool: string;
@@ -60,6 +61,8 @@ export function putAsset(a: {
   };
   db.prepare(`INSERT INTO assets (id, job, client, project, tool, kind, mime, path, bytes, sha256, seed, recipe, recipe_key, labels, tags, title, starred, meta, created)
               VALUES (:id, :job, :client, :project, :tool, :kind, :mime, :path, :bytes, :sha256, :seed, :recipe, :recipe_key, :labels, :tags, :title, :starred, :meta, :created)`).run(row);
+  // Also to S3 (in the background), so the library survives this disk (src/storage.ts).
+  backup({ sha256: row.sha256, path: file, bytes: row.bytes });
   return getAsset(assetId)!;
 }
 

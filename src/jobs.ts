@@ -24,6 +24,7 @@ import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, type Client } from './auth.ts';
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
+import { ensureInputs } from './storage.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
@@ -458,6 +459,8 @@ class Queue {
     };
 
     try {
+      // Library files this job reads that aren't on this disk (a new server) come back from S3 first.
+      await ensureInputs(job.inputs);
       if (ep) ctx.comfy = await this.comfyRun(job, ep, step, abort.signal);
       await tool.run(ctx);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });

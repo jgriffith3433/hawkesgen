@@ -15,6 +15,7 @@ import { estimate } from './estimate.ts';
 import { submit, getJob, listJobs, cancel, rerun, clearFinished, events, summary, queue, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
 import * as lib from './entities.ts';
+import * as storage from './storage.ts';
 import { usageSummary } from './usage.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
@@ -279,6 +280,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const a = getAsset(m[2]);
       if (!a || !canProject(client, a.project)) throw new GenError('No such asset', { status: 404 });
       if (m[1] === 'files' && method === 'GET') {
+        // Not on this disk (a new server): from S3, the first time it's asked for.
+        if (!fs.existsSync(a.path) && !(await storage.ensureLocal(a))) throw new GenError(`${a.id}'s file is missing here and not in the library's S3 bucket`, { status: 404 });
         const name = `${a.project}-${a.tool}-${a.id}${path.extname(a.path)}`;
         return serveFile(req, res, a.path, a.mime, q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {});
       }
@@ -294,6 +297,19 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (!data.length) throw new GenError('Send the file as the request body');
       const ext = path.extname(String(req.headers['x-filename'] ?? '')).toLowerCase().replace(/[^.a-z0-9]/g, '');
       return send(res, 200, { blob: `blob:${putBlob(data, ext)}`, bytes: data.length });
+    }
+    // The library's files in S3 (src/storage.ts): what's backed up, back up the rest, bring missing files back.
+    if (route === '/v1/storage' && method === 'GET') return send(res, 200, storage.status());
+    if (route === '/v1/storage/backfill' && method === 'POST') {
+      requireRole(client, 'admin');
+      if (!storage.bucket()) throw new GenError('No bucket: set settings.storage.bucket (or HAWKESGEN_LIBRARY_BUCKET) first', { status: 409 });
+      const added = storage.backfill();
+      return send(res, 200, { ...storage.status(), added });
+    }
+    if (route === '/v1/storage/restore' && method === 'POST') {
+      requireRole(client, 'admin');
+      if (!storage.bucket()) throw new GenError('No bucket set', { status: 409 });
+      return send(res, 200, await storage.restoreAll());
     }
     if (route === '/v1/estimate' && method === 'POST') {
       // What a batch would cost before anyone pays for it (src/estimate.ts).

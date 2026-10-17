@@ -29,6 +29,7 @@ process.on('unhandledRejection', (e: any) => console.error(`[unhandled rejection
 server.listen(PORT, HOST, () => {
   console.log(`Hawkes Gen on http://${HOST}:${PORT}  (data: ${DATA_DIR})`);
   queue.start();
+  void import('./storage.ts').then((m) => m.resumeOnStart()).catch((e) => console.warn(`[storage] ${e.message}`));
   void import('./providers/comfy/image.ts').then((m) => m.resumeImageBuild()).catch((e) => console.warn(`[image] ${e.message}`));
   // On the cloud control server, make sure the GPU fleet and the build server let this machine in.
   if (process.env.HAWKES_AWS_ROLE) {

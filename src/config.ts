@@ -71,6 +71,8 @@ export type Settings = {
   localOpen: boolean;
   /** Dollars per unit for usage reports, where the provider doesn't say. */
   rates: { elevenlabsPer1kChars: number };
+  /** The library's files also go to this S3 bucket (src/storage.ts); null keeps them on this disk only. */
+  storage: { bucket: string | null };
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
@@ -78,6 +80,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   concurrency: { elevenlabs: 3, anthropic: 4, local: 2 },
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
+  storage: { bucket: null },
 };
 export const FLEET_MAX = 16;
 
@@ -98,6 +101,7 @@ function clean(s: Settings): Settings {
     },
     localOpen: s.localOpen !== false,
     rates: { elevenlabsPer1kChars: Number(s.rates?.elevenlabsPer1kChars ?? SETTINGS_DEFAULTS.rates.elevenlabsPer1kChars) || 0 },
+    storage: { bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null },
   };
 }
 
