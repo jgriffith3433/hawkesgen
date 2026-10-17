@@ -31,6 +31,7 @@ import {
 import { awsConfig, myIp, classify, lockKey, allowOnly as fleetAllowOnly } from '../comfy/fleet.ts';
 import { env, paths } from '../../config.ts';
 import { GenError } from '../../util.ts';
+import { parsePoll, pollLengthOf, type PollAnswer } from './poll.ts';
 
 /** Windows on-demand prices (US East), for estimates. */
 export const BUILDER_TYPES: Record<string, { vcpus: number; memory: number; price: number }> = {
@@ -824,18 +825,39 @@ export async function runBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks
   let tail = '';
   let licenseProblem = '';
   let lastStep = 'building';
+  let badPolls = 0;
+  const decoder = new TextDecoder();
   hooks.step('Unity is opening the project');
   for (;;) {
     if (hooks.signal?.aborted) {
       await ssh(`Get-Process Unity -ErrorAction SilentlyContinue | Stop-Process -Force; 'stopped'`).catch(() => {});
       throw fail('cancelled', 'cancelled');
     }
-    let p: any;
+    let raw: string;
     try {
-      p = JSON.parse((await ssh(`& C:\\hawkes\\bin\\poll.ps1 -Job ${jobId} -Offset ${offset}`, { timeoutMs: 60_000 })).trim());
+      raw = await ssh(`& C:\\hawkes\\bin\\poll.ps1 -Job ${jobId} -Offset ${offset}`, { timeoutMs: 60_000 });
     } catch (e: any) {
       hooks.log(`(couldn't reach the build server: ${e.message}; retrying)`);
       await new Promise((r) => setTimeout(r, 15_000));
+      continue;
+    }
+    let p: PollAnswer;
+    try {
+      p = parsePoll(raw, decoder);
+      badPolls = 0;
+    } catch (e: any) {
+      // The server answered but the answer can't be read: the same chunk would fail forever, so skip past it.
+      badPolls++;
+      const skipTo = pollLengthOf(raw);
+      if (badPolls >= 3 && skipTo !== null && skipTo > offset) {
+        hooks.log(`(couldn't read the build log at ${offset}-${skipTo}: ${e.message}; skipping that part of the log)`);
+        offset = skipTo;
+        badPolls = 0;
+        continue;
+      }
+      if (badPolls >= 10) throw fail(`The build server's progress can't be read (${e.message}), ${badPolls} times in a row. The build may still be running on the server (job ${jobId}).`);
+      hooks.log(`(couldn't read the build server's answer: ${e.message}; retrying)`);
+      await new Promise((r) => setTimeout(r, 8_000));
       continue;
     }
     if (p.text) {
