@@ -6,9 +6,9 @@
 //   ]
 //   candidates: 4, pick: "reads clearly at small size; matches the art direction"
 //
-// The first step runs `candidates` times (different seeds); Claude looks at them and picks one; the rest of the
-// chain runs on the winner. "$prev" is the previous step's (first) output, "$step1".. any earlier step's, "$input:name"
-// one of this job's inputs. Each step is a normal job (labelled with this one), queued through Hawkes Gen's own API,
+// The first step (or step `pickAt`) runs `candidates` times (different seeds); Claude looks at them and picks one; the
+// rest of the chain runs on the winner. "$prev" is the previous step's (first) output, "$step1".. any earlier step's,
+// "$step1:depth" its output titled "depth" (blender.render makes several), "$input:0" one of this job's inputs. Each step is a normal job (labelled with this one), queued through Hawkes Gen's own API,
 // so the queue, fleet and library work as usual.
 //
 // Takes are paid for once: every step asks Gen for a finished job of exactly its recipe first (`reuse`), so changing a
@@ -54,7 +54,8 @@ export const assetMakeTool: Tool = {
   inputs: { files: { kind: 'file', multiple: true, max: 16, description: 'Inputs the steps use as "$input:0", "$input:1"…' } },
   params: {
     steps: { type: 'json', required: true, description: 'The chain: [{ tool | preset, params, inputs, save }]' },
-    candidates: { type: 'integer', default: 1, min: 1, max: 8, description: 'How many versions of the first step to make and choose from' },
+    candidates: { type: 'integer', default: 1, min: 1, max: 8, description: 'How many versions of the pick step (the first, or pickAt) to make and choose from' },
+    pickAt: { type: 'integer', default: 1, min: 1, max: 20, description: 'Which step (1-based) makes the candidates; the steps before it run once', advanced: true },
     pick: { type: 'text', description: 'What makes a candidate the best (Claude chooses with this)' },
     style: { type: 'text', description: 'The art direction to judge against (default: the project\'s preset style line)', advanced: true },
     canon: { type: 'text', description: 'Canon the pick must respect: who the character is, what they wear and carry, what the world never shows', advanced: true },
@@ -76,9 +77,10 @@ export const assetMakeTool: Tool = {
     const resolve = (v: unknown): unknown => {
       if (Array.isArray(v)) return v.map(resolve);
       if (typeof v !== 'string') return v;
-      if (v === '$prev') return firstOf(made.length - 1);
-      const st = /^\$step(\d+)$/.exec(v);
-      if (st) return firstOf(Number(st[1]) - 1);
+      const pv = /^\$prev(?::(.+))?$/.exec(v);
+      if (pv) return outputOf(made.length - 1, pv[1]);
+      const st = /^\$step(\d+)(?::(.+))?$/.exec(v);
+      if (st) return outputOf(Number(st[1]) - 1, st[2]);
       const inp = /^\$input:(\d+)$/.exec(v);
       if (inp) {
         const f = inputFiles[Number(inp[1])];
@@ -87,9 +89,11 @@ export const assetMakeTool: Tool = {
       }
       return v;
     };
-    const firstOf = (i: number) => {
-      const o = made[i]?.outputs?.[0];
-      if (!o) throw new GenError(`step ${i + 1} has no output to pass on`);
+    /** A step's first output, or the one with this title ("$step1:depth" is blender.render's depth video). */
+    const outputOf = (i: number, title?: string) => {
+      const outs: any[] = made[i]?.outputs ?? [];
+      const o = title ? outs.find((x) => String(x.title ?? '').toLowerCase() === title.toLowerCase()) : outs[0];
+      if (!o) throw new GenError(title ? `step ${i + 1} has no output "${title}" (it made: ${outs.map((x) => x.title ?? '?').join(', ') || 'nothing'})` : `step ${i + 1} has no output to pass on`);
       return `asset:${o.asset}`;
     };
 
@@ -117,50 +121,60 @@ export const assetMakeTool: Tool = {
       return done;
     };
 
-    // Step 1, as candidates: all queued first, then waited on together.
+    // The pick step (the first unless pickAt says), as candidates: all queued first, then waited on together. The steps
+    // before it run once, so a Blender render can be styled three ways and the best styling goes on.
     const n = Math.max(1, ctx.params.candidates ?? 1);
-    const queued: any[] = [];
-    for (let c = 0; c < n; c++) queued.push(await submitStep(0, steps[0], n > 1 || ctx.params.seed ? { seed: base + c } : {}));
-    const firstJobs = await Promise.all(queued.map((j) => waitStep(0, j)));
-    let winner = firstJobs[0];
+    const pickAt = Math.min(steps.length, Math.max(1, Number(ctx.params.pickAt) || 1)) - 1;
     let picked: any = null;
-    if (n > 1) {
-      const outs = firstJobs.map((j) => j.outputs?.[0]).filter(Boolean);
-      const assets = outs.map((o) => getAsset(o.asset)).filter(Boolean) as any[];
-      // What Claude looks at per candidate: the image, or three frames of a video.
-      const views: string[][] = [];
-      for (const [k, a] of assets.entries()) {
-        if (a.kind === 'image') views.push([a.path]);
-        else if (a.kind === 'video') views.push(await videoFrames(a.path, ctx.tmp(`cand-${k}`), ctx.signal).catch(() => []));
-        else views.push([]);
+    for (let i = 0; i < steps.length; i++) {
+      if (i !== pickAt) {
+        const j = await waitStep(i, await submitStep(i, steps[i]));
+        made.push({ job: j.id, outputs: j.outputs });
+        chain.push({ step: i + 1, tool: j.tool, job: j.id });
+        continue;
       }
-      if (assets.length === outs.length && assets.length > 1 && views.every((v) => v.length === views[0].length && v.length)) {
-        ctx.step(`Claude is choosing between ${assets.length} candidates`);
-        const style = ctx.params.style ?? (await gen.presets(ctx.job.project).catch(() => null))?.style ?? '';
-        const refIdx: number[] = Array.isArray(ctx.params.refs) ? ctx.params.refs.map(Number) : [];
-        const refs = refIdx.map((i) => inputFiles[i]).filter((f) => f && /\.(png|jpe?g|webp|gif)$/i.test(f));
-        const per = views[0].length;
-        const layout = (refs.length ? `The first ${refs.length} image(s) are on-model references (what the subject must look like), not candidates. Then ` : 'The images are ') +
-          (per > 1 ? `the candidates, ${per} frames each (start, middle, end of its video), candidates 0 to ${views.length - 1} in order.` : `the candidates 0 to ${views.length - 1}, in order.`);
-        const r = await ask({
-          system: 'You are the art director for a small game studio. Choose the candidate that best fits the brief, the criteria, the art direction and the canon. Prefer clean, usable game assets: correct subject, on-model with the references, readable silhouette, no artifacts, no text unless asked. A candidate that breaks canon loses even if it looks better.',
-          prompt: `Brief (the first step's params): ${JSON.stringify(steps[0].params ?? {}).slice(0, 2000)}\n${steps[0].preset ? `Preset: ${steps[0].preset}\n` : ''}Criteria: ${ctx.params.pick ?? 'the best result for the brief'}\nArt direction: ${style || 'none given'}\n${ctx.params.canon ? `Canon: ${String(ctx.params.canon).slice(0, 3000)}\n` : ''}\n${layout}`,
-          images: [...refs, ...views.flat()], schema: PICK_SCHEMA, effort: 'medium', maxTokens: 4000,
-        }, ctx.signal);
-        ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: `${r.model} pick` });
-        picked = JSON.parse(r.text);
-        const best = Math.max(0, Math.min(firstJobs.length - 1, Number(picked.best) || 0));
-        winner = firstJobs[best];
-        ctx.log(`picked candidate ${best}: ${picked.reason}`);
+      const queued: any[] = [];
+      for (let c = 0; c < n; c++) queued.push(await submitStep(i, steps[i], n > 1 || ctx.params.seed ? { seed: base + c } : {}));
+      const pickJobs = await Promise.all(queued.map((j) => waitStep(i, j)));
+      let winner = pickJobs[0];
+      if (n > 1) {
+        const outs = pickJobs.map((j) => j.outputs?.[0]).filter(Boolean);
+        const assets = outs.map((o) => getAsset(o.asset)).filter(Boolean) as any[];
+        // What Claude looks at per candidate: the image, or three frames of a video.
+        const views: string[][] = [];
+        for (const [k, a] of assets.entries()) {
+          if (a.kind === 'image') views.push([a.path]);
+          else if (a.kind === 'video') views.push(await videoFrames(a.path, ctx.tmp(`cand-${k}`), ctx.signal).catch(() => []));
+          else views.push([]);
+        }
+        if (assets.length === outs.length && assets.length > 1 && views.every((v) => v.length === views[0].length && v.length)) {
+          ctx.step(`Claude is choosing between ${assets.length} candidates`);
+          const style = ctx.params.style ?? (await gen.presets(ctx.job.project).catch(() => null))?.style ?? '';
+          const refIdx: number[] = Array.isArray(ctx.params.refs) ? ctx.params.refs.map(Number) : [];
+          const refs = refIdx.map((r) => inputFiles[r]).filter((f) => f && /\.(png|jpe?g|webp|gif)$/i.test(f));
+          const per = views[0].length;
+          const layout = (refs.length ? `The first ${refs.length} image(s) are on-model references (what the subject must look like), not candidates. Then ` : 'The images are ') +
+            (per > 1 ? `the candidates, ${per} frames each (start, middle, end of its video), candidates 0 to ${views.length - 1} in order.` : `the candidates 0 to ${views.length - 1}, in order.`);
+          const r = await ask({
+            system: 'You are the art director for a small game studio. Choose the candidate that best fits the brief, the criteria, the art direction and the canon. Prefer clean, usable game assets: correct subject, on-model with the references, readable silhouette, no artifacts, no text unless asked. A candidate that breaks canon loses even if it looks better.',
+            prompt: `Brief (the picked step's params): ${JSON.stringify(steps[i].params ?? {}).slice(0, 2000)}
+${steps[i].preset ? `Preset: ${steps[i].preset}
+` : ''}Criteria: ${ctx.params.pick ?? 'the best result for the brief'}
+Art direction: ${style || 'none given'}
+${ctx.params.canon ? `Canon: ${String(ctx.params.canon).slice(0, 3000)}
+` : ''}
+${layout}`,
+            images: [...refs, ...views.flat()], schema: PICK_SCHEMA, effort: 'medium', maxTokens: 4000,
+          }, ctx.signal);
+          ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: `${r.model} pick` });
+          picked = JSON.parse(r.text);
+          const best = Math.max(0, Math.min(pickJobs.length - 1, Number(picked.best) || 0));
+          winner = pickJobs[best];
+          ctx.log(`picked candidate ${best}: ${picked.reason}`);
+        }
       }
-    }
-    made.push({ job: winner.id, outputs: winner.outputs });
-    chain.push({ step: 1, tool: winner.tool, job: winner.id, candidates: firstJobs.map((j: any) => j.id), picked });
-
-    for (let i = 1; i < steps.length; i++) {
-      const j = await waitStep(i, await submitStep(i, steps[i]));
-      made.push({ job: j.id, outputs: j.outputs });
-      chain.push({ step: i + 1, tool: j.tool, job: j.id });
+      made.push({ job: winner.id, outputs: winner.outputs });
+      chain.push({ step: i + 1, tool: winner.tool, job: winner.id, candidates: pickJobs.map((j: any) => j.id), picked });
     }
 
     // Saved steps become this job's outputs (the last step is saved when none says so).

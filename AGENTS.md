@@ -9,6 +9,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/workflows.md` covers ComfyUI workflows as tools.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.
+- `docs/blender.md` covers Blender shots to video (`blender.render`, `video.control`).
 - `DESIGN.md` has J's decisions and the roadmap.
 - `CLAUDE.md` just imports this file; edit this one.
 
@@ -50,11 +51,12 @@ each job).
 | `src/jobs.ts` | The queue: lanes per provider, GPU scheduling by model family, model installs, resume after restart, job keys, presets applied on submit |
 | `src/tools/` | Tools written in code. `types.ts` (what a tool is), `comfy.ts` (image.edit, image.paint, video.i2v, video.animate, comfy.graph), `api.ts` (ElevenLabs voice, sfx and voice design; Claude), `local.ts` (this PC), `index.ts` (the list, plus every workflow folder) |
 | `src/workflows/` | `convert.ts` (ComfyUI UI → API format, and checks), `registry.ts` (workflow folders, draft manifests), `tool.ts` (a folder as a Tool), `catalog.ts` (the template library cached from a server; import) |
-| `workflows/` | **The workflow tools** (manifest + graph + source each): image.generate, image.angles, image.upscale, image.panorama, image.depth, image.normals, image.albedo, image.remove-background, image.segment, video.t2v, video.upscale, video.interpolate, mesh.from-image, mesh.textured, audio.music |
+| `workflows/` | **The workflow tools** (manifest + graph + source each): image.generate, image.angles, image.upscale, image.panorama, image.depth, image.normals, image.albedo, image.remove-background, image.segment, video.t2v, video.control, video.control-wan, video.upscale, video.interpolate, mesh.from-image, mesh.textured, audio.music |
 | `presets/<project>.json` | Each project's art direction: style line, negative, named presets (tool + prompt template + params) |
 | `src/presets.ts` | Loading and applying presets |
 | `src/providers/comfy/` | `fleet.ts` (AWS launch/start/stop/adopt, SSH, model install/prune), `client.ts` (ComfyUI HTTP), `graphs.ts` (the code-built graphs), `retry.ts` (keep trying) |
 | `src/providers/builder/builder.ts` | The Unity build server: launch (Windows + Unity via `server/builder/bootstrap.ps1`), start/stop, SSH, incremental sync of `C:\Projects` folders, detached builds (`server/builder/build.ps1`), pulling the build back |
+| `src/tools/blender.ts`, `src/providers/blender/` | `blender.render`: Blender 5.0 on a GPU server (installed on first use; `install.ts` is shared with `bootstrap.sh`), a job workspace in `/var/tmp/hawkes-blender`, a detached render followed over SSH. The scripts are `post/blender/hawkes_blender.py` (inside Blender) and `post/pose_draw.py` |
 | `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
 | `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |
 | `src/providers/elevenlabs.ts`, `anthropic.ts` | API clients |
@@ -156,6 +158,11 @@ returns a verdict, scores and findings.
 - Installs resume on every boot until ready, and a stuck or failed install powers itself off (`docs/comfyui.md`,
   "Installs resume"; dry run in `test/bootstrap.test.ts`). Keep each `server/bootstrap.sh` step idempotent behind its
   `begin`/`mark` marker.
+- New servers launch from the **fleet image** (an AMI with ComfyUI and the core models, `src/providers/comfy/image.ts`,
+  `server/firstboot.sh`, `server/image-prep.sh`) and are ready in minutes; without a matching image they install from
+  bootstrap.sh. Launched from the image they are **disposable**: idle, they are terminated, not stopped. When
+  models.json or the ComfyUI tag changes, build a new image (`hawkesgen fleet image build`, J's OK: it costs a server
+  hour and storage). `docs/comfyui.md`, "The fleet image".
 - Servers adopted from DoD keep `flavor: dod` (auth user `dod`, `/dod/status.json`); new ones are
   `flavor: gen`. **Never terminate a server without J asking.**
 

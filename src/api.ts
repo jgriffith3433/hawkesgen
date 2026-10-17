@@ -17,6 +17,7 @@ import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, findByRecipe, 
 import { usageSummary } from './usage.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
+import * as fleetImage from './providers/comfy/image.ts';
 import * as builder from './providers/builder/builder.ts';
 import * as playtester from './providers/playtester/playtester.ts';
 import { Retry } from './providers/comfy/retry.ts';
@@ -291,6 +292,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       queue.pump();
       return send(res, 200, { ok: true, settings: s.fleet });
     }
+    // The machine image new servers launch from (src/providers/comfy/image.ts).
+    if (route === '/v1/fleet/image' && method === 'GET') return send(res, 200, await fleetImage.imageStatus());
+    m = /^\/v1\/fleet\/image\/(build|prune|cancel)$/.exec(route);
+    if (m && method === 'POST') {
+      const body = await readJson(req);
+      // Building launches or starts a server and stores an image; pruning deletes images. Both are the owner's, confirmed.
+      requireRole(client, m[1] === 'cancel' ? 'admin' : 'owner');
+      if (m[1] === 'cancel') return send(res, 200, { ok: true, build: fleetImage.cancelImageBuild() });
+      if (m[1] === 'prune' && body.dryRun === true) return send(res, 200, { ok: true, dryRun: true, removed: await fleetImage.pruneImages({ dryRun: true }) });
+      if (body.confirm !== true) throw new GenError(`image ${m[1]} needs { "confirm": true }`);
+      if (m[1] === 'prune') return send(res, 200, { ok: true, removed: await fleetImage.pruneImages() });
+      const from = typeof body.from === 'string' && /^i-[0-9a-f]+$/.test(body.from) ? body.from : undefined;
+      return send(res, 200, { ok: true, build: await fleetImage.startImageBuild({ from, region: typeof body.region === 'string' ? body.region : undefined, asIs: body.asIs === true }) });
+    }
     if (route === '/v1/fleet/regions' && method === 'GET') return send(res, 200, { regions: await fleet.regionsInfo({ force: q('refresh') === '1' }) });
     if (route === '/v1/fleet/capacity' && method === 'GET') return send(res, 200, { scores: await fleet.capacityScores(Object.keys(fleet.TYPES)) });
     if (route === '/v1/fleet/health' && method === 'GET') return send(res, 200, await fleet.serverHealth(q('id')));
@@ -366,7 +381,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       }
       try {
         if (act === 'launch') return send(res, 200, { ok: true, ...(await fleet.launchServer(opts)) });
-        if (act === 'start') return send(res, 200, { ok: true, ...(await fleet.startServer(instanceId)) });
+        if (act === 'start') {
+          // Nothing to start (disposable servers are terminated when idle): with the image, launch one instead (ready in minutes).
+          const startable = (await fleet.listServers()).some((f) => ['stopped', 'running', 'pending'].includes(f.instance.State?.Name) && !fleet.serverRecord(f.instance.InstanceId).imageSource);
+          if (!instanceId && !startable && (await fleet.imageAvailable())) return send(res, 200, { ok: true, launched: true, ...(await fleet.launchServer(opts)) });
+          return send(res, 200, { ok: true, ...(await fleet.startServer(instanceId)) });
+        }
         if (act === 'stop') return send(res, 200, { ok: true, ...(await fleet.stopServer(instanceId)) });
         if (act === 'terminate') return send(res, 200, { ok: true, ...(await fleet.terminateServer(instanceId)) });
         if (act === 'access') return send(res, 200, { ok: true, ...(await fleet.refreshAccess()) });
@@ -400,12 +420,24 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const up = all.filter((st) => ['running', 'pending'].includes(st.state!)).length;
           const started: string[] = [];
           const failed: any[] = [];
-          for (const st of all.filter((x) => x.state === 'stopped').slice(0, Math.max(0, count - up))) {
+          for (const st of all.filter((x) => x.state === 'stopped' && !x.imageSource && !x.purpose).slice(0, Math.max(0, count - up))) {
             try {
               await fleet.startServer(st.id);
               started.push(st.id!);
             } catch (e: any) {
               failed.push({ id: st.id, region: st.region, message: e.message, kind: e.kind ?? 'other' });
+            }
+          }
+          // Disposable servers aren't kept stopped: with the image, the rest are launched from it (ready in minutes).
+          if (up + started.length < count && (await fleet.imageAvailable())) {
+            for (let k = up + started.length; k < count; k++) {
+              try {
+                const r = await fleet.launchServer(opts);
+                started.push(r.id);
+              } catch (e: any) {
+                failed.push({ region: e.attempts?.at(-1)?.region, message: e.message, kind: e.kind ?? 'other' });
+                break;
+              }
             }
           }
           return send(res, 200, { ok: true, started, failed, running: up + started.length, short: Math.max(0, count - up - started.length) });

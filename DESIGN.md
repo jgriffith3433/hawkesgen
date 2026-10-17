@@ -89,6 +89,17 @@ J asked to playtest every product every day and talk through the results in chat
 - **More ComfyUI workflows:** layers, relight, pose (image and video), ControlNet render-to-art, multi-view to 3D,
   SeedVR2 restore, Wan Animate 2, and InfiniteTalk lip-sync.
 
+### Added on 2026-10-17: Blender to video
+
+J wants projects to make video from Blender scenes through the API and MCP. `blender.render` renders a shot on a GPU
+server (Blender 5.0.1, Cycles on the GPU, installed on first use) from a .blend or from a shot built out of the
+projects' own characters (GLB/FBX with their animations, Mixamo clips retargeted by bone name), props, a sky and a
+camera move. It returns the render plus control videos: depth, OpenPose skeletons from the rigs, edges, normals and a
+character mask. `video.control` (LTX-2.3 IC-LoRA Union, with sound) and `video.control-wan` (Wan 2.2 Fun Control)
+repaint the shot in any look from a styled first frame. `asset.make` can pick candidates at any step (`pickAt`) and
+pass on outputs by title (`$step1:depth`), so the chain is one recipe. `docs/blender.md`. Verified on this PC
+(the Blender script and every pass); the GPU servers and the two video models still need a live run.
+
 ## Roadmap
 
 1. ~~**Sick Of It audio:** move the C# ElevenLabs sound generator to `audio.sfx` through `com.hawkes.gen`.~~ Done

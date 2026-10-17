@@ -24,7 +24,7 @@ import { putAsset, getAsset, blobPath, findAllByRecipe, recipeKey, type Recipe }
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, type Client } from './auth.ts';
-import { comfyEndpoints, fleetStatus, startServer, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
+import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
@@ -353,7 +353,11 @@ class Queue {
     save(j, ['detail']);
   }
 
-  /** With auto start on: starts stopped servers (never launches) until there is one per job. At most every two minutes. */
+  /**
+   * With auto start on: starts stopped servers until there is one per job, and once the fleet image exists launches
+   * from it (one per round) when there's none left to start: disposable servers aren't kept stopped. Without the image it
+   * never launches (that's a 30-45 minute install). At most every two minutes.
+   */
   async autoStart(want: number) {
     const fleet = loadSettings().fleet;
     if (!fleet.auto || Date.now() - this.lastAutoStart < 120_000) return;
@@ -361,9 +365,14 @@ class Queue {
     try {
       const all = await fleetStatus();
       const up = all.filter((st) => ['running', 'pending'].includes(st.state!)).length;
-      const stopped = all.filter((st) => st.state === 'stopped').slice(0, Math.max(0, Math.min(fleet.servers, want) - up));
+      const short = Math.max(0, Math.min(fleet.servers, want) - up);
+      const stopped = all.filter((st) => st.state === 'stopped' && !st.imageSource && !st.purpose).slice(0, short);
       for (const st of stopped) await startServer(st.id).catch((e) => console.warn(`[queue] couldn't start ${st.id}: ${e.message}`));
       if (stopped.length) console.log(`[queue] started ${stopped.length} server(s) for waiting jobs`);
+      if (stopped.length < short && all.length < fleet.servers && (await imageAvailable())) {
+        const r = await launchServer({ idleMinutes: fleet.idleMinutes, type: 'auto' }).catch((e) => console.warn(`[queue] couldn't launch from the image: ${e.message}`));
+        if (r) console.log(`[queue] launched ${r.id} from the image for waiting jobs`);
+      }
     } catch (e: any) {
       console.warn(`[queue] auto start: ${e.message}`);
     }
@@ -497,6 +506,15 @@ class Queue {
         }
       },
       download: (file: any) => comfy.download(file),
+      timed: async <T>(work: () => Promise<T>) => {
+        const t = Date.now();
+        try {
+          return await work();
+        } finally {
+          job.gpu_seconds = Math.round((job.gpu_seconds + (Date.now() - t) / 1000) * 10) / 10;
+          save(job, ['gpu_seconds']);
+        }
+      },
       ensureModels: async (models: ModelRef[]) => {
         const installed = await installModels(ep.id, models, step);
         markModelsUsed(ep.id, models);

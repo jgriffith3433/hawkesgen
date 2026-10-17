@@ -1,0 +1,220 @@
+{
+  "id": "video.control",
+  "version": 1,
+  "title": "Video from a control video (LTX-2.3 IC-LoRA)",
+  "description": "Repaints a control video in a new look, following its motion and layout exactly, with sound: LTX-2.3 22B with the Union IC-LoRA (depth, pose skeletons or edges). Made for blender.render: give its depth (or pose, or edges) video as control and a styled first frame (its first frame through image.edit) as image. Plain footage works too with estimateDepth on (MoGe reads the depth). Describe the motion and the sound, not the picture. 1280x704 at 24 fps by default; the control video sets the length (8n + 1 frames). For Wan instead, video.control-wan.",
+  "family": "ltx-2.3",
+  "output": "video",
+  "tags": [
+    "video",
+    "video-to-video",
+    "control",
+    "blender"
+  ],
+  "seconds": 150,
+  "models": [
+    {
+      "file": "ltx-2.3-22b-distilled-fp8.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-distilled-fp8.safetensors"
+    },
+    {
+      "file": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors"
+    },
+    {
+      "file": "ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+      "dir": "loras",
+      "url": "https://huggingface.co/Lightricks/LTX-2.3-22b-IC-LoRA-Union-Control/resolve/main/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors"
+    },
+    {
+      "file": "moge_2_vitl_normal_fp16.safetensors",
+      "dir": "geometry_estimation",
+      "url": "https://huggingface.co/Comfy-Org/MoGe/resolve/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "control": {
+      "kind": "video",
+      "required": true,
+      "description": "The control video: depth, pose or edges (blender.render), or plain footage with estimateDepth",
+      "targets": [
+        [
+          "199",
+          "file"
+        ]
+      ]
+    },
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The first frame in the finished look (sets style, characters and light)",
+      "targets": [
+        [
+          "200",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "What happens and what it sounds like (dialogue in quotes)",
+      "example": "A man in a dark suit walks through a rain-soaked neon street at night, steady tracking shot, footsteps on wet asphalt, distant traffic.",
+      "targets": [
+        [
+          "129:128",
+          "text"
+        ]
+      ]
+    },
+    "negative": {
+      "type": "text",
+      "default": "blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, unreadable text on shirt or hat, incorrect lettering on cap (“PNTR”), incorrect t-shirt slogan (“JUST DO IT”), missing microphone, misplaced microphone, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, smiling, laughing, exaggerated sadness, wrong gaze direction, eyes looking at camera, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, missing sniff sounds, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, missing door or shelves, missing shallow depth of field, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts.",
+      "advanced": true,
+      "targets": [
+        [
+          "129:112",
+          "text"
+        ]
+      ]
+    },
+    "width": {
+      "type": "integer",
+      "min": 256,
+      "max": 1920,
+      "default": 1280,
+      "description": "Multiple of 32; match the control video",
+      "targets": [
+        [
+          "129:113",
+          "value"
+        ]
+      ]
+    },
+    "height": {
+      "type": "integer",
+      "min": 256,
+      "max": 1920,
+      "default": 704,
+      "targets": [
+        [
+          "129:98",
+          "value"
+        ]
+      ]
+    },
+    "fps": {
+      "type": "integer",
+      "min": 8,
+      "max": 50,
+      "default": 24,
+      "description": "Match the control video",
+      "targets": [
+        [
+          "129:114",
+          "value"
+        ]
+      ]
+    },
+    "seconds": {
+      "type": "number",
+      "min": 0.5,
+      "max": 20,
+      "default": 10,
+      "description": "At most this much of the control video",
+      "targets": [
+        [
+          "692",
+          "duration"
+        ]
+      ]
+    },
+    "strength": {
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "default": 1,
+      "description": "How strictly it follows the control video",
+      "targets": [
+        [
+          "129:115",
+          "strength"
+        ]
+      ]
+    },
+    "imageStrength": {
+      "type": "number",
+      "min": 0,
+      "max": 1,
+      "default": 1,
+      "advanced": true,
+      "description": "How strictly the first frame matches the image",
+      "targets": [
+        [
+          "129:198",
+          "strength"
+        ]
+      ]
+    },
+    "estimateDepth": {
+      "type": "boolean",
+      "default": false,
+      "description": "The control is plain footage: read its depth with MoGe first",
+      "targets": [
+        [
+          "hb:guide",
+          "switch"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "targets": [
+        [
+          "129:704",
+          "seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 1,
+      "max": 50,
+      "default": 8,
+      "advanced": true,
+      "targets": [
+        [
+          "129:704",
+          "steps"
+        ]
+      ]
+    },
+    "cfg": {
+      "type": "number",
+      "min": 0,
+      "max": 10,
+      "default": 1,
+      "advanced": true,
+      "targets": [
+        [
+          "129:704",
+          "cfg"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "68"
+  ],
+  "source": {
+    "template": "video_ltx2_3_ic_lora",
+    "size": 40909563494,
+    "changes": "prompt enhancer removed; the control video feeds the guide directly, MoGe depth behind estimateDepth"
+  }
+}

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { paths, loadSettings } from '../../config.ts';
 import { GenError } from '../../util.ts';
-import { fleetStatus, launchServer, startServer } from './fleet.ts';
+import { fleetStatus, launchServer, startServer, imageAvailable } from './fleet.ts';
 
 const RETRYABLE = new Set(['capacity', 'quota']);
 const FILE = path.join(paths.fleet, 'retry.json');
@@ -78,7 +78,7 @@ export class Retry {
     if (up) return { id: up.id, region: up.region };
     const attempts: any[] = [];
     let last: any = null;
-    for (const st of all.filter((x) => x.state === 'stopped')) {
+    for (const st of all.filter((x) => x.state === 'stopped' && !x.imageSource && !x.purpose)) {
       try {
         return await startServer(st.id);
       } catch (e: any) {
@@ -88,7 +88,9 @@ export class Retry {
       }
     }
     s.misses = (s.misses ?? 0) + 1;
-    if (s.opts.fallbackLaunch && (s.misses >= 2 || !all.length)) {
+    // With the image, launching is as quick as starting (and disposable servers aren't kept stopped), so do it straight away.
+    const fromImage = await imageAvailable();
+    if ((s.opts.fallbackLaunch && (s.misses >= 2 || !all.length)) || fromImage) {
       const r = await launchServer({ idleMinutes: s.opts.idleMinutes ?? loadSettings().fleet.idleMinutes, region: 'auto', type: 'auto' }).catch((e) => {
         throw new GenError(`No stopped server could start, and a new one couldn't launch either: ${e.message}`, { status: 409, kind: e.kind ?? 'capacity', attempts: [...attempts, ...(e.attempts ?? [])] });
       });

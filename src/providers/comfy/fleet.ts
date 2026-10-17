@@ -2,9 +2,13 @@
 // ComfyUI. Ported from Dose Of Destruction's tools/gpu/aws.mjs, which built
 // and tuned it (read docs/comfyui.md before changing flags or models).
 //
-// A server is launched once: it installs itself from server/bootstrap.sh and
-// server/models.json, then powers itself off when idle. After that it is
-// started and stopped. ComfyUI listens on 127.0.0.1 only; nginx in front of it
+// A server is launched from the fleet's machine image when one matches
+// server/models.json (image.ts builds it): server/firstboot.sh makes it its own
+// and it is ready in minutes. Launched that way it is disposable by default:
+// idle, it powers itself off and AWS terminates it, so no disk is left paying.
+// Without a matching image it installs itself from server/bootstrap.sh (30-45
+// minutes), then powers itself off when idle and is started and stopped after
+// that. ComfyUI listens on 127.0.0.1 only; nginx in front of it
 // (port 8189) needs the server's token (HTTP basic auth), and the security
 // group lets in only this machine's IP.
 //
@@ -28,11 +32,12 @@ import {
   EC2Client, DescribeImagesCommand, DescribeInstancesCommand, DescribeInstanceTypeOfferingsCommand, DescribeSubnetsCommand,
   DescribeVpcsCommand, DescribeSecurityGroupsCommand, CreateSecurityGroupCommand, AuthorizeSecurityGroupIngressCommand,
   RevokeSecurityGroupIngressCommand, DescribeKeyPairsCommand, CreateKeyPairCommand, RunInstancesCommand, StartInstancesCommand,
-  StopInstancesCommand, TerminateInstancesCommand, GetSpotPlacementScoresCommand,
+  StopInstancesCommand, TerminateInstancesCommand, GetSpotPlacementScoresCommand, type Image,
 } from '@aws-sdk/client-ec2';
 import { ServiceQuotasClient, GetServiceQuotaCommand, ListRequestedServiceQuotaChangeHistoryByQuotaCommand, RequestServiceQuotaIncreaseCommand } from '@aws-sdk/client-service-quotas';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { env, paths, loadSettings } from '../../config.ts';
+import { installScript as blenderInstall } from '../blender/install.ts';
 import { GenError } from '../../util.ts';
 
 /**
@@ -64,6 +69,7 @@ const PROFILES: Record<'gen' | 'dod', Profile> = {
   gen: { flavor: 'gen', project: 'hawkes-gen', name: 'hawkesgen-comfy', sg: 'hawkesgen-comfy', keyBase: 'hawkesgen-comfy', user: 'gen', status: '/gen/status.json', idleScript: '/usr/local/bin/gen-idle.sh', bootLog: '/var/log/gen-bootstrap.log' },
   dod: { flavor: 'dod', project: 'dose-of-destruction', name: 'dod-comfy', sg: 'dod-comfy', keyBase: 'dod-comfy', user: 'dod', status: '/dod/status.json', idleScript: '/usr/local/bin/dod-idle.sh', bootLog: '/var/log/dod-bootstrap.log' },
 };
+export const PROFILES_GEN = PROFILES.gen;
 const profileOf = (instance: any): Profile => (tagOf(instance, 'Name') === PROFILES.dod.name ? PROFILES.dod : PROFILES.gen);
 const tagOf = (instance: any, key: string) => (instance?.Tags ?? []).find((t: any) => t.Key === key)?.Value;
 
@@ -90,7 +96,7 @@ export function classify(e: any): string {
 const fleetError = (message: string, kind = 'other', attempts: unknown[] = []) => new GenError(message, { status: 409, kind, attempts });
 
 const clients = new Map<string, EC2Client>();
-function ec2(region: string) {
+export function ec2(region: string) {
   if (!clients.has(region)) clients.set(region, new EC2Client({ ...awsConfig(), region }));
   return clients.get(region)!;
 }
@@ -99,11 +105,19 @@ const quotas = (region: string) => new ServiceQuotasClient({ ...awsConfig(), reg
 // ------------------------------------------------------------ local state
 
 /** What a server's /gen/status.json says (bootstrap.sh). run counts install runs (one per boot until ready). */
-export type Boot = { stage: string; detail?: string; time?: number; run?: number; started?: number; lastFailure?: string };
+export type Boot = { stage: string; detail?: string; time?: number; run?: number; started?: number; lastFailure?: string; image?: string; warm?: string };
 type ServerRecord = {
   region?: string; type?: string; token?: string; idleMinutes?: number; keyName?: string; zone?: string; launchedAt?: string; modelsUsed?: Record<string, number>;
   /** The last status the server itself reported, so a stopped server still says whether its install finished. */
   lastBoot?: Boot; readyAt?: string;
+  /** Launched from this machine image (firstboot.sh) instead of installing. */
+  image?: string;
+  /** Launched to be thrown away: powering itself off terminates it, and Gen's stop terminates it. */
+  disposable?: boolean;
+  /** 'image-build': launched to become an image (image.ts); never given jobs. */
+  purpose?: string;
+  /** Cleaned for imaging (image-prep.sh): its password and keys are gone, so it can't serve jobs again. */
+  imageSource?: string;
 };
 type State = { servers: Record<string, ServerRecord>; [k: string]: any };
 
@@ -131,6 +145,8 @@ function saveRecord(instanceId: string, patch: ServerRecord) {
   const st = localState();
   saveState({ servers: { ...st.servers, [instanceId]: { ...(st.servers[instanceId] ?? {}), ...patch } } });
 }
+export const serverRecord = record;
+export const saveServerRecord = saveRecord;
 
 /**
  * Copies another project's fleet state (tokens and SSH keys) in, so Hawkes
@@ -187,10 +203,25 @@ let listCache: { at: number; value: Found[] | null } = { at: 0, value: null };
 export async function listServers({ force = false } = {}): Promise<Found[]> {
   if (!force && listCache.value && Date.now() - listCache.at < 5000) return listCache.value;
   awsConfig();
-  const all = (await Promise.all(REGIONS.map((r) => serversIn(r).catch(() => [] as Found[])))).flat();
+  let complete = true;
+  const all = (await Promise.all(REGIONS.map((r) => serversIn(r).catch(() => { complete = false; return [] as Found[]; })))).flat();
   const value = all.sort((a, b) => (b.instance.LaunchTime?.getTime() ?? 0) - (a.instance.LaunchTime?.getTime() ?? 0));
   listCache = { at: Date.now(), value };
+  if (complete) forgetGone(value);
   return value;
+}
+
+/** Drops the saved state of servers AWS no longer lists (disposable ones terminate themselves). Only when every region answered. */
+function forgetGone(found: Found[]) {
+  const st = localState();
+  const live = new Set(found.map((f) => f.instance.InstanceId));
+  const hour = Date.now() - 60 * 60 * 1000;
+  const gone = Object.keys(st.servers).filter((id) => !live.has(id) && Date.parse(st.servers[id].launchedAt ?? '') < hour);
+  if (!gone.length) return;
+  const servers = { ...st.servers };
+  for (const id of gone) delete servers[id];
+  saveState({ servers });
+  console.log(`[fleet] forgot ${gone.length} server(s) that no longer exist: ${gone.join(', ')}`);
 }
 
 export async function findServer(instanceId?: string) {
@@ -209,6 +240,8 @@ export type ServerStatus = {
   exists: boolean; id?: string; region?: string; type?: string; state?: string; reason?: string | null; ip?: string | null; zone?: string;
   launched?: string; pricePerHour: number; url?: string | null; user?: string; flavor?: string; hasToken?: boolean; idleMinutes?: number | null;
   key?: string | null; boot?: Boot | null;
+  /** Launched from this machine image; disposable: idle or stopped, it is terminated. */
+  image?: string | null; disposable?: boolean; purpose?: string | null; imageSource?: string | null;
   /** Installing with no progress (status time unchanged) for STUCK_MINUTES: the server powers itself off at 20. */
   stuck?: { minutes: number; detail: string } | null;
   /** Stopped (or not answering) with an install that never finished: starting it resumes the install. */
@@ -263,8 +296,12 @@ async function statusOf({ instance: i, region }: Found): Promise<ServerStatus> {
     zone: i.Placement?.AvailabilityZone, launched: i.LaunchTime?.toISOString(), pricePerHour: priceIn(i.InstanceType, region),
     url: ip ? `http://${ip}:${PORT}` : null, user: prof.user, flavor: prof.flavor, hasToken: Boolean(rec.token), idleMinutes: rec.idleMinutes ?? null,
     key: keyName ? path.join(paths.fleet, `${keyName}.pem`) : null, boot: null,
+    image: tagOf(i, 'Image') ?? rec.image ?? null, disposable: tagOf(i, 'Disposable') === 'yes' || rec.disposable === true,
+    purpose: tagOf(i, 'Purpose') ?? rec.purpose ?? null, imageSource: rec.imageSource ?? null,
   };
-  if (i.State?.Name === 'running' && ip && rec.token) {
+  if (rec.imageSource) {
+    out.boot = { stage: 'image source', detail: `cleaned for the image ${rec.imageSource}: it can't take jobs any more (terminate it once J agrees)` };
+  } else if (i.State?.Name === 'running' && ip && rec.token) {
     try {
       const r = await fetch(`http://${ip}:${PORT}${prof.status}`, { headers: authHeader(rec.token, prof.user), signal: AbortSignal.timeout(4000) });
       out.boot = r.ok ? await r.json() : r.status === 401 ? { stage: 'locked out', detail: 'the server rejected the saved password' } : { stage: 'unreachable', detail: `HTTP ${r.status}` };
@@ -276,7 +313,7 @@ async function statusOf({ instance: i, region }: Found): Promise<ServerStatus> {
     out.boot = { stage: 'locked out', detail: 'Hawkes Gen has no password for it (DATA_DIR/fleet/server.json): it was launched elsewhere. Adopt its state first.' };
   }
   out.stuck = i.State?.Name === 'running' ? stuckFor(out.boot) : null;
-  out.unfinished = i.State?.Name !== 'running' || !out.boot || out.boot.stage === 'booting' ? unfinishedInstall(record(i.InstanceId)) : null;
+  out.unfinished = !rec.imageSource && (i.State?.Name !== 'running' || !out.boot || out.boot.stage === 'booting') ? unfinishedInstall(record(i.InstanceId)) : null;
   return out;
 }
 
@@ -290,7 +327,7 @@ export async function serverStatus(instanceId?: string): Promise<ServerStatus> {
 export async function fleetStatus({ syncIdle = true } = {}): Promise<ServerStatus[]> {
   const list = await Promise.all((await listServers()).map(statusOf));
   const idle = loadSettings().fleet.idleMinutes;
-  if (syncIdle) for (const st of list) if (st.state === 'running' && st.boot?.stage === 'ready' && st.idleMinutes !== idle) void setIdle(st.id!, idle);
+  if (syncIdle) for (const st of list) if (st.state === 'running' && st.boot?.stage === 'ready' && !st.purpose && st.idleMinutes !== idle) void setIdle(st.id!, idle);
   return list;
 }
 
@@ -527,6 +564,79 @@ export function loadManifest() {
   };
 }
 
+// ------------------------------------------------------------------ images
+// The fleet's machine image: a ready install with ComfyUI and the core models (image.ts builds, copies and prunes
+// it). An image matches when its ModelsKey tag is manifestKey(): ComfyUI's tag, the nodes and the core models.
+
+export const IMAGE_ROLE = 'comfy-image';
+
+/** A short hash of what an image must contain (models.json without its descriptions). */
+export function manifestKey(m = loadManifest()) {
+  const parts = { comfyui: m.comfyui, nodes: m.nodes.map((n) => [n.repo, n.commit]), models: m.models.map((x) => [x.dir, x.file, x.url]) };
+  return crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 12);
+}
+
+export type FleetImage = { id: string; region: string; name: string; state: string; created: string; key: string | null; comfy: string | null; snapshots: string[]; usedGb: number | null; build: string | null; root: string };
+
+const imageOf = (img: Image, region: string): FleetImage => {
+  const tag = (k: string) => img.Tags?.find((t) => t.Key === k)?.Value ?? null;
+  return {
+    id: img.ImageId!, region, name: img.Name ?? '', state: img.State ?? '', created: img.CreationDate ?? '', key: tag('ModelsKey'), comfy: tag('ComfyUI'),
+    snapshots: (img.BlockDeviceMappings ?? []).map((b) => b.Ebs?.SnapshotId).filter((x): x is string => Boolean(x)),
+    usedGb: Number(tag('UsedGb')) || null, build: tag('Build'), root: img.RootDeviceName ?? '/dev/sda1',
+  };
+};
+
+/** Every fleet image in a region (any state), newest first. */
+export async function imagesIn(region: string): Promise<FleetImage[]> {
+  const r = await ec2(region).send(new DescribeImagesCommand({ Owners: ['self'], Filters: [{ Name: 'tag:Project', Values: [PROFILES.gen.project] }, { Name: 'tag:Role', Values: [IMAGE_ROLE] }] }));
+  return (r.Images ?? []).map((img) => imageOf(img, region)).sort((a, b) => b.created.localeCompare(a.created));
+}
+
+const imageCache = new Map<string, { at: number; value: FleetImage | null }>();
+export const forgetImages = () => imageCache.clear();
+
+/** The newest available image in a region that matches models.json, or null (then servers install from bootstrap.sh). Cached for 5 minutes. */
+export async function findImage(region: string): Promise<FleetImage | null> {
+  const hit = imageCache.get(region);
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.value;
+  const key = manifestKey();
+  const value = (await imagesIn(region)).find((img) => img.state === 'available' && img.key === key) ?? null;
+  imageCache.set(region, { at: Date.now(), value });
+  return value;
+}
+
+/** Whether a server launched now (in any fleet region) would come from the image. */
+export async function imageAvailable() {
+  for (const r of REGIONS) if (await findImage(r).catch(() => null)) return true;
+  return false;
+}
+
+let sizeCache: { at: number; value: Record<string, number> } | null = null;
+
+/** Each core model's size on Hugging Face ("dir/file" -> bytes; 0 when unknown). Cached for a day. */
+export async function coreSizes() {
+  if (sizeCache && Date.now() - sizeCache.at < 24 * 3600_000) return sizeCache.value;
+  const m = loadManifest();
+  const sizes = await Promise.all(m.models.map((x) => remoteSize(x.url)));
+  const value = Object.fromEntries(m.models.map((x, i) => [`${x.dir}/${x.file}`, sizes[i]]));
+  if (sizes.every(Boolean)) sizeCache = { at: Date.now(), value };
+  return value;
+}
+
+/** firstboot.sh with the token, idle time, image and core models (with their sizes, checked at first boot) filled in, gzipped for EC2 user data. */
+export function imageUserData(token: string, idleMinutes: number, imageId: string, sizes: Record<string, number> = {}) {
+  const m = loadManifest();
+  const script = fs.readFileSync(path.join(paths.server, 'firstboot.sh'), 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replaceAll('__TOKEN__', token)
+    .replaceAll('__IDLE_MINUTES__', String(idleMinutes))
+    .replaceAll('__IMAGE__', imageId)
+    .replaceAll('__COMFY_TAG__', m.comfyui.tag)
+    .replace('__MODELS__', m.models.map((x) => `${x.dir}/${x.file} ${sizes[`${x.dir}/${x.file}`] ?? 0}`).join('\n'));
+  return zlib.gzipSync(Buffer.from(script)).toString('base64');
+}
+
 /** bootstrap.sh with the token, idle time and server/models.json filled in, gzipped for EC2 user data. */
 export function userData(token: string, idleMinutes: number) {
   const m = loadManifest();
@@ -537,6 +647,7 @@ export function userData(token: string, idleMinutes: number) {
     .replaceAll('__COMFY_TAG__', m.comfyui.tag)
     .replaceAll('__COMFY_REPO__', m.comfyui.repo)
     .replace('__NODES__', m.nodes.map((n) => `${n.repo} ${n.commit}`).join('\n'))
+    .replace('__BLENDER__', () => blenderInstall(''))
     .replace('__MODELS__', m.models.map((x) => `${x.dir} ${x.file} ${x.url}`).join('\n'));
   return zlib.gzipSync(Buffer.from(script)).toString('base64');
 }
@@ -558,29 +669,40 @@ async function launchRegions(region: string, vcpus: number, type: string) {
   return ok;
 }
 
+/** Disk speed for servers launched from the image: their disk loads lazily from S3, and the warm-up reads ~90 GB. About $0.02/hr over the gp3 baseline. */
+const IMAGE_DISK = { Iops: 4000, Throughput: 500 };
+
 /**
  * Creates a server. Costs money from here on (see TYPES). type 'auto' tries
  * every type, cheapest first, in every region with quota free for it.
+ * From the region's matching image when there is one (ready in minutes; disposable unless settings say otherwise),
+ * else it installs itself (bootstrap.sh). fromImage false always installs (how images are built).
  */
-export async function launchServer({ idleMinutes = loadSettings().fleet.idleMinutes, region = 'auto', type = DEFAULT_TYPE, max = loadSettings().fleet.servers } = {}) {
+export async function launchServer({ idleMinutes = loadSettings().fleet.idleMinutes, region = 'auto', type = DEFAULT_TYPE, max = loadSettings().fleet.servers, fromImage = true, purpose = '' } = {}) {
   if (type !== 'auto' && !TYPES[type]) throw fleetError(`Not an instance type the fleet uses: ${type}`);
   const existing = await listServers({ force: true });
   if (existing.length >= max) throw fleetError(`There are already ${existing.length} GPU servers (the most "servers" allows). Start one of them instead, or raise the setting.`);
   const ip = await myIp();
   const token = crypto.randomBytes(24).toString('base64url');
-  const data = userData(token, idleMinutes);
   const attempts: any[] = [];
   const setups = new Map<string, Promise<any>>();
   const prof = PROFILES.gen;
-  const tags = [{ Key: 'Project', Value: prof.project }, { Key: 'Name', Value: prof.name }];
+  const disposableSetting = loadSettings().fleet.disposable;
 
   const setupFor = (r: string) => {
     if (!setups.has(r)) {
       setups.set(r, (async () => {
-        const [sg, key, image] = await Promise.all([ensureSecurityGroup(r, ip), ensureKeyPair(r), gpuImage(r)]);
+        const [sg, key, fleetImage] = await Promise.all([ensureSecurityGroup(r, ip), ensureKeyPair(r), fromImage ? findImage(r).catch(() => null) : null]);
+        const image = fleetImage ? { ImageId: fleetImage.id, Name: fleetImage.name, RootDeviceName: fleetImage.root } : await gpuImage(r);
         const vpc = await defaultVpc(r);
         const subnets = await ec2(r).send(new DescribeSubnetsCommand({ Filters: [{ Name: 'vpc-id', Values: [vpc] }, { Name: 'default-for-az', Values: ['true'] }] }));
-        return { sg, key, image, subnets: subnets.Subnets ?? [] };
+        const disposable = Boolean(fleetImage) && disposableSetting && !purpose;
+        const data = fleetImage ? imageUserData(token, idleMinutes, fleetImage.id, await coreSizes()) : userData(token, idleMinutes);
+        const tags = [
+          { Key: 'Project', Value: prof.project }, { Key: 'Name', Value: prof.name },
+          ...(fleetImage ? [{ Key: 'Image', Value: fleetImage.id }] : []), ...(disposable ? [{ Key: 'Disposable', Value: 'yes' }] : []), ...(purpose ? [{ Key: 'Purpose', Value: purpose }] : []),
+        ];
+        return { sg, key, image, fleetImage, disposable, data, tags, subnets: subnets.Subnets ?? [] };
       })());
     }
     return setups.get(r)!;
@@ -616,17 +738,23 @@ export async function launchServer({ idleMinutes = loadSettings().fleet.idleMinu
           const res = await ec2(r).send(new RunInstancesCommand({
             ImageId: setup.image.ImageId, InstanceType: t as any, MinCount: 1, MaxCount: 1, KeyName: setup.key,
             ...(subnet ? { SubnetId: subnet.SubnetId } : {}),
-            SecurityGroupIds: [setup.sg], UserData: data, InstanceInitiatedShutdownBehavior: 'stop',
-            BlockDeviceMappings: [{ DeviceName: setup.image.RootDeviceName ?? '/dev/sda1', Ebs: { VolumeSize: DISK_GB, VolumeType: 'gp3', Iops: 3000, Throughput: 125, DeleteOnTermination: true } }],
-            TagSpecifications: [{ ResourceType: 'instance', Tags: tags }, { ResourceType: 'volume', Tags: tags }],
+            // A disposable server powering itself off (idle, or a failed first boot) is terminated with its disk.
+            SecurityGroupIds: [setup.sg], UserData: setup.data, InstanceInitiatedShutdownBehavior: setup.disposable ? 'terminate' : 'stop',
+            BlockDeviceMappings: [{ DeviceName: setup.image.RootDeviceName ?? '/dev/sda1', Ebs: { VolumeSize: DISK_GB, VolumeType: 'gp3', ...(setup.fleetImage ? IMAGE_DISK : { Iops: 3000, Throughput: 125 }), DeleteOnTermination: true } }],
+            TagSpecifications: [{ ResourceType: 'instance', Tags: setup.tags }, { ResourceType: 'volume', Tags: setup.tags }],
           }));
           const instanceId = res.Instances?.[0]?.InstanceId!;
           const zone = res.Instances?.[0]?.Placement?.AvailabilityZone ?? subnet?.AvailabilityZone ?? 'any';
           saveState({ region: r });
-          saveRecord(instanceId, { region: r, type: t, token, idleMinutes, keyName: setup.key, zone, launchedAt: new Date().toISOString() });
+          saveRecord(instanceId, {
+            region: r, type: t, token, idleMinutes, keyName: setup.key, zone, launchedAt: new Date().toISOString(),
+            ...(setup.fleetImage ? { image: setup.fleetImage.id } : {}), ...(setup.disposable ? { disposable: true } : {}), ...(purpose ? { purpose } : {}),
+          });
           listCache.at = 0;
           attempts.push({ region: r, zone, type: t, code: 'ok', kind: 'ok', message: 'launched' });
-          return { id: instanceId, region: r, zone, type: t, image: setup.image.Name, attempts };
+          const how = setup.fleetImage ? `from the image ${setup.fleetImage.id}${setup.disposable ? ' (disposable: terminated when idle)' : ''}` : 'installing from bootstrap.sh (30-45 min; no matching image)';
+          console.log(`[fleet] launched ${instanceId} in ${zone}, ${how}`);
+          return { id: instanceId, region: r, zone, type: t, image: setup.image.Name, fromImage: setup.fleetImage?.id ?? null, disposable: setup.disposable, attempts };
         } catch (e: any) {
           const kind = classify(e);
           attempts.push({ region: r, zone: subnet?.AvailabilityZone ?? 'any zone', type: t, code: e.name, kind, message: e.message });
@@ -657,6 +785,8 @@ async function requireServer(instanceId?: string) {
 
 export async function startServer(instanceId?: string) {
   const { instance: i, region } = await requireServer(instanceId);
+  const source = record(i.InstanceId).imageSource;
+  if (source) throw fleetError(`${i.InstanceId} was cleaned to make the image ${source}: it has no password or SSH keys any more, so it can't take jobs. Launch a new server (from the image) instead.`);
   const unfinished = unfinishedInstall(record(i.InstanceId));
   if (unfinished && !unfinished.resumable && i.State?.Name === 'stopped') {
     // Launched before installs resumed: started, it would sit half installed and never stop itself (2026-10-16).
@@ -683,8 +813,12 @@ export async function startServer(instanceId?: string) {
   return { id: i.InstanceId, region, was: i.State?.Name, ...(note ? { resuming: true, note } : {}) };
 }
 
+/** Stops a server. A disposable one (launched from the image) is terminated instead: a stopped disk costs about $20/month, and the image brings a new one up in minutes. */
 export async function stopServer(instanceId?: string) {
   const { instance: i, region } = await requireServer(instanceId);
+  if (tagOf(i, 'Disposable') === 'yes' && ['running', 'pending', 'stopping', 'stopped'].includes(i.State?.Name)) {
+    return { ...(await terminateServer(i.InstanceId)), was: i.State?.Name, terminated: true };
+  }
   if (i.State?.Name === 'running' || i.State?.Name === 'pending') await ec2(region).send(new StopInstancesCommand({ InstanceIds: [i.InstanceId] }));
   listCache.at = 0;
   return { id: i.InstanceId, region, was: i.State?.Name };
@@ -707,7 +841,7 @@ export type Endpoint = { id: string; region: string; price: number; url: string;
 /** Every server ready for jobs. */
 export async function comfyEndpoints(): Promise<Endpoint[]> {
   return (await fleetStatus())
-    .filter((st) => st.state === 'running' && st.boot?.stage === 'ready')
+    .filter((st) => st.state === 'running' && st.boot?.stage === 'ready' && !st.purpose)
     .map((st) => ({ id: st.id!, region: st.region!, price: st.pricePerHour, url: st.url!, headers: authHeader(record(st.id!).token!, st.user) }));
 }
 

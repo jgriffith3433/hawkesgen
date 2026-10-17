@@ -253,10 +253,44 @@ function bootCell(s) {
   const unfinished = s.unfinished ? `<div class="small" style="color:var(--warn)">install unfinished (at: ${esc(s.unfinished.detail)})${s.unfinished.resumable ? '; starting it resumes the install' : '; launched before installs resumed, so starting it is refused'}</div>` : '';
   if (s.state !== 'running') return `<span class="status s-${s.state}">${esc(s.state)}</span>${s.reason ? `<div class="small muted">${esc(s.reason)}</div>` : ''}${unfinished}`;
   const stage = s.boot?.stage ?? 'booting';
+  if (stage === 'image source') return `<span class="status s-stopped">image source</span><div class="small muted">${esc(s.boot.detail)}</div>`;
   const run = s.boot?.run > 1 ? ` (resumed, run ${s.boot.run})` : '';
   const stuck = s.stuck ? `<div class="small" style="color:var(--bad)"><b>stuck</b>: no progress for ${s.stuck.minutes} min. It powers itself off after 20 min without progress; check its Log.</div>` : '';
   const lastFailure = s.boot?.lastFailure && stage !== 'ready' && stage !== 'failed' ? `<div class="small muted">last run: ${esc(s.boot.lastFailure)}</div>` : '';
-  return `<span class="status s-${stage === 'ready' ? 'ready' : stage === 'failed' || stage === 'locked out' || s.stuck ? 'failed' : 'booting'}">${esc(s.stuck ? 'stuck' : stage)}</span><div class="small muted">${esc(s.boot?.detail ?? '')}${esc(run)}</div>${stuck}${lastFailure}${stage === 'booting' ? unfinished : ''}`;
+  const warm = s.boot?.warm && stage === 'ready' && !/^(\d+) of \1$/.test(s.boot.warm) ? `<div class="small muted">warming the disk: ${esc(s.boot.warm)} models read</div>` : '';
+  return `<span class="status s-${stage === 'ready' ? 'ready' : stage === 'failed' || stage === 'locked out' || s.stuck ? 'failed' : 'booting'}">${esc(s.stuck ? 'stuck' : stage)}</span><div class="small muted">${esc(s.boot?.detail ?? '')}${esc(run)}</div>${stuck}${lastFailure}${stage === 'booting' ? unfinished : ''}${warm}`;
+}
+
+/** The machine image card: which image each region launches from, the build, and its buttons. */
+async function renderImage() {
+  const el = $('#fl-image');
+  if (!el) return;
+  let im;
+  try {
+    im = await api('/fleet/image');
+  } catch (e) {
+    el.innerHTML = `<h3>Machine image</h3><div class="small muted">${esc(e.message)}</div>`;
+    return;
+  }
+  const b = im.build;
+  const rows = im.regions.map((r) => `<tr><td>${esc(r.region)}</td><td>${r.current ? `<b>${esc(r.current.id)}</b> <span class="small muted">${esc(r.current.created.slice(0, 10))}${r.current.usedGb ? ` · ${r.current.usedGb} GB` : ''}</span>` : r.error ? `<span class="small" style="color:var(--bad)">${esc(r.error)}</span>` : '<span class="muted">none: servers here install from bootstrap.sh (30-45 min)</span>'}</td><td class="small muted">${r.others.map((o) => `${esc(o.id)} (${esc(o.state)}${o.key !== im.key ? ', out of date' : ''})`).join(', ') || '—'}</td></tr>`).join('');
+  el.innerHTML = `<div class="row spread"><h3>Machine image</h3><div class="row">
+      ${b?.active ? '<button id="im-cancel">Cancel build</button>' : '<button id="im-build">Build new image…</button>'}<button id="im-prune">Delete old images…</button></div></div>
+    <p class="small muted">New servers launch from the image matching server/models.json (ComfyUI ${esc(im.comfy)}, ${im.models} core models, key ${esc(im.key)}) and are ready in minutes${im.disposable ? '; idle, they are terminated (no disk left paying)' : ''}. ${im.stale ? '<b style="color:var(--warn)">The images are out of date (models.json or ComfyUI changed): build a new one.</b> ' : ''}Snapshots cost about ${money(im.costPerMonth)} a month.</p>
+    <table><thead><tr><th>Region</th><th>Launches from</th><th>Other images</th></tr></thead><tbody>${rows}</tbody></table>
+    ${b ? `<div class="small" style="margin-top:8px"><b>Build ${esc(b.id)}</b>: ${esc(b.phase)}${b.active ? ' (running)' : ''}${b.from ? ` · server ${esc(b.from)}` : ''}${b.error ? ` · <span style="color:var(--bad)">${esc(b.error)}</span>` : ''}<div class="muted">${b.log.slice(-4).map((l) => `${esc(new Date(l.at).toLocaleTimeString())} ${esc(l.msg)}`).join('<br>')}</div></div>` : ''}`;
+  $('#im-cancel')?.addEventListener('click', () => post('/fleet/image/cancel', {}).then(() => renderImage()).catch(fail));
+  $('#im-build')?.addEventListener('click', () => {
+    const from = prompt('Build the image from a ready server (its id), or leave blank to launch a fresh install (30-45 min at ~$1.86/hr, terminated afterwards). A server you name is cleaned (its password and keys stripped: it can\'t take jobs afterwards) and left stopped. Each region\'s copy costs about $8-9 a month.', '');
+    if (from === null) return;
+    post('/fleet/image/build', { confirm: true, ...(from.trim() ? { from: from.trim() } : {}) }).then(() => { toast('Image build started'); renderImage(); }).catch(fail);
+  });
+  $('#im-prune')?.addEventListener('click', async () => {
+    const dry = await post('/fleet/image/prune', { dryRun: true }).catch(fail);
+    if (!dry) return;
+    if (!dry.removed.length) return toast('Nothing to delete: every image left is the one its region launches from');
+    if (confirm(`Delete ${dry.removed.length} image(s) and their snapshots?\n${dry.removed.map((i) => `${i.region} ${i.id}`).join('\n')}`)) post('/fleet/image/prune', { confirm: true }).then((r) => { toast(`Deleted ${r.removed.length}`); renderImage(); }).catch(fail);
+  });
 }
 
 render.fleet = async () => {
@@ -275,16 +309,18 @@ render.fleet = async () => {
     ${f.lastFailure ? `<div class="card"><b style="color:var(--warn)">Last start/launch failed (${esc(f.lastFailure.kind)}):</b> ${esc(f.lastFailure.message)}</div>` : ''}
     ${f.retry?.active ? `<div class="card"><div class="row spread"><span>Keep trying to <b>${esc(f.retry.action)}</b>: try ${f.retry.tries}, next ${f.retry.next ? new Date(f.retry.next).toLocaleTimeString() : '—'}, until ${new Date(f.retry.until).toLocaleTimeString()}</span><button id="fl-rstop">Stop trying</button></div><div class="small muted">${esc(f.retry.log?.at(-1)?.message ?? '')}</div></div>` : ''}
     <div class="card">${f.servers.length ? `<table><thead><tr><th>Server</th><th>State</th><th>Loaded / busy</th><th class="num">$/hr</th><th></th></tr></thead><tbody>${f.servers.map((sv) => `<tr>
-      <td><b>${esc(sv.id)}</b><div class="small muted">${esc(sv.type)} · ${esc(sv.zone ?? sv.region)} · ${esc(sv.flavor)}${sv.idleMinutes ? ` · stops after ${sv.idleMinutes} idle min` : ''}</div></td>
+      <td><b>${esc(sv.id)}</b><div class="small muted">${esc(sv.type)} · ${esc(sv.zone ?? sv.region)} · ${esc(sv.flavor)}${sv.image ? ` · from ${esc(sv.image)}` : ''}${sv.purpose ? ` · ${esc(sv.purpose)}` : ''}${sv.idleMinutes ? ` · ${sv.disposable ? 'terminated' : 'stops'} after ${sv.idleMinutes} idle min` : ''}</div></td>
       <td>${bootCell(sv)}</td>
       <td class="small">${esc(f.families[sv.id] ?? '—')}${f.busy[sv.id] ? `<br><a href="#" data-job-link="${f.busy[sv.id]}">${esc(f.busy[sv.id])}</a>` : ''}</td>
       <td class="num">${money(sv.pricePerHour)}</td>
-      <td><div class="row">${sv.state === 'stopped' ? `<button data-sv="start" data-id="${sv.id}">Start</button>` : ''}${['running', 'pending'].includes(sv.state) ? `<button data-sv="stop" data-id="${sv.id}">Stop</button>` : ''}${sv.state === 'running' ? `<button data-sv="health" data-id="${sv.id}">Health</button><button data-sv="log" data-id="${sv.id}">Log</button><button data-sv="models" data-id="${sv.id}">Models</button><button data-sv="sync" data-id="${sv.id}">Sync core models</button>` : ''}<button class="danger" data-sv="terminate" data-id="${sv.id}">Terminate</button></div></td>
+      <td><div class="row">${sv.state === 'stopped' ? `<button data-sv="start" data-id="${sv.id}">Start</button>` : ''}${['running', 'pending'].includes(sv.state) ? `<button data-sv="stop" data-id="${sv.id}">${sv.disposable ? 'Stop (discard)' : 'Stop'}</button>` : ''}${sv.state === 'running' ? `<button data-sv="health" data-id="${sv.id}">Health</button><button data-sv="log" data-id="${sv.id}">Log</button><button data-sv="models" data-id="${sv.id}">Models</button><button data-sv="sync" data-id="${sv.id}">Sync core models</button>` : ''}<button class="danger" data-sv="terminate" data-id="${sv.id}">Terminate</button></div></td>
     </tr>`).join('')}</tbody></table>` : '<div class="empty">No GPU servers. Launch one, or adopt existing ones (Settings).</div>'}</div>
+    <div class="card" id="fl-image"><h3>Machine image</h3><div class="small muted">Loading…</div></div>
     <div class="card"><h3>Scaling</h3><div class="form">
       <label><span><b>Servers</b>: most servers, and GPU jobs at once</span><input type="number" id="fs-servers" min="1" max="${s.max}" value="${s.servers}"></label>
       <label><span><b>Idle stop</b>: minutes before an idle server powers off</span><input type="number" id="fs-idle" min="10" max="240" value="${s.idleMinutes}"></label>
-      <label><span><b>Start servers by themselves</b> when jobs wait (costs money)</span><select id="fs-auto"><option value="false" ${!s.auto ? 'selected' : ''}>Off</option><option value="true" ${s.auto ? 'selected' : ''}>On</option></select></label>
+      <label><span><b>Start servers by themselves</b> when jobs wait (costs money; with the image, launches from it)</span><select id="fs-auto"><option value="false" ${!s.auto ? 'selected' : ''}>Off</option><option value="true" ${s.auto ? 'selected' : ''}>On</option></select></label>
+      <label><span><b>Disposable servers</b>: servers launched from the image are terminated when idle, not stopped</span><select id="fs-disposable"><option value="true" ${s.disposable ? 'selected' : ''}>On</option><option value="false" ${!s.disposable ? 'selected' : ''}>Off</option></select></label>
     </div><div class="row" style="margin-top:10px"><button class="primary" id="fs-save">Save</button><span class="small muted">Each server's disk costs about ${money(f.diskPerMonth)} a month until it's terminated.</span></div></div>
     <div class="card" id="fl-builder"><h3>Unity build server</h3><div class="small muted">Loading…</div></div>
     <details class="card"><summary>Regions and GPU quota</summary><div id="fl-regions" class="small muted">Loading…</div></details>
@@ -292,6 +328,7 @@ render.fleet = async () => {
 
   const act = (a, body = {}) => post(`/fleet/${a}`, body).then((r) => { toast(`${a}: ok`); render.fleet(); return r; }).catch((e) => { fail(e); render.fleet(); });
   renderBuilder().catch(() => {});
+  renderImage().catch(() => {});
   $('#fl-access').onclick = () => act('access');
   $('#fl-stopall').onclick = () => confirm('Stop every running GPU server? Running jobs fail.') && act('stop-all');
   $('#fl-rstop')?.addEventListener('click', () => act('retry-stop'));
@@ -300,7 +337,7 @@ render.fleet = async () => {
     if (n) act('scale', { confirm: true, count: Number(n) });
   };
   $('#fl-launch').onclick = () => launchDialog(f);
-  $('#fs-save').onclick = () => post('/fleet/settings', { servers: Number($('#fs-servers').value), idleMinutes: Number($('#fs-idle').value), auto: $('#fs-auto').value === 'true' }).then(() => { toast('Saved'); render.fleet(); }).catch(fail);
+  $('#fs-save').onclick = () => post('/fleet/settings', { servers: Number($('#fs-servers').value), idleMinutes: Number($('#fs-idle').value), auto: $('#fs-auto').value === 'true', disposable: $('#fs-disposable').value === 'true' }).then(() => { toast('Saved'); render.fleet(); }).catch(fail);
   for (const b of document.querySelectorAll('#fleet [data-sv]')) {
     b.onclick = async () => {
       const id = b.dataset.id;
@@ -310,7 +347,11 @@ render.fleet = async () => {
         const resume = sv?.unfinished?.resumable ? ` Its install never finished: it carries on from where it stopped (${sv.unfinished.detail}).` : '';
         return confirm(`Start ${id}? It costs money while it runs.${resume}`) && act('start', { id, confirm: true }).then((r) => r?.note && toast(`${id}: ${r.note}`));
       }
-      if (a === 'stop') return act('stop', { id });
+      if (a === 'stop') {
+        const sv = f.servers.find((x) => x.id === id);
+        if (sv?.disposable && !confirm(`${id} was launched from the image: stopping it terminates it (a new one comes up from the image in minutes). Go on?`)) return;
+        return act('stop', { id });
+      }
       if (a === 'terminate') return confirm(`Terminate ${id}? This deletes the server and its disk (about 90 GB of models). Launching again re-downloads everything.`) && act('terminate', { id, confirm: true });
       if (a === 'sync') return confirm(`Download any models and nodes ${id} is missing (from server/models.json)? This can take a while.`) && act('sync', { id, confirm: true }).then((r) => r && toast(`Synced: ${r.models.length} models, ${r.nodes.length} nodes`));
       if (a === 'health') return api(`/fleet/health?id=${id}`).then((h) => modal(`<h2>Health: ${esc(id)}</h2><pre>${esc(JSON.stringify(h, null, 2))}</pre>${h.ok ? '' : `<button class="primary" id="fixit">Put ComfyUI on the flags that work</button>`}`)).then((m) => m.querySelector('#fixit')?.addEventListener('click', () => act('fix', { id, confirm: true }))).catch(fail);
