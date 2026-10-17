@@ -1,9 +1,9 @@
 {
   "project": "icanbe",
   "title": "I Can Be",
-  "style": "",
+  "style": "Quiet suburban diorama of one ordinary day: simple box-built rooms, street and furniture, matte muted greens, warm creams and asphalt greys, soft hemispheric daylight with a light haze, calm and lived-in.",
   "negative": "text, watermark",
-  "notes": "Direction undecided (a real-time 'day of a developer' simulation; the character is 'AI'). Fill in the style line when the look is chosen.",
+  "notes": "Direction undecided (a real-time 'day of a developer' simulation; the character is 'AI'). Fill in the style line when the look is chosen. The style line describes the current build (icanbeaiwebsite/js/world.js: matte StandardMaterials, #4a6b4c ground, #3b3e44 road, exp2 fog), not a chosen direction: change it when J picks one.",
   "presets": {
     "idea": {
       "tool": "llm.text",
