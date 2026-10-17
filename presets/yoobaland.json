@@ -9,11 +9,37 @@
       "tool": "image.generate",
       "description": "A concept for a place in Yooba Land.",
       "prompt": "{prompt}. {style}",
-      "params": { "width": 1536, "height": 864 }
+      "params": {
+        "width": 1536,
+        "height": 864
+      }
     },
     "prop": {
       "tool": "mesh.textured",
       "description": "A textured GLB prop from a concept image (import into Unity)."
+    }
+  },
+  "kinds": {
+    "_about": "For the Hawkes Gen library (docs/library.md). Yooba's art lives with Dose Of Destruction (AllTheCharacters/Yooba, entity doseofdestruction/yooba); yoobaland/yooba keeps Yooba Land's own picks.",
+    "character": {
+      "description": "A character: a concept and the model the game uses.",
+      "slots": {
+        "concept": {
+          "description": "The concept art.",
+          "optional": true,
+          "make": {
+            "tool": "image.generate",
+            "params": {
+              "prompt": "{look}, full body, front three-quarter view, plain background, {style} {feedback}",
+              "width": 1024,
+              "height": 1024
+            }
+          }
+        },
+        "model": {
+          "description": "The model in hawkes-assets (characters/yooba) and the Unity project."
+        }
+      }
     }
   }
 }

@@ -9,19 +9,86 @@
       "tool": "image.generate",
       "description": "The opening still for a branch of the story.",
       "prompt": "{prompt}. {style}",
-      "params": { "width": 1280, "height": 720 }
+      "params": {
+        "width": 1280,
+        "height": 720
+      }
     },
     "branch-clip": {
       "tool": "video.i2v",
       "description": "Animate a branch still into its clip (give the still as start).",
       "prompt": "{prompt}. Slow, tense camera.",
-      "params": { "width": 960, "height": 544, "frames": 81 }
+      "params": {
+        "width": 960,
+        "height": 544,
+        "frames": 81
+      }
     },
     "branch-text": {
       "tool": "llm.json",
       "description": "Write a branch: its scene line and two choices, in the story's voice.",
       "prompt": "Continue The Final Spark, a choose-your-path story that starts with waking in a sewer, found by a rat. Write the next page for: {prompt}. Keep it short and second person.",
-      "params": { "schema": { "type": "object", "properties": { "scene": { "type": "string" }, "question": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } } }, "required": ["scene", "question", "choices"], "additionalProperties": false } }
+      "params": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "scene": {
+              "type": "string"
+            },
+            "question": {
+              "type": "string"
+            },
+            "choices": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "scene",
+            "question",
+            "choices"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "kinds": {
+    "_about": "For the Hawkes Gen library (docs/library.md). imaginelivetvwebsite/hawkes.library.json brings the cast (story/characters) and the pages (assets/video) in. Page videos are made by Studio from hawkes.assets.json.",
+    "character": {
+      "description": "A character of The Final Spark: a frame from the filmed clips (seed) and the reference sheet made from it.",
+      "slots": {
+        "seed": {
+          "description": "A frame of the character from the filmed clips."
+        },
+        "sheet": {
+          "description": "Reference sheet: front, three-quarter, side and back views and a face close-up, made from the seed.",
+          "make": {
+            "tool": "image.edit",
+            "inputs": {
+              "images": [
+                "slot:./seed"
+              ]
+            },
+            "params": {
+              "prompt": "Character reference sheet of this exact individual: {look}. Full-body front view, three-quarter view, side view and back view, plus a close-up of the face, side by side on a plain mid-grey background. Same proportions and clothes in every view. {style} {feedback}",
+              "negative": "text, watermark, cartoon, subtitles",
+              "width": 1536,
+              "height": 1024
+            }
+          }
+        }
+      }
+    },
+    "page": {
+      "description": "A page of the story: its video (a shot with the narration).",
+      "slots": {
+        "clip": {
+          "description": "The page video in assets/video (made by Studio: hawkes.assets.json)."
+        }
+      }
     }
   }
 }

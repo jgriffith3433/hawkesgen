@@ -9,13 +9,62 @@
       "tool": "image.generate",
       "description": "A new bird species for the waves (concept, side view).",
       "prompt": "A {prompt}, a bird enemy, full body side view on a plain background, {style}",
-      "params": { "width": 1024, "height": 1024 }
+      "params": {
+        "width": 1024,
+        "height": 1024
+      }
     },
     "piano-theme": {
       "tool": "audio.music",
       "description": "Music the pirate plays on the piano.",
       "prompt": "{prompt}, solo piano, pirate shanty feel, moonlit, loopable, instrumental",
-      "params": { "lyrics": "[Instrumental]", "seconds": 90 }
+      "params": {
+        "lyrics": "[Instrumental]",
+        "seconds": 90
+      }
+    }
+  },
+  "kinds": {
+    "_about": "For the Hawkes Gen library (docs/library.md). breakingthrough/hawkes.library.json brings the bird models in (Assets/Resources/Models/Birds/<Kind>.fbx, one entity each); their look is FowlRoster.cs line. Models are made in Blender (Tools/Blender/bt_birds.py, export(\"<Kind>\")), not by Gen.",
+    "bird": {
+      "description": "A bird species in the waves: a concept and the Blender-made model the game loads.",
+      "slots": {
+        "concept": {
+          "description": "A side-view concept of the species, to model from.",
+          "optional": true,
+          "make": {
+            "tool": "image.generate",
+            "params": {
+              "prompt": "A {look}, a bird enemy, full body side view on a plain background, {style} {feedback}",
+              "width": 1024,
+              "height": 1024
+            }
+          }
+        },
+        "model": {
+          "description": "The FBX in Assets/Resources/Models/Birds (Blender: bt_birds.py)."
+        }
+      }
+    },
+    "character": {
+      "description": "Warrok or the pianist: a concept and the rigged model.",
+      "slots": {
+        "concept": {
+          "description": "A full-body concept.",
+          "optional": true,
+          "make": {
+            "tool": "image.generate",
+            "params": {
+              "prompt": "{look}, full body, front three-quarter view, plain background, {style} {feedback}",
+              "width": 1024,
+              "height": 1024
+            }
+          }
+        },
+        "model": {
+          "description": "The rigged FBX in Assets/Art (Mixamo)."
+        }
+      }
     }
   }
 }
