@@ -12,6 +12,12 @@ blender.render  ──>  depth / pose / edges videos + the first frame
                          │
                          ▼
                   the finished shot (with sound, from LTX)
+                         │
+                         ▼
+     video.compose (this PC or the control server, ffmpeg: order, transitions, music, voice, captions)
+                         │
+                         ▼
+                  the finished cut: mp4 + .vtt + poster
 ```
 
 Any project can do this through the API, the MCP (`hawkesgen_run`) or an asset manifest (Hawkes Studio).
@@ -188,6 +194,58 @@ and its `files` map `render.depth`, `look` and `video` to paths in the repo.
 **From an MCP:** `hawkesgen_run` with `tool: "asset.make"` and the params above. Or call `blender.render`, then
 `image.edit`, then `video.control` one at a time, passing outputs on as `asset:<id>`.
 
+## The cut: video.compose
+
+`video.compose` puts finished shots together with ffmpeg, on the machine the service runs on. It's free and takes
+seconds. It handles the edit order, trims, cuts and transitions, each shot's own sound, music and voice tracks, and
+captions. The output is a web H.264 mp4 (yuv420p, AAC, faststart), a `.vtt` when there are captions, and a poster PNG.
+Clips of any size and frame rate are normalized: each is resampled to `fps` and letterboxed (`fit: pad`) or filled
+(`fit: crop`) to `width` x `height`. Lengths snap to whole frames, so transitions land exactly.
+
+**Inputs:** `clips` (videos) and `audio` (music, voice lines, beds), both lists. The timeline picks from them by index.
+
+**Params:** `timeline` (below), `width`, `height` (1280 x 704), `fps` (24), `fit`, `captions` (`vtt`, `burn` or
+`both`), `codec` (`h264`, or `h265`), `crf` (20), `poster`, `posterAt`.
+
+**The timeline:**
+
+| Field | What |
+|---|---|
+| `clips[]` | The cut in order (default: every clip, cut together). `clip` (input index; one clip can be used twice), `in`, `out` (seconds in the clip) |
+| `clips[].transition` | How this clip goes **into the next**: `cut` (default), `crossfade`, `dissolve`, `fadeblack`, `fadewhite`, `wipeleft`, `wiperight`, `wipeup`, `wipedown`, `slideleft`, `slideright`, `circleopen`, `circleclose`. `seconds` is its length (0.5). `crossfade: 0.5` is short for both. A transition overlaps the two clips, so the cut gets shorter by its length |
+| `clips[].sound` | Keep the clip's own sound (LTX shots have it). Default `timeline.sound`, else true. Its sound fades across transitions. `volume` scales it. `dialogue: true` makes ducked tracks dip under it |
+| `audio[]` | `audio` (input index), `start` (seconds on the cut, or after the start of timeline clip `clip`), `in` (seconds into the file), `seconds` (longest it plays), `volume`, `fadeIn`, `fadeOut`, `loop` |
+| `audio[].dialogue` | This track is a voice line |
+| `audio[].duck` | Dip under dialogue. `true` / `"envelope"` dips to `duckTo` (0.3 of the volume) around each dialogue track or clip, with quarter-second ramps. `"sidechain"` compresses it under the dialogue's actual sound (a lower `duckTo` compresses harder) |
+| `captions[]` | `text`, `start`, `end` (or `seconds`, 2.5), on the cut or relative to timeline clip `clip`. Or `track`: shown while that `audio[]` track plays (a voice line's caption) |
+| `fadeIn`, `fadeOut` | From and to black at the start and the end, picture and sound |
+
+```json
+{
+  "tool": "video.compose",
+  "inputs": { "clips": ["asset:SHOT1", "asset:SHOT2"], "audio": ["asset:MUSIC", "asset:LINE1"] },
+  "params": {
+    "timeline": {
+      "clips": [{ "clip": 0, "transition": "crossfade", "seconds": 0.5 }, { "clip": 1, "out": 4.5 }],
+      "audio": [
+        { "audio": 0, "volume": 0.3, "loop": true, "fadeIn": 1, "fadeOut": 2, "duck": true },
+        { "audio": 1, "clip": 1, "start": 0.4, "dialogue": true }
+      ],
+      "captions": [{ "clip": 1, "start": 0.4, "end": 2.6, "text": "Who's there?" }],
+      "fadeIn": 0.5, "fadeOut": 1
+    },
+    "width": 1280, "height": 704, "fps": 24
+  }
+}
+```
+
+The outputs are titled `cut`, `captions` and `poster`. The result has `duration`, `width`, `height`, `fps`, `bytes`,
+and each clip's place on the cut (`clips[].start`, `end`). Anything left out goes in `notes`, such as a caption past
+the end or a track that ducks when nothing is dialogue.
+
+**Hawkes Video** (`hawkes-video`, `tools/cut.mjs`) builds the timeline from a production's `edit.json` and
+`audio.json`. It makes the music cue (`audio.music`) and voice lines (`audio.voice`) first.
+
 ## Cost
 
 On a running L40S, a 5 s shot (121 frames at 1280 x 704) takes:
@@ -207,6 +265,7 @@ Blender install (1 minute) and the LTX model download (about 40 GB, 15–20 minu
 |---|---|
 | `post/blender/hawkes_blender.py` | Runs inside Blender. Builds the shot and renders the passes as PNG sequences. Depth, normal and mask use emission-only material overrides with no bounces. It writes the pose keypoints from the bones (`pose.json`) and `info.json`. Progress lines start with `HB `. |
 | `post/pose_draw.py` | Draws the skeletons with Pillow (ComfyUI's Python on the server). |
+| `src/tools/compose.ts` | `video.compose`: `planCompose` turns the timeline into one ffmpeg filter graph (trim, fps, scale/pad, xfade or concat; each sound placed with `adelay`, the ducking, then `amix`). `test/compose.test.ts` checks the plan and makes real cuts of synthetic clips. |
 | `src/tools/blender.ts` | The tool, and the script the server runs: Blender, the pose drawing, then ffmpeg to one mp4 per pass. |
 | `src/providers/blender/` | The install (`install.ts`, shared with `bootstrap.sh`), and the per-job workspace on the server (`/var/tmp/hawkes-blender/<job>`). The render runs as a transient systemd unit, so a dropped SSH connection doesn't stop it and cancelling the job does. Hawkes Gen follows its log and counts the time as GPU time. |
 | `test/blender.test.ts` | Runs the whole server script on this PC (Blender 5.0) with a small rigged character it makes itself (`test/fixtures/make_rig.py`). It skips where Blender isn't installed (CI). |

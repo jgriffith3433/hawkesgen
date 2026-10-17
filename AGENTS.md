@@ -50,7 +50,7 @@ each job).
 |---|---|
 | `src/server.ts`, `src/api.ts` | HTTP server on :8790; every `/v1` route and the dashboard's files |
 | `src/jobs.ts` | The queue: lanes per provider, GPU scheduling by model family, model installs, resume after restart, job keys, presets applied on submit |
-| `src/tools/` | Tools written in code. `types.ts` (what a tool is), `comfy.ts` (image.edit, image.paint, video.i2v, video.animate, comfy.graph), `api.ts` (ElevenLabs voice, sfx and voice design; Claude), `local.ts` (this PC), `index.ts` (the list, plus every workflow folder) |
+| `src/tools/` | Tools written in code. `types.ts` (what a tool is), `comfy.ts` (image.edit, image.paint, video.i2v, video.animate, comfy.graph), `api.ts` (ElevenLabs voice, sfx and voice design; Claude), `local.ts` (this PC), `compose.ts` (video.compose: the finished cut with ffmpeg), `index.ts` (the list, plus every workflow folder) |
 | `src/workflows/` | `convert.ts` (ComfyUI UI → API format, and checks), `registry.ts` (workflow folders, draft manifests), `tool.ts` (a folder as a Tool), `catalog.ts` (the template library cached from a server; import) |
 | `workflows/` | **The workflow tools** (manifest + graph + source each): image.generate, image.angles, image.upscale, image.panorama, image.depth, image.normals, image.albedo, image.remove-background, image.segment, video.t2v, video.control, video.control-wan, video.upscale, video.interpolate, mesh.from-image, mesh.textured, audio.music |
 | `presets/<project>.json` | Each project's art direction: style line, negative, named presets (tool + prompt template + params) |
