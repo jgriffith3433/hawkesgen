@@ -2,7 +2,7 @@
   "id": "video.talk",
   "version": 2,
   "title": "Talking character from audio (InfiniteTalk)",
-  "description": "A talking (or singing) character from one image and a voice track (InfiniteTalk on Wan 2.1): lips, head and body move with the audio. One speaker per clip; for a dialogue, make a clip per line and cut them together (video.compose). Use it for story scenes, trailers and Imagine Live TV dialogue. Pair with audio.voice for the line. Not yet verified live since v2 (v1 rendered black frames: its two-speaker masks were empty).",
+  "description": "A talking (or singing) character from one image and a voice track (InfiniteTalk on Wan 2.1): lips, head and body move with the audio. One speaker per clip; for a dialogue, make a clip per line and cut them together (video.compose). Use it for story scenes, trailers and Imagine Live TV dialogue. Pair with audio.voice for the line. Live-verified (v2): the clip is two passes of frames each (6.5 s at the defaults) whatever the audio length; trim it in the cut. v1 rendered black frames: its two-speaker masks were empty.",
   "family": "wan-infinitetalk",
   "output": "video",
   "models": [
