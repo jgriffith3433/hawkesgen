@@ -21,3 +21,21 @@ test('presets are valid for their tools', () => {
     }
   }
 });
+
+test("projects' kinds: every slot recipe names a real tool, its inputs and valid params", () => {
+  for (const pp of listPresets() as any[]) {
+    for (const [kind, k] of Object.entries<any>(pp.kinds ?? {})) {
+      if (kind.startsWith('_')) continue;
+      for (const [slot, s] of Object.entries<any>(k.slots ?? {})) {
+        if (!s.make) continue;
+        const where = `${pp.project} kinds.${kind}.${slot}`;
+        const tool = getTool(s.make.tool ?? (s.make.steps ? 'asset.make' : ''));
+        assert.ok(tool, `${where}: unknown tool ${s.make.tool}`);
+        for (const name of Object.keys(s.make.inputs ?? {})) assert.ok(name in tool!.inputs, `${where}: ${tool!.id} has no input ${name}`);
+        const params: Record<string, unknown> = { ...(s.make.params ?? {}) };
+        for (const [k2, spec] of Object.entries(tool!.params)) if (spec.required && params[k2] === undefined) params[k2] = spec.type === 'json' ? [] : 'x';
+        assert.doesNotThrow(() => validateParams(tool!, params), where);
+      }
+    }
+  }
+});

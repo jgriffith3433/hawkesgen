@@ -14,7 +14,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { EventEmitter } from 'node:events';
 import { db, parseRow, J } from './db.ts';
 import { paths, loadSettings, ROOT, DATA_DIR } from './config.ts';
 import { getTool } from './tools/index.ts';
@@ -24,13 +23,15 @@ import { putAsset, getAsset, blobPath, findAllByRecipe, recipeKey, type Recipe }
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, type Client } from './auth.ts';
+import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
 
-export const events = new EventEmitter();
-events.setMaxListeners(100);
+import { events } from './bus.ts';
+
+export { events };
 
 export type Job = {
   id: string; key: string | null; client: string; project: string; tool: string; params: Record<string, any>; inputs: Record<string, any>;
@@ -79,6 +80,8 @@ export type JobSpec = {
    * instead of paying for it again. `exclude` lists asset ids the caller already has (other takes of a best-of-N).
    */
   reuse?: boolean | { exclude?: string[] };
+  /** The entity "slot:./..." references mean (set when a job is made for one of its slots). */
+  self?: string;
 };
 
 /** Turns an input reference into a local path: a path (local callers only), "asset:<id>" or "blob:<sha256>". */
@@ -128,6 +131,14 @@ export function submit(client: Client, spec0: JobSpec): Job {
   // A preset (the project's art direction) fills in the tool, params and inputs.
   const applied = applyPreset({ ...spec0, project: project0 }, (id) => getTool(id)?.params ?? null);
   const spec: JobSpec = { ...spec0, tool: applied.tool ?? spec0.tool, params: applied.params, inputs: applied.inputs, labels: applied.preset ? { ...(spec0.labels ?? {}), preset: applied.preset } : spec0.labels };
+  // Slot references ("slot:doseofdestruction/break/side") become the asset they mean now, in params (asset.make
+  // steps) and inputs, so the recipe follows the slot; what was used is kept as the outputs' made_from.
+  const expanded = expandSlotRefs(client, { params: spec.params ?? {}, inputs: spec.inputs ?? {} }, spec.self);
+  if (expanded.used.length) {
+    spec.params = expanded.value.params;
+    spec.inputs = expanded.value.inputs;
+    spec.labels = { ...(spec.labels ?? {}), madeFrom: expanded.used };
+  }
   const tool = getTool(spec.tool ?? '');
   if (!tool) throw new GenError(`Unknown tool: ${spec.tool}`, { status: 404 });
   const project = project0;
@@ -141,7 +152,11 @@ export function submit(client: Client, spec0: JobSpec): Job {
   const inputs = resolveInputs(client, tool, spec.inputs ?? {});
   if (spec.reuse) {
     const found = reusable(tool, project, params, inputs, typeof spec.reuse === 'object' ? spec.reuse.exclude ?? [] : []);
-    if (found) return found;
+    if (found) {
+      // Made for a slot: the takes the library hands back land in that slot too.
+      if (spec.labels?.entity) fileJobOutputs({ ...found, labels: { ...found.labels, ...spec.labels } });
+      return found;
+    }
   }
   return createJob(client, tool, { project, params, inputs, labels: spec.labels, key: spec.key, priority: spec.priority });
 }
@@ -446,6 +461,12 @@ class Queue {
       if (ep) ctx.comfy = await this.comfyRun(job, ep, step, abort.signal);
       await tool.run(ctx);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
+      try {
+        const filed = fileJobOutputs(job);
+        if (filed.length) job.log.push(`filed ${filed.length} take${filed.length === 1 ? '' : 's'} in ${job.labels.entity} ${filed.map((v) => `${v.slot} v${v.n}`).join(', ')}`);
+      } catch (e: any) {
+        job.log.push(`couldn't file the outputs in ${job.labels.entity}: ${e.message}`);
+      }
     } catch (e: any) {
       const cancelled = abort.signal.aborted || e.message === 'Cancelled';
       Object.assign(job, { status: cancelled ? 'cancelled' : 'failed', finished: Date.now(), error: cancelled ? null : e.message, detail: cancelled ? 'cancelled' : e.message });

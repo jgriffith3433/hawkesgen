@@ -10,6 +10,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.
 - `docs/blender.md` covers Blender shots to video (`blender.render`, `video.control`).
+- `docs/library.md` covers the library every product builds on: entities, slots, versions, slot references, make/revise/pick.
 - `DESIGN.md` has J's decisions and the roadmap.
 - `CLAUDE.md` just imports this file; edit this one.
 
@@ -60,6 +61,7 @@ each job).
 | `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
 | `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |
 | `src/providers/elevenlabs.ts`, `anthropic.ts` | API clients |
+| `src/entities.ts`, `src/bus.ts` | The library's structure (docs/library.md): entities (`project/slug`), slots, versions (take, current, old, discarded), `slot:` references expanded at submit, slot recipes (request, entity data, or the project's `kinds` in presets), and filing a job's outputs into its slot. `bus.ts` is the event bus (`job`, `library`) behind `GET /v1/events` |
 | `src/library.ts`, `usage.ts`, `auth.ts`, `config.ts`, `db.ts` | Assets and recipes, costs, API keys and roles, settings and paths, SQLite (node:sqlite) |
 | `src/mcp.ts`, `mcp-tools.ts`, `mcp-http.ts`, `mcp-core.ts` | The MCP server: stdio (`mcp.ts`, talks to the running service over HTTP) and `/mcp` over HTTPS with the caller's API key (`mcp-http.ts`); both share the tools (`mcp-tools.ts`). `mcp-core.ts` is the same file as in hawkesstudio. Setup for Claude anywhere: `hawkesstudio/docs/cloud.md` |
 | `post/` | Python: `prep.py` (frame, motion, canvas), `cutout.py` (rembg), `texture.py` (tile, material maps) |
@@ -177,7 +179,9 @@ returns a verdict, scores and findings.
 | Every project folder | The `hawkesgen` MCP server in `.mcp.json`, plus a "Generative AI: Hawkes Gen" section in its AGENTS.md |
 
 The JS client in projects is a copy of `clients/js/hawkesgen.mjs` (`CLIENT_VERSION` in the file). Copy it
-again when it changes:
+again when it changes. The library's web components (`hawkesgen-ui.mjs`, `UI_VERSION`) and the folder bridge
+(`hawkesgen-folders.mjs`) are copied the same way; DoD has all three
+(`src/devtools/hawkesgen/` for the browser, `tools/gpu/` for its dev server).
 - `doseofdestructionwebsite/tools/gpu/hawkesgen.mjs`
 - `phoriginswebsite/tools/hawkesgen.mjs`
 - `sickofitgame-unity/Tools/Art/hawkesgen.mjs`
