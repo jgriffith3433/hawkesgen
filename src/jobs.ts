@@ -9,7 +9,8 @@
 // Jobs survive a restart: one that was running goes back in the line and
 // keeps the outputs it already saved. A caller can give a job a key; sending
 // the same key again returns the existing job (so a game that restarts
-// mid-batch doesn't pay twice).
+// mid-batch doesn't pay twice), unless that job failed or was cancelled: then
+// the key goes to a new job (a retry).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -146,8 +147,10 @@ export function submit(client: Client, spec0: JobSpec): Job {
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(project)) throw new GenError('project is required (letters, numbers, . _ -)');
   if (!canProject(client, project)) throw new GenError(`No access to project ${project}`, { status: 403 });
   if (spec.key) {
-    const existing = db.prepare('SELECT id FROM jobs WHERE client = ? AND key = ?').get(client.id, String(spec.key)) as { id: string } | undefined;
-    if (existing) return getJob(existing.id)!;
+    const existing = db.prepare('SELECT id, status FROM jobs WHERE client = ? AND key = ?').get(client.id, String(spec.key)) as { id: string; status: string } | undefined;
+    // A key never pays twice for work that is done or under way; a failed or cancelled job frees it for a retry.
+    if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') return getJob(existing.id)!;
+    if (existing) db.prepare('UPDATE jobs SET key = NULL WHERE id = ?').run(existing.id);
   }
   const params = validateParams(tool, spec.params ?? {});
   const inputs = resolveInputs(client, tool, spec.inputs ?? {});
