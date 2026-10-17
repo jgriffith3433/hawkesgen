@@ -44,3 +44,12 @@ test('at least 230 templates convert and check cleanly', { skip: !have && 'no te
   }
   assert.ok(ok >= 230, `only ${ok} converted cleanly`);
 });
+
+test('a widget typed "FLOAT,INT" keeps its place (LTX-2.3 audio latent batch_size stays 1)', () => {
+  const src = JSON.parse(fs.readFileSync(path.join('workflows', 'video-control', 'source.json'), 'utf8'));
+  const oi = have ? info : { LTXVEmptyLatentAudio: null };
+  if (!oi.LTXVEmptyLatentAudio) return;
+  const n = find(convertUiWorkflow(src, oi).graph, 'LTXVEmptyLatentAudio');
+  assert.equal(n.inputs.batch_size, 1);
+  assert.equal(find(JSON.parse(fs.readFileSync(path.join('workflows', 'video-control', 'graph.json'), 'utf8')), 'LTXVEmptyLatentAudio').inputs.batch_size, 1);
+});

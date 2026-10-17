@@ -33,7 +33,10 @@ function toLink(l: any): Link {
 function isWidget(spec: any) {
   const [type, opts] = spec;
   if (opts?.forceInput || opts?.rawLink) return false;
-  return Array.isArray(type) || WIDGET_TYPES.has(type) || type === 'COMFY_DYNAMICCOMBO_V3';
+  if (Array.isArray(type) || WIDGET_TYPES.has(type) || type === 'COMFY_DYNAMICCOMBO_V3' || opts?.widgetType) return true;
+  // A type that accepts several primitives ("FLOAT,INT": LTXVEmptyLatentAudio's frame_rate) is still a widget; missing it
+  // shifts every later widget value (batch_size got the frame rate, 25, and the sampler failed).
+  return typeof type === 'string' && type.includes(',') && type.split(',').every((t) => WIDGET_TYPES.has(t.trim()));
 }
 
 /** The widget inputs of a node type, in the order their values are saved (dynamic sub-inputs not expanded). */

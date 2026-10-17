@@ -1,6 +1,6 @@
 {
   "id": "video.control",
-  "version": 1,
+  "version": 2,
   "title": "Video from a control video (LTX-2.3 IC-LoRA)",
   "description": "Repaints a control video in a new look, following its motion and layout exactly, with sound: LTX-2.3 22B with the Union IC-LoRA (depth, pose skeletons or edges). Made for blender.render: give its depth (or pose, or edges) video as control and a styled first frame (its first frame through image.edit) as image. Plain footage works too with estimateDepth on (MoGe reads the depth). Describe the motion and the sound, not the picture. 1280x704 at 24 fps by default; the control video sets the length (8n + 1 frames). For Wan instead, video.control-wan.",
   "family": "ltx-2.3",
