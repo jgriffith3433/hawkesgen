@@ -173,9 +173,9 @@ returns a verdict, scores and findings.
 
 | Project | How |
 |---|---|
-| Dose Of Destruction | `tools/gpu/gen.mjs` + `jobs.mjs`: the GPU tab and every fighter/stage job. Sound and voice tabs: `audio.*`. Map designer and art review: `llm.json` |
+| Dose Of Destruction | `tools/gpu/gen.mjs` + `jobs.mjs`: the GPU tab and every fighter/stage job. Sound and voice tabs: `audio.*`. Map designer and art review: `llm.json`. Library tab (fighters, `hawkes.library.json`); the GPU tab's jobs, picks and discards are mirrored into the library (`tools/devApi.mjs` `mirror`) |
 | Sick Of It | `Tools/Art/art.mjs` (enemy art). Window > Hawkes Gen in Unity. SickOfIt > Audio > Sound Generator (`Assets/Scripts/Tools/Editor/Audio/HawkesGenAudio.cs`): `audio.sfx`, `audio.voice`, `audio.voice-design`, `audio.voice-save` and `recipes/check` through `com.hawkes.gen` |
-| PH Origins | `tools/voiceLines.mjs`, `tools/soundEffects.mjs` (`audio.*`), `tools/genMaterial.mjs` (materials) |
+| PH Origins | `tools/voiceLines.mjs`, `tools/soundEffects.mjs` (`audio.*`), `tools/genMaterial.mjs` (materials). Level editor Tools > Library (`src/editor/library.ts`, `tools/genLibrary.mjs`): characters and props from `assets/models` |
 | Breaking Through, Yooba Land | Window > Hawkes Gen (Unity package) |
 | Every project folder | The `hawkesgen` MCP server in `.mcp.json`, plus a "Generative AI: Hawkes Gen" section in its AGENTS.md |
 
