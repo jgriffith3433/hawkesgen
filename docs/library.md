@@ -142,6 +142,13 @@ folders and the library. A mapping file in the product's repo says which file is
 | `pose/{name}` | `poses/{name}.png` | takes in `poses/_takes/` |
 | `clip/{name}` | `anims/{name}.mp4` | takes in `anims/_takes/`, old versions in `anims/_old/` |
 
+A flat folder with one file per entity uses `"layout": "files"`. In that layout `{entity}` in a pattern is the entity's
+name, `entities` lists name patterns to keep, and `skip` lists name patterns to leave out. One file can hold several
+mappings: `{ ...shared, "mappings": [...] }`, one per kind. PH Origins' `phoriginswebsite/hawkes.library.json` uses this
+for `assets/models/*.glb`: `ch*`, `hero` and `parasite-*` are characters, and the rest are props. Its level editor has
+Tools → Library (`src/editor/library.ts`), which talks to Gen through the dev server (`tools/genLibrary.mjs`).
+Studio writes a pick back with the mapping for that entity's kind.
+
 How the bridge behaves:
 - **Re-importing is safe:** files already in a slot (same bytes) are skipped.
 - **The library's pick stands:** a current file that matches a take picks that take, but only while the slot has no

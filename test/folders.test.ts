@@ -90,3 +90,33 @@ test('import brings folders in; again changes nothing; the library\'s pick stand
   await F.importFolders(gen, m, { adopt: true });
   assert.equal((await gen.current(e.id, 'side')).n, 3);
 });
+
+test('a flat folder (one file per entity), split between two mappings by name', async () => {
+  const flat = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-models-'));
+  for (const [f, t] of [['office-desk.glb', 'desk'], ['ch33-hero.glb', 'hero'], ['_takes/office-desk-1.glb', 'desk take'], ['notes.json', '{}']]) {
+    fs.mkdirSync(path.dirname(path.join(flat, f)), { recursive: true });
+    fs.writeFileSync(path.join(flat, f), t);
+  }
+  const file = path.join(flat, 'hawkes.library.json');
+  const slots = [{ slot: 'model', current: '{entity}.glb', takes: '_takes/{entity}-*.glb' }];
+  fs.writeFileSync(file, JSON.stringify({ project: 'testgame', layout: 'files', root: '.', mappings: [{ kind: 'character', entities: ['ch*'], slots }, { kind: 'prop', skip: ['ch*', '_*'], slots }] }));
+  const [chars, props] = F.loadMappings(file);
+  assert.deepEqual(F.entityFolders(chars), ['ch33-hero']);
+  assert.deepEqual(F.entityFolders(props), ['office-desk']);
+  assert.equal(F.loadMapping(file, 'prop').kind, 'prop');
+  assert.equal(F.currentPath(props, 'model', 'office-desk'), 'office-desk.glb');
+
+  await F.importFolders(gen, chars);
+  await F.importFolders(gen, props);
+  const desk = await gen.entity('testgame/office-desk');
+  assert.equal(desk.kind, 'prop');
+  assert.equal(desk.slots.model.versions, 2);
+  assert.equal(desk.slots.model.current.n, 2);
+  assert.equal((await gen.entity('testgame/ch33-hero')).kind, 'character');
+
+  const take = (await gen.slot(desk.id, 'model')).versions.find((v: any) => v.n === 1);
+  await gen.pick(take.id);
+  const out = await F.exportFolders(gen, props);
+  assert.deepEqual(out.filter((r: any) => r.action !== 'same').map((r: any) => r.file), ['office-desk.glb']);
+  assert.equal(fs.readFileSync(path.join(flat, 'office-desk.glb'), 'utf8'), 'desk take');
+});

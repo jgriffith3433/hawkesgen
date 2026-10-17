@@ -8,7 +8,7 @@
 // Hawkes Gen is found the usual way (HAWKESGEN_URL / HAWKESGEN_KEY, ~/.hawkes/client.json, else this PC).
 
 import { HawkesGen } from '../clients/js/hawkesgen.mjs';
-import { loadMapping, importFolders, exportFolders } from '../clients/js/hawkesgen-folders.mjs';
+import { loadMappings, importFolders, exportFolders } from '../clients/js/hawkesgen-folders.mjs';
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(`--${n}`);
@@ -18,8 +18,8 @@ if (!['status', 'import', 'export'].includes(cmd) || !file) {
   console.error('usage: hawkesgen-folders.mjs status|import|export <mapping.json> [--only <folder>] [--dry]');
   process.exit(2);
 }
-const m = loadMapping(file);
-const gen = new HawkesGen({ project: m.project });
+const mappings = loadMappings(file);
+const gen = new HawkesGen({ project: mappings[0].project });
 const only = val('only');
 const tally = (report) => {
   const n = {};
@@ -27,13 +27,16 @@ const tally = (report) => {
   return Object.entries(n).map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing';
 };
 try {
-  if (cmd === 'import' || cmd === 'status') {
-    const r = await importFolders(gen, m, { only, dry: cmd === 'status' || flag('dry'), adopt: flag('adopt'), log: (l) => console.log(l) });
-    for (const x of r.filter((x) => x.action !== 'same').slice(0, cmd === 'status' ? 60 : 0)) console.log(`${x.action.padEnd(12)} ${x.entity}${x.slot ? ` ${x.slot}` : ''}${x.file ? `  ${x.file}` : ''}`);
-    console.log(`${cmd === 'import' && !flag('dry') ? 'import' : 'to import'}: ${tally(r)}`);
-  } else {
-    const r = await exportFolders(gen, m, { only, dry: flag('dry'), log: (l) => console.log(l) });
-    console.log(`export: ${tally(r)}`);
+  for (const m of mappings) {
+    const label = mappings.length > 1 ? `${m.kind} ` : '';
+    if (cmd === 'import' || cmd === 'status') {
+      const r = await importFolders(gen, m, { only, dry: cmd === 'status' || flag('dry'), adopt: flag('adopt'), log: (l) => console.log(l) });
+      for (const x of r.filter((x) => x.action !== 'same').slice(0, cmd === 'status' ? 60 : 0)) console.log(`${x.action.padEnd(12)} ${x.entity}${x.slot ? ` ${x.slot}` : ''}${x.file ? `  ${x.file}` : ''}`);
+      console.log(`${label}${cmd === 'import' && !flag('dry') ? 'import' : 'to import'}: ${tally(r)}`);
+    } else {
+      const r = await exportFolders(gen, m, { only, dry: flag('dry'), log: (l) => console.log(l) });
+      console.log(`${label}export: ${tally(r)}`);
+    }
   }
 } catch (e) {
   console.error(e.message);

@@ -9,25 +9,37 @@
       "tool": "image.generate",
       "description": "A tileable material (walnut, lab tile, painted block...) for the interior kit.",
       "prompt": "Seamless tileable texture: {prompt}. Flat, straight-on, evenly lit, no shadows, no objects, photographic detail.",
-      "params": { "width": 1024, "height": 1024, "seamless": true }
+      "params": {
+        "width": 1024,
+        "height": 1024,
+        "seamless": true
+      }
     },
     "sign": {
       "tool": "image.generate",
       "description": "A poster, ad, store sign or document for the world (Hawkes Biomedical, Voss Capital...).",
       "prompt": "{prompt}. Flat, front-on, fills the frame, legible typography, {style}",
-      "params": { "width": 1024, "height": 1536 }
+      "params": {
+        "width": 1024,
+        "height": 1536
+      }
     },
     "sky": {
       "tool": "image.panorama",
       "description": "A 360° sky / city panorama for a level's skybox.",
       "prompt": "{prompt}. {style}",
-      "params": { "width": 2048, "height": 1024 }
+      "params": {
+        "width": 2048,
+        "height": 1024
+      }
     },
     "screen-loop": {
       "tool": "video.i2v",
       "description": "A short loop for a screen (boardroom TV, station ad, CCTV): give the screen's still as start and end.",
       "prompt": "{prompt}. Subtle looping motion, locked camera.",
-      "params": { "frames": 49 }
+      "params": {
+        "frames": 49
+      }
     },
     "prop": {
       "tool": "mesh.textured",
@@ -37,7 +49,70 @@
       "tool": "llm.json",
       "description": "Pierce's inner-voice barks for a room, written to the story's tone.",
       "prompt": "Write short inner-voice barks for Pierce Hawkes (chairman of Hawkes Biomedical, one night in Hawkes Tower) for this moment: {prompt}. Terse, dry, in character. Never mention game mechanics.",
-      "params": { "schema": { "type": "object", "properties": { "barks": { "type": "array", "items": { "type": "string" } } }, "required": ["barks"], "additionalProperties": false } }
+      "params": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "barks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "barks"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  },
+  "kinds": {
+    "_about": "What each kind of entity is made of, for the Hawkes Gen library (docs/library.md). phoriginswebsite/hawkes.library.json brings assets/models in: a character or prop per GLB, its model slot the shipped file. Runtime is GLB-only: a made model is converted and compressed before it ships (phoriginswebsite/AGENTS.md).",
+    "character": {
+      "description": "A character: a concept turnaround and the rigged GLB the game loads (Mixamo rig, fitted in Blender).",
+      "slots": {
+        "concept": {
+          "description": "A full-body turnaround (front, side, back) to model from.",
+          "make": {
+            "tool": "image.generate",
+            "params": {
+              "prompt": "Character turnaround sheet of {look}: front, side and back views, full body, neutral A-pose, plain grey background. {style} {feedback}",
+              "width": 1536,
+              "height": 1024
+            }
+          }
+        },
+        "model": {
+          "description": "The rigged GLB in assets/models (made by hand: Mixamo rig, Blender)."
+        }
+      }
+    },
+    "prop": {
+      "description": "A prop for a level: a reference image and the textured GLB made from it.",
+      "slots": {
+        "reference": {
+          "description": "The prop alone, three-quarter view, evenly lit on a plain background: what the model is made from.",
+          "make": {
+            "tool": "image.generate",
+            "params": {
+              "prompt": "A single {look}, three-quarter view, the whole object in frame, evenly lit, plain white background, no other objects. Photographic detail, {style} {feedback}",
+              "width": 1024,
+              "height": 1024
+            }
+          }
+        },
+        "model": {
+          "description": "The textured GLB in assets/models (convert and compress before shipping).",
+          "make": {
+            "tool": "mesh.textured",
+            "inputs": {
+              "image": "slot:./reference"
+            }
+          }
+        }
+      }
     }
   }
 }

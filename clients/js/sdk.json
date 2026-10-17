@@ -18,7 +18,12 @@
     },
     "phoriginswebsite": {
       "tools/": [
-        "hawkesgen.mjs"
+        "hawkesgen.mjs",
+        "hawkesgen-folders.mjs"
+      ],
+      "src/editor/hawkesgen/": [
+        "hawkesgen.mjs",
+        "hawkesgen-ui.mjs"
       ]
     },
     "sickofitgame-unity": {
