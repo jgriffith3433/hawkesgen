@@ -57,7 +57,10 @@ test('the client: an entity, a file into a slot, pick, history, live events', as
   assert.equal(list.items[0].slots.side.current.n, 1);
 });
 
-test('make: a slot recipe with a slot reference runs, and its output comes back as a take', async () => {
+// image.tile is a local Python tool: CI has no .venv, so this one skips there.
+const python = [path.join('.venv', 'Scripts', 'python.exe'), path.join('.venv', 'bin', 'python')].some((p) => fs.existsSync(p));
+
+test('make: a slot recipe with a slot reference runs, and its output comes back as a take', { skip: !python && 'no .venv' }, async () => {
   const id = 'doseofdestruction/break';
   await gen.updateEntity(id, { data: { slots: { 'pose/tiled': { brief: 'a tile test', make: { tool: 'image.tile', inputs: { image: 'slot:./side' }, params: { blend: 0.2 } } } } } });
   const job = await gen.make(id, 'pose/tiled', { note: 'first try' });
