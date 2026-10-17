@@ -11,6 +11,7 @@ import { playtestRunTool, playtestReviewTool } from './playtest.ts';
 import { assetMakeTool } from './pipeline.ts';
 import { loraTrainTool, imageCharacterTool } from './lora.ts';
 import { blenderRenderTool } from './blender.ts';
+import { composeTool } from './compose.ts';
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
@@ -19,7 +20,7 @@ const BUILT_IN: Tool[] = [
   llmTextTool, llmJsonTool,
   cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, loraTrainTool, imageCharacterTool,
-  blenderRenderTool,
+  blenderRenderTool, composeTool,
 ];
 
 export let TOOLS: Tool[] = [];
