@@ -13,7 +13,8 @@ import { convertUiWorkflow, checkGraph } from './workflows/convert.ts';
 import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { submit, getJob, listJobs, cancel, rerun, clearFinished, events, summary, queue, type JobSpec } from './jobs.ts';
-import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, findByRecipe, recipeKey } from './library.ts';
+import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
+import * as lib from './entities.ts';
 import { usageSummary } from './usage.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
@@ -103,6 +104,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
   // MCP over HTTP (src/mcp-http.ts), with its own key check.
   if (route === '/mcp' || route.startsWith('/mcp/')) return handleMcp(req, res, route);
+
+  // The JS client and the UI kit (clients/js), for pages that load them from Gen instead of keeping a copy.
+  const kit = /^\/client\/(hawkesgen(?:-ui)?\.mjs)$/.exec(route);
+  if (kit && method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
+    return void fs.createReadStream(path.join(paths.server, '..', 'clients', 'js', kit[1])).pipe(res);
+  }
 
   // Dashboard.
   if (!route.startsWith('/v1/')) {
@@ -201,13 +209,64 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write(': hello\n\n');
       const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(j)}\n\n`);
+      // Library changes (src/entities.ts): an entity edited, a take filed, picked or discarded.
+      const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
       events.on('job', onJob);
+      events.on('library', onLibrary);
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => {
         events.off('job', onJob);
+        events.off('library', onLibrary);
         clearInterval(ping);
       });
       return;
+    }
+
+    // --------------------------------------------------------------- library: entities, slots, versions
+    // src/entities.ts and docs/library.md. A slot name can have slashes (pose/air), so it is the rest of the path.
+    if (route === '/v1/entities' && method === 'GET') {
+      return send(res, 200, lib.listEntities(client, { project: q('project'), kind: q('kind'), text: q('q'), tag: q('tag'), archived: q('archived') === '1', limit: Number(q('limit')) || 100, offset: Number(q('offset')) || 0 }));
+    }
+    if (route === '/v1/entities' && method === 'POST') return send(res, 200, lib.createEntity(client, await readJson(req)));
+    m = /^\/v1\/versions\/(v_[0-9a-f]+)$/.exec(route);
+    if (m && method === 'PATCH') return send(res, 200, lib.updateVersion(client, m[1], await readJson(req)));
+    m = /^\/v1\/entities\/([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9-]*)(?:\/slots\/(.+?))?(?:\/(versions|make|revise))?$/i.exec(route);
+    if (m) {
+      const entityId = `${m[1]}/${m[2]}`;
+      const slot = m[3] ? decodeURIComponent(m[3]) : null;
+      const action = m[4] ?? null;
+      if (!slot && !action && method === 'GET') return send(res, 200, lib.getEntity(client, entityId));
+      if (!slot && !action && method === 'PATCH') return send(res, 200, lib.updateEntity(client, entityId, await readJson(req)));
+      if (slot && !action && method === 'GET') return send(res, 200, lib.slotHistory(client, entityId, slot, { discarded: q('discarded') !== '0' }));
+      if (slot && action === 'versions' && method === 'POST') {
+        // A file into the slot: an asset already in the library, or an uploaded blob (POST /v1/blobs first).
+        const b = await readJson(req);
+        let assetId = typeof b.asset === 'string' ? b.asset.replace(/^asset:/, '') : null;
+        const file = typeof b.file === 'string' ? b.file : null;
+        if (!assetId && file?.startsWith('asset:')) assetId = file.slice(6);
+        if (!assetId && file?.startsWith('blob:')) {
+          const p = blobPath(file.slice(5));
+          if (!p) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
+          const e = lib.getEntity(client, entityId);
+          const ext = path.extname(p).toLowerCase();
+          assetId = putAsset({
+            data: fs.readFileSync(p), ext: ext || undefined, client: client.id, project: e.project, tool: 'file.import',
+            recipe: { tool: 'file.import', version: 1, params: { title: b.title ?? null, ...(typeof b.prompt === 'string' ? { prompt: b.prompt.slice(0, 8000) } : {}) }, inputs: { file: file.slice(5) } },
+            labels: { entity: entityId, slot }, title: typeof b.title === 'string' ? b.title.slice(0, 200) : `${entityId} ${slot}`,
+            meta: b.meta && typeof b.meta === 'object' ? b.meta : undefined,
+          }).id;
+        }
+        if (!assetId) throw new GenError('Send asset (an asset id) or file (blob:<sha256> or asset:<id>)');
+        return send(res, 200, lib.addVersion(client, { entity: entityId, slot, asset: assetId, status: b.status, note: b.note, by: client.name }));
+      }
+      if (slot && (action === 'make' || action === 'revise') && method === 'POST') {
+        const b = await readJson(req);
+        const spec = action === 'make'
+          ? lib.slotJobSpec(client, { entity: entityId, slot, make: b.make, feedback: b.feedback, count: b.count, params: b.params, note: b.note })
+          : lib.reviseJobSpec(client, { entity: entityId, slot, feedback: b.feedback, version: b.version, count: b.count, references: b.references });
+        const job = submit(client, { ...spec, labels: { ...spec.labels, by: client.name }, priority: b.priority, reuse: b.reuse ?? false } as JobSpec);
+        return send(res, 200, job);
+      }
     }
 
     // --------------------------------------------------------------- assets

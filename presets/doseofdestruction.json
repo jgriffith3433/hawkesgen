@@ -9,7 +9,10 @@
       "tool": "image.generate",
       "description": "A new fighter, full body, front three-quarter view, on green for keying.",
       "prompt": "{prompt}. Full-body character, standing in a fighting stance, facing three-quarters toward the camera. {style} Plain flat pure green background, no floor, no shadow, even studio lighting.",
-      "params": { "width": 1024, "height": 1024 }
+      "params": {
+        "width": 1024,
+        "height": 1024
+      }
     },
     "fighter-turnaround": {
       "tool": "image.angles",
@@ -19,13 +22,101 @@
       "tool": "image.generate",
       "description": "A stage backdrop: game environment art, nobody in it.",
       "prompt": "Game environment art for a 2D platform fighter stage, an empty scene: nobody in it. {prompt}. Wide side-on view, readable depth, {style}",
-      "params": { "width": 1568, "height": 672 }
+      "params": {
+        "width": 1568,
+        "height": 672
+      }
     },
     "stage-theme": {
       "tool": "audio.music",
       "description": "A looping stage theme.",
       "prompt": "{prompt}, energetic fighting game stage theme, loopable, instrumental",
-      "params": { "lyrics": "[Instrumental]", "seconds": 90 }
+      "params": {
+        "lyrics": "[Instrumental]",
+        "seconds": 90
+      }
+    }
+  },
+  "kinds": {
+    "_about": "What each kind of entity is made of, for the Hawkes Gen library (docs/library.md): a slot's make is the recipe 'Make' runs. Prompts use {name}, {look} (the entity's look), {brief} (the slot's brief), {feedback}, {style} and any field of the slot's own data ({start}, {end}). These are the settings DoD's dev tools tuned (tools/gpu/settings.mjs).",
+    "fighter": {
+      "description": "A playable fighter: a concept, a front reference cut out on green, a side view facing right, poses, and a clip per move.",
+      "slots": {
+        "concept": {
+          "description": "The concept art (imported or painted)."
+        },
+        "reference": {
+          "description": "The front view, cut out on green: what every other slot is made from."
+        },
+        "side": {
+          "description": "Standing, full body, side profile facing right, on green.",
+          "make": {
+            "tool": "image.edit",
+            "inputs": {
+              "images": [
+                "slot:./reference"
+              ]
+            },
+            "params": {
+              "prompt": "Show this exact character in full-body side profile view, turned to face right, standing in a relaxed fighting stance. Keep exactly the same character design: the same face, hair, outfit, colors, proportions and art style. {look} The whole body is visible from head to feet. Plain flat pure green background, no floor, no shadow, even studio lighting. {feedback}",
+              "count": 4,
+              "steps": 4,
+              "cfg": 1,
+              "shift": 3.1,
+              "lora": 1,
+              "sampler": "euler",
+              "scheduler": "simple"
+            }
+          }
+        },
+        "pose/*": {
+          "description": "A pose, made from the side view. The slot's brief is the action (\"crouching low, guard up\").",
+          "make": {
+            "tool": "image.edit",
+            "inputs": {
+              "images": [
+                "slot:./side"
+              ]
+            },
+            "params": {
+              "prompt": "Image 1 is this character, side view, facing right. Show the exact same character {brief}. Keep everything about them the same as image 1: face, hair, outfit, colors, proportions and art style, and the same size and position in the frame. Side view, facing right. {look} The whole body is visible, feet on the same ground line as image 1 unless they are in the air. Plain flat pure green background, no floor, no shadow, even studio lighting. {feedback}",
+              "count": 2,
+              "steps": 4,
+              "cfg": 1,
+              "shift": 3.1,
+              "lora": 1,
+              "sampler": "euler",
+              "scheduler": "simple"
+            }
+          }
+        },
+        "clip/*": {
+          "description": "A move, from its start pose to its end pose (the slot's start and end: pose names, e.g. \"stand\" -> the side view). The brief is the action.",
+          "make": {
+            "tool": "video.i2v",
+            "inputs": {
+              "start": "slot:./{start}",
+              "end": "slot:./{end}"
+            },
+            "params": {
+              "prompt": "{name}, {look}, {brief}. Side view, facing right, full body, staying in place in the center of the frame. Locked camera, no camera movement. Plain flat pure green background, no floor, no shadow, even studio lighting. Big, clear, fast motion for a fighting game. {feedback}",
+              "negative": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, camera movement, zoom, pan, cut, background change, floor, shadow, extra limbs",
+              "width": 640,
+              "height": 640,
+              "frames": 33,
+              "fps": 16,
+              "steps": 8,
+              "split": 4,
+              "cfgHigh": 2,
+              "cfg": 1,
+              "loraVersion": 2,
+              "shift": 5,
+              "loraHigh": 0.7,
+              "loraLow": 1
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -68,6 +68,8 @@ cd /opt/hawkes-pw
 sudo -u ubuntu env PATH=$PATH HOME=/home/ubuntu sh -c 'npm init -y >/dev/null && npm install --no-audit --no-fund --loglevel=error playwright@__PW_VERSION__'
 status installing "installing Chromium"
 npx --yes playwright install-deps chromium
+# ffmpeg encodes each playtest's video here (NVENC on the T4), so the control server only downloads the mp4.
+apt-get -o DPkg::Lock::Timeout=600 install -y -q ffmpeg
 sudo -u ubuntu env PATH=$PATH HOME=/home/ubuntu npx playwright install chromium chromium-headless-shell
 
 # The browser server. Playwright's run-server ignores per-connection launch options, so Chromium would fall back to

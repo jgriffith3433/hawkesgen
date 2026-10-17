@@ -63,6 +63,22 @@ A finished job has `outputs: [{ asset, seed, mime, kind, title }]` and/or `resul
 | `POST /v1/estimate` `{ project, items: [{ tool \| preset, params, count, label }], servers? }` | What a batch would cost before running it: GPU seconds per line (the median of past jobs of that tool, scaled by frames and pixels, else the tool's guess), model loads per family, server boots, API costs, `cost: { gpu, api, idleTail, total, withIdleTail }`, `wallMinutes`, `note`. `asset.make` items expand into their steps × `candidates` plus a pick. `src/estimate.ts` |
 | `POST /v1/recipes/check` `{ tool, params, inputs, project }` | `{ status: "current" \| "missing", asset }`: is there an asset from exactly this tool version, params and inputs (any seed)? |
 
+## Entities, slots and versions (docs/library.md)
+
+| Route | What |
+|---|---|
+| `GET /v1/entities?project&kind&q&tag&archived&limit&offset` | Entities, each with its slots' current version and counts |
+| `POST /v1/entities` | `{ project, name, kind, slug?, data?, tags?, upsert? }` |
+| `GET` / `PATCH /v1/entities/:project/:slug` | One entity and its slots; change name, kind, data (merged), tags, archived |
+| `GET /v1/entities/:id/slots/:slot` | The slot's versions, newest first (`?discarded=0` hides discarded) |
+| `POST /v1/entities/:id/slots/:slot/versions` | `{ file: blob:<sha> \| asset:<id>, status?, note?, title? }` |
+| `POST /v1/entities/:id/slots/:slot/make` | `{ make?, feedback?, count?, params?, note?, reuse? }`: the job; its outputs land in the slot as takes |
+| `POST /v1/entities/:id/slots/:slot/revise` | `{ feedback, version?, count?, references? }`: the job |
+| `PATCH /v1/versions/:id` | `{ status: current \| take \| old \| discarded, note? }` |
+
+Job inputs and chain steps take `slot:<project>/<slug>/<slot>[@n|@latest]` and, in an entity's own recipes, `slot:./<slot>`.
+`GET /v1/events` also streams `library` events.
+
 ## Presets
 
 | Route | |

@@ -4,6 +4,7 @@
 // sites a crawl of their pages.
 
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import type { Tool, RunContext } from './types.ts';
 import { GenError, run as runProc, sleep } from '../util.ts';
@@ -12,7 +13,7 @@ import { db } from '../db.ts';
 import { ask, DEFAULT_MODEL } from '../providers/anthropic.ts';
 import { openPlaytestHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
 import { awsConfig } from '../providers/comfy/fleet.ts';
-import { ScreencastRecorder, mjpegToMp4Args, SCREENCAST_FPS } from './screencast.ts';
+import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
 type Problem = { severity: string; message: string; source: string };
@@ -57,7 +58,7 @@ export const playtestRunTool: Tool = {
     headed: { type: 'boolean', default: false, description: 'Show the browser window (WebGL runs on the real GPU either way)', advanced: true },
     gpu: { type: 'enum', values: ['auto', 'require', 'off'], default: 'auto', description: 'Where the browser runs. auto: this PC if it has a GPU (Windows), else the playtester (T4) if it is running, else a ready GPU fleet server, else here in software. require: one of those GPU machines or fail. off: here.', advanced: true },
     maxPages: { type: 'integer', default: 40, min: 1, max: 300, description: 'Site mode: how many pages to visit', advanced: true },
-    recorder: { type: 'enum', values: ['auto', 'screencast', 'playwright'], default: 'auto', description: 'How the video is made. screencast: every frame Chromium draws, kept at 30 fps, encoded here after the run (smooth). playwright: Playwright\'s recordVideo (25 fps, encoded on the browser\'s machine). auto: screencast when the browser runs on a GPU machine, else playwright.', advanced: true },
+    recorder: { type: 'enum', values: ['auto', 'screencast', 'playwright'], default: 'auto', description: 'How the video is made. screencast: every frame Chromium draws, kept at 30 fps, encoded after the run on the browser\'s machine (smooth). playwright: Playwright\'s recordVideo (25 fps, encoded on the browser\'s machine). auto: screencast when the browser runs on a GPU machine, else playwright.', advanced: true },
     baseline: { type: 'string', description: 'A previous playtest.run job of the same scenario: screenshots at matching events (scene changes, the end) are compared with a perceptual diff', advanced: true, example: 'j_0123456789ab' },
   },
   async run(ctx) {
@@ -418,7 +419,24 @@ export const playtestRunTool: Tool = {
       if (mjpeg) {
         const out = ctx.tmp('playtest.mp4');
         try {
-          await runProc('ffmpeg', mjpegToMp4Args(mjpeg, out, viewport), { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(20 * 60_000)]) });
+          // On the machine that recorded it (this server's two cores stay free for the agents), else here.
+          let encoded = false;
+          if (host) {
+            ctx.step(`encoding the video on ${host.server}`);
+            try {
+              const encoder = await encodeRemotely(host.ssh, remoteEncodeScript(viewport), mjpeg, out, AbortSignal.any([ctx.signal, AbortSignal.timeout(20 * 60_000)]));
+              Object.assign(recorder, { encodedOn: host.server, encoder });
+              encoded = true;
+            } catch (e: any) {
+              if (ctx.signal.aborted) throw e;
+              ctx.log(`video: encoding on ${host.server} failed (${e.message}); encoding here instead`);
+            }
+          }
+          if (!encoded) {
+            ctx.step('encoding the video');
+            await runProc('ffmpeg', mjpegToMp4Args(mjpeg, out, viewport), { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(20 * 60_000)]) });
+            Object.assign(recorder, { encodedOn: 'this machine', encoder: 'libx264' });
+          }
           mp4 = out;
           await ctx.emit({ data: fs.readFileSync(out), ext: '.mp4', mime: 'video/mp4', title, meta: { playtest: 'video' } });
           result.video = lastAsset();
@@ -492,6 +510,49 @@ export const playtestRunTool: Tool = {
     }
   },
 };
+
+/**
+ * Runs the encode script on a playtest machine over SSH: the MJPEG goes up on stdin, the mp4 comes back on stdout into
+ * `out`. Resolves with the encoder it used; rejects (and kills ssh) on failure, a bad exit or the signal.
+ */
+export function encodeRemotely(target: { args: string[]; dest: string }, script: string, input: string, out: string, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // The script travels base64-encoded, so no quoting survives into the remote shell.
+    const command = `bash -c "$(printf %s ${Buffer.from(script).toString('base64')} | base64 -d)"`;
+    const child = spawn('ssh', [...target.args, '-o', 'ConnectTimeout=15', '-o', 'ServerAliveInterval=15', target.dest, command], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const file = fs.createWriteStream(out);
+    let err = '';
+    let failed: Error | null = null;
+    const fail = (e: Error) => { failed ??= e; child.kill(); };
+    const onAbort = () => fail(new Error(signal.reason?.message ?? 'cancelled'));
+    if (signal.aborted) onAbort();
+    signal.addEventListener('abort', onAbort);
+    child.stderr.on('data', (d) => { err = (err + d).slice(-4000); });
+    child.stdin.on('error', () => {});
+    file.on('error', fail);
+    // ssh that never started (not installed) doesn't always emit close.
+    child.on('error', (e) => { fail(e); if (!child.pid) { file.end(); exited(-1); } });
+    fs.createReadStream(input).on('error', fail).pipe(child.stdin);
+    child.stdout.pipe(file);
+    // Done when ssh has exited and the mp4 is flushed to disk (stdout's end closes the file).
+    let code: number | null = null;
+    let pending = 2;
+    const settle = () => {
+      if (--pending) return;
+      signal.removeEventListener('abort', onAbort);
+      const encoder = /encoder: (\S+)/.exec(err)?.[1] ?? 'unknown';
+      const lines = err.split('\n').filter((l) => l.trim() && !l.startsWith('encoder:'));
+      if (failed) reject(failed);
+      else if (code !== 0) reject(new Error(lines.slice(-2).join(' ') || `exit ${code}`));
+      else if (!fs.existsSync(out) || fs.statSync(out).size === 0) reject(new Error('no video came back'));
+      else resolve(encoder);
+    };
+    let gone = false;
+    const exited = (c: number | null) => { if (!gone) { gone = true; code = c; settle(); } };
+    file.on('close', settle);
+    child.on('close', exited);
+  });
+}
 
 /** A step that hangs past its limit. The run ends as "stuck" (with what it recorded), not failed. */
 class Stuck extends Error {

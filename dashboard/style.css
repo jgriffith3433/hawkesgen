@@ -69,3 +69,6 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 .bar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; } .bar > i { display: block; height: 100%; background: var(--accent); }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
 @media (max-width: 640px) { .top { padding: 10px 12px; } main { padding: 12px; } th:nth-child(n+5), td:nth-child(n+5) { display: none; } }
+
+/* The library's web components (clients/js/hawkesgen-ui.mjs) in the dashboard's colors, light and dark. */
+hg-library, hg-entity, hg-slot { --hg-bg: var(--bg); --hg-panel: var(--panel); --hg-fg: var(--ink); --hg-muted: var(--muted); --hg-line: var(--line); --hg-accent: var(--accent); }

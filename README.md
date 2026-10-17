@@ -57,6 +57,7 @@ Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
 | Builds | `unity.build` (Unity WebGL on the AWS build server, incremental: keeps each project's Library) |
 | Playtests | `playtest.run` (play a game in Chromium through its playtest contract, or smoke-test or crawl a site; video, screenshots, console, fps), `playtest.review` (Claude watches it and files a few new findings: capped, told the known ones, a mode per run kind, judged against the product's quality bar) |
 | Pipelines | `asset.make` (a chain of tools as one recipe; best-of-N images or videos, at any step, picked by Claude against the art direction, canon and on-model references; takes the library already has are reused) |
+| Library | Entities (a fighter, a stage, a shot) with slots (concept, side, pose/air, clip/jab) and every version of each (takes, current, old): make, revise with feedback, pick, live events, and `slot:` references in any job. One API for every product's tools, Studio, Unity and Claude: `docs/library.md` |
 | Anything else | `comfy.graph` (run a raw graph), or import a workflow (dashboard → Workflows) |
 
 ## Use it
@@ -96,5 +97,6 @@ await gen.download(job.outputs[0].asset, 'imp.png');
 | `docs/workflows.md` | Turning ComfyUI workflows into tools, and the manifest format |
 | `docs/api.md` | Every API route |
 | `docs/comfyui.md` | What works on the GPU servers (and what hangs them) |
+| `docs/library.md` | The library: entities, slots, versions, and how a product's tools use it |
 | `docs/blender.md` | Blender shots to video: `blender.render`, the shot format, `video.control`, and the cut (`video.compose`) |
 | `DESIGN.md` | J's decisions and the roadmap |

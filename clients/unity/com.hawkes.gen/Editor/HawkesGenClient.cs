@@ -199,6 +199,97 @@ namespace HawkesGen
             });
         }
 
+        // ------------------------------------------------------------ the library (hawkesgen/docs/library.md)
+        // Entities ("sickofit/imp"), their slots ("side", "pose/attack", "clip/walk") and every version of each slot:
+        // takes, the current one, old and discarded ones. Jobs made for a slot file their outputs there as takes.
+
+        static void SendJson(string method, string path, object body, Action<object, string> done)
+        {
+            var req = new UnityWebRequest(Url + "/v1" + path, method)
+            {
+                uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(MiniJson.Write(body ?? new Dictionary<string, object>()))),
+                downloadHandler = new DownloadHandlerBuffer(),
+            };
+            req.SetRequestHeader("Content-Type", "application/json");
+            Send(req, r => done(ErrorOf(r) == null ? MiniJson.Parse(r.downloadHandler.text) : null, ErrorOf(r)));
+        }
+
+        static string SlotPath(string entityId, string slot)
+        {
+            var parts = slot.Split('/');
+            for (var i = 0; i < parts.Length; i++) parts[i] = UnityWebRequest.EscapeURL(parts[i]);
+            return "/entities/" + entityId + "/slots/" + string.Join("/", parts);
+        }
+
+        /// <summary>Uploads a file (absolute or Assets/... path) to Hawkes Gen; done gets "blob:&lt;sha256&gt;" to use as an input or a version.</summary>
+        public static void Upload(string path, Action<string, string> done)
+        {
+            var full = Path.GetFullPath(path);
+            var req = new UnityWebRequest(Url + "/v1/blobs", "POST") { uploadHandler = new UploadHandlerRaw(File.ReadAllBytes(full)), downloadHandler = new DownloadHandlerBuffer() };
+            req.SetRequestHeader("X-Filename", Path.GetFileName(full));
+            Send(req, r =>
+            {
+                var err = ErrorOf(r);
+                done(err == null ? (MiniJson.Parse(r.downloadHandler.text) as Dictionary<string, object>).Str("blob") : null, err);
+            });
+        }
+
+        /// <summary>Entities in a project (kind optional): { items: [{ id, name, kind, slots: { side: { current, takes } } }], total }.</summary>
+        public static void Entities(string project, string kind, Action<object, string> done) =>
+            GetJson("/entities?project=" + UnityWebRequest.EscapeURL(project ?? "") + (string.IsNullOrEmpty(kind) ? "" : "&kind=" + UnityWebRequest.EscapeURL(kind)), done);
+
+        public static void Entity(string entityId, Action<object, string> done) => GetJson("/entities/" + entityId, done);
+
+        /// <summary>Creates (or with upsert, updates) an entity: project, name, kind, optional data (canon, look, slots).</summary>
+        public static void CreateEntity(string project, string name, string kind, Dictionary<string, object> data, bool upsert, Action<object, string> done) =>
+            PostJson("/entities", new Dictionary<string, object> { ["project"] = project, ["name"] = name, ["kind"] = kind, ["data"] = data ?? new Dictionary<string, object>(), ["upsert"] = upsert }, done);
+
+        public static void UpdateEntity(string entityId, Dictionary<string, object> patch, Action<object, string> done) => SendJson("PATCH", "/entities/" + entityId, patch, done);
+
+        /// <summary>A slot's versions, newest first: { versions: [{ id, n, status, note, asset, file: { kind, url, prompt } }] }.</summary>
+        public static void Slot(string entityId, string slot, Action<object, string> done) => GetJson(SlotPath(entityId, slot), done);
+
+        /// <summary>Files a file into a slot: a path (uploaded), asset:&lt;id&gt; or blob:&lt;sha256&gt;. status "current" makes it the one in use.</summary>
+        public static void AddVersion(string entityId, string slot, string file, string note, string status, Action<object, string> done)
+        {
+            void post(string reference)
+            {
+                var body = new Dictionary<string, object> { ["file"] = reference };
+                if (!string.IsNullOrEmpty(note)) body["note"] = note;
+                if (!string.IsNullOrEmpty(status)) body["status"] = status;
+                PostJson(SlotPath(entityId, slot) + "/versions", body, done);
+            }
+            if (file.StartsWith("asset:") || file.StartsWith("blob:")) post(file);
+            else Upload(file, (blob, err) => { if (err != null) done(null, err); else post(blob); });
+        }
+
+        /// <summary>Makes a version current (the old current becomes old), or discards it, restores it ("take") or notes on it.</summary>
+        public static void SetVersion(string versionId, string status, string note, Action<object, string> done)
+        {
+            var body = new Dictionary<string, object>();
+            if (!string.IsNullOrEmpty(status)) body["status"] = status;
+            if (note != null) body["note"] = note;
+            SendJson("PATCH", "/versions/" + versionId, body, done);
+        }
+
+        /// <summary>New takes for a slot from its own recipe (or make: { tool | preset | steps, params, inputs }); feedback is added. Wait() on the job.</summary>
+        public static void Make(string entityId, string slot, Dictionary<string, object> make, string feedback, int count, Action<GenJob, string> done)
+        {
+            var body = new Dictionary<string, object>();
+            if (make != null) body["make"] = make;
+            if (!string.IsNullOrEmpty(feedback)) body["feedback"] = feedback;
+            if (count > 0) body["count"] = count;
+            PostJson(SlotPath(entityId, slot) + "/make", body, (res, err) => done(err == null ? GenJob.From((Dictionary<string, object>)res) : null, err));
+        }
+
+        /// <summary>Edits the slot's current version with the feedback ("make the horns longer"); the results come back as takes.</summary>
+        public static void Revise(string entityId, string slot, string feedback, int count, Action<GenJob, string> done)
+        {
+            var body = new Dictionary<string, object> { ["feedback"] = feedback };
+            if (count > 0) body["count"] = count;
+            PostJson(SlotPath(entityId, slot) + "/revise", body, (res, err) => done(err == null ? GenJob.From((Dictionary<string, object>)res) : null, err));
+        }
+
         static string Safe(string s)
         {
             var sb = new StringBuilder();

@@ -486,6 +486,32 @@ render.tools = async () => {
 };
 
 // ---------------------------------------------------------------- presets
+// ---------------------------------------------------------------- entities (the library's structure: docs/library.md)
+// The same web components every product's tools embed (clients/js/hawkesgen-ui.mjs, served at /client/).
+render.entities = async () => {
+  const el = $('#entities');
+  if (!render.entities.ready) {
+    const ui = await import('/client/hawkesgen-ui.mjs');
+    ui.configure({ url: location.origin, key: '' });
+    render.entities.ready = true;
+  }
+  const projects = (await api('/presets')).projects.map((p) => p.project).sort();
+  const pick = render.entities.project ?? localStorage.getItem('hg-entities-project') ?? projects[0];
+  if (el.querySelector('hg-library')?.getAttribute('project') === pick) return;
+  el.innerHTML = '';
+  const sel = document.createElement('select');
+  for (const p of projects) sel.append(new Option(p, p, false, p === pick));
+  sel.onchange = () => { render.entities.project = sel.value; try { localStorage.setItem('hg-entities-project', sel.value); } catch {} render.entities().catch(fail); };
+  const bar = document.createElement('div');
+  bar.className = 'row';
+  bar.append('Project ', sel);
+  const lib = document.createElement('hg-library');
+  lib.setAttribute('project', pick);
+  lib.setAttribute('open-inline', '');
+  lib.style.marginTop = '12px';
+  el.append(bar, lib);
+};
+
 render.presets = async () => {
   const [{ projects }, { tools }] = await Promise.all([api('/presets'), api('/tools')]);
   state.tools = tools;

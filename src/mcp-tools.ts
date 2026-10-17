@@ -2,7 +2,7 @@
 // They use the HTTP API through the client they are given: on the server, a client for this service with the
 // caller's own API key, so the key's role and projects apply.
 //
-// Tools stay few and general (list, run, jobs, library, presets, fleet, templates), so they cost little context;
+// Tools stay few and general (list, run, jobs, library, entities, presets, fleet, templates), so they cost little context;
 // hawkesgen_tools describes the 30+ generation tools when an agent needs them.
 
 import fs from 'node:fs';
@@ -114,6 +114,64 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
       run: async (a) => {
         const r = await gen.assets({ ...(a.search ? { q: a.search } : {}), ...(a.project ? { project: a.project } : {}), ...(a.kind ? { kind: a.kind } : {}), ...(a.starred ? { starred: '1' } : {}), limit: String(a.limit ?? 30) });
         return { total: r.total, items: r.items.map((x: any) => ({ id: x.id, kind: x.kind, project: x.project, tool: x.tool, title: x.title, labels: x.labels, path: remote ? `${filesUrl}/v1/files/${x.id}` : x.path, prompt: x.recipe?.params?.prompt, created: new Date(x.created).toISOString() })) };
+      },
+    },
+    {
+      name: 'hawkesgen_entities',
+      description:
+        'The library\'s structure, shared by every product: entities (a fighter, a stage, a set, a shot: "doseofdestruction/break") with named slots ' +
+        '(concept, side, pose/air, clip/jab, model, animation/walk) and every version of each slot (takes, the current one, old, discarded; with notes ' +
+        'and what each was made from). Without id: list entities. With id: one entity and its slots. With id and slot: that slot\'s history.',
+      inputSchema: obj({ id: str('Entity id, project/slug (optional)'), slot: str('Slot name with id (optional)'), project: str('Project, to list'), kind: str('character, stage, prop, shot... to list'), search: str('Text to find, to list') }),
+      run: async (a) => {
+        const view = (v: any) => v && { id: v.id, n: v.n, status: v.status, note: v.note || undefined, by: v.by || undefined, asset: v.asset, kind: v.file?.kind, prompt: v.file?.prompt ?? undefined, made_from: v.made_from?.length ? v.made_from.map((m: any) => m.slot ? `${m.entity} ${m.slot} v${m.n}` : m.asset) : undefined, file: remote ? `${filesUrl}/v1/files/${v.asset}` : undefined, created: new Date(v.created).toISOString() };
+        if (a.id && a.slot) return { entity: a.id, slot: a.slot, versions: (await gen.slot(a.id, a.slot)).versions.map(view) };
+        if (a.id) {
+          const e = await gen.entity(a.id);
+          return { ...e, slots: Object.fromEntries(Object.entries<any>(e.slots).map(([k, s]) => [k, { current: view(s.current), takes: s.takes, versions: s.versions }])) };
+        }
+        const r = await gen.entities({ ...(a.project ? { project: a.project } : {}), ...(a.kind ? { kind: a.kind } : {}), ...(a.search ? { q: a.search } : {}), limit: '200' });
+        return { total: r.total, items: r.items.map((e: any) => ({ id: e.id, kind: e.kind, name: e.name, slots: Object.fromEntries(Object.entries<any>(e.slots).map(([k, s]) => [k, s.current ? `v${s.current.n}${s.takes ? ` (+${s.takes} takes)` : ''}` : `${s.takes} takes, none picked`])) })) };
+      },
+    },
+    {
+      name: 'hawkesgen_entity_edit',
+      description:
+        'Change the library: create or update an entity (create with project, name, kind; data is merged: canon, look, slots.<slot>.brief/make), file a ' +
+        'file into a slot (file: a path on this machine, asset:<id> or blob:<sha>), pick a version as current, discard or restore one, or note on it. ' +
+        'Picking changes what products use: do it when the user chose, not on your own.',
+      inputSchema: obj({
+        action: str('create, update, add, pick, discard, restore or note'), id: str('Entity id (project/slug)'), project: str('create: project'), name: str('create/update: name'),
+        kind: str('create/update: kind'), data: { type: 'object', description: 'create/update: data to merge' }, slot: str('add: slot'), file: str('add: the file'),
+        version: str('pick/discard/restore/note: version id (v_...)'), note: str('add/pick/note: the note'),
+      }, ['action']),
+      run: async (a) => {
+        if (a.action === 'create') return gen.createEntity({ project: a.project, name: a.name, kind: a.kind, data: a.data, ...(a.id ? { slug: String(a.id).split('/').pop() } : {}) });
+        if (a.action === 'update') return gen.updateEntity(a.id, { name: a.name, kind: a.kind, data: a.data });
+        if (a.action === 'add') {
+          if (remote && a.file && !/^(asset|blob):/.test(a.file)) throw new Error('Over HTTP, file must be asset:<id> or blob:<sha256>');
+          return gen.addVersion(a.id, a.slot, a.file, { note: a.note });
+        }
+        if (a.action === 'pick') return gen.pick(a.version, a.note);
+        if (a.action === 'discard') return gen.discard(a.version);
+        if (a.action === 'restore') return gen.restore(a.version);
+        if (a.action === 'note') return gen.note(a.version, a.note ?? '');
+        throw new Error('action is create, update, add, pick, discard, restore or note');
+      },
+    },
+    {
+      name: 'hawkesgen_entity_make',
+      description:
+        'Make new takes for an entity\'s slot (they land in the slot when the job ends). With feedback and revise: true, edits the current version with ' +
+        'the feedback ("make the visor bigger"). Without make, the slot\'s own recipe is used (the entity\'s data.slots.<slot>.make, else the project\'s ' +
+        'kinds in its presets). make: { tool | preset | steps, params, inputs, candidates, pick, pickAt, saves }; inputs can say "slot:./side". GPU work ' +
+        'costs money: price big batches with hawkesgen_estimate first.',
+      inputSchema: obj({ id: str('Entity id'), slot: str('Slot'), feedback: str('What to change'), revise: { type: 'boolean', description: 'Edit the current version with the feedback' }, make: { type: 'object' }, count: { type: 'number' }, wait: { type: 'boolean', description: 'Wait for the job (default true)' } }, ['id', 'slot']),
+      run: async (a) => {
+        const job = a.revise ? await gen.revise(a.id, a.slot, a.feedback, { count: a.count }) : await gen.make(a.id, a.slot, { make: a.make, feedback: a.feedback, count: a.count });
+        if (a.wait === false) return summarizeJob(job);
+        const done = await gen.wait(job.id, { throwOnFail: false });
+        return { job: summarizeJob(done), takes: (await gen.slot(a.id, a.slot)).versions.filter((v: any) => v.job === done.id).map((v: any) => ({ id: v.id, n: v.n, asset: v.asset })) };
       },
     },
     {

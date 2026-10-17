@@ -131,3 +131,57 @@ class HawkesGen:
         with open(dest, "wb") as f:
             f.write(self.request("/files/" + asset_id, raw=True))
         return dest
+
+    # ------------------------------------------------------------ the library (docs/library.md)
+    # Entities ("doseofdestruction/break"), their slots ("side", "pose/air") and every version of each slot.
+
+    @staticmethod
+    def _slot_path(entity_id, slot):
+        return "/entities/" + entity_id + "/slots/" + "/".join(urllib.parse.quote(p, safe="") for p in str(slot).split("/"))
+
+    def entities(self, project=None, kind=None, q=None, limit=100):
+        query = {k: v for k, v in {"project": project or self.project, "kind": kind, "q": q, "limit": limit}.items() if v}
+        return self.request("/entities?" + urllib.parse.urlencode(query))
+
+    def entity(self, entity_id):
+        return self.request("/entities/" + entity_id)
+
+    def create_entity(self, name, kind, project=None, slug=None, data=None, upsert=False):
+        body = {"project": project or self.project, "name": name, "kind": kind, "slug": slug, "data": data, "upsert": upsert}
+        return self.request("/entities", "POST", {k: v for k, v in body.items() if v is not None})
+
+    def update_entity(self, entity_id, **patch):
+        return self.request("/entities/" + entity_id, "PATCH", patch)
+
+    def slot(self, entity_id, slot):
+        return self.request(self._slot_path(entity_id, slot))
+
+    def current(self, entity_id, slot):
+        return (self.entity(entity_id).get("slots", {}).get(slot) or {}).get("current")
+
+    def add_version(self, entity_id, slot, file, note=None, status=None, title=None):
+        """file: a local path (uploaded), "asset:<id>" or "blob:<sha256>"."""
+        ref = file if str(file).startswith(("asset:", "blob:")) else self.upload(file)
+        body = {k: v for k, v in {"file": ref, "note": note, "status": status, "title": title}.items() if v is not None}
+        return self.request(self._slot_path(entity_id, slot) + "/versions", "POST", body)
+
+    def pick(self, version_id, note=None):
+        body = {"status": "current"}
+        if note is not None:
+            body["note"] = note
+        return self.request("/versions/" + version_id, "PATCH", body)
+
+    def discard(self, version_id):
+        return self.request("/versions/" + version_id, "PATCH", {"status": "discarded"})
+
+    def note(self, version_id, note):
+        return self.request("/versions/" + version_id, "PATCH", {"note": note})
+
+    def make(self, entity_id, slot, make=None, feedback=None, count=None, params=None, note=None):
+        """New takes for a slot (its own recipe unless make is given). Returns the job; wait() on it."""
+        body = {k: v for k, v in {"make": make, "feedback": feedback, "count": count, "params": params, "note": note}.items() if v is not None}
+        return self.request(self._slot_path(entity_id, slot) + "/make", "POST", body)
+
+    def revise(self, entity_id, slot, feedback, version=None, count=None):
+        body = {k: v for k, v in {"feedback": feedback, "version": version, "count": count}.items() if v is not None}
+        return self.request(self._slot_path(entity_id, slot) + "/revise", "POST", body)

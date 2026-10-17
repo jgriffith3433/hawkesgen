@@ -90,6 +90,40 @@ const MIGRATIONS: string[] = [
      last_used INTEGER,
      disabled INTEGER NOT NULL DEFAULT 0
    );`,
+  // The library's structure (src/entities.ts): the things a product cares about (a fighter, a stage, a shot), named
+  // slots on them (concept, side, pose/air, clip/jab, model, animation/walk) and every version of each slot: takes,
+  // the current one, old ones and discarded ones, with notes and what each was made from.
+  `CREATE TABLE entities (
+     id TEXT PRIMARY KEY,
+     project TEXT NOT NULL,
+     slug TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     name TEXT NOT NULL,
+     data TEXT NOT NULL DEFAULT '{}',
+     tags TEXT NOT NULL DEFAULT '[]',
+     archived INTEGER NOT NULL DEFAULT 0,
+     created INTEGER NOT NULL,
+     updated INTEGER NOT NULL
+   );
+   CREATE INDEX entities_project ON entities (project, kind, slug);
+
+   CREATE TABLE versions (
+     id TEXT PRIMARY KEY,
+     entity TEXT NOT NULL REFERENCES entities (id) ON DELETE CASCADE,
+     slot TEXT NOT NULL,
+     n INTEGER NOT NULL,
+     asset TEXT NOT NULL,
+     status TEXT NOT NULL,
+     note TEXT NOT NULL DEFAULT '',
+     by TEXT NOT NULL DEFAULT '',
+     job TEXT,
+     made_from TEXT NOT NULL DEFAULT '[]',
+     created INTEGER NOT NULL,
+     updated INTEGER NOT NULL
+   );
+   CREATE UNIQUE INDEX versions_n ON versions (entity, slot, n);
+   CREATE INDEX versions_asset ON versions (asset);
+   CREATE INDEX versions_status ON versions (entity, slot, status);`,
 ];
 
 db.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
