@@ -64,6 +64,8 @@ export type Settings = {
     autoPrune: boolean;
     /** Servers launched from the fleet image are thrown away when idle (terminated, not stopped), so no disk is left costing ~$20/month. Servers that installed themselves are always kept. */
     disposable: boolean;
+    /** When a job's models still don't fit after pruning, grow the server's disk up to this many GB (0: never; ~$0.08/GB-month). */
+    maxDiskGb: number;
   };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; local: number };
@@ -76,7 +78,7 @@ export type Settings = {
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
-  fleet: { servers: 4, auto: false, idleMinutes: 60, autoPrune: true, disposable: true },
+  fleet: { servers: 4, auto: false, idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
   concurrency: { elevenlabs: 3, anthropic: 4, local: 2 },
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
@@ -93,6 +95,7 @@ function clean(s: Settings): Settings {
       idleMinutes: n(s.fleet?.idleMinutes, 10, 240, SETTINGS_DEFAULTS.fleet.idleMinutes),
       autoPrune: s.fleet?.autoPrune !== false,
       disposable: s.fleet?.disposable !== false,
+      maxDiskGb: n(s.fleet?.maxDiskGb, 0, 2000, SETTINGS_DEFAULTS.fleet.maxDiskGb),
     },
     concurrency: {
       elevenlabs: n(s.concurrency?.elevenlabs, 1, 16, SETTINGS_DEFAULTS.concurrency.elevenlabs),

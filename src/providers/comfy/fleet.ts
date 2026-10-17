@@ -32,7 +32,8 @@ import {
   EC2Client, DescribeImagesCommand, DescribeInstancesCommand, DescribeInstanceTypeOfferingsCommand, DescribeSubnetsCommand,
   DescribeVpcsCommand, DescribeSecurityGroupsCommand, CreateSecurityGroupCommand, AuthorizeSecurityGroupIngressCommand,
   RevokeSecurityGroupIngressCommand, DescribeKeyPairsCommand, CreateKeyPairCommand, RunInstancesCommand, StartInstancesCommand,
-  StopInstancesCommand, TerminateInstancesCommand, GetSpotPlacementScoresCommand, type Image,
+  StopInstancesCommand, TerminateInstancesCommand, GetSpotPlacementScoresCommand, DescribeVolumesCommand, ModifyVolumeCommand,
+  DescribeVolumesModificationsCommand, type Image,
 } from '@aws-sdk/client-ec2';
 import { ServiceQuotasClient, GetServiceQuotaCommand, ListRequestedServiceQuotaChangeHistoryByQuotaCommand, RequestServiceQuotaIncreaseCommand } from '@aws-sdk/client-service-quotas';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
@@ -1039,6 +1040,11 @@ export async function installModels(instanceId: string, models: { dir: string; f
       remove.push(f);
       freed += bytes;
     }
+    // Not enough even after pruning: grow the disk when the settings allow it (fleet.maxDiskGb), and keep what's there.
+    if (loadSettings().fleet.maxDiskGb && (!loadSettings().fleet.autoPrune || freed < need)) {
+      await growDisk(instanceId, need, onProgress);
+      return installModels(instanceId, models, onProgress);
+    }
     if (!loadSettings().fleet.autoPrune || freed < need) {
       throw new GenError(`Server ${instanceId} needs ${(total / 1e9).toFixed(1)} GB for ${missing.map((m) => m.file).join(', ')} but has ${(have.free / 1e9).toFixed(1)} GB free (keeping ${reserve / 1e9} GB spare)${loadSettings().fleet.autoPrune ? ', and removing unused models would not free enough' : ''}. Prune models (fleet models) or use another server.`, { status: 409, kind: 'disk' });
     }
@@ -1052,6 +1058,41 @@ export async function installModels(instanceId: string, models: { dir: string; f
   }
   modelCache.delete(instanceId);
   return missing.map((m) => `${m.dir}/${m.file}`);
+}
+
+/**
+ * Grows a server's root disk by at least `bytes` (rounded up to 50 GB, never past settings.fleet.maxDiskGb), then its
+ * partition and filesystem, while it runs. EBS allows one change per volume every six hours.
+ */
+export async function growDisk(instanceId: string, bytes: number, onProgress: (line: string) => void = () => {}) {
+  const region = record(instanceId).region ?? localState().region ?? homeRegion();
+  const client = ec2(region);
+  const inst = (await client.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }))).Reservations?.[0]?.Instances?.[0];
+  const rootName = inst?.RootDeviceName;
+  const volumeId = inst?.BlockDeviceMappings?.find((b) => b.DeviceName === rootName)?.Ebs?.VolumeId;
+  if (!volumeId) throw new GenError(`Couldn't find ${instanceId}'s disk`);
+  const vol = (await client.send(new DescribeVolumesCommand({ VolumeIds: [volumeId] }))).Volumes?.[0];
+  const now = vol?.Size ?? DISK_GB;
+  const max = loadSettings().fleet.maxDiskGb;
+  const want = Math.min(max, Math.ceil((now + bytes / 1e9) / 50) * 50);
+  if (want <= now) throw new GenError(`Server ${instanceId}'s disk is ${now} GB, the most fleet.maxDiskGb (${max}) allows; it needs ${(bytes / 1e9).toFixed(1)} GB more`, { status: 409, kind: 'disk' });
+  onProgress(`growing the disk from ${now} to ${want} GB (about $${((want - now) * 0.08).toFixed(0)}/month more)`);
+  await client.send(new ModifyVolumeCommand({ VolumeId: volumeId, Size: want }));
+  // The new size can be used once the change is "optimizing" (it finishes in the background).
+  for (let i = 0; i < 60; i++) {
+    const m = (await client.send(new DescribeVolumesModificationsCommand({ VolumeIds: [volumeId] }))).VolumesModifications?.[0];
+    if (m?.ModificationState === 'optimizing' || m?.ModificationState === 'completed') break;
+    if (m?.ModificationState === 'failed') throw new GenError(`Growing ${instanceId}'s disk failed: ${m.StatusMessage ?? ''}`);
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  await sshRun(
+    'ROOT=$(findmnt -n -o SOURCE /) && PART=$(cat /sys/class/block/$(basename $ROOT)/partition) && DISK=/dev/$(lsblk -no pkname $ROOT) && ' +
+      '(sudo growpart $DISK $PART || true) && (sudo resize2fs $ROOT || sudo xfs_growfs /) && df -h / | tail -1',
+    instanceId, { timeoutMs: 5 * 60 * 1000 },
+  );
+  modelCache.delete(instanceId);
+  onProgress(`the disk is now ${want} GB`);
+  return want;
 }
 
 /** Remembers when a server last used these models (for least-recently-used pruning). */

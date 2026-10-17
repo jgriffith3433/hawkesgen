@@ -9,6 +9,12 @@ this before changing server flags, models or workflows.
   The RAM, not the GPU, is the tight resource.
 - **Disk:** 250 GB gp3. After setup about 45 GB is the OS, 48 GB swap and 90 GB
   models, leaving about 50 GB free.
+  - A job's models may still not fit after the least-recently-used ones are pruned (LTX-2.3 needs 40 GB). Gen can
+    then grow that server's disk while it runs (`growDisk` in `fleet.ts`): EBS first, then the partition and the
+    filesystem.
+  - Each grow is rounded up to 50 GB. It is capped by `fleet.maxDiskGb` (`hawkesgen fleet set maxDiskGb=400`); the
+    default is 0, which never grows.
+  - Disk costs about $0.08 per GB-month. EBS allows one change per volume every six hours.
 - **First setup:** an install from `server/bootstrap.sh` takes 30-45 minutes
   in practice (it was 12 on a good day; the 90 GB of models come from Hugging
   Face). Later starts take a couple of minutes. Servers normally launch from
