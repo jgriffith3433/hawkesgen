@@ -9,24 +9,89 @@
       "tool": "image.generate",
       "description": "A Hell enemy concept, full body side view on green (feed it to art.mjs as a reference).",
       "prompt": "{prompt}. Full-body side profile view, turned to face right, centered with empty space around it; the whole body visible. A single creature, nothing else. {style} Plain flat pure green background, no floor, no shadow.",
-      "params": { "width": 1024, "height": 1024 }
+      "params": {
+        "width": 1024,
+        "height": 1024
+      }
     },
     "floor-backdrop": {
       "tool": "image.generate",
       "description": "A side-view background for a stretch of Hell's floors.",
       "prompt": "Side-scrolling video game background, a floor of Hell: {prompt}. Empty of characters, layered depth, {style}",
-      "params": { "width": 1536, "height": 864 }
+      "params": {
+        "width": 1536,
+        "height": 864
+      }
     },
     "floor-music": {
       "tool": "audio.music",
       "description": "A floor theme: 90s arcade energy, loopable.",
       "prompt": "{prompt}, 90s arcade video game soundtrack, driving, loopable, instrumental",
-      "params": { "lyrics": "[Instrumental]", "seconds": 90 }
+      "params": {
+        "lyrics": "[Instrumental]",
+        "seconds": 90
+      }
     },
     "announcer": {
       "tool": "audio.voice",
       "description": "Hell's announcer line (booming 90s arcade). Set voice to the announcer voice id from audio.json.",
-      "params": { "model": "eleven_v3" }
+      "params": {
+        "model": "eleven_v3"
+      }
+    }
+  },
+  "kinds": {
+    "_about": "What each kind of entity is made of, for the Hawkes Gen library (docs/library.md). The prompts are Tools/Art/art.mjs's (sickofitgame-unity); art.mjs keeps an enemy's look (its description) and each pose's and clip's brief (the action) on the entity, and a clip's from/to poses as {from} and {to}.",
+    "enemy": {
+      "description": "An enemy: a standing side view facing right on green, poses made from it, and a clip per animator state (idle, move, attack, hurt, die).",
+      "slots": {
+        "pose/stand": {
+          "description": "Standing, full body, side profile facing right, on green: every other pose is made from it.",
+          "make": {
+            "tool": "image.paint",
+            "params": {
+              "prompt": "Paint {look}, {brief}. Full-body side profile view, turned to face right, centered in the frame with plenty of empty space around it; the whole body is visible from head to toe. A single character, nothing else. {style} Plain flat pure green background (#00ff00), no floor, no shadow, no scenery, even studio lighting. {feedback}",
+              "width": 1024,
+              "height": 1024,
+              "canvas": "00ff00",
+              "count": 3
+            }
+          }
+        },
+        "pose/*": {
+          "description": "A pose made from the stand pose; the slot's brief is the action.",
+          "make": {
+            "tool": "image.edit",
+            "inputs": {
+              "images": [
+                "slot:./pose/stand"
+              ]
+            },
+            "params": {
+              "prompt": "Image 1 is this creature, side view, facing right. Show the exact same creature {brief}. Keep everything about it the same as image 1: face, body, colors, proportions and art style, and the same size and position in the frame. Side view, facing right. The whole body is visible. Plain flat pure green background (#00ff00), no floor, no shadow, no scenery, even studio lighting. {feedback}",
+              "count": 2
+            }
+          }
+        },
+        "clip/*": {
+          "description": "A clip from its from pose to its to pose (pose/{from} -> pose/{to}); the brief is the action.",
+          "make": {
+            "tool": "video.i2v",
+            "inputs": {
+              "start": "slot:./pose/{from}",
+              "end": "slot:./pose/{to}"
+            },
+            "params": {
+              "prompt": "{name}, {look}, {brief}. Side view, facing right, full body, staying in place in the center of the frame. Locked camera, no camera movement, no zoom. Plain flat pure green background (#00ff00), no floor, no shadow, no scenery, even studio lighting. Clear, snappy motion for a 2D arcade game. {feedback}",
+              "negative": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走, camera movement, zoom, pan, cut, background change, floor, shadow, extra limbs",
+              "width": 640,
+              "height": 640,
+              "frames": 33,
+              "fps": 16
+            }
+          }
+        }
+      }
     }
   }
 }

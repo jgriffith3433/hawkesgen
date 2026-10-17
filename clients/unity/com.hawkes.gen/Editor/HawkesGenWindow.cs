@@ -1,6 +1,8 @@
 // Window > Hawkes Gen: run any Hawkes Gen tool or project preset from the
-// editor and import the results into Assets, or bring in anything from the
-// shared library (every project's generated art, video, 3D, music, voice).
+// editor and import the results into Assets, work the project's entities in
+// the library (each slot's takes: use one, discard, revise with feedback, make
+// more; hawkesgen/docs/library.md), or bring in anything from the shared
+// library (every project's generated art, video, 3D, music, voice).
 
 using System;
 using System.Collections.Generic;
@@ -17,7 +19,7 @@ namespace HawkesGen
         [MenuItem("Window/Hawkes Gen")]
         public static void Open() => GetWindow<HawkesGenWindow>("Hawkes Gen").Show();
 
-        enum Tab { Generate, Library, Settings }
+        enum Tab { Generate, Entities, Library, Settings }
 
         Tab tab;
         string status = "connecting…";
@@ -81,7 +83,7 @@ namespace HawkesGen
         {
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
-                tab = (Tab)GUILayout.Toolbar((int)tab, new[] { "Generate", "Library", "Settings" }, EditorStyles.toolbarButton, GUILayout.Width(240));
+                tab = (Tab)GUILayout.Toolbar((int)tab, new[] { "Generate", "Entities", "Library", "Settings" }, EditorStyles.toolbarButton, GUILayout.Width(320));
                 GUILayout.FlexibleSpace();
                 GUILayout.Label(online ? "● " + status : "○ " + status, EditorStyles.miniLabel);
                 if (GUILayout.Button("Refresh", EditorStyles.toolbarButton)) Refresh();
@@ -89,6 +91,7 @@ namespace HawkesGen
             scroll = EditorGUILayout.BeginScrollView(scroll);
             if (!online) EditorGUILayout.HelpBox($"Hawkes Gen isn't reachable at {HawkesGenClient.Url}. Start it with C:\\Projects\\hawkesgen\\auto-start.bat, then Refresh.", MessageType.Warning);
             else if (tab == Tab.Generate) DrawGenerate();
+            else if (tab == Tab.Entities) DrawEntities();
             else if (tab == Tab.Library) DrawLibrary();
             if (tab == Tab.Settings) DrawSettings();
             EditorGUILayout.EndScrollView();
@@ -292,6 +295,178 @@ namespace HawkesGen
                 if (e != null) Debug.LogError("[Hawkes Gen] " + e);
                 Repaint();
             });
+        }
+
+        // ------------------------------------------------------------ entities (the library: docs/library.md)
+
+        string entKind = "";
+        List<Dictionary<string, object>> entities = new List<Dictionary<string, object>>();
+        Dictionary<string, object> entity;
+        readonly HashSet<string> openSlots = new HashSet<string>();
+        readonly Dictionary<string, List<Dictionary<string, object>>> slotVersions = new Dictionary<string, List<Dictionary<string, object>>>();
+        readonly Dictionary<string, string> feedback = new Dictionary<string, string>();
+        readonly Dictionary<string, Texture2D> thumbs = new Dictionary<string, Texture2D>();
+        readonly HashSet<string> thumbLoading = new HashSet<string>();
+        readonly Dictionary<string, string> slotBusy = new Dictionary<string, string>();
+        bool entitiesLoaded;
+
+        void LoadEntities()
+        {
+            entitiesLoaded = true;
+            HawkesGenClient.Entities(Project, entKind.Trim(), (r, e) =>
+            {
+                if (e != null) { Debug.LogError("[Hawkes Gen] " + e); return; }
+                entities = ((List<object>)((Dictionary<string, object>)r)["items"]).Cast<Dictionary<string, object>>().ToList();
+                if (entity != null) entity = entities.FirstOrDefault(x => x.Str("id") == entity.Str("id"));
+                Repaint();
+            });
+        }
+
+        void LoadSlot(string slot)
+        {
+            var id = entity.Str("id");
+            HawkesGenClient.Slot(id, slot, (r, e) =>
+            {
+                if (e != null) { Debug.LogError("[Hawkes Gen] " + e); return; }
+                slotVersions[id + " " + slot] = ((List<object>)((Dictionary<string, object>)r)["versions"]).Cast<Dictionary<string, object>>().ToList();
+                Repaint();
+            });
+        }
+
+        Texture2D Thumb(Dictionary<string, object> v)
+        {
+            var file = v.TryGetValue("file", out var f) ? f as Dictionary<string, object> : null;
+            if (file == null || file.Str("kind") != "image") return null;
+            var asset = v.Str("asset");
+            if (thumbs.TryGetValue(asset, out var t)) return t;
+            if (thumbLoading.Add(asset))
+                HawkesGenClient.GetBytes("/files/" + asset, (bytes, e) =>
+                {
+                    if (bytes == null) return;
+                    var tex = new Texture2D(2, 2) { hideFlags = HideFlags.HideAndDontSave };
+                    if (tex.LoadImage(bytes)) thumbs[asset] = tex;
+                    Repaint();
+                });
+            return null;
+        }
+
+        void DrawEntities()
+        {
+            if (!entitiesLoaded) LoadEntities();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField("Project", Project, GUILayout.ExpandWidth(true));
+                entKind = EditorGUILayout.TextField(entKind, GUILayout.Width(90));
+                if (GUILayout.Button("List", GUILayout.Width(50))) LoadEntities();
+            }
+            EditorGUILayout.LabelField("Kind filter (blank for all). Picks made here show in Studio's Library tab and the product's tools.", EditorStyles.miniLabel);
+            if (entities.Count == 0)
+            {
+                EditorGUILayout.HelpBox($"No entities in {Project} yet. A product's tools bring them in (hawkes.library.json), or make one in Studio's Library tab.", MessageType.Info);
+                return;
+            }
+
+            var names = entities.Select(x => $"{x.Str("name")}  ({x.Str("kind")})").ToArray();
+            var index = Mathf.Max(0, entities.FindIndex(x => x.Str("id") == entity?.Str("id")));
+            var picked = EditorGUILayout.Popup("Entity", index, names);
+            if (entity == null || picked != index) { entity = entities[picked]; openSlots.Clear(); }
+
+            var data = entity.TryGetValue("data", out var d) ? d as Dictionary<string, object> : null;
+            if (data != null && data.Str("look") != null) EditorGUILayout.LabelField(data.Str("look"), EditorStyles.wordWrappedMiniLabel);
+
+            var slots = entity.TryGetValue("slots", out var s) ? s as Dictionary<string, object> : new Dictionary<string, object>();
+            foreach (var slot in slots.Keys.OrderBy(k => k).ToList())
+            {
+                var sum = slots[slot] as Dictionary<string, object>;
+                Dictionary<string, object> cur = null;
+                if (sum != null && sum.TryGetValue("current", out var c)) cur = c as Dictionary<string, object>;
+                var takes = sum?.Str("takes") ?? "0";
+                var key = entity.Str("id") + " " + slot;
+                var open = openSlots.Contains(slot);
+                var now = EditorGUILayout.Foldout(open, $"{slot}   {(cur != null ? "v" + cur.Str("n") : "none picked")}   {takes} takes", true);
+                if (now != open)
+                {
+                    if (now) { openSlots.Add(slot); LoadSlot(slot); }
+                    else openSlots.Remove(slot);
+                }
+                if (!now) continue;
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    if (slotVersions.TryGetValue(key, out var versions))
+                        foreach (var v in versions) DrawVersion(slot, v);
+                    feedback.TryGetValue(key, out var fb);
+                    feedback[key] = EditorGUILayout.TextField("Feedback", fb ?? "");
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        if (GUILayout.Button("Revise current") && !string.IsNullOrWhiteSpace(feedback[key])) RunSlot(slot, true, feedback[key]);
+                        if (GUILayout.Button("Make takes")) RunSlot(slot, false, feedback[key]);
+                        if (slotBusy.TryGetValue(key, out var busy)) GUILayout.Label(busy, EditorStyles.miniLabel);
+                    }
+                }
+            }
+        }
+
+        void DrawVersion(string slot, Dictionary<string, object> v)
+        {
+            var status = v.Str("status");
+            if (status == "discarded") return;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                var t = Thumb(v);
+                GUILayout.Box(t, GUILayout.Width(64), GUILayout.Height(64));
+                using (new EditorGUILayout.VerticalScope())
+                {
+                    var file = v.TryGetValue("file", out var f) ? f as Dictionary<string, object> : null;
+                    EditorGUILayout.LabelField($"v{v.Str("n")}  {status}  {file?.Str("kind")}", EditorStyles.boldLabel);
+                    if (!string.IsNullOrEmpty(v.Str("note"))) EditorGUILayout.LabelField(v.Str("note"), EditorStyles.wordWrappedMiniLabel);
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        if (status != "current" && GUILayout.Button("Use this", GUILayout.Width(70))) SetVersion(slot, v.Str("id"), "current");
+                        if (status != "current" && GUILayout.Button("Discard", GUILayout.Width(60))) SetVersion(slot, v.Str("id"), "discarded");
+                        if (GUILayout.Button("Import", GUILayout.Width(60)))
+                        {
+                            var name = slot.Replace("/", "_") + "-v" + v.Str("n") + HawkesGenClient.ExtFor(file?.Str("mime"));
+                            var path = Path.Combine(ImportFolder, "library", entity.Str("id").Replace("/", "_"), name).Replace(Path.DirectorySeparatorChar, '/');
+                            HawkesGenClient.Download(v.Str("asset"), path, (p, e) =>
+                            {
+                                if (e != null) Debug.LogError("[Hawkes Gen] " + e);
+                                else EditorGUIUtility.PingObject(AssetDatabase.LoadMainAssetAtPath(p));
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        void SetVersion(string slot, string versionId, string status)
+        {
+            HawkesGenClient.SetVersion(versionId, status, null, (r, e) =>
+            {
+                if (e != null) Debug.LogError("[Hawkes Gen] " + e);
+                LoadSlot(slot);
+                LoadEntities();
+            });
+        }
+
+        void RunSlot(string slot, bool revise, string fb)
+        {
+            var key = entity.Str("id") + " " + slot;
+            var entityId = entity.Str("id");
+            Action<GenJob, string> started = (job, err) =>
+            {
+                if (err != null) { slotBusy[key] = err; Repaint(); return; }
+                slotBusy[key] = job.Status;
+                HawkesGenClient.Wait(job.Id, j => { slotBusy[key] = j.Detail ?? j.Status; Repaint(); }, (j, e) =>
+                {
+                    slotBusy.Remove(key);
+                    if (e != null) Debug.LogError("[Hawkes Gen] " + e);
+                    if (entity?.Str("id") == entityId) LoadSlot(slot);
+                    LoadEntities();
+                });
+                Repaint();
+            };
+            if (revise) HawkesGenClient.Revise(entityId, slot, fb, 1, started);
+            else HawkesGenClient.Make(entityId, slot, null, fb, 0, started);
         }
 
         // ------------------------------------------------------------ settings

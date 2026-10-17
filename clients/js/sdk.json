@@ -23,7 +23,8 @@
     },
     "sickofitgame-unity": {
       "Tools/Art/": [
-        "hawkesgen.mjs"
+        "hawkesgen.mjs",
+        "hawkesgen-folders.mjs"
       ]
     },
     "hawkes-video": {

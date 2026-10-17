@@ -225,6 +225,13 @@ namespace HawkesGen
             return "/entities/" + entityId + "/slots/" + string.Join("/", parts);
         }
 
+        /// <summary>A file's bytes (e.g. a version's image for a thumbnail): path is under /v1, like "/files/a_...".</summary>
+        public static void GetBytes(string path, Action<byte[], string> done)
+        {
+            var req = UnityWebRequest.Get(Url + "/v1" + path);
+            Send(req, r => done(ErrorOf(r) == null ? r.downloadHandler.data : null, ErrorOf(r)));
+        }
+
         /// <summary>Uploads a file (absolute or Assets/... path) to Hawkes Gen; done gets "blob:&lt;sha256&gt;" to use as an input or a version.</summary>
         public static void Upload(string path, Action<string, string> done)
         {
