@@ -196,7 +196,7 @@ ${layout}`,
 };
 
 /** Three frames (start, middle, end) of a video as PNGs, for Claude to judge it by. */
-async function videoFrames(file: string, dir: string, signal: AbortSignal): Promise<string[]> {
+export async function videoFrames(file: string, dir: string, signal: AbortSignal): Promise<string[]> {
   fs.mkdirSync(dir, { recursive: true });
   const dur = Number((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { signal })).trim()) || 2;
   const out: string[] = [];

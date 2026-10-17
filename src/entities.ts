@@ -95,14 +95,22 @@ export function updateEntity(client: Client, entityId: string, patch: { name?: s
   return getEntity(client, entityId);
 }
 
-/** The slots of an entity: for each, its current version, the newest take and counts. */
+/**
+ * The slots of an entity: for each, its current version, the newest take and counts. waiting: the takes nobody has
+ * looked at since the pick (made after the current version became current), or every take while nothing is picked.
+ */
 function slotSummary(entityId: string) {
   const rows = db.prepare('SELECT * FROM versions WHERE entity = ? ORDER BY slot, n').all(entityId).map((r) => parseRow<Version>(r, ['made_from']));
-  const slots: Record<string, { current: ReturnType<typeof versionView> | null; latest: ReturnType<typeof versionView> | null; takes: number; versions: number; updated: number }> = {};
+  const slots: Record<string, { current: ReturnType<typeof versionView> | null; latest: ReturnType<typeof versionView> | null; takes: number; waiting: number; versions: number; updated: number }> = {};
+  const picked: Record<string, number> = {};
+  for (const v of rows) if (v.status === 'current') picked[v.slot] = v.updated;
   for (const v of rows) {
-    const s = (slots[v.slot] ??= { current: null, latest: null, takes: 0, versions: 0, updated: 0 });
+    const s = (slots[v.slot] ??= { current: null, latest: null, takes: 0, waiting: 0, versions: 0, updated: 0 });
     s.versions++;
-    if (v.status === 'take') s.takes++;
+    if (v.status === 'take') {
+      s.takes++;
+      if (picked[v.slot] === undefined || v.created > picked[v.slot]) s.waiting++;
+    }
     if (v.status === 'current') s.current = versionView(v);
     if (v.status !== 'discarded') s.latest = versionView(v);
     s.updated = Math.max(s.updated, v.updated);

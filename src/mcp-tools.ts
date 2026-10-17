@@ -175,6 +175,19 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
       },
     },
     {
+      name: 'hawkesgen_entity_judge',
+      description:
+        "Claude picks the best version of an entity's slot: the current one against its takes (newest first), with the entity's on-model " +
+        'references, look, canon and the art direction (videos judged by three frames). apply (default true) makes the winner current with the ' +
+        "reason as its note; retire moves the takes that lost to old so the slot stops waiting. Cents per call (Claude only, no GPU). A person can always pick again.",
+      inputSchema: obj({ id: str('Entity id (project/slug)'), slot: str('Slot'), criteria: str('What makes a version the best (optional)'), apply: { type: 'boolean', description: 'Make the winner current (default true)' }, retire: { type: 'boolean', description: 'Move the losing takes to old' }, max: { type: 'number', description: 'At most this many candidates (default 6)' } }, ['id', 'slot']),
+      run: async (a) => {
+        const job = await gen.submit('library.judge', { project: String(a.id).split('/')[0], params: { entity: a.id, slot: a.slot, criteria: a.criteria, apply: a.apply, retire: a.retire, max: a.max } });
+        const done = await gen.wait(job.id, { throwOnFail: false });
+        return { job: summarizeJob(done), result: done.result };
+      },
+    },
+    {
       name: 'hawkesgen_presets',
       description: 'A project\'s art direction: its style line and named presets (tool + prompt template + params). Without a project, lists every project\'s presets.',
       inputSchema: obj({ project: str('Project (optional)') }),

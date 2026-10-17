@@ -85,9 +85,13 @@ test('import brings folders in; again changes nothing; the library\'s pick stand
   assert.equal(fs.readFileSync(path.join(root, 'DJWontRead/anims/_side.png'), 'utf8'), 'side A');
   assert.ok((await F.exportFolders(gen, m)).every((r: any) => r.action === 'same'));
 
-  // adopt: the folder wins.
+  // adopt: [slots]: only those slots' folder files win.
   put('DJWontRead/anims/_side.png', 'side C');
-  await F.importFolders(gen, m, { adopt: true });
+  const other = await F.importFolders(gen, m, { adopt: ['clip/jab'] });
+  assert.ok(other.some((r: any) => r.slot === 'side' && r.action === 'differs'));
+  assert.equal((await gen.current(e.id, 'side')).n, 1, 'side was not adopted');
+  // adopt: the folder wins.
+  await F.importFolders(gen, m, { adopt: ['side'] });
   assert.equal((await gen.current(e.id, 'side')).n, 3);
 
   // A take the product's tools dropped (moved to an old path) is old in the library.

@@ -69,12 +69,12 @@
     }
   },
   "kinds": {
-    "_about": "What each kind of entity is made of, for the Hawkes Gen library (docs/library.md). phoriginswebsite/hawkes.library.json brings assets/models in: a character or prop per GLB, its model slot the shipped file. Runtime is GLB-only: a made model is converted and compressed before it ships (phoriginswebsite/AGENTS.md).",
+    "_about": "What each kind of entity is made of, for the Hawkes Gen library (docs/library.md). phoriginswebsite/hawkes.library.json brings assets/models in: a character or prop per GLB, its model slot the shipped file. Runtime is GLB-only: a made model is converted and compressed before it ships (phoriginswebsite/AGENTS.md). optional: a slot a product may skip (content health leaves it out of what is unmade).",
     "character": {
       "description": "A character: a concept turnaround and the rigged GLB the game loads (Mixamo rig, fitted in Blender).",
       "slots": {
         "concept": {
-          "description": "A full-body turnaround (front, side, back) to model from.",
+          "description": "A full-body turnaround (front, side, back) to model from. Optional: the shipped characters were rigged from Mixamo, not modeled from a concept.",
           "make": {
             "tool": "image.generate",
             "params": {
@@ -82,7 +82,8 @@
               "width": 1536,
               "height": 1024
             }
-          }
+          },
+          "optional": true
         },
         "model": {
           "description": "The rigged GLB in assets/models (made by hand: Mixamo rig, Blender)."

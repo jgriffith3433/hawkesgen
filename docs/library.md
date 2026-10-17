@@ -68,6 +68,14 @@ side view, and everything made from the old one reads as out of date, so it's ma
   - Anything else is made again by the same tool and params with the feedback added.
 - **Pick:** `PATCH /v1/versions/<id> { status: "current" }`; the old current becomes `old`. Also `discarded`,
   `take` (restore) and `{ note }`.
+- **Judge:** the tool `library.judge { entity, slot }` (MCP `hawkesgen_entity_judge`) has Claude pick for you.
+  - It compares the current version with the newest takes. It also sees the entity's references, look and canon, and
+    the project's style. Videos are judged by three frames each.
+  - By default the winner becomes current, and the reason is saved in its note.
+  - `retire: true` moves the takes that lost to `old`.
+  - It costs cents (Claude only). A person can always pick again.
+- **Waiting:** each slot's `waiting` count is the takes made after the current version became current, or every take
+  when nothing is picked yet. Alternatives that were passed over don't count. Studio's "waiting" lists use it.
 
 `presets/doseofdestruction.json` has the first kind, `fighter`. Its recipes are DoD's own tuned settings (side views
 from the reference, poses from the side view, clips from a start pose to an end pose).

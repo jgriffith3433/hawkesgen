@@ -9,6 +9,7 @@ import { workflowTool } from '../workflows/tool.ts';
 import { unityBuild, unityTest } from './build.ts';
 import { playtestRunTool, playtestReviewTool } from './playtest.ts';
 import { assetMakeTool } from './pipeline.ts';
+import { libraryJudgeTool } from './judge.ts';
 import { loraTrainTool, imageCharacterTool } from './lora.ts';
 import { blenderRenderTool } from './blender.ts';
 import { composeTool } from './compose.ts';
@@ -19,7 +20,7 @@ const BUILT_IN: Tool[] = [
   voiceTool, sfxTool, voiceDesignTool, voiceSaveTool,
   llmTextTool, llmJsonTool,
   cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool,
-  unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, loraTrainTool, imageCharacterTool,
+  unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
   blenderRenderTool, composeTool,
 ];
 
