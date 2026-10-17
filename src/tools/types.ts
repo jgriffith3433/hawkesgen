@@ -53,6 +53,8 @@ export type ComfyRun = {
   download(file: ComfyFile): Promise<Buffer>;
   /** Installs any of these models the server doesn't have yet (the job shows the download). */
   ensureModels(models: ModelRef[]): Promise<void>;
+  /** Counts other work on the server as GPU time (a Blender render over SSH). */
+  timed<T>(work: () => Promise<T>): Promise<T>;
 };
 
 export type RunContext = {

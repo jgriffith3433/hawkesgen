@@ -37,6 +37,7 @@ import {
 import { ServiceQuotasClient, GetServiceQuotaCommand, ListRequestedServiceQuotaChangeHistoryByQuotaCommand, RequestServiceQuotaIncreaseCommand } from '@aws-sdk/client-service-quotas';
 import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { env, paths, loadSettings } from '../../config.ts';
+import { installScript as blenderInstall } from '../blender/install.ts';
 import { GenError } from '../../util.ts';
 
 /**
@@ -646,6 +647,7 @@ export function userData(token: string, idleMinutes: number) {
     .replaceAll('__COMFY_TAG__', m.comfyui.tag)
     .replaceAll('__COMFY_REPO__', m.comfyui.repo)
     .replace('__NODES__', m.nodes.map((n) => `${n.repo} ${n.commit}`).join('\n'))
+    .replace('__BLENDER__', () => blenderInstall(''))
     .replace('__MODELS__', m.models.map((x) => `${x.dir} ${x.file} ${x.url}`).join('\n'));
   return zlib.gzipSync(Buffer.from(script)).toString('base64');
 }

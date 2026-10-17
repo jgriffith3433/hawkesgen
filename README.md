@@ -48,14 +48,15 @@ Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
 | Images | `image.generate` (Z-Image Turbo text-to-image; `seamless` for textures), `image.edit` (Qwen-Image-Edit), `image.paint` (paint styled on references), `image.control` (paint over a render or sketch with ControlNet: grey-box to finished art), `image.relight`, `image.angles` (a character from 8 camera angles), `image.upscale` (Real-ESRGAN), `image.restore` (SeedVR2, finer), `image.panorama` (360° skies) |
 | Characters | `lora.train` (train a character LoRA on its poses, with per-image captions or Claude-written ones, on the GPU fleet), `image.character` (draw that character on-model in any pose or scene) |
 | Analysis and masks | `image.remove-background` (BiRefNet on the GPU), `image.segment` (SAM 3, find by text), `image.layers` (split into RGBA layers), `image.pose` / `video.pose` (SDPose whole-body pose maps), `image.depth` (Depth Anything 3), `image.normals` and `image.albedo` (Marigold v2) |
-| Video | `video.i2v` (Wan 2.2 image-to-video and first-last-frame loops), `video.animate` and `video.motion` (motion transfer; Wan Animate 2), `video.talk` (InfiniteTalk: a character speaks or sings a voice track), `video.t2v` (Wan 2.2 text-to-video), `video.upscale`, `video.interpolate` (FILM) |
+| Video | `video.i2v` (Wan 2.2 image-to-video and first-last-frame loops), `video.animate` and `video.motion` (motion transfer; Wan Animate 2), `video.talk` (InfiniteTalk: a character speaks or sings a voice track), `video.t2v` (Wan 2.2 text-to-video), `video.control` (repaint a control video, depth, pose or edges, in any look, with sound; LTX-2.3 IC-LoRA) and `video.control-wan` (Wan 2.2 Fun Control), `video.upscale`, `video.interpolate` (FILM) |
+| Blender | `blender.render` (a Blender shot on a GPU server: a .blend, or characters, animations, props, sky and a camera move built from files; returns the render plus depth, pose, edges, normal and mask videos for `video.control`) |
 | 3D | `mesh.from-image` (Hunyuan3D 2.1 shape), `mesh.from-views` (Hunyuan3D multi-view: front + side), `mesh.textured` (Pixal3D / TRELLIS 2 with PBR textures) |
 | Audio | `audio.music` (ACE-Step 1.5 songs and loops), `audio.voice` and `audio.sfx` (ElevenLabs), `audio.voice-design` + `audio.voice-save` (ElevenLabs Voice Design: candidates, then save one to the voice library) |
 | Language | `llm.text` and `llm.json` (Claude, with images for vision) |
 | On this PC | `image.cutout`, `image.frame`, `image.tile`, `texture.maps`, `video.fit`, `media.probe`, `file.import` (a file into the library as it is) |
 | Builds | `unity.build` (Unity WebGL on the AWS build server, incremental: keeps each project's Library) |
 | Playtests | `playtest.run` (play a game in Chromium through its playtest contract, or smoke-test or crawl a site; video, screenshots, console, fps), `playtest.review` (Claude watches it and files a few new findings: capped, told the known ones, a mode per run kind, judged against the product's quality bar) |
-| Pipelines | `asset.make` (a chain of tools as one recipe; best-of-N images or videos picked by Claude against the art direction, canon and on-model references; takes the library already has are reused) |
+| Pipelines | `asset.make` (a chain of tools as one recipe; best-of-N images or videos, at any step, picked by Claude against the art direction, canon and on-model references; takes the library already has are reused) |
 | Anything else | `comfy.graph` (run a raw graph), or import a workflow (dashboard → Workflows) |
 
 ## Use it
@@ -95,4 +96,5 @@ await gen.download(job.outputs[0].asset, 'imp.png');
 | `docs/workflows.md` | Turning ComfyUI workflows into tools, and the manifest format |
 | `docs/api.md` | Every API route |
 | `docs/comfyui.md` | What works on the GPU servers (and what hangs them) |
+| `docs/blender.md` | Blender shots to video: `blender.render`, the shot format, `video.control` |
 | `DESIGN.md` | J's decisions and the roadmap |

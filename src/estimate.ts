@@ -4,7 +4,7 @@
 //
 // GPU time per job comes from this service's own history (the median of the last finished jobs of that tool, scaled
 // by frames and pixels for images and video), else the tool's own guess (`gpuSeconds`). API tools (Claude,
-// ElevenLabs) use the median cost of their past jobs. asset.make is expanded into its steps: the first step times
+// ElevenLabs) use the median cost of their past jobs. asset.make is expanded into its steps: the pick step (the first, or pickAt) times
 // `candidates`, one Claude pick, the rest once. Each model family adds one model load, a stopped server adds its boot,
 // and a server left on idles for the fleet's idle minutes before stopping itself: all are counted, so the number J
 // approves is the number he pays.
@@ -30,12 +30,18 @@ const median = (xs: number[]) => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? s[Math.floor(s.length / 2)] : 0;
 };
-/** How big a job is (pixels x frames), to scale history to this job's params. */
-const sizeOf = (p: Record<string, any>) => {
-  const px = (Number(p.width) || 0) * (Number(p.height) || 0);
-  const frames = Number(p.frames) || Number(p.length) || 0;
-  return (px || 1) * (frames || 1) * (Number(p.count) || 1);
-};
+/**
+ * How much bigger a job is than a past one: pixels and frames where both say (a past image.edit with no size, which
+ * kept its input's size, can't be compared by pixels with one at 1280x704), and the count.
+ */
+export function scaleFrom(cur: Record<string, any>, past: Record<string, any>) {
+  const px = (p: Record<string, any>) => (Number(p.width) || 0) * (Number(p.height) || 0);
+  const frames = (p: Record<string, any>) => Number(p.frames) || Number(p.length) || 0;
+  let r = (Number(cur.count) || 1) / (Number(past.count) || 1);
+  if (px(cur) && px(past)) r *= px(cur) / px(past);
+  if (frames(cur) && frames(past)) r *= frames(cur) / frames(past);
+  return r;
+}
 
 function history(tool: string) {
   const rows = db.prepare(
@@ -51,9 +57,8 @@ function lineFor(tool: Tool, params: Record<string, any>, count: number, label: 
     let per: number;
     let basis: string;
     if (gpuPast.length >= 2) {
-      // Seconds per unit of size, so a 81-frame 960p clip isn't priced like a 33-frame 480p one.
-      const rate = median(gpuPast.map((h) => h.gpu / sizeOf(h.params)));
-      per = rate * sizeOf(params);
+      // Scaled by size, so a 81-frame 960p clip isn't priced like a 33-frame 480p one.
+      per = median(gpuPast.map((h) => h.gpu * scaleFrom(params, h.params)));
       basis = `median of ${gpuPast.length} past jobs`;
     } else {
       per = tool.gpuSeconds?.(params) ?? 30;
@@ -90,9 +95,10 @@ export function estimate(project: string, items: EstimateItem[], opts: { servers
     if (tool.id === 'asset.make') {
       const steps: any[] = Array.isArray(params.steps) ? params.steps : [];
       const n = Math.max(1, Number(params.candidates) || 1);
+      const pickAt = Math.min(steps.length, Math.max(1, Number(params.pickAt) || 1)) - 1;
       steps.forEach((s, k) => {
         const r = resolve(project, s);
-        lines.push(lineFor(r.tool, r.params, count * (k === 0 ? n : 1), `${label} · step ${k + 1}`));
+        lines.push(lineFor(r.tool, r.params, count * (k === pickAt ? n : 1), `${label} · step ${k + 1}`));
       });
       if (n > 1) lines.push({ label: `${label} · pick`, tool: 'llm (pick)', count, gpuSeconds: 0, apiCost: PICK_COST * count, family: null, basis: 'one Claude pick per asset' });
       continue;

@@ -506,6 +506,15 @@ class Queue {
         }
       },
       download: (file: any) => comfy.download(file),
+      timed: async <T>(work: () => Promise<T>) => {
+        const t = Date.now();
+        try {
+          return await work();
+        } finally {
+          job.gpu_seconds = Math.round((job.gpu_seconds + (Date.now() - t) / 1000) * 10) / 10;
+          save(job, ['gpu_seconds']);
+        }
+      },
       ensureModels: async (models: ModelRef[]) => {
         const installed = await installModels(ep.id, models, step);
         markModelsUsed(ep.id, models);

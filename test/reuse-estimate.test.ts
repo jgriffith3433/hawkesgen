@@ -12,7 +12,7 @@ const { submit, getJob, jobRecipeKey, queue } = await import('../src/jobs.ts');
 const { putAsset } = await import('../src/library.ts');
 const { getTool } = await import('../src/tools/index.ts');
 const { validateParams } = await import('../src/tools/validate.ts');
-const { estimate } = await import('../src/estimate.ts');
+const { estimate, scaleFrom } = await import('../src/estimate.ts');
 
 const owner = { id: 'test', name: 'test', role: 'owner', projects: ['*'] } as any;
 
@@ -65,4 +65,12 @@ test('estimates come from history and count loads, boots and the idle tail', () 
   assert.ok(e.lines.some((l: any) => l.label === 'props · pick'));
   assert.ok(e.gpu.servers >= 1 && e.gpu.boots > 0 && e.gpu.modelLoads > 0);
   assert.ok(e.cost.withIdleTail > e.cost.total && e.cost.total > 0);
+});
+
+test('estimates scale history by size only where both jobs give it', () => {
+  assert.equal(scaleFrom({ width: 1280, height: 704, frames: 81 }, { width: 640, height: 352, frames: 81 }), 4);
+  assert.equal(scaleFrom({ frames: 81 }, { frames: 33, width: 640, height: 640 }), 81 / 33);
+  // A past job with no size (it kept its input's size) isn't a 1-pixel job.
+  assert.equal(scaleFrom({ width: 1280, height: 704 }, { prompt: 'x' }), 1);
+  assert.equal(scaleFrom({ count: 3 }, {}), 3);
 });

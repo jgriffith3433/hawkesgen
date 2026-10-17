@@ -328,6 +328,15 @@ if begin onnxruntime; then
   run installing "onnxruntime-gpu" "$PY" -m pip install onnxruntime-gpu || true
   mark onnxruntime
 fi
+# Blender, for blender.render (Cycles on this GPU). Optional: a failed download doesn't stop the install, and
+# src/providers/blender/blender.ts installs it the first time a render needs it.
+cat > "$STATE/blender.sh" <<'BLENDER'
+__BLENDER__
+BLENDER
+if begin blender; then
+  run installing "Blender" bash "$STATE/blender.sh" || true
+  mark blender
+fi
 
 # ----------------------------------------------------------------- models
 # aria2c -c keeps partial files (and their .aria2 control files), so a stop
