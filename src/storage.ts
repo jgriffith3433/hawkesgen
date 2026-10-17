@@ -38,9 +38,9 @@ export function setStore(s: Store | null) {
 async function s3Store(b: string): Promise<Store> {
   const S = await import('@aws-sdk/client-s3');
   const c = new S.S3Client({ ...awsConfig(), region: REGION });
-  let ready = false;
-  const ensure = async () => {
-    if (ready) return;
+  // Once, shared: two uploads starting together must not both try to create the bucket.
+  let ready: Promise<void> | null = null;
+  const ensure = () => (ready ??= (async () => {
     try {
       await c.send(new S.HeadBucketCommand({ Bucket: b }));
     } catch (e: any) {
@@ -49,8 +49,10 @@ async function s3Store(b: string): Promise<Store> {
       await c.send(new S.PutPublicAccessBlockCommand({ Bucket: b, PublicAccessBlockConfiguration: { BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: true, RestrictPublicBuckets: true } }));
       console.log(`[storage] created the private bucket ${b}`);
     }
-    ready = true;
-  };
+  })().catch((e) => {
+    ready = null;
+    throw e;
+  }));
   return {
     async has(key) {
       await ensure();

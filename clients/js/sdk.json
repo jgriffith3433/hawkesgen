@@ -1,0 +1,11 @@
+{
+  "_about": "Where each product keeps Hawkes Gen's JS SDK. Products keep copies (their own CI and site builds can't read this private repo), and `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one; `status` lists the ones behind. Paths are folders in each repo (next to C:\\Projects\\hawkesgen, /srv/hawkes on the server). Add a product here when it starts using the SDK.",
+  "files": ["hawkesgen.mjs", "hawkesgen-ui.mjs", "hawkesgen-folders.mjs"],
+  "consumers": {
+    "doseofdestructionwebsite": { "tools/gpu/": ["hawkesgen.mjs", "hawkesgen-folders.mjs"], "src/devtools/hawkesgen/": ["hawkesgen.mjs", "hawkesgen-ui.mjs"] },
+    "phoriginswebsite": { "tools/": ["hawkesgen.mjs"] },
+    "sickofitgame-unity": { "Tools/Art/": ["hawkesgen.mjs"] },
+    "hawkes-video": { "tools/": ["hawkesgen.mjs"] },
+    "hawkesstudio": { "src/": ["hawkesgen.mjs"] }
+  }
+}

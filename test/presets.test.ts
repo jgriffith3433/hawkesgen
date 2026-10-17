@@ -39,3 +39,12 @@ test("projects' kinds: every slot recipe names a real tool, its inputs and valid
     }
   }
 });
+
+test('the SDK copies list (clients/js/sdk.json) names real files', async () => {
+  const fs = await import('node:fs');
+  const sdk = JSON.parse(fs.readFileSync('clients/js/sdk.json', 'utf8'));
+  for (const f of sdk.files) assert.ok(fs.existsSync(`clients/js/${f}`), f);
+  for (const [repo, dirs] of Object.entries<any>(sdk.consumers)) {
+    for (const files of Object.values<string[]>(dirs)) for (const f of files) assert.ok(sdk.files.includes(f), `${repo}: ${f} isn't an SDK file`);
+  }
+});

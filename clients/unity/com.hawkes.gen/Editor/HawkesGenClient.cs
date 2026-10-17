@@ -53,6 +53,9 @@ namespace HawkesGen
 
     public static class HawkesGenClient
     {
+        /// <summary>The package version (package.json); sent to Hawkes Gen so Studio can flag projects on an old one.</summary>
+        public const string Version = "0.2.0";
+
         public static string Url
         {
             get => EditorPrefs.GetString("HawkesGen.Url", "http://127.0.0.1:8790");
@@ -69,6 +72,7 @@ namespace HawkesGen
         static void Send(UnityWebRequest req, Action<UnityWebRequest> done)
         {
             if (!string.IsNullOrEmpty(Key)) req.SetRequestHeader("Authorization", "Bearer " + Key);
+            req.SetRequestHeader("X-Hawkes-Client", "unity/" + Version);
             var op = req.SendWebRequest();
             EditorApplication.CallbackFunction tick = null;
             tick = () =>

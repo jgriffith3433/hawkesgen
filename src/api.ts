@@ -88,6 +88,20 @@ function jobVisible(c: Client, j: { project: string }) {
 
 const STATIC: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
+// The SDK versions callers send. js and py share CLIENT_VERSION; Unity has its package version.
+const SDK_CURRENT = { js: Number(/CLIENT_VERSION = (\d+)/.exec(fs.readFileSync(path.join(paths.server, '..', 'clients', 'js', 'hawkesgen.mjs'), 'utf8'))?.[1] ?? 0), unity: JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'clients', 'unity', 'com.hawkes.gen', 'package.json'), 'utf8')).version as string };
+const SDK_MIN = { js: 4 };
+const clientsSeen = new Map<string, { agent: string; version: string; from: string; behind: boolean; at: number }>();
+function noteClient(req: IncomingMessage) {
+  const v = String(req.headers['x-hawkes-client'] ?? '');
+  const m = /^(js|py|unity)\/([\d.]+)$/.exec(v);
+  if (!m) return;
+  const from = String(req.headers.origin ?? req.headers['user-agent'] ?? '').slice(0, 80);
+  const behind = m[1] === 'unity' ? m[2] !== SDK_CURRENT.unity : Number(m[2]) < SDK_CURRENT.js;
+  clientsSeen.set(`${v} ${from}`, { agent: m[1], version: m[2], from, behind, at: Date.now() });
+  if (clientsSeen.size > 200) clientsSeen.delete(clientsSeen.keys().next().value!);
+}
+
 export async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = url.pathname;
@@ -98,7 +112,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   const origin = String(req.headers.origin ?? '');
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hawkesgen-Key, X-Filename');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hawkesgen-Key, X-Filename, X-Hawkes-Client');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   }
   if (method === 'OPTIONS') return void res.writeHead(204).end();
@@ -124,6 +138,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     return send(res, 404, { error: 'Not found' });
   }
 
+  // Which SDK each caller runs (X-Hawkes-Client: js/6, py/6, unity/0.2.0): /v1/health lists the ones behind.
+  noteClient(req);
+
   try {
     if (route === '/v1/health') {
       return send(res, 200, {
@@ -138,6 +155,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
         // (the deploy script waits for these only; everything else resumes after a restart).
         building: (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND tool IN ('unity.build', 'unity.test')").get() as any).n,
+        client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
       });
     }
 

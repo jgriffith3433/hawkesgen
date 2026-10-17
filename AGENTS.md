@@ -179,13 +179,11 @@ returns a verdict, scores and findings.
 | Breaking Through, Yooba Land | Window > Hawkes Gen (Unity package) |
 | Every project folder | The `hawkesgen` MCP server in `.mcp.json`, plus a "Generative AI: Hawkes Gen" section in its AGENTS.md |
 
-The JS client in projects is a copy of `clients/js/hawkesgen.mjs` (`CLIENT_VERSION` in the file). Copy it
-again when it changes. The library's web components (`hawkesgen-ui.mjs`, `UI_VERSION`) and the folder bridge
-(`hawkesgen-folders.mjs`) are copied the same way; DoD has all three
-(`src/devtools/hawkesgen/` for the browser, `tools/gpu/` for its dev server).
-- `doseofdestructionwebsite/tools/gpu/hawkesgen.mjs`
-- `phoriginswebsite/tools/hawkesgen.mjs`
-- `sickofitgame-unity/Tools/Art/hawkesgen.mjs`
+Products keep copies of the JS SDK (`clients/js`: the client, the web components, the folder bridge): their own CI
+and site builds can't read this private repo. `clients/js/sdk.json` lists where each product keeps them, and
+`node bin/hawkesgen-sdk.mjs sync` writes the current files into every one (`status` lists the ones behind). Sync and
+commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`) when behavior
+changes. Every client sends `X-Hawkes-Client` (js/6, py/6, unity/0.2.0); `GET /v1/health` lists callers behind.
 
 ## Checking your changes
 

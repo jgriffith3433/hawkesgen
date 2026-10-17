@@ -21,6 +21,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+CLIENT_VERSION = 6
+
 
 class HawkesGenError(Exception):
     def __init__(self, message, status=None, kind=None, job=None):
@@ -43,7 +45,7 @@ class HawkesGen:
         self.local = urllib.parse.urlparse(self.url).hostname in ("127.0.0.1", "localhost", "::1")
 
     def request(self, path, method="GET", body=None, raw=False, headers=None):
-        h = dict(headers or {})
+        h = {"X-Hawkes-Client": "py/%d" % CLIENT_VERSION, **(headers or {})}
         data = None
         if body is not None:
             if isinstance(body, (bytes, bytearray)):
