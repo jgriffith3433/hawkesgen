@@ -67,7 +67,11 @@ function freePort(): Promise<number> {
   });
 }
 
-export type PlaytestHost = { wsEndpoint: string; server: string; close(): void; /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string };
+export type PlaytestHost = {
+  wsEndpoint: string; server: string; close(): void;
+  /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
+  /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). */ ssh: { args: string[]; dest: string };
+};
 
 /**
  * A browser on a GPU machine (the playtester first, else a GPU fleet server): ensures the host, opens the tunnel (and reverse tunnels for local game ports) and
@@ -129,5 +133,5 @@ export async function openPlaytestHost(localPorts: number[], step: (s: string) =
     if (/^(localhost|127\.0\.0\.1)$/.test(u.hostname) && remote.has(port)) u.port = String(remote.get(port));
     return u.toString();
   };
-  return { wsEndpoint: `ws://127.0.0.1:${local}/`, server: `${ep.id} (${ep.region})`, close: () => child.kill(), mapUrl };
+  return { wsEndpoint: `ws://127.0.0.1:${local}/`, server: `${ep.id} (${ep.region})`, close: () => child.kill(), mapUrl, ssh: { args: sshArgs, dest } };
 }

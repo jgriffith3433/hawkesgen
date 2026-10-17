@@ -74,6 +74,35 @@ test('screencast: an MJPEG stream from the clock becomes a 30 fps mp4 at the vie
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('screencast: the encode on the recording machine (through ssh) makes the same 30 fps mp4', { skip: (!hasFfmpeg || process.platform === 'win32') && 'no ffmpeg or bash' }, async () => {
+  const { FrameClock, remoteEncodeScript } = await import('../src/tools/screencast.ts');
+  const { encodeRemotely } = await import('../src/tools/playtest.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-encode-'));
+  assert.equal(spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=green:s=640x400', '-frames:v', '1', path.join(dir, 'f.jpg')]).status, 0);
+  const chunks: Buffer[] = [];
+  const clock = new FrameClock(30, (f) => chunks.push(f));
+  clock.push(fs.readFileSync(path.join(dir, 'f.jpg')), 1000);
+  clock.end(1002);
+  fs.writeFileSync(path.join(dir, 's.mjpeg'), Buffer.concat(chunks));
+  // A stand-in ssh that runs the command here, the way the remote shell would.
+  fs.mkdirSync(path.join(dir, 'bin'));
+  fs.writeFileSync(path.join(dir, 'bin', 'ssh'), '#!/bin/bash\nexec bash -c "${@: -1}"\n', { mode: 0o755 });
+  const PATH = process.env.PATH;
+  process.env.PATH = `${path.join(dir, 'bin')}:${PATH}`;
+  try {
+    const out = path.join(dir, 's.mp4');
+    const encoder = await encodeRemotely({ args: ['-i', 'key'], dest: 'ubuntu@host' }, remoteEncodeScript({ width: 1280, height: 721 }), path.join(dir, 's.mjpeg'), out, AbortSignal.timeout(60_000));
+    assert.match(encoder, /^(libx264|h264_nvenc)$/);
+    const probe = spawnSync('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v', '-show_entries', 'stream=codec_name,width,height,r_frame_rate,nb_read_frames', '-of', 'csv=p=0', out], { encoding: 'utf8' });
+    assert.equal(probe.stdout.trim(), 'h264,1280,722,30/1,60');
+    // A failing encode rejects (the caller then encodes here).
+    await assert.rejects(encodeRemotely({ args: [], dest: 'x' }, 'echo broken >&2; exit 5', path.join(dir, 's.mjpeg'), path.join(dir, 'bad.mp4'), AbortSignal.timeout(60_000)), /broken/);
+  } finally {
+    process.env.PATH = PATH;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('settleReview: worst first, polish only without bugs, capped, mode-limited, known ids only', () => {
   const f = (severity: string, title: string, regression = false) => ({ severity, title, regression });
   const r = settleReview({ verdict: 'fix-first', findings: [f('polish', 'p1'), f('bug', 'b1'), f('idea', 'i1'), f('bug', 'b2'), f('blocker', 'x1')], known: [{ id: 'f_1', status: 'fixed' }, { id: 'f_nope', status: 'present' }] }, { maxFindings: 2, known: [{ id: 'f_1', title: 't' }] });

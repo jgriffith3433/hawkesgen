@@ -131,7 +131,7 @@ returns a verdict, scores and findings.
   (private, objects to Infrequent Access after 30 days; created on first use). `HAWKES_PLAYTEST_BUCKET=off` skips it.
   `result.s3` has the keys; Studio serves them through short-lived signed links.
 - **Video:** on a GPU machine, a CDP screencast (`src/tools/screencast.ts`: every frame Chromium draws, kept at a steady
-  30 fps, encoded on the control server after the run), about 30 distinct fps even with two playtests on the
+  30 fps, encoded after the run on the machine that played it: NVENC, else libx264; on the control server only if that fails), about 30 distinct fps even with two playtests on the
   playtester; elsewhere, or if the screencast won't start, Playwright's `recordVideo` (25 fps). `recorder` forces one;
   `result.recorder` says which. Measurements and the alternatives tried (tab capture): `docs/playtest-video.md`.
 - **Reviews converge** (`playtest.review` v3): at most `maxFindings` (default 5) new findings, worst first, polish and ideas

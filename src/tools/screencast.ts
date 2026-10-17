@@ -1,8 +1,9 @@
 // Playtest video from a CDP screencast: Chromium sends a JPEG each time it draws a new frame, the runner acks it at
 // once and keeps a 30 fps clock, writing the frame on screen at each tick into an MJPEG stream (no encoding while the
-// game plays). ffmpeg turns the stream into the mp4 afterwards. Playwright's recordVideo also screencasts, but encodes
-// VP8 at 25 fps on the browser's machine; this moves the encoding off the playtester and keeps up with 30 fps even
-// with two playtests on its 4 vCPUs. Measurements: docs/playtest-video.md.
+// game plays). After the run, ffmpeg turns the stream into the mp4 on the machine that recorded it (remoteEncodeScript,
+// over SSH), or here if that fails. Playwright's recordVideo also screencasts, but encodes VP8 at 25 fps while the
+// game plays; this keeps up with 30 fps even with two playtests on the playtester's 4 vCPUs. Measurements:
+// docs/playtest-video.md.
 //
 // The CDP session belongs to the page, so it follows navigations (site crawls, a game that reloads).
 // No dependencies on the rest of Hawkes Gen, so it can be tried on a playtester by itself.
@@ -115,11 +116,39 @@ export class ScreencastRecorder {
   }
 }
 
-/** ffmpeg arguments for the MJPEG stream -> H.264 mp4 at the viewport's size (even), 30 fps. */
-export function mjpegToMp4Args(input: string, out: string, { width, height }: { width: number; height: number }) {
+/** The scale and pad filter: the viewport's size (even), the frame centred. */
+function sizeFilter({ width, height }: { width: number; height: number }) {
   const w = Math.ceil(width / 2) * 2;
   const h = Math.ceil(height / 2) * 2;
+  return `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+}
+
+/** ffmpeg arguments for the MJPEG stream -> H.264 mp4 at the viewport's size (even), 30 fps. */
+export function mjpegToMp4Args(input: string, out: string, viewport: { width: number; height: number }) {
   return ['-y', '-loglevel', 'error', '-f', 'mjpeg', '-framerate', String(SCREENCAST_FPS), '-i', input,
-    '-vf', `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`,
+    '-vf', sizeFilter(viewport),
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out];
+}
+
+/**
+ * A bash script that encodes on the machine that recorded the video (the playtester or a GPU server): the MJPEG comes
+ * in on stdin, the mp4 goes out on stdout, what happened on stderr ("encoder: <name>" first). NVENC when the GPU has
+ * it (the T4 does), else libx264 at the same settings as here; ffmpeg is installed once if it's missing. Run niced so
+ * a game still playing in the other lane keeps its frame rate. Exits non-zero on failure (the caller encodes here).
+ */
+export function remoteEncodeScript(viewport: { width: number; height: number }) {
+  const common = `-y -loglevel error -f mjpeg -framerate ${SCREENCAST_FPS} -i pipe:0 -vf '${sizeFilter(viewport)}'`;
+  return [
+    'set -o pipefail',
+    '[ -d /var/lib/hawkes ] && sudo -n touch /var/lib/hawkes/last_busy 2>/dev/null',
+    'apt() { sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 -y -q "$@" </dev/null >&2; }',
+    'command -v ffmpeg >/dev/null || apt install ffmpeg || { apt update && apt install ffmpeg; } || { echo "no ffmpeg" >&2; exit 3; }',
+    'enc="libx264 -preset veryfast -crf 28"',
+    'ffmpeg -hide_banner -loglevel error -f lavfi -i color=black:s=256x256:d=0.2 -c:v h264_nvenc -f null - </dev/null >/dev/null 2>&1 && enc="h264_nvenc -preset p4 -rc vbr -cq 28 -b:v 0"',
+    'echo "encoder: ${enc%% *}" >&2',
+    'd=$(mktemp -d) || exit 4',
+    'trap "rm -rf $d" EXIT',
+    `nice -n 10 ffmpeg ${common} -c:v $enc -pix_fmt yuv420p -movflags +faststart "$d/out.mp4" || exit 5`,
+    'cat "$d/out.mp4"',
+  ].join('\n');
 }

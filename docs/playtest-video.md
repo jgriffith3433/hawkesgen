@@ -8,9 +8,13 @@ Chromium sent, the frames written and the seconds).
 
 How the screencast works: Chromium sends a JPEG (quality 60, at most the viewport's size) every time it draws a new
 frame; the runner acks it at once (Chromium waits for the ack) and keeps a 30 fps clock, writing whatever frame is on
-screen at each tick into an MJPEG file. Nothing is encoded while the game plays. After the run, ffmpeg turns the MJPEG
-into the H.264 mp4 (crf 28, veryfast) on the control server, as it did with the old webm. The CDP session belongs to
-the page, so it follows navigations (site crawls, reloads). The MJPEG is about 2 MB per second of run (1.2 GB for a
+screen at each tick into an MJPEG file. Nothing is encoded while the game plays. After the run, the MJPEG goes back
+over SSH to the machine that played the game, ffmpeg there turns it into the H.264 mp4 and the control server only
+downloads the result (`remoteEncodeScript` in `src/tools/screencast.ts`, `encodeRemotely` in `src/tools/playtest.ts`):
+NVENC (`h264_nvenc -preset p4 -rc vbr -cq 28`) when the GPU has it (the T4 does), else libx264 (crf 28, veryfast),
+niced so a game in the other lane keeps its frame rate; ffmpeg is installed there on first use if it's missing. If
+that fails, the control server encodes it with libx264 as before. `result.recorder.encodedOn` and `encoder` say which.
+(The control server has 2 cores; a 10-minute encode there used to max them out while agents were running.) The CDP session belongs to the page, so it follows navigations (site crawls, reloads). The MJPEG is about 2 MB per second of run (1.2 GB for a
 10-minute campaign) in the job's tmp folder; it's deleted once the mp4 is made.
 
 ## Measurements (2026-10-16, playtester g4dn.xlarge: T4, 4 vCPU)
@@ -32,7 +36,7 @@ game's own `state().fps` during the match.
 
 With two playtests the T4's 4 vCPUs are saturated (the game's renderer alone takes about 2 cores per tab). Tab capture
 encodes VP8/VP9 in software inside the same Chromium, so its frame rate falls with the load; the screencast only
-JPEG-encodes on the playtester and leaves the video encode to the control server after the run, so it holds 30.
+JPEG-encodes on the playtester and leaves the video encode until after the run, so it holds 30.
 Neither changed the game's frame rate measurably.
 
 The original report of 3 to 14 distinct fps with `recordVideo` didn't reproduce on 2026-10-16: three production runs
