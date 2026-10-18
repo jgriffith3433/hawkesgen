@@ -68,7 +68,59 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 #toast.on { opacity: .95; }
 .bar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; } .bar > i { display: block; height: 100%; background: var(--accent); }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
-@media (max-width: 640px) { .top { padding: 10px 12px; } main { padding: 12px; } th:nth-child(n+5), td:nth-child(n+5) { display: none; } }
+/* Tablets and phones: nothing widens the page; a wide table scrolls inside its card. */
+@media (max-width: 1024px) {
+  html { -webkit-text-size-adjust: 100%; }
+  body { overflow-x: clip; }
+  main { padding: 16px max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); overflow-wrap: anywhere; }
+  .top { padding: max(10px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left)); }
+  .card { overflow-x: auto; }
+  img, video, audio, model-viewer, iframe { max-width: 100%; }
+  input[type="file"] { max-width: 100%; }
+  code { overflow-wrap: anywhere; }
+  dialog { width: min(920px, calc(100vw - 16px)); max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+  #modalBody { max-height: calc(100dvh - 20px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); overflow-wrap: anywhere; }
+  #modalBody textarea[style*="min-height"] { min-height: 45dvh !important; }
+  #toast { bottom: max(18px, env(safe-area-inset-bottom)); }
+}
+/* Touch screens: tap targets of 44px, and inputs at 16px so iOS doesn't zoom in on focus. */
+@media (pointer: coarse) {
+  button, select, input:not([type="checkbox"]):not([type="radio"]):not([type="file"]) { min-height: 44px; }
+  button.star { min-width: 44px; }
+  input, select, textarea { font-size: 16px; }
+  input[type="checkbox"], input[type="radio"] { width: 22px; height: 22px; }
+  hg-library, hg-entity, hg-slot { font-size: 16px; }
+}
+/* Phones. */
+@media (max-width: 640px) {
+  main { padding: 12px max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  .top { gap: 8px 12px; padding: max(8px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); }
+  .brand { flex: 1; min-width: 0; }
+  .brand span { display: none; }
+  /* The tabs: one strip under the brand that scrolls sideways. */
+  nav { order: 3; flex: 0 0 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -12px; padding: 0 12px 6px; -webkit-overflow-scrolling: touch; }
+  nav::-webkit-scrollbar { display: none; }
+  nav button { flex: none; white-space: nowrap; min-height: 44px; padding: 6px 12px; }
+  .card { padding: 12px; }
+  /* Toolbars: filters and actions take the full width and wrap. */
+  .row.spread > .row { width: 100%; }
+  .row > input:not([type="checkbox"]), .row > select { flex: 1 1 140px; }
+  .form { grid-template-columns: 1fr; }
+  .form input:not([type="checkbox"]), .form select, .form textarea { width: 100%; }
+  .lib { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  dialog { width: calc(100vw - 16px); }
+  #modalBody { padding: 14px; }
+  /* Tables stack into one card per row; each cell is labelled with its column (app.js labelCells). */
+  .card { overflow-x: visible; }
+  table, tbody, tr, td { display: block; width: 100%; }
+  thead { display: none; }
+  tr { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  td { border: 0; padding: 3px 0; width: auto !important; }
+  td.num { text-align: left; }
+  td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 12px; font-weight: 600; }
+  tr.click:hover td { background: none; }
+  tr.click:active { background: var(--chip); }
+}
 
 /* The library's web components (clients/js/hawkesgen-ui.mjs) in the dashboard's colors, light and dark. */
 hg-library, hg-entity, hg-slot { --hg-bg: var(--bg); --hg-panel: var(--panel); --hg-fg: var(--ink); --hg-muted: var(--muted); --hg-line: var(--line); --hg-accent: var(--accent); }

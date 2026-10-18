@@ -36,11 +36,24 @@ function modal(html) {
 }
 $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') e.target.close(); });
 
+// On a phone, table rows stack into cards (style.css): each cell gets its column's
+// header as a label, from whatever table a render just wrote.
+function labelCells() {
+  for (const table of document.querySelectorAll('table:not([data-labelled])')) {
+    const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+    if (heads.length) for (const tr of table.querySelectorAll('tbody tr')) [...tr.children].forEach((td, i) => { if (heads[i]) td.dataset.label = heads[i]; });
+    table.dataset.labelled = '';
+  }
+}
+new MutationObserver(labelCells).observe(document.body, { childList: true, subtree: true });
+
 // ---------------------------------------------------------------- tabs
 let current = location.hash.slice(1) || 'overview';
 function show(tab) {
   current = tab;
   for (const b of document.querySelectorAll('#tabs button')) b.classList.toggle('on', b.dataset.tab === tab);
+  // On a phone the tabs are a strip that scrolls sideways: keep the open one in view.
+  $(`#tabs button[data-tab="${tab}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   for (const s of document.querySelectorAll('.tab')) s.classList.toggle('on', s.id === tab);
   history.replaceState(null, '', `#${tab}`);
   render[tab]?.().catch(fail);
