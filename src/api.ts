@@ -149,6 +149,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           aws: (() => { try { fleet.awsConfig(); return true; } catch { return false; } })(),
           elevenlabs: eleven.configured(),
           anthropic: claude.configured(),
+          claude: claude.backend(),
           python: fs.existsSync(path.join(paths.post, '..', '.venv')),
         },
         queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),

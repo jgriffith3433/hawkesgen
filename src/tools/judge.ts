@@ -12,7 +12,7 @@ import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { getAsset } from '../library.ts';
 import { ensureLocal } from '../storage.ts';
-import { ask } from '../providers/anthropic.ts';
+import { ask, usageOf } from '../providers/anthropic.ts';
 import { videoFrames } from './pipeline.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
@@ -111,7 +111,7 @@ ${current ? 'Candidate 0 is the version in use now.' : 'No version is in use yet
 ${layout}`,
       images: [...refs, ...views.flat()], schema: SCHEMA, effort: 'medium', maxTokens: 4000,
     }, ctx.signal);
-    ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: `${r.model} judge` });
+    ctx.usage(usageOf(r, `${r.model} judge`));
     const pick = JSON.parse(r.text);
     const best = cands[pick.best];
     if (!best) throw new GenError(`Claude answered candidate ${pick.best}, which doesn't exist`);

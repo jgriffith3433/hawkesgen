@@ -4,7 +4,7 @@
 import type { Tool } from './types.ts';
 import { loadSettings } from '../config.ts';
 import { speak, soundEffect, designVoice, saveDesignedVoice } from '../providers/elevenlabs.ts';
-import { ask, DEFAULT_MODEL, MODELS } from '../providers/anthropic.ts';
+import { ask, DEFAULT_MODEL, MODELS, usageOf } from '../providers/anthropic.ts';
 import { GenError } from '../util.ts';
 
 export const voiceTool: Tool = {
@@ -130,7 +130,7 @@ export const llmTextTool: Tool = {
     const p = ctx.params;
     ctx.step(`asking ${p.model}`);
     const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens }, ctx.signal);
-    ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: r.model });
+    ctx.usage(usageOf(r));
     ctx.result({ text: r.text, model: r.model, usage: r.usage });
   },
 };
@@ -149,7 +149,7 @@ export const llmJsonTool: Tool = {
     if (!p.schema || typeof p.schema !== 'object') throw new GenError('schema must be a JSON Schema object');
     ctx.step(`asking ${p.model} for JSON`);
     const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, schema: p.schema }, ctx.signal);
-    ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: r.model });
+    ctx.usage(usageOf(r));
     let value: unknown;
     try {
       value = JSON.parse(r.text);

@@ -24,7 +24,7 @@ import crypto from 'node:crypto';
 import type { Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
-import { ask } from '../providers/anthropic.ts';
+import { ask, usageOf } from '../providers/anthropic.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
 
@@ -166,7 +166,7 @@ ${ctx.params.canon ? `Canon: ${String(ctx.params.canon).slice(0, 3000)}
 ${layout}`,
             images: [...refs, ...views.flat()], schema: PICK_SCHEMA, effort: 'medium', maxTokens: 4000,
           }, ctx.signal);
-          ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: `${r.model} pick` });
+          ctx.usage(usageOf(r, `${r.model} pick`));
           picked = JSON.parse(r.text);
           const best = Math.max(0, Math.min(pickJobs.length - 1, Number(picked.best) || 0));
           winner = pickJobs[best];

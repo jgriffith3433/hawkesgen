@@ -71,6 +71,10 @@ export type Settings = {
   };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; local: number };
+  /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
+   * (billed per token). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
+   * (inside every job: reviews, judges, captions) and how long one may take. */
+  claude: { backend: 'max-plan' | 'api'; concurrency: number; timeoutMinutes: number };
   /** Local requests (127.0.0.1) without an API key act as the owner. Turn off before exposing the service. */
   localOpen: boolean;
   /** Dollars per unit for usage reports, where the provider doesn't say. */
@@ -82,6 +86,7 @@ export type Settings = {
 export const SETTINGS_DEFAULTS: Settings = {
   fleet: { servers: 4, auto: true, autoLaunch: false, idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
   concurrency: { elevenlabs: 3, anthropic: 4, local: 2 },
+  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
   storage: { bucket: null },
@@ -105,6 +110,11 @@ function clean(s: Settings): Settings {
       anthropic: n(s.concurrency?.anthropic, 1, 16, SETTINGS_DEFAULTS.concurrency.anthropic),
       local: n(s.concurrency?.local, 1, 8, SETTINGS_DEFAULTS.concurrency.local),
     },
+    claude: {
+      backend: s.claude?.backend === 'api' ? 'api' : 'max-plan',
+      concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
+      timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
+    },
     localOpen: s.localOpen !== false,
     rates: { elevenlabsPer1kChars: Number(s.rates?.elevenlabsPer1kChars ?? SETTINGS_DEFAULTS.rates.elevenlabsPer1kChars) || 0 },
     storage: { bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null },
@@ -117,7 +127,7 @@ export function loadSettings(): Settings {
     // Settings saved before fleet.autoLaunch existed had auto start off by default: J turned it on (2026-10-18, starts
     // only). The first save after this writes autoLaunch, so J's later choice sticks.
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -130,6 +140,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     ...patch,
     fleet: { ...cur.fleet, ...(patch.fleet ?? {}) },
     concurrency: { ...cur.concurrency, ...(patch.concurrency ?? {}) },
+    claude: { ...cur.claude, ...(patch.claude ?? {}) },
     rates: { ...cur.rates, ...(patch.rates ?? {}) },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
