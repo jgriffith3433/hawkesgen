@@ -376,8 +376,19 @@ render.fleet = async () => {
   $('#fleet details').addEventListener('toggle', async (e) => {
     if (!e.target.open) return;
     try {
-      const { regions } = await api('/fleet/regions');
-      $('#fl-regions').innerHTML = `<table><thead><tr><th>Region</th><th class="num">GPU quota (vCPUs)</th><th>Open requests</th><th>Zones offering</th></tr></thead><tbody>${regions.map((r) => `<tr><td>${esc(r.region)}</td><td class="num">${esc(r.quota ?? '?')}</td><td>${esc(r.requests.map((q) => `${q.value} ${q.status}`).join('; ') || '—')}</td><td>${esc(Object.entries(r.zones).map(([t, z]) => `${t}: ${z.length}`).join(', ') || '—')}${r.error ? ` (${esc(r.error)})` : ''}</td></tr>`).join('')}</tbody></table>`;
+      const [{ regions }, me] = await Promise.all([api(`/fleet/regions${e.refresh ? '?refresh=1' : ''}`), api('/me').catch(() => ({}))]);
+      const owner = me.role === 'owner';
+      $('#fl-regions').innerHTML = `<table><thead><tr><th>Region</th><th class="num">GPU quota (vCPUs)</th><th>Requests</th><th>Zones offering</th>${owner ? '<th></th>' : ''}</tr></thead><tbody>${regions.map((r) => `<tr><td>${esc(r.region)}</td><td class="num">${esc(r.quota ?? '?')}</td><td>${esc(r.requests.map((q) => `${q.value} ${q.status}`).join('; ') || '—')}</td><td>${esc(Object.entries(r.zones).map(([t, z]) => `${t}: ${z.length}`).join(', ') || '—')}${r.error ? ` (${esc(r.error)})` : ''}</td>${owner ? `<td><button data-quota="${esc(r.region)}" data-now="${esc(r.quota ?? 0)}">Request more</button></td>` : ''}</tr>`).join('')}</tbody></table>
+        <p class="small muted">Quota is "Running On-Demand G and VT instances" in vCPUs (a g6e.xlarge takes 4, a g6e.2xlarge 8). Requesting more is free and launches nothing; AWS reviews it, usually within a day.</p>`;
+      for (const b of document.querySelectorAll('#fl-regions [data-quota]')) b.onclick = () => {
+        const region = b.dataset.quota;
+        const n = prompt(`Ask AWS to raise ${region}'s GPU quota from ${b.dataset.now} to how many vCPUs? Free; it launches nothing.`, String(Math.max(16, Number(b.dataset.now) + 8)));
+        if (!n) return;
+        post('/fleet/quota', { region, value: Number(n) }).then((r) => {
+          toast(`Asked AWS for ${r.value} vCPUs in ${region} (${r.status ?? 'sent'})`);
+          $('#fleet details').dispatchEvent(Object.assign(new Event('toggle'), { refresh: true }));
+        }).catch(fail);
+      };
     } catch (err) {
       $('#fl-regions').textContent = err.message;
     }

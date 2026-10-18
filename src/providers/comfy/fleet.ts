@@ -397,11 +397,40 @@ export async function regionsInfo({ force = false } = {}) {
   return value;
 }
 
+/** Quota request statuses AWS is still working on. */
+export const OPEN_QUOTA_STATUSES = ['PENDING', 'CASE_OPENED'];
+
+/** Why a GPU quota request shouldn't be filed (null when it can be): an unknown region, a silly size, no increase, one already open. */
+export function quotaRequestProblem(region: string, value: unknown, current: number | null, requests: { status?: string; value?: number }[] = [], regions = REGIONS) {
+  if (!regions.includes(region)) return `Not a region the fleet uses: ${region}`;
+  const want = Math.round(Number(value));
+  if (!(want >= 4 && want <= 64)) return 'Ask for between 4 and 64 vCPUs';
+  if (current != null && want <= current) return `${region} already allows ${current} vCPUs; ask for more than that`;
+  const open = requests.find((r) => OPEN_QUOTA_STATUSES.includes(r.status ?? ''));
+  if (open) return `${region} already has a quota request open (${open.value} vCPUs, ${open.status}). Wait for AWS to answer it.`;
+  return null;
+}
+
+/** One region's GPU quota now and its recent increase requests (newest first). Read-only, uncached. */
+export async function quotaStatus(region: string) {
+  if (!REGIONS.includes(region)) throw fleetError(`Not a region the fleet uses: ${region}`);
+  const [q, h] = await Promise.all([
+    quotas(region).send(new GetServiceQuotaCommand(QUOTA)),
+    quotas(region).send(new ListRequestedServiceQuotaChangeHistoryByQuotaCommand(QUOTA)).catch(() => null),
+  ]);
+  const requests = (h?.RequestedQuotas ?? [])
+    .sort((a, b) => (b.Created?.getTime() ?? 0) - (a.Created?.getTime() ?? 0))
+    .slice(0, 5)
+    .map((r) => ({ value: r.DesiredValue, status: r.Status, caseId: r.CaseId ?? null, created: r.Created?.toISOString() }));
+  return { region, quota: q.Quota?.Value ?? 0, requests, open: requests.some((r) => OPEN_QUOTA_STATUSES.includes(r.status ?? '')) };
+}
+
 /** Asks AWS for more GPU quota in a region. Free; AWS reviews it. */
 export async function requestQuota(region: string, value: number) {
-  if (!REGIONS.includes(region)) throw fleetError(`Not a region the fleet uses: ${region}`);
+  const now = REGIONS.includes(region) ? await quotaStatus(region).catch(() => null) : null;
+  const problem = quotaRequestProblem(region, value, now?.quota ?? null, now?.requests);
+  if (problem) throw fleetError(problem);
   const want = Math.round(Number(value));
-  if (!(want >= 4 && want <= 64)) throw fleetError('Ask for between 4 and 64 vCPUs');
   try {
     const r = await quotas(region).send(new RequestServiceQuotaIncreaseCommand({ ...QUOTA, DesiredValue: want }));
     regionCache.at = 0;
