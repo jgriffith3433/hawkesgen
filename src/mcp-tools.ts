@@ -70,11 +70,17 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
         reuse: { type: 'boolean', description: 'Hand back a finished job of exactly this recipe (any seed) from the library instead of paying again (default true; false for a new take)' },
         wait: { type: 'boolean', description: 'Wait for it to finish (default true). False returns the job id.' },
         timeout_minutes: { type: 'number', description: 'How long to wait (default 30)' },
+        wait_for_server: { type: 'boolean', description: 'Wait even when no GPU server is running (default false: return at once, queued)' },
       }, ['project']),
       run: async (a) => {
         if (remote) for (const v of Object.values<any>(a.inputs ?? {}).flat()) if (typeof v !== 'string' || !/^(asset|blob):/.test(v)) throw new Error('Over the remote MCP endpoint, inputs must be asset:<id> or blob:<sha> (upload files with POST /v1/blobs first).');
         const job = await gen.submit(a.tool, { project: a.project, params: a.params ?? {}, inputs: a.inputs ?? {}, labels: a.labels, preset: a.preset, reuse: a.reuse !== false });
         if (a.wait === false) return summarizeJob(job);
+        // No GPU server running: the job waits in the queue until J starts one. Say so now instead of blocking.
+        const first = job.status === 'queued' ? await new Promise((r) => setTimeout(r, 2000)).then(() => gen.job(job.id)) : job;
+        if (first.status === 'queued' && /no GPU server is ready/i.test(first.detail ?? '') && !a.wait_for_server) {
+          return { ...summarizeJob(first), waitingForServer: true, note: 'Queued: no GPU server is running. Only J can start one (agents and Talk cannot). Tell J (studio_inbox ask, with hawkesgen_estimate\'s price); the job runs by itself once a server is up. Check it later with hawkesgen_job.' };
+        }
         const done = await gen.wait(job.id, { timeoutMs: (a.timeout_minutes ?? 30) * 60000, throwOnFail: false });
         return withFiles(done, a.save_to);
       },
@@ -195,7 +201,7 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
     },
     {
       name: 'hawkesgen_fleet',
-      description: 'GPU fleet status: servers, which are ready, what each is running and costs per hour. Starting or launching costs money: only with the user\'s OK, via action + confirm.',
+      description: 'GPU fleet status: servers, which are ready, what each is running and costs per hour. start, stop and stop-all need the owner key (J\'s): Talk and agents get "This needs the owner role", so don\'t try them there; ask J instead (studio_inbox ask, with hawkesgen_estimate\'s price). An approval of the work is not a key.',
       inputSchema: obj({ action: str('Optional: start, stop, access (refresh IP), stop-all'), id: str('Server id for start/stop'), confirm: { type: 'boolean', description: 'Required true for start (it costs money). Only after the user agreed.' } }),
       run: async ({ action, id, confirm }) => {
         if (!action) {

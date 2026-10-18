@@ -183,7 +183,7 @@ Products keep copies of the JS SDK (`clients/js`: the client, the web components
 and site builds can't read this private repo. `clients/js/sdk.json` lists where each product keeps them, and
 `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one (`status` lists the ones behind). Sync and
 commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`) when behavior
-changes. Every client sends `X-Hawkes-Client` (js/6, py/6, unity/0.2.0); `GET /v1/health` lists callers behind.
+changes. Every client sends `X-Hawkes-Client` (js/7, py/6, unity/0.2.0); `GET /v1/health` lists callers behind.
 
 ## Checking your changes
 
