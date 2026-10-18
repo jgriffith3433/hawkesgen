@@ -403,6 +403,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/fleet/capacity' && method === 'GET') return send(res, 200, { scores: await fleet.capacityScores(Object.keys(fleet.TYPES)) });
     if (route === '/v1/fleet/health' && method === 'GET') return send(res, 200, await fleet.serverHealth(q('id')));
     if (route === '/v1/fleet/log' && method === 'GET') return send(res, 200, { log: await fleet.serverLog(Number(q('lines')) || 40, q('id')) });
+    if (route === '/v1/fleet/quota' && method === 'GET') return send(res, 200, await fleet.quotaStatus(q('region') || 'us-east-1'));
     if (route === '/v1/fleet/quota' && method === 'POST') {
       requireRole(client, 'owner');
       const { region, value } = await readJson(req);

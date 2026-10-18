@@ -129,7 +129,8 @@ background, and a missing file comes back from S3 when a job or a download needs
 | `POST /v1/fleet/fix` `{ id?, confirm: true }` | owner; ComfyUI back on the flags that work |
 | `POST /v1/fleet/adopt` `{ from: "<dir>", confirm: true }` | owner; take over servers another project launched (tokens + keys) |
 | `GET /v1/fleet/health?id=`, `/log?id=&lines=`, `/regions?refresh=1`, `/capacity` | Over SSH / AWS, read-only |
-| `POST /v1/fleet/quota` `{ region, value }` | owner; ask AWS for more GPU quota (free) |
+| `GET /v1/fleet/quota?region=` | A region's GPU quota (vCPUs, "Running On-Demand G and VT instances") and its last increase requests; `open` while one is PENDING or CASE_OPENED |
+| `POST /v1/fleet/quota` `{ region, value }` | owner; ask AWS to raise that quota to `value` vCPUs (free, launches nothing). Refused when `value` isn't above the current quota or a request is still open. Dashboard: GPU fleet → Regions and GPU quota → Request more; MCP: `hawkesgen_fleet` `request-quota` |
 | `GET /v1/fleet/models?id=&refresh=1` | A server's model files, sizes, free disk, and which tools use each |
 | `POST /v1/fleet/models/install` `{ id, tool, confirm: true }` | owner; install a workflow tool's models ahead of time |
 | `POST /v1/fleet/models/prune` `{ id, files, confirm: true }` | owner; remove model files (never core ones) |
