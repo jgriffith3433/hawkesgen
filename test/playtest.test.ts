@@ -126,3 +126,46 @@ test('settleCriteria: one answer per criterion, in order, unclear when skipped',
   assert.deepEqual(r.criteria.map((c: any) => c.met), ['yes', 'no', 'unclear']);
   assert.equal(settleCriteria({ criteria: [{ met: 'yes' }] }, []).criteria, undefined);
 });
+
+test('peers: each player gets the room and its number; problems and events are labelled by peer', async () => {
+  const { peerUrl, mergePeers } = await import('../src/tools/playtest.ts');
+  assert.equal(peerUrl('http://localhost:8089/game/?debug=1', 'abc123', 2), 'http://localhost:8089/game/?debug=1&room=abc123&peer=2');
+  const m = mergePeers([
+    { i: 0, outcome: 'won', problems: [{ severity: 'bug', message: 'boom', source: 'game' }], events: [{ t: 5, type: 'goal' }], log: ['joined'] },
+    { i: 1, outcome: 'lost', problems: [], events: [{ t: 2, type: 'join' }], log: ['joined'] },
+  ]);
+  // One player losing is the game working: peer 0's outcome.
+  assert.equal(m.outcome, 'won');
+  assert.deepEqual(m.problems, [{ severity: 'bug', message: 'peer 0: boom', source: 'game', peer: 0 }]);
+  assert.deepEqual(m.events, [{ t: 2, type: 'join', peer: 1 }, { t: 5, type: 'goal', peer: 0 }]);
+  assert.deepEqual(m.log, ['peer 0: joined', 'peer 1: joined']);
+  assert.equal(mergePeers([{ i: 0, outcome: 'won', problems: [] }, { i: 1, outcome: 'stuck', problems: [] }]).outcome, 'stuck');
+  assert.equal(mergePeers([{ i: 0, outcome: 'won', problems: [] }, { i: 1, outcome: null, problems: [] }, { i: 2, outcome: 'error', problems: [] }]).outcome, 'error');
+});
+
+test('peers: the players\' videos are stacked into one 30 fps mp4 (side by side, or a 2x2 grid)', { skip: !hasFfmpeg && 'no ffmpeg' }, async () => {
+  const { stackArgs } = await import('../src/tools/playtest.ts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-'));
+  try {
+    // MJPEG (screencast) and webm (Playwright) players, of different lengths: the shorter ones hold their last frame.
+    const inputs: { file: string; mjpeg: boolean }[] = [];
+    for (const [i, [color, secs]] of ([['red', 2], ['blue', 1], ['green', 1.5], ['white', 0.5]] as const).entries()) {
+      const mjpeg = i % 2 === 0;
+      const file = path.join(dir, `p${i}.${mjpeg ? 'mjpeg' : 'webm'}`);
+      const enc = mjpeg ? ['-f', 'mjpeg', '-c:v', 'mjpeg'] : ['-c:v', 'libvpx', '-b:v', '200k'];
+      const r = spawnSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=${color}:s=640x400:r=30:d=${secs}`, ...enc, file], { encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      inputs.push({ file, mjpeg });
+    }
+    const probe = (f: string) => spawnSync('ffprobe', ['-v', 'error', '-count_frames', '-select_streams', 'v', '-show_entries', 'stream=width,height,r_frame_rate,nb_read_frames', '-of', 'csv=p=0', f], { encoding: 'utf8' }).stdout.trim();
+    const vp = { width: 1280, height: 721 };
+    for (const [n, want] of [[2, '2560,722,30/1,60'], [3, '1280,724,30/1,60'], [4, '1280,724,30/1,60'], [1, '1280,722,30/1,60']] as const) {
+      const out = path.join(dir, `s${n}.mp4`);
+      const r = spawnSync('ffmpeg', stackArgs(inputs.slice(0, n), vp, out), { encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(probe(out), want, `${n} players`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
