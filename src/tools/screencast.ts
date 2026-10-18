@@ -117,7 +117,7 @@ export class ScreencastRecorder {
 }
 
 /** The scale and pad filter: the viewport's size (even), the frame centred. */
-function sizeFilter({ width, height }: { width: number; height: number }) {
+export function sizeFilter({ width, height }: { width: number; height: number }) {
   const w = Math.ceil(width / 2) * 2;
   const h = Math.ceil(height / 2) * 2;
   return `scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1`;

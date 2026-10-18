@@ -5,6 +5,7 @@
 
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Tool, RunContext } from './types.ts';
 import { GenError, run as runProc, sleep } from '../util.ts';
@@ -13,7 +14,7 @@ import { db } from '../db.ts';
 import { ask, DEFAULT_MODEL } from '../providers/anthropic.ts';
 import { openPlaytestHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
 import { awsConfig } from '../providers/comfy/fleet.ts';
-import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, SCREENCAST_FPS } from './screencast.ts';
+import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
 type Problem = { severity: string; message: string; source: string };
@@ -60,11 +61,14 @@ export const playtestRunTool: Tool = {
     maxPages: { type: 'integer', default: 40, min: 1, max: 300, description: 'Site mode: how many pages to visit', advanced: true },
     recorder: { type: 'enum', values: ['auto', 'screencast', 'playwright'], default: 'auto', description: 'How the video is made. screencast: every frame Chromium draws, kept at 30 fps, encoded after the run on the browser\'s machine (smooth). playwright: Playwright\'s recordVideo (25 fps, encoded on the browser\'s machine). auto: screencast when the browser runs on a GPU machine, else playwright.', advanced: true },
     baseline: { type: 'string', description: 'A previous playtest.run job of the same scenario: screenshots at matching events (scene changes, the end) are compared with a perceptual diff', advanced: true, example: 'j_0123456789ab' },
+    peers: { type: 'integer', default: 1, min: 1, max: 4, description: 'Multiplayer: how many players (browser tabs in the same browser) play together. Each opens the URL with a shared random room=<id> and peer=<0..n-1>; peer 0 plays the scenario, the others scenarioPeers (or the same one). Their videos play side by side in the job\'s video; problems and events say which peer. Needs the playtest contract.' },
+    scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;
     // Loaded lazily so the service starts without Playwright's browsers installed.
     const { chromium, devices } = await import('playwright');
+    if ((p.peers ?? 1) > 1) return runPeers(ctx, chromium, devices);
     const videoDir = ctx.tmp('video');
     fs.mkdirSync(videoDir, { recursive: true });
     const viewport = p.mobile ? { width: 390, height: 844 } : { width: p.width, height: p.height };
@@ -511,6 +515,485 @@ export const playtestRunTool: Tool = {
   },
 };
 
+// ------------------------------------------------------------ multiplayer (peers > 1)
+
+type PeerRun = {
+  i: number; scenario: string; url: string; context: any; page: any; screencast: ScreencastRecorder | null; recorder: any; videoDir: string;
+  problems: Problem[]; consoleLines: { type: string; text: string; t: number }[]; failed: { url: string; status: number | string }[];
+  report: any; outcome: string | null; stuck: string | null; loadSeconds: number | null; sc: any; scenarios: any[];
+  lastScene?: string; lastAnswer: number; lastProblems: number; detail: string; fpsSamples: number[]; webm: string | null;
+};
+
+/** Each player's page: the game's URL with the shared room and the player's number. */
+export function peerUrl(url: string, room: string, peer: number) {
+  return withParams(url, { room, peer: String(peer) });
+}
+
+/**
+ * One result from the players' own: problems, events and log lines labelled by peer, and one outcome (peer 0's, unless
+ * a player broke or got stuck: in multiplayer one player losing is the game working).
+ */
+export function mergePeers(peers: { i: number; outcome: string | null; problems: Problem[]; events?: any[]; log?: any[] }[]) {
+  const outcomes = peers.map((x) => x.outcome ?? 'stuck');
+  const outcome = outcomes.includes('error') ? 'error' : outcomes.includes('stuck') ? 'stuck' : outcomes[0] ?? 'done';
+  const label = (i: number, x: any) => (x && typeof x === 'object' ? { ...x, peer: i } : { peer: i, detail: String(x) });
+  const events = peers.flatMap((x) => (x.events ?? []).map((e) => label(x.i, e)));
+  // By time when the game gives one (a stable sort keeps each peer's order otherwise).
+  if (events.every((e) => typeof e.t === 'number')) events.sort((a, b) => a.t - b.t);
+  return {
+    outcome,
+    problems: peers.flatMap((x) => x.problems.map((pr) => ({ ...pr, message: `peer ${x.i}: ${pr.message}`, peer: x.i }))),
+    events,
+    log: peers.flatMap((x) => (x.log ?? []).map((l) => (typeof l === 'string' ? `peer ${x.i}: ${l}` : label(x.i, l)))),
+  };
+}
+
+/**
+ * ffmpeg arguments for the players' videos in one mp4 (30 fps): two side by side at full size, three or four in a 2x2
+ * grid at half size (an empty corner stays black). One video is just scaled. Inputs are the screencast's MJPEG or
+ * Playwright's webm; a player whose video ended early holds its last frame.
+ */
+export function stackArgs(inputs: { file: string; mjpeg: boolean }[], viewport: { width: number; height: number }, out: string) {
+  const n = inputs.length;
+  const half = n > 2;
+  const tile = half ? { width: Math.ceil(viewport.width / 4) * 2, height: Math.ceil(viewport.height / 4) * 2 } : viewport;
+  const args = ['-y', '-loglevel', 'error'];
+  for (const x of inputs) args.push(...(x.mjpeg ? ['-f', 'mjpeg', '-framerate', String(SCREENCAST_FPS)] : []), '-i', x.file);
+  const parts = inputs.map((_, i) => `[${i}:v]fps=${SCREENCAST_FPS},${sizeFilter(tile)},setpts=PTS-STARTPTS[t${i}]`);
+  if (n === 1) parts.push('[t0]null[v]');
+  else if (n === 2) parts.push('[t0][t1]hstack=inputs=2[v]');
+  else if (n === 3) parts.push('[t0]split[s0][b0]', '[b0]drawbox=c=black:t=fill[blank]', '[s0][t1][t2][blank]xstack=inputs=4:layout=0_0|w0_0|0_h0|w0_h0[v]');
+  else parts.push('[t0][t1][t2][t3]xstack=inputs=4:layout=0_0|w0_0|0_h0|w0_h0[v]');
+  args.push('-filter_complex', parts.join(';'), '-map', '[v]', '-r', String(SCREENCAST_FPS),
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out);
+  return args;
+}
+
+/**
+ * playtest.run with peers > 1: that many browser contexts in the same browser (players), each on the game's URL with a
+ * shared random room and its peer number, each playing its scenario through the contract. Every context is recorded;
+ * the videos are stacked into the job's video and the players' problems and events merged, labelled by peer. Same
+ * limits as one player: every await is bounded and a watchdog kills the browser if the run overruns.
+ */
+async function runPeers(ctx: RunContext, chromium: any, devices: any) {
+  const p = ctx.params;
+  const n: number = p.peers;
+  if (p.mode === 'site' || p.mode === 'generic') throw new GenError(`peers needs a game with the playtest contract (mode auto or contract, not ${p.mode})`, { kind: 'contract' });
+  const viewport = p.mobile ? { width: 390, height: 844 } : { width: p.width, height: p.height };
+  const room = randomBytes(6).toString('hex');
+
+  let browser: any = null;
+  let host: PlaytestHost | null = null;
+  let softwareBecause: string | null = null;
+  let killed = '';
+  const kill = async (why: string) => {
+    if (killed) return;
+    killed = why;
+    ctx.log(`stopping the browser: ${why}`);
+    await within(browser?.close() ?? Promise.resolve(), 15_000, 'closing the browser').catch(() => {});
+    host?.close();
+  };
+  const onAbort = () => void kill('cancelled');
+  ctx.signal.addEventListener('abort', onAbort);
+  let watchdog: NodeJS.Timeout | null = null;
+  const arm = (ms: number) => {
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = setTimeout(() => void kill(`the run went past its ${Math.round(ms / 1000)} s limit`), ms);
+  };
+  let release: (() => void) | null = null;
+
+  const peers: PeerRun[] = [];
+  const shots: (Shot & { peer: number })[] = [];
+  const problems: Problem[] = [];
+  const timeline: any[] = [];
+  let t0 = Date.now();
+  const T = () => Math.round((Date.now() - t0) / 100) / 10;
+  let stuck: string | null = null;
+
+  try {
+    if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
+      const u = new URL(p.url);
+      const localPorts = /^(localhost|127\.0\.0\.1)$/.test(u.hostname) ? [Number(u.port || (u.protocol === 'https:' ? 443 : 80))] : [];
+      const opening = openPlaytestHost(localPorts, ctx.step, { startPlaytester: true });
+      host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
+        opening.then((h) => h?.close(), () => {});
+        if (p.gpu === 'require') throw e;
+        ctx.log(`no GPU browser (${e.message}); playing here in software`);
+        softwareBecause = String(e.message ?? e).slice(0, 300);
+        return null;
+      });
+      if (!host && p.gpu === 'require') throw new GenError('No GPU server is ready for the playtest (start one, or use gpu: auto)', { kind: 'gpu' });
+      if (!host && !softwareBecause) softwareBecause = 'no GPU machine was ready (the playtester did not start and no GPU server was running)';
+    }
+    if (!host) {
+      ctx.step('waiting for this machine\'s browser');
+      release = await localSlot(ctx.signal);
+    }
+    ctx.step(host ? `opening Chromium on ${host.server}` : 'opening Chromium');
+    browser = await within(host
+      ? chromium.connect(host.wsEndpoint, { timeout: 90_000, headers: { 'x-playwright-launch-options': JSON.stringify({ headless: true, args: GPU_LINUX_ARGS }) } })
+      : chromium.launch({
+        headless: !p.headed,
+        timeout: 90_000,
+        args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--mute-audio'],
+      }), 120_000, 'starting the browser');
+    if (host) ctx.log(`browser on the GPU server ${host.server}`);
+    arm((p.bootTimeout + (p.timeout ?? 3600) + 300) * 1000);
+
+    // One context per player (its own storage, like separate players), each recorded.
+    const wantScreencast = p.recorder === 'screencast' || (p.recorder === 'auto' && Boolean(host));
+    for (let i = 0; i < n; i++) {
+      const videoDir = ctx.tmp(`video-peer${i}`);
+      fs.mkdirSync(videoDir, { recursive: true });
+      const openTab = async (video: boolean) => {
+        const context = await within<any>(browser.newContext({
+          ...(p.mobile ? { ...devices['iPhone 13'], deviceScaleFactor: 2 } : {}),
+          viewport,
+          ...(video ? { recordVideo: { dir: videoDir, size: viewport } } : {}),
+          ignoreHTTPSErrors: true,
+        }), 30_000, 'opening a browser tab');
+        await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
+        return { context, page: await within(context.newPage(), 30_000, 'opening a browser tab') as any };
+      };
+      let { context, page } = await openTab(!wantScreencast);
+      let recorder: any = { kind: 'playwright', fps: 25 };
+      let screencast: ScreencastRecorder | null = null;
+      if (wantScreencast) {
+        const sc = new ScreencastRecorder(ctx.tmp(`screen-peer${i}.mjpeg`), viewport);
+        const why = await within(sc.start(context, page), 30_000, 'starting the screencast').catch((e: any) => e.message as string);
+        if (why) {
+          ctx.log(`peer ${i}: the screencast didn't start (${why}); recording with Playwright instead`);
+          await sc.stop();
+          await within(context.close(), 30_000, 'closing the tab').catch(() => {});
+          ({ context, page } = await openTab(true));
+        } else {
+          screencast = sc;
+          recorder = { kind: 'screencast', fps: SCREENCAST_FPS };
+        }
+      }
+      const url = peerUrl(p.url, room, i);
+      const peer: PeerRun = {
+        i, scenario: i > 0 && p.scenarioPeers ? p.scenarioPeers : p.scenario, url: host ? host.mapUrl(url) : url, context, page, screencast, recorder, videoDir,
+        problems: [], consoleLines: [], failed: [], report: null, outcome: null, stuck: null, loadSeconds: null, sc: null, scenarios: [],
+        lastAnswer: Date.now(), lastProblems: 0, detail: '', fpsSamples: [], webm: null,
+      };
+      page.setDefaultTimeout(30_000);
+      page.on('console', (m: any) => {
+        const type = m.type();
+        if (type === 'error' || type === 'warning') {
+          peer.consoleLines.push({ type, text: m.text().slice(0, 500), t: T() });
+          if (peer.consoleLines.length > 500) peer.consoleLines.shift();
+        }
+      });
+      page.on('pageerror', (e: any) => peer.problems.push({ severity: 'bug', message: `page error: ${e.message.slice(0, 300)}`, source: 'browser' }));
+      page.on('crash', () => peer.problems.push({ severity: 'bug', message: 'the page crashed (the browser tab died)', source: 'browser' }));
+      page.on('requestfailed', (r: any) => {
+        const why = r.failure()?.errorText ?? 'failed';
+        if (!/ERR_ABORTED/.test(why) && !killed) peer.failed.push({ url: r.url().slice(0, 300), status: why });
+      });
+      page.on('response', (r: any) => { if (r.status() >= 400) peer.failed.push({ url: r.url().slice(0, 300), status: r.status() }); });
+      peers.push(peer);
+    }
+    t0 = Date.now();
+
+    const shot = async (peer: PeerRun, reason: string, scene?: string) => {
+      if (killed) return;
+      const file = ctx.tmp(`shot-p${peer.i}-${String(shots.length).padStart(3, '0')}.jpg`);
+      try {
+        await within(peer.page.screenshot({ path: file, type: 'jpeg', quality: 80, timeout: 15_000 }), 20_000, 'a screenshot');
+        shots.push({ t: T(), reason, scene, file, peer: peer.i });
+      } catch {
+        // The page may be navigating.
+      }
+    };
+    const ev = <R>(peer: PeerRun, f: any, arg?: any, ms = 15_000): Promise<R> => within(peer.page.evaluate(f, arg), ms, `peer ${peer.i}'s page`);
+
+    try {
+      ctx.step(`loading ${n} players (room ${room})`);
+      await Promise.all(peers.map(async (peer) => {
+        const resp = await within<any>(peer.page.goto(peer.url, { waitUntil: 'load', timeout: p.bootTimeout * 1000 }), p.bootTimeout * 1000 + 15_000, 'loading the page').catch((e: any) => {
+          if (e instanceof Stuck) throw e;
+          peer.problems.push({ severity: 'bug', message: `the page did not load: ${e.message.split('\n')[0]}`, source: 'browser' });
+          return null;
+        });
+        peer.loadSeconds = T();
+        if (resp && resp.status() >= 400) peer.problems.push({ severity: 'bug', message: `the page answered HTTP ${resp.status()}`, source: 'browser' });
+        await shot(peer, 'loaded');
+      }));
+
+      const bootEnd = Date.now() + p.bootTimeout * 1000;
+      ctx.step('waiting for the games to load');
+      await Promise.all(peers.map(async (peer) => {
+        while (Date.now() < bootEnd && !killed) {
+          if (await ev<boolean>(peer, () => typeof (window as any).hawkesPlaytest === 'object').catch(() => false)) return;
+          await sleep(500);
+        }
+        if (killed) throw new Stuck(killed);
+        throw new GenError(`Peer ${peer.i}'s page never exposed window.hawkesPlaytest (waited ${p.bootTimeout} s): peers needs the playtest contract`, { kind: 'contract' });
+      }));
+      for (const peer of peers) {
+        peer.scenarios = await ev<any[]>(peer, () => (window as any).hawkesPlaytest.scenarios()).catch(() => []);
+        peer.sc = peer.scenarios.find((s: any) => s.id === peer.scenario);
+        if (!peer.sc) throw new GenError(`No scenario "${peer.scenario}" (peer ${peer.i}). This game has: ${peer.scenarios.map((s: any) => s.id).join(', ') || 'none'}`, { kind: 'contract' });
+      }
+      const limit = (p.timeout ?? Math.max(60, Math.round(Math.max(...peers.map((x) => x.sc.seconds || 150)) * 2))) * 1000;
+      arm(Math.max(0, bootEnd - Date.now()) + limit + 300_000);
+      ctx.step('waiting for the games to be ready');
+      await Promise.all(peers.map(async (peer) => {
+        while (Date.now() < bootEnd && !killed) {
+          if (await ev<boolean>(peer, () => (window as any).hawkesPlaytest.state().ready).catch(() => false)) break;
+          await sleep(500);
+        }
+        await shot(peer, 'ready');
+      }));
+      // Peer 0 first (it may open the room), then the others; start() isn't awaited (see the one-player run).
+      for (const peer of peers) {
+        ctx.step(`peer ${peer.i}: playing "${peer.sc.title ?? peer.sc.id}"`);
+        await ev(peer, (a: any) => {
+          const w = window as any;
+          w.__hawkesStartError = null;
+          try {
+            const r = w.hawkesPlaytest.start(a[0], { ...(a[3] ?? {}), seed: a[1], speed: a[2] });
+            if (r && typeof r.then === 'function') r.then(null, (e: any) => { w.__hawkesStartError = String(e?.stack ?? e); });
+          } catch (e: any) {
+            w.__hawkesStartError = String(e?.stack ?? e);
+          }
+          return true;
+        }, [peer.scenario, p.seed, p.speed, p.options && typeof p.options === 'object' ? p.options : null], 30_000);
+      }
+      const start = Date.now();
+      let nextShot = Date.now() + p.shotEvery * 1000;
+      let lastDetail = '';
+      for (;;) {
+        if (killed) throw new Stuck(killed);
+        await sleep(500);
+        const playing = peers.filter((x) => x.outcome === null);
+        await Promise.all(playing.map(async (peer) => {
+          const st = await ev<any>(peer, () => {
+            const w = window as any;
+            const s = w.hawkesPlaytest?.state();
+            return w.__hawkesStartError ? { ...(s ?? {}), status: 'error', __startError: w.__hawkesStartError } : s;
+          }, undefined, 10_000).catch((e: any) => {
+            if (killed) throw new Stuck(killed);
+            return e instanceof Stuck ? undefined : null;
+          });
+          if (st === undefined) {
+            // A player whose page stops answering for a minute is stuck; the others play on.
+            if (Date.now() - peer.lastAnswer > 60_000) {
+              peer.outcome = 'stuck';
+              peer.stuck = 'the page stopped answering for a minute';
+              peer.problems.push({ severity: 'bug', message: `the run got stuck: ${peer.stuck}`, source: 'runner' });
+            }
+            return;
+          }
+          peer.lastAnswer = Date.now();
+          if (!st) return;
+          timeline.push({ t: T(), peer: peer.i, status: st.status, scene: st.scene, progress: st.progress, fps: st.fps, note: st.note, metrics: st.metrics });
+          if (timeline.length > 5000) timeline.splice(0, 1000);
+          if (st.scene && st.scene !== peer.lastScene) {
+            peer.lastScene = st.scene;
+            await shot(peer, 'scene', st.scene);
+          }
+          peer.detail = `${peer.i}: ${st.scene ?? ''}${st.progress != null ? ` ${Math.round(st.progress * 100)}%` : ''}`;
+          if (st.__startError) peer.problems.push({ severity: 'bug', message: `hawkesPlaytest.start() failed: ${String(st.__startError).slice(0, 400)}`, source: 'game' });
+          if (TERMINAL.has(st.status)) peer.outcome = st.status;
+        }));
+        for (const peer of playing) {
+          const nProblems = peer.problems.length + peer.consoleLines.filter((c) => c.type === 'error').length;
+          if (nProblems > peer.lastProblems) {
+            peer.lastProblems = nProblems;
+            await shot(peer, 'problem', peer.lastScene);
+          }
+        }
+        if (Date.now() >= nextShot) {
+          nextShot = Date.now() + p.shotEvery * 1000;
+          for (const peer of peers.filter((x) => !x.stuck)) await shot(peer, 'every', peer.lastScene);
+        }
+        const detail = `${peers[0].sc.id}: ${peers.map((x) => x.outcome ?? (x.detail || `${x.i}: starting`)).join(' | ')}`;
+        if (detail !== lastDetail) {
+          lastDetail = detail;
+          ctx.step(detail);
+        }
+        if (peers.every((x) => x.outcome !== null)) break;
+        if (Date.now() - start > limit) {
+          for (const peer of peers.filter((x) => x.outcome === null)) {
+            peer.outcome = 'stuck';
+            peer.problems.push({ severity: 'bug', message: `the scenario didn't finish within ${Math.round(limit / 1000)} s`, source: 'runner' });
+            await ev(peer, () => (window as any).hawkesPlaytest?.stop?.(), undefined, 10_000).catch(() => {});
+          }
+          break;
+        }
+        if (ctx.signal.aborted) throw new GenError('cancelled', { kind: 'cancelled' });
+      }
+      await sleep(1000);
+      await Promise.all(peers.filter((x) => !x.stuck).map(async (peer) => {
+        await shot(peer, 'end', peer.lastScene);
+        peer.report = await ev<any>(peer, () => (window as any).hawkesPlaytest?.report()).catch(() => null);
+        if (peer.report?.outcome) peer.outcome = peer.report.outcome;
+        for (const pr of peer.report?.problems ?? []) peer.problems.push({ severity: pr.severity, message: pr.message, source: 'game' });
+      }));
+    } catch (e: any) {
+      if (ctx.signal.aborted) throw new GenError('cancelled', { kind: 'cancelled' });
+      if (e instanceof GenError) throw e;
+      stuck = killed || e.message?.split('\n')[0] || String(e);
+      const outcome = e instanceof Stuck || killed ? 'stuck' : 'error';
+      for (const peer of peers) if (peer.outcome === null) peer.outcome = outcome;
+      problems.push({ severity: 'bug', message: `the run ${outcome === 'stuck' ? 'got stuck' : 'broke'}: ${stuck}`, source: 'runner' });
+      ctx.log(`run ended early (${outcome}): ${stuck}`);
+      if (outcome !== 'stuck') for (const peer of peers) await shot(peer, 'end');
+    }
+
+    // Wrapping up, bounded like the one-player run.
+    const asleep = Boolean(killed || stuck);
+    for (const peer of peers) {
+      if (!asleep && !peer.stuck) peer.fpsSamples = await ev<number[]>(peer, () => (window as any).__hawkesRunnerFps?.samples ?? []).catch(() => []);
+    }
+    const renderer: string = asleep || peers[0].stuck ? 'unknown' : await ev<string>(peers[0], () => {
+      try {
+        const gl = document.createElement('canvas').getContext('webgl');
+        const d = gl?.getExtension('WEBGL_debug_renderer_info');
+        return String(d ? gl!.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl?.getParameter(gl.RENDERER) ?? 'none');
+      } catch {
+        return 'unknown';
+      }
+    }).catch(() => 'unknown');
+    const software = /swiftshader|llvmpipe|software|basic render/i.test(renderer);
+    for (const peer of peers) {
+      if (peer.screencast) {
+        const r = await within(peer.screencast.stop(), 30_000, 'stopping the screencast').catch((e: any) => {
+          ctx.log(`peer ${peer.i}: screencast: ${e.message}`);
+          return null;
+        });
+        if (r) Object.assign(peer.recorder, { frames: r.frames, written: r.written, seconds: Math.round(r.seconds * 10) / 10 });
+      }
+      const video = peer.page.video();
+      await within(peer.context.close(), 60_000, 'closing the tab').catch((e: any) => ctx.log(`peer ${peer.i}: closing the tab: ${e.message}`));
+      if (video && !killed) {
+        const webm = ctx.tmp(`video-peer${peer.i}.webm`);
+        peer.webm = await within(video.saveAs(webm), 120_000, 'saving the video').then(() => webm, (e: any) => { ctx.log(`peer ${peer.i}: video: ${e.message}`); return null; });
+      }
+      if (!peer.webm || !fs.existsSync(peer.webm)) peer.webm = newestFile(peer.videoDir, '.webm');
+    }
+    if (watchdog) clearTimeout(watchdog);
+
+    // Results: each player's problems, then merged and labelled.
+    const players: any[] = [];
+    for (const peer of peers) {
+      const errors = peer.consoleLines.filter((c) => c.type === 'error');
+      for (const e of dedupe(errors.map((c) => c.text))) peer.problems.push({ severity: 'bug', message: `console error: ${e}`, source: 'console' });
+      for (const f of dedupeBy(peer.failed, (x) => x.url).slice(0, 20)) peer.problems.push({ severity: 'bug', message: `request failed (${f.status}): ${f.url}`, source: 'network' });
+      for (const s of shots.filter((x) => x.peer === peer.i)) {
+        if (fs.statSync(s.file).size < 9_000) peer.problems.push({ severity: 'warning', message: `the screen looks blank at ${s.t} s (${s.reason})`, source: 'runner' });
+      }
+      const fps = summarizeFps(peer.fpsSamples);
+      if (fps.average && fps.average < 30 && !software) peer.problems.push({ severity: 'warning', message: `low frame rate: ${fps.average} fps on average (worst ${fps.worst}) in this browser`, source: 'runner' });
+      players.push({
+        peer: peer.i, url: peer.url, scenario: peer.scenario, outcome: peer.outcome, stuck: peer.stuck, loadSeconds: peer.loadSeconds, fps,
+        metrics: peer.report?.metrics ?? {}, recorder: peer.recorder,
+        console: { errors: errors.length, warnings: peer.consoleLines.length - errors.length, first: peer.consoleLines.slice(0, 10) },
+      });
+    }
+    const merged = mergePeers(peers.map((x) => ({ i: x.i, outcome: x.outcome, problems: x.problems, events: x.report?.events, log: x.report?.log })));
+    const allConsole = peers.flatMap((x) => x.consoleLines.map((c) => ({ ...c, text: `peer ${x.i}: ${c.text}` })));
+    const allErrors = allConsole.filter((c) => c.type === 'error').length;
+    const result: any = {
+      url: p.url, mode: 'contract', scenario: p.scenario, scenarioPeers: p.scenarioPeers || p.scenario, outcome: merged.outcome, room,
+      stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `GPU server ${host.server}` : 'this machine',
+      seconds: T(), loadSeconds: Math.max(...peers.map((x) => x.loadSeconds ?? 0)) || null, fps: players[0].fps, renderer, software, softwareBecause, contract: true, scenarios: peers[0].scenarios,
+      metrics: peers[0].report?.metrics ?? {}, events: merged.events, log: merged.log,
+      problems: dedupeBy([...problems, ...merged.problems], (x) => x.message),
+      console: { errors: allErrors, warnings: allConsole.length - allErrors, first: allConsole.slice(0, 30) },
+      failedRequests: dedupeBy(peers.flatMap((x) => x.failed.map((f) => ({ ...f, peer: x.i }))), (x) => `${x.peer} ${x.url}`).slice(0, 50),
+      pages: [], timeline: thin(timeline, 400), recorder: { kind: 'stacked', peers: players.map((x) => x.recorder) },
+      peers: players,
+      shots: shots.map((s, i) => ({ i, t: s.t, peer: s.peer, reason: s.reason, scene: s.scene, asset: null as string | null })),
+      video: null as string | null,
+      visual: null as any,
+      s3: null as any,
+    };
+    await within(browser.close(), 15_000, 'closing the browser').catch(() => {});
+    host?.close();
+    release?.();
+    release = null;
+
+    // The players' videos side by side (here: the stack needs them all on one machine).
+    ctx.step(`stacking the ${n} players' videos`);
+    const lastAsset = () => (ctx.outputs[ctx.outputs.length - 1] as any)?.asset ?? null;
+    const inputs = peers.map((x) => {
+      const mjpeg = x.screencast && fs.existsSync(x.screencast.file) && fs.statSync(x.screencast.file).size > 0 ? x.screencast.file : null;
+      return mjpeg ? { file: mjpeg, mjpeg: true } : x.webm && fs.existsSync(x.webm) ? { file: x.webm, mjpeg: false } : null;
+    }).filter((x): x is { file: string; mjpeg: boolean } => x !== null);
+    let mp4: string | null = null;
+    if (inputs.length) {
+      const out = ctx.tmp('playtest.mp4');
+      try {
+        await runProc('ffmpeg', stackArgs(inputs, viewport, out), { signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(30 * 60_000)]) });
+        mp4 = out;
+        result.recorder.encodedOn = 'this machine';
+        await ctx.emit({ data: fs.readFileSync(out), ext: '.mp4', mime: 'video/mp4', title: `Playtest video (${p.scenario}, ${n} players${p.mobile ? ', phone' : ''})`, meta: { playtest: 'video', peers: n } });
+        result.video = lastAsset();
+      } catch (e: any) {
+        ctx.log(`video: ${e.message}`);
+      }
+      if (inputs.length < n) ctx.log(`video: ${n - inputs.length} of the ${n} players recorded nothing`);
+    }
+    for (const x of peers) if (x.screencast) fs.rmSync(x.screencast.file, { force: true });
+    for (const [i, s] of shots.entries()) {
+      await ctx.emit({ data: fs.readFileSync(s.file), ext: '.jpg', mime: 'image/jpeg', title: `peer ${s.peer} · ${s.t}s ${s.reason}${s.scene ? ` — ${s.scene}` : ''}`, meta: { playtest: 'shot', t: s.t, reason: s.reason, scene: s.scene ?? null, peer: s.peer } });
+      result.shots[i].asset = lastAsset();
+    }
+
+    // Visual regression on peer 0's events (the other players' shots keep their place in the list but match nothing).
+    if (p.baseline) {
+      ctx.step('comparing screenshots with the previous run');
+      result.visual = await within(visualDiff(ctx, shots.map((s) => (s.peer ? { ...s, reason: 'peer' } : s)), p.baseline, lastAsset), 3 * 60_000, 'the screenshot comparison').catch((e: any) => {
+        ctx.log(`visual diff: ${e.message}`);
+        return { baseline: p.baseline, error: String(e.message).slice(0, 300), pairs: [] };
+      });
+    }
+
+    const s3 = playtestBucket();
+    if (s3) {
+      ctx.step('uploading the video to S3');
+      const prefix = `${ctx.job.project}/${new Date().toISOString().slice(0, 10)}/${ctx.job.id}`;
+      result.s3 = { bucket: s3, region: S3_REGION, prefix, video: mp4 ? `${prefix}/playtest.mp4` : null, report: `${prefix}/report.json` };
+      try {
+        await within(ensureBucket(s3), 60_000, 'checking the S3 bucket');
+        if (mp4) await within(putS3(s3, result.s3.video, fs.readFileSync(mp4), 'video/mp4'), 5 * 60_000, 'uploading the video');
+        await within(putS3(s3, result.s3.report, Buffer.from(JSON.stringify(result, null, 2)), 'application/json'), 60_000, 'uploading the report');
+      } catch (e: any) {
+        ctx.log(`S3: ${e.message}`);
+        result.s3.error = String(e.message).slice(0, 300);
+      }
+    }
+    await ctx.emit({ data: Buffer.from(JSON.stringify(result, null, 2)), ext: '.json', mime: 'application/json', title: 'Playtest report', meta: { playtest: 'report' } });
+    result.report = lastAsset();
+    ctx.result(result);
+    ctx.log(`${n} players, ${p.scenario}: ${result.outcome} (${players.map((x) => `${x.peer} ${x.outcome}`).join(', ')}) in ${result.seconds} s, ${result.problems.length} problems${result.s3?.error ? ' (S3 upload failed)' : ''}`);
+  } catch (e: any) {
+    // Hung before there were pages: a stuck run with nothing recorded.
+    if (!(e instanceof Stuck) || ctx.signal.aborted || peers.length) throw e;
+    const result = {
+      url: p.url, mode: 'contract', scenario: null, outcome: 'stuck', stuck: e.message, room, device: p.mobile ? 'phone' : 'desktop', viewport,
+      browser: host ? `GPU server ${host.server}` : 'this machine', seconds: 0, loadSeconds: null, fps: summarizeFps([]), contract: false, scenarios: [], metrics: {}, events: [], log: [],
+      problems: [{ severity: 'bug', message: `the run got stuck before the page opened: ${e.message}`, source: 'runner' }],
+      console: { errors: 0, warnings: 0, first: [] }, failedRequests: [], pages: [], timeline: [], shots: [], peers: [], video: null, visual: null, s3: null,
+    };
+    ctx.log(`stuck: ${e.message}`);
+    await ctx.emit({ data: Buffer.from(JSON.stringify(result, null, 2)), ext: '.json', mime: 'application/json', title: 'Playtest report', meta: { playtest: 'report' } });
+    ctx.result(result);
+  } finally {
+    // Players still waiting on their page (another one failed) stop looking.
+    killed ||= 'the run ended';
+    if (watchdog) clearTimeout(watchdog);
+    ctx.signal.removeEventListener('abort', onAbort);
+    for (const x of peers) await x.screencast?.stop().catch(() => {});
+    await within(browser?.close() ?? Promise.resolve(), 15_000, 'closing the browser').catch(() => {});
+    host?.close();
+    release?.();
+  }
+}
+
 /**
  * Runs the encode script on a playtest machine over SSH: the MJPEG goes up on stdin, the mp4 comes back on stdout into
  * `out`. Resolves with the encoder it used; rejects (and kills ssh) on failure, a bad exit or the signal.
@@ -666,7 +1149,7 @@ const eventKey = (reason: string, scene?: string | null) =>
 
 async function visualDiff(ctx: RunContext, shots: Shot[], baselineJob: string, lastAsset: () => string | null) {
   const before = new Map<string, any>();
-  for (const a of listAssets({ job: baselineJob, limit: 500 }).items.filter((x: any) => x.meta?.playtest === 'shot').sort((x: any, y: any) => (x.meta.t ?? 0) - (y.meta.t ?? 0))) {
+  for (const a of listAssets({ job: baselineJob, limit: 500 }).items.filter((x: any) => x.meta?.playtest === 'shot' && !x.meta.peer).sort((x: any, y: any) => (x.meta.t ?? 0) - (y.meta.t ?? 0))) {
     const k = eventKey(a.meta.reason as string, a.meta.scene as string);
     if (k && !before.has(k) && fs.existsSync(a.path)) before.set(k, a);
   }
