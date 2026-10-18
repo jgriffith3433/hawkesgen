@@ -26,6 +26,7 @@ import { applyPreset } from './presets.ts';
 import { canProject, type Client } from './auth.ts';
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { ensureInputs } from './storage.ts';
+import { autoStartRound, type AutoStartRound, type Backoff } from './autostart.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
@@ -253,6 +254,9 @@ class Queue {
   again = false;
   timer: NodeJS.Timeout | null = null;
   lastAutoStart = 0;
+  /** The last auto start round, and the servers it leaves alone for now (a start failed). */
+  autoRound: AutoStartRound | null = null;
+  autoBackoff: Backoff = new Map();
   waitReason = '';
   /** Whether a GPU server was ready for playtest browsers, checked at most every 30 s. */
   gpuSeen = { at: 0, ready: false, limit: 3 };
@@ -356,8 +360,11 @@ class Queue {
       void this.runOn(next, ep);
     }
     const left = gpu.filter((j) => !taken.has(j.id));
+    // While servers auto start booted in the last 10 minutes come up, the jobs say so.
+    const r = this.autoRound;
+    const booting = r && (r.started.length || r.launched) && Date.now() - r.at < 600_000 ? `${r.note} (booting, a few minutes)` : '';
     for (const j of left) {
-      this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${this.waitReason}`);
+      this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || this.waitReason}`);
     }
     if (left.length) {
       if (endpoints.length < Math.min(cap, left.length + this.busy.size)) void this.autoStart(left.length + this.busy.size);
@@ -373,28 +380,42 @@ class Queue {
   }
 
   /**
-   * With auto start on: starts stopped servers until there is one per job, and once the fleet image exists launches
-   * from it (one per round) when there's none left to start: disposable servers aren't kept stopped. Without the image it
-   * never launches (that's a 30-45 minute install). At most every two minutes.
+   * With auto start on (fleet.auto): starts stopped servers until there is one per job (src/autostart.ts: US regions,
+   * a failed start moves on to another zone or region and is left alone for a while). It launches from the fleet image
+   * only with fleet.autoLaunch. At most every two minutes. What it did goes in the waiting jobs' logs and GET /v1/fleet.
    */
   async autoStart(want: number) {
     const fleet = loadSettings().fleet;
     if (!fleet.auto || Date.now() - this.lastAutoStart < 120_000) return;
     this.lastAutoStart = Date.now();
     try {
-      const all = await fleetStatus();
-      const up = all.filter((st) => ['running', 'pending'].includes(st.state!)).length;
-      const short = Math.max(0, Math.min(fleet.servers, want) - up);
-      const stopped = all.filter((st) => st.state === 'stopped' && !st.imageSource && !st.purpose).slice(0, short);
-      for (const st of stopped) await startServer(st.id).catch((e) => console.warn(`[queue] couldn't start ${st.id}: ${e.message}`));
-      if (stopped.length) console.log(`[queue] started ${stopped.length} server(s) for waiting jobs`);
-      if (stopped.length < short && all.length < fleet.servers && (await imageAvailable())) {
-        const r = await launchServer({ idleMinutes: fleet.idleMinutes, type: 'auto' }).catch((e) => console.warn(`[queue] couldn't launch from the image: ${e.message}`));
-        if (r) console.log(`[queue] launched ${r.id} from the image for waiting jobs`);
+      const round = await autoStartRound(want, fleet, {
+        status: () => fleetStatus(),
+        start: (id) => startServer(id),
+        launch: () => launchServer({ idleMinutes: fleet.idleMinutes, type: 'auto' }),
+        imageAvailable,
+      }, this.autoBackoff);
+      this.autoRound = round;
+      if (!round.started.length && !round.launched && !round.failed.length) return;
+      console.log(`[queue] auto start: ${round.note}`);
+      const line = `${new Date(round.at).toISOString().slice(11, 19)} ${round.note}`;
+      for (const j of this.queued().filter((x) => getTool(x.tool)?.provider === 'comfy')) {
+        j.log.push(line);
+        j.log = j.log.slice(-300);
+        save(j, ['log']);
       }
     } catch (e: any) {
       console.warn(`[queue] auto start: ${e.message}`);
     }
+  }
+
+  /** Auto start's state for the fleet status. */
+  autoStartState() {
+    const s = loadSettings().fleet;
+    return {
+      auto: s.auto, autoLaunch: s.autoLaunch, last: this.autoRound,
+      backoff: [...this.autoBackoff].filter(([, b]) => b.until > Date.now()).map(([id, b]) => ({ id, until: b.until, reason: b.reason })),
+    };
   }
 
   async runOn(job: Job, ep: Endpoint) {

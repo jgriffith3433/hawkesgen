@@ -332,7 +332,10 @@ render.fleet = async () => {
     <div class="card"><h3>Scaling</h3><div class="form">
       <label><span><b>Servers</b>: most servers, and GPU jobs at once</span><input type="number" id="fs-servers" min="1" max="${s.max}" value="${s.servers}"></label>
       <label><span><b>Idle stop</b>: minutes before an idle server powers off</span><input type="number" id="fs-idle" min="10" max="240" value="${s.idleMinutes}"></label>
-      <label><span><b>Start servers by themselves</b> when jobs wait (costs money; with the image, launches from it)</span><select id="fs-auto"><option value="false" ${!s.auto ? 'selected' : ''}>Off</option><option value="true" ${s.auto ? 'selected' : ''}>On</option></select></label>
+      <label><span><b>Start servers by themselves</b> when GPU jobs wait: stopped servers in US regions (costs money)</span><select id="fs-auto"><option value="false" ${!s.auto ? 'selected' : ''}>Off</option><option value="true" ${s.auto ? 'selected' : ''}>On</option></select></label>
+      <label><span><b>Launch new servers by themselves</b> from the image when no stopped one is left (needs the above on)</span><select id="fs-autolaunch"><option value="false" ${!s.autoLaunch ? 'selected' : ''}>Off</option><option value="true" ${s.autoLaunch ? 'selected' : ''}>On</option></select></label>
+      ${f.autoStart?.last ? `<div class="small muted">Last auto start (${esc(new Date(f.autoStart.last.at).toLocaleTimeString())}): ${esc(f.autoStart.last.note || 'nothing to do')}</div>` : ''}
+      ${f.autoStart?.backoff?.length ? `<div class="small muted">Left alone for now: ${f.autoStart.backoff.map((b) => `${esc(b.id)} until ${esc(new Date(b.until).toLocaleTimeString())} (${esc(b.reason)})`).join(', ')}</div>` : ''}
       <label><span><b>Disposable servers</b>: servers launched from the image are terminated when idle, not stopped</span><select id="fs-disposable"><option value="true" ${s.disposable ? 'selected' : ''}>On</option><option value="false" ${!s.disposable ? 'selected' : ''}>Off</option></select></label>
     </div><div class="row" style="margin-top:10px"><button class="primary" id="fs-save">Save</button><span class="small muted">Each server's disk costs about ${money(f.diskPerMonth)} a month until it's terminated.</span></div></div>
     <div class="card" id="fl-builder"><h3>Unity build server</h3><div class="small muted">Loading…</div></div>
@@ -350,7 +353,7 @@ render.fleet = async () => {
     if (n) act('scale', { confirm: true, count: Number(n) });
   };
   $('#fl-launch').onclick = () => launchDialog(f);
-  $('#fs-save').onclick = () => post('/fleet/settings', { servers: Number($('#fs-servers').value), idleMinutes: Number($('#fs-idle').value), auto: $('#fs-auto').value === 'true', disposable: $('#fs-disposable').value === 'true' }).then(() => { toast('Saved'); render.fleet(); }).catch(fail);
+  $('#fs-save').onclick = () => post('/fleet/settings', { servers: Number($('#fs-servers').value), idleMinutes: Number($('#fs-idle').value), auto: $('#fs-auto').value === 'true', autoLaunch: $('#fs-autolaunch').value === 'true', disposable: $('#fs-disposable').value === 'true' }).then(() => { toast('Saved'); render.fleet(); }).catch(fail);
   for (const b of document.querySelectorAll('#fleet [data-sv]')) {
     b.onclick = async () => {
       const id = b.dataset.id;

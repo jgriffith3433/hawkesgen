@@ -89,6 +89,16 @@ this before changing server flags, models or workflows.
   let it choose the zone, so `launchServer` tries without a zone first, then
   each zone, then each 48 GB type, then each region with quota.
   `node tools/gpu/capacity.mjs` prints AWS's capacity hints.
+- **Auto start** (`fleet.auto`, on since 2026-10-18; `src/autostart.ts`):
+  when GPU jobs wait and fewer servers run than jobs (up to `fleet.servers`),
+  the queue starts stopped servers in US regions, at most every 2 minutes. A
+  start that fails moves on in the same round to a server in another zone
+  (capacity) or region (quota), and the failed server is left alone for 15
+  minutes. It launches new servers from the image only with
+  `fleet.autoLaunch` (off: J approved starts, not launches). Each start goes
+  in the waiting jobs' logs, and `GET /v1/fleet` has `autoStart` (last
+  round, servers left alone). Disposable servers are terminated when idle,
+  so with autoLaunch off only kept (stopped) servers can come back.
 
 ## ComfyUI memory flags (v0.40.0)
 
