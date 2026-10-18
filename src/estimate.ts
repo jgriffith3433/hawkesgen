@@ -66,6 +66,8 @@ function lineFor(tool: Tool, params: Record<string, any>, count: number, label: 
     }
     return { label, tool: tool.id, count, gpuSeconds: Math.round(per * count), apiCost: 0, family: (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null, basis };
   }
+  // Claude on the Max plan costs nothing per call (settings.claude.backend).
+  if (tool.provider === 'anthropic' && loadSettings().claude.backend === 'max-plan') return { label, tool: tool.id, count, gpuSeconds: 0, apiCost: 0, family: null, basis: 'Claude Max plan ($0 per call)' };
   const costPast = past.map((h) => h.cost).filter((c) => c > 0);
   const per = costPast.length ? median(costPast) : tool.provider === 'anthropic' ? 0.05 : tool.provider === 'elevenlabs' ? 0.03 : 0;
   return { label, tool: tool.id, count, gpuSeconds: 0, apiCost: Math.round(per * count * 1000) / 1000, family: null, basis: costPast.length ? `median of ${costPast.length} past jobs` : 'a typical job' };
@@ -100,7 +102,7 @@ export function estimate(project: string, items: EstimateItem[], opts: { servers
         const r = resolve(project, s);
         lines.push(lineFor(r.tool, r.params, count * (k === pickAt ? n : 1), `${label} · step ${k + 1}`));
       });
-      if (n > 1) lines.push({ label: `${label} · pick`, tool: 'llm (pick)', count, gpuSeconds: 0, apiCost: PICK_COST * count, family: null, basis: 'one Claude pick per asset' });
+      if (n > 1) lines.push({ label: `${label} · pick`, tool: 'llm (pick)', count, gpuSeconds: 0, apiCost: (loadSettings().claude.backend === 'max-plan' ? 0 : PICK_COST) * count, family: null, basis: 'one Claude pick per asset' });
       continue;
     }
     lines.push(lineFor(tool, params, count, label));

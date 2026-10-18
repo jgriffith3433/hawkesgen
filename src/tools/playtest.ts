@@ -11,7 +11,7 @@ import type { Tool, RunContext } from './types.ts';
 import { GenError, run as runProc, sleep } from '../util.ts';
 import { listAssets, getAsset } from '../library.ts';
 import { db } from '../db.ts';
-import { ask, DEFAULT_MODEL } from '../providers/anthropic.ts';
+import { ask, DEFAULT_MODEL, usageOf } from '../providers/anthropic.ts';
 import { openPlaytestHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
 import { awsConfig } from '../providers/comfy/fleet.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
@@ -1532,7 +1532,7 @@ export const playtestReviewTool: Tool = {
     ].filter(Boolean).join('\n\n');
     ctx.step(`Claude is reviewing ${frames.length} screenshots`);
     const r = await ask({ prompt, system: REVIEW_SYSTEM, images: [...frames.map((a: any) => a.path), ...before.map((b: any) => b.asset.path)], model: p.model, effort: 'high', maxTokens: 16000, schema: REVIEW_SCHEMA }, ctx.signal);
-    ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: r.model });
+    ctx.usage(usageOf(r));
     const review = settleCriteria(settleReview(JSON.parse(r.text), { mode, maxFindings: p.maxFindings, known }), criteria);
     // Evidence indexes -> the library's asset ids, so reports can show the frames.
     const shown = [...frames.map((a: any) => a.id), ...before.map((b: any) => b.asset.id)];

@@ -4,10 +4,14 @@
 // review tools already use: streaming, adaptive thinking with an effort level,
 // structured output through output_config.format, and server-side refusal
 // fallbacks ("default" routing) turned on.
+//
+// Since 2026-10-18 (J: "Switch to max plan") calls go to Claude Code on J's Max plan by default (claudecode.ts);
+// settings.claude.backend "api" brings back the API key path below.
 
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { env } from '../config.ts';
+import { env, loadSettings } from '../config.ts';
+import * as maxPlan from './claudecode.ts';
 import { GenError, mimeOf } from '../util.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
@@ -36,14 +40,28 @@ function anthropic() {
   return client;
 }
 
-export const configured = () => Boolean(env('ANTHROPIC_API_KEY'));
+export const backend = () => loadSettings().claude.backend;
+
+/** The API path needs its key; the Max plan path needs only the CLI (its login is checked on the first call). */
+export const configured = () => (backend() === 'api' ? Boolean(env('ANTHROPIC_API_KEY')) : true);
+
+/** A call's usage record: "max-plan" at $0 (like Studio's agents on the subscription), or "anthropic" billed per token. */
+export function usageOf(r: { model: string; usage: any; cost: number; billing: 'max-plan' | 'api' }, detail: string = r.model) {
+  return { provider: r.billing === 'max-plan' ? 'max-plan' : 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail };
+}
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
-/** One request: text (and images) in, text or schema-valid JSON out. */
-export async function ask({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema }: {
-  prompt: string; system?: string; images?: string[]; model?: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown>;
-}, signal?: AbortSignal) {
+type AskParams = { prompt: string; system?: string; images?: string[]; model?: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown> };
+
+/** One request: text (and images) in, text or schema-valid JSON out, on the backend settings.claude.backend names. */
+export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: 'max-plan' | 'api' }> {
+  if (backend() === 'api') return askApi(p, signal);
+  return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal);
+}
+
+/** The API key path: billed per token. */
+async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema }: AskParams, signal?: AbortSignal) {
   const content: any[] = images.map((file) => {
     const mime = mimeOf(file);
     if (!IMAGE_TYPES.has(mime)) throw new GenError(`Claude reads PNG, JPEG, WebP or GIF images, not ${file}`);
@@ -70,5 +88,5 @@ export async function ask({ prompt, system, images = [], model = DEFAULT_MODEL, 
   if (response.stop_reason === 'refusal') throw new GenError(`Claude declined this request${response.stop_details?.category ? ` (${response.stop_details.category})` : ''}.`, { status: 422, kind: 'refusal' });
   if (response.stop_reason === 'max_tokens') throw new GenError('The answer ran out of room before it finished. Raise maxTokens.', { status: 422 });
   const text = response.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
-  return { text, model: response.model as string, usage: response.usage, cost: costOf(response.model, response.usage) };
+  return { text, model: response.model as string, usage: response.usage, cost: costOf(response.model, response.usage), billing: 'api' as const };
 }

@@ -12,7 +12,7 @@ import { GenError } from '../util.ts';
 import { getAsset } from '../library.ts';
 import { paths } from '../config.ts';
 import { sshRun, scpToServer, MODELS_DIR } from '../providers/comfy/fleet.ts';
-import { ask } from '../providers/anthropic.ts';
+import { ask, usageOf } from '../providers/anthropic.ts';
 
 const WORKFLOW = () => path.join(paths.server, '..', 'workflows', 'image-generate');
 const baseModels = () => JSON.parse(fs.readFileSync(path.join(WORKFLOW(), 'workflow.json'), 'utf8')).models ?? [];
@@ -93,7 +93,7 @@ export const loraTrainTool: Tool = {
         images, effort: 'low', maxTokens: 4000,
         schema: { type: 'object', additionalProperties: false, required: ['captions'], properties: { captions: { type: 'array', items: { type: 'string' } } } },
       }, ctx.signal);
-      ctx.usage({ provider: 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail: `${r.model} captions` });
+      ctx.usage(usageOf(r, `${r.model} captions`));
       const got: string[] = JSON.parse(r.text).captions ?? [];
       if (got.length === images.length) captions = got;
       else ctx.log(`Claude gave ${got.length} captions for ${images.length} images; using the one caption for all`);
