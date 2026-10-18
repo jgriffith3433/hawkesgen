@@ -32,6 +32,7 @@ import { awsConfig, myIp, classify, lockKey, allowOnly as fleetAllowOnly } from 
 import { env, paths } from '../../config.ts';
 import { GenError } from '../../util.ts';
 import { parsePoll, pollLengthOf, type PollAnswer } from './poll.ts';
+import { fetchOrigin, withRepoLock } from './gitfetch.ts';
 
 /** Windows on-demand prices (US East), for estimates. */
 export const BUILDER_TYPES: Record<string, { vcpus: number; memory: number; price: number }> = {
@@ -630,16 +631,22 @@ export async function seedFromGit(root: string, exclude: string[], log: (s: stri
   const authArg = token ? ` -c 'http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}'` : '';
   const sshCmd = priv && !token ? ` -c core.sshCommand='ssh -i ${GH_KEY} -o StrictHostKeyChecking=accept-new'` : '';
   log(`${repo.top}: the server fetches ${repo.slug} from GitHub (${repo.base.slice(0, 7)})`);
-  const script = [
+  // Never wait on a password prompt (there is nobody to answer it).
+  const noPrompt = `$env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'`;
+  const prepare = [
     `$ErrorActionPreference = 'Stop'`,
-    // Never wait on a password prompt (there is nobody to answer it).
-    `$env:GIT_TERMINAL_PROMPT = '0'; $env:GCM_INTERACTIVE = 'never'`,
+    noPrompt,
     `if (-not (Test-Path '${remoteDir}\\.git')) { if (Test-Path '${remoteDir}') { ${GIT} -C '${remoteDir}' init -q; ${GIT} -C '${remoteDir}' remote add origin '${url}' } else { ${GIT}${sshCmd}${authArg} clone -q --no-checkout '${url}' '${remoteDir}' } }`,
     priv && !token ? `${GIT} -C '${remoteDir}' config core.sshCommand 'ssh -i ${GH_KEY} -o StrictHostKeyChecking=accept-new'` : '',
     token ? `${GIT} -C '${remoteDir}' remote set-url origin '${https}'` : '',
     // A failed git command doesn't stop PowerShell ($ErrorActionPreference only covers cmdlets): check each one.
     `if (-not (Test-Path '${remoteDir}\\.git')) { throw 'cloning ${repo.slug} failed' }`,
-    `${GIT} -C '${remoteDir}'${authArg} fetch -q origin; if ($LASTEXITCODE) { throw 'git fetch failed for ${repo.slug}' }`,
+    `'ready'`,
+  ].filter(Boolean).join('; ');
+  // The fetch runs on its own so a locked ref can be retried (gitfetch.ts).
+  const script = [
+    `$ErrorActionPreference = 'Stop'`,
+    noPrompt,
     // A website's files come back from the server and are committed as they are: check them out with the repo's own
     // line endings, not Git for Windows' CRLF (else every go live rewrites index.html whole). Dropping the index makes
     // the checkout below rewrite the files once. A Unity project keeps CRLF (rewriting it would reimport everything).
@@ -650,7 +657,12 @@ export async function seedFromGit(root: string, exclude: string[], log: (s: stri
     `'seeded'`,
   ].filter(Boolean).join('; ');
   try {
-    await ssh(script, { timeoutMs: 60 * 60_000 });
+    // One seed per server checkout at a time: two fetches in one checkout fail with "cannot lock ref".
+    await withRepoLock(remoteDir, async () => {
+      await ssh(prepare, { timeoutMs: 30 * 60_000 });
+      await fetchOrigin({ run: (cmd) => ssh(`${noPrompt}; ${cmd}`, { timeoutMs: 30 * 60_000 }), dir: remoteDir, authArg, slug: repo.slug, log });
+      await ssh(script, { timeoutMs: 60 * 60_000 });
+    });
   } catch (e: any) {
     // Never let the token reach a log or an error message.
     const msg = token ? String(e.message).split(token).join('***').replace(/Basic [A-Za-z0-9+/=]{20,}/g, 'Basic ***') : String(e.message);
@@ -660,7 +672,7 @@ export async function seedFromGit(root: string, exclude: string[], log: (s: stri
         : `The build server can't read the private repo ${repo.slug}. Give it read-only access: sign in with "gh auth login" here, then run "hawkesgen builder github".`, 'auth');
     }
     if (token) throw fail(msg);
-    throw e;
+    throw e instanceof GenError ? e : fail(msg);
   }
 
   // What differs from the base commit, as paths relative to C:\Projects under this root.
