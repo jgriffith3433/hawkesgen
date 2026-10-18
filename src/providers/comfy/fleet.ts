@@ -1004,11 +1004,15 @@ export async function serverModels(instanceId: string, { force = false } = {}) {
   return v;
 }
 
-/** A download's size from its headers (follows redirects), or 0 when unknown. */
+/** A download's size from its headers (follows redirects), or 0 when unknown. Remembered per URL. */
+const remoteSizes = new Map<string, number>();
 async function remoteSize(url: string) {
+  if (remoteSizes.has(url)) return remoteSizes.get(url)!;
   try {
     const r = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(15000) });
-    return Number(r.headers.get('x-linked-size') ?? r.headers.get('content-length') ?? 0);
+    const n = Number(r.headers.get('x-linked-size') ?? r.headers.get('content-length') ?? 0);
+    if (n) remoteSizes.set(url, n);
+    return n;
   } catch {
     return 0;
   }
@@ -1021,9 +1025,18 @@ async function remoteSize(url: string) {
  */
 export async function installModels(instanceId: string, models: { dir: string; file: string; url: string }[], onProgress: (line: string) => void = () => {}) {
   const have = await serverModels(instanceId);
-  const missing = models.filter((m) => !have.files.has(`${m.dir}/${m.file}`));
+  // A file that's there but shorter than the download (a cut-off copy: ComfyUI fails with "extends past the end of the
+  // file") counts as missing: aria2c -c finishes it.
+  const want = await Promise.all(models.map((m) => remoteSize(m.url)));
+  const missing = models.filter((m, i) => {
+    const got = have.files.get(`${m.dir}/${m.file}`);
+    return got === undefined || (want[i] > 0 && got < want[i]);
+  });
   if (!missing.length) return [];
-  const sizes = await Promise.all(missing.map((m) => remoteSize(m.url)));
+  const sizes = missing.map((m) => {
+    const full = want[models.indexOf(m)];
+    return Math.max(0, full - (have.files.get(`${m.dir}/${m.file}`) ?? 0));
+  });
   const total = sizes.reduce((a, b) => a + b, 0);
   const reserve = 15e9;
   if (total && have.free - total < reserve) {
@@ -1054,7 +1067,9 @@ export async function installModels(instanceId: string, models: { dir: string; f
   for (const [i, m] of missing.entries()) {
     onProgress(`installing model ${i + 1} of ${missing.length}: ${m.file}${sizes[i] ? ` (${(sizes[i] / 1e9).toFixed(1)} GB)` : ''}`);
     if (!/^[\w.-]+$/.test(m.file) || !/^[\w./-]+$/.test(m.dir) || !/^https:\/\/[^\s'"]+$/.test(m.url)) throw new GenError(`Refusing an odd model entry: ${m.dir}/${m.file}`);
-    await sshRun(`sudo mkdir -p ${MODELS_DIR}/${m.dir} && for a in 1 2 3; do sudo aria2c -q -x 16 -s 16 -c --file-allocation=none -d ${MODELS_DIR}/${m.dir} -o '${m.file}' '${m.url}' && break; sleep 10; done && test -s ${MODELS_DIR}/${m.dir}/${m.file} && echo ok`, instanceId, { timeoutMs: 60 * 60 * 1000 });
+    const full = want[models.indexOf(m)];
+    const check = full ? `test $(stat -c %s ${MODELS_DIR}/${m.dir}/${m.file}) -eq ${full}` : `test -s ${MODELS_DIR}/${m.dir}/${m.file}`;
+    await sshRun(`sudo mkdir -p ${MODELS_DIR}/${m.dir} && for a in 1 2 3; do sudo aria2c -q -x 16 -s 16 -c --file-allocation=none -d ${MODELS_DIR}/${m.dir} -o '${m.file}' '${m.url}' && ${check} && break; sleep 10; done && ${check} && echo ok`, instanceId, { timeoutMs: 60 * 60 * 1000 });
   }
   modelCache.delete(instanceId);
   return missing.map((m) => `${m.dir}/${m.file}`);
