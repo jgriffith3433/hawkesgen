@@ -118,8 +118,8 @@ background, and a missing file comes back from S3 when a job or a download needs
 
 | Route | |
 |---|---|
-| `GET /v1/fleet` | Servers (state, boot stage, price, flavor), settings, retry, last failure, account, which job each server runs and which models it has loaded |
-| `POST /v1/fleet/settings` `{ servers, auto, idleMinutes }` | admin |
+| `GET /v1/fleet` | Servers (state, boot stage, price, flavor), settings, retry, last failure, account, which job each server runs and which models it has loaded, and `autoStart` (`auto`, `autoLaunch`, `last`: the last round's servers started or failed and its note, `backoff`: servers left alone after a failed start) |
+| `POST /v1/fleet/settings` `{ servers, auto, autoLaunch, idleMinutes }` | admin. `auto` (on): queued GPU jobs start stopped US servers; `autoLaunch` (off): also launch from the image |
 | `POST /v1/fleet/start` `{ id?, confirm: true, keepTrying?: { minutes, every } }` | owner; costs money |
 | `POST /v1/fleet/launch` `{ confirm: true, type?: "auto"\|"g6e.xlarge"…, region?: "auto"\|…, keepTrying? }` | owner; a new server |
 | `POST /v1/fleet/stop` `{ id? }`, `/stop-all`, `/access`, `/retry-stop` | admin |

@@ -375,7 +375,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const busy = Object.fromEntries([...queue.busy.entries()]);
       return send(res, 200, {
         servers, error, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
-        busy, families: Object.fromEntries(queue.families), types: fleet.TYPES, regions: fleet.REGIONS, defaultType: fleet.DEFAULT_TYPE, diskPerMonth: fleet.DISK_PER_MONTH,
+        busy, autoStart: queue.autoStartState(), families: Object.fromEntries(queue.families), types: fleet.TYPES, regions: fleet.REGIONS, defaultType: fleet.DEFAULT_TYPE, diskPerMonth: fleet.DISK_PER_MONTH,
       });
     }
     if (route === '/v1/fleet/settings' && method === 'POST') {

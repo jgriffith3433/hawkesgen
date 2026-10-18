@@ -56,8 +56,10 @@ export type Settings = {
   fleet: {
     /** How many GPU servers there may be, and how many GPU jobs run at once (one per ready server). */
     servers: number;
-    /** Start stopped servers by themselves when jobs wait. Off unless J turns it on: it costs money. */
+    /** Start stopped servers by themselves when GPU jobs wait (src/autostart.ts). On since 2026-10-18 (J: start stopped servers, no new launches). */
     auto: boolean;
+    /** With auto on, also launch new servers from the fleet image when no stopped one is left. Off unless J turns it on. */
+    autoLaunch: boolean;
     /** How long a server sits idle before it powers itself off. */
     idleMinutes: number;
     /** When a job's models don't fit, remove the server's least recently used non-core models. */
@@ -78,7 +80,7 @@ export type Settings = {
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
-  fleet: { servers: 4, auto: false, idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
+  fleet: { servers: 4, auto: true, autoLaunch: false, idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
   concurrency: { elevenlabs: 3, anthropic: 4, local: 2 },
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
@@ -92,6 +94,7 @@ function clean(s: Settings): Settings {
     fleet: {
       servers: n(s.fleet?.servers, 1, FLEET_MAX, SETTINGS_DEFAULTS.fleet.servers),
       auto: s.fleet?.auto === true,
+      autoLaunch: s.fleet?.autoLaunch === true,
       idleMinutes: n(s.fleet?.idleMinutes, 10, 240, SETTINGS_DEFAULTS.fleet.idleMinutes),
       autoPrune: s.fleet?.autoPrune !== false,
       disposable: s.fleet?.disposable !== false,
@@ -111,6 +114,9 @@ function clean(s: Settings): Settings {
 export function loadSettings(): Settings {
   try {
     const raw = JSON.parse(fs.readFileSync(paths.settings, 'utf8'));
+    // Settings saved before fleet.autoLaunch existed had auto start off by default: J turned it on (2026-10-18, starts
+    // only). The first save after this writes autoLaunch, so J's later choice sticks.
+    if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates } });
   } catch {
     return clean(SETTINGS_DEFAULTS);

@@ -7,7 +7,8 @@ generative AI, so projects never deal with GPU servers, ComfyUI, models or API k
   incremental. Hawkes Studio (`C:\Projects\hawkesstudio`) drives it with the playtest and review tools every day.
 - **A GPU fleet on AWS running ComfyUI.** Hawkes Gen launches, starts and stops the servers and shares them
   between projects through one queue. It installs each workflow's models the first time a job needs them,
-  and frees disk when space runs short.
+  and frees disk when space runs short. Queued GPU jobs start stopped servers by themselves (`fleet.auto`;
+  launching new ones needs `fleet.autoLaunch`, off).
 - **Workflows as data.** Any ComfyUI workflow becomes a tool: browse ComfyUI's 245 open-source templates
   (or drop in your own export) and import it. Its inputs, prompts, seeds, sizes, outputs and model download
   links are found for you.
