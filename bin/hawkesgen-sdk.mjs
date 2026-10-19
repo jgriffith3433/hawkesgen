@@ -21,7 +21,7 @@ const only = args.includes('--only') ? args[args.indexOf('--only') + 1] : null;
 
 const norm = (b) => b.toString('utf8').replace(/\r\n/g, '\n');
 const hash = (f) => crypto.createHash('sha256').update(norm(fs.readFileSync(f))).digest('hex');
-const versionOf = (f) => /(?:CLIENT_VERSION|UI_VERSION) = (\d+)/.exec(fs.readFileSync(f, 'utf8'))?.[1] ?? '?';
+const versionOf = (f) => /(?:CLIENT_VERSION|UI_VERSION|ANALYTICS_VERSION) = (\d+)/.exec(fs.readFileSync(f, 'utf8'))?.[1] ?? '?';
 
 let behind = 0;
 let written = 0;

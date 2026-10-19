@@ -20,7 +20,8 @@ generative AI, so projects never deal with GPU servers, ComfyUI, models or API k
 - **Usage and cost** per project and per API key.
 - **Player analytics** for every product: its own collect door, GeoIP and user agents on the server (no IP kept),
   sessions, funnels, drop-off, retention, levels, errors, perf, builds side by side and plain-sentence insights
-  (`docs/analytics.md`).
+  (`docs/analytics.md`). Pages add one script tag (`/sdk/analytics@1.js`); Unity WebGL games add the
+  `com.hawkes.analytics` package.
 - **Clients for everything:**
   - JS and Python libraries
   - a Unity editor package
@@ -92,6 +93,18 @@ await gen.download(job.outputs[0].asset, 'imp.png');
 
 **From Unity:** add `"com.hawkes.gen": "file:C:/Projects/hawkesgen/clients/unity/com.hawkes.gen"` to
 `Packages/manifest.json`, then open Window > Hawkes Gen. Results import into `Assets/HawkesGen/`.
+
+**Player analytics on a page** (`clients/js/hawkes-analytics.js`; the quick start is in `docs/analytics.md`):
+
+```html
+<script src="https://gen.hawkesgen.com/sdk/analytics@1.js" data-product="sickofit" data-build="1.4.2" defer></script>
+<script>hawkesAnalytics.levelStart(1); /* … */ hawkesAnalytics.levelEnd(1, 'complete');</script>
+```
+
+**Player analytics in a Unity WebGL game:** add `"com.hawkes.analytics": "file:C:/Projects/hawkesgen/clients/unity/com.hawkes.analytics"`,
+create `Assets/Resources/HawkesAnalyticsSettings.asset` (Assets > Create > Hawkes > Analytics Settings, set the
+product), and call `Hawkes.HawkesAnalytics.LevelStart("1")` and friends. The website needs no change: the bridge
+loads the SDK into the page.
 
 ## Docs
 

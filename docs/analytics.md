@@ -7,6 +7,99 @@ and don't, which browsers and places they come from, and how one build compares 
 anything. Code: `src/analytics/`. Registry: `analytics/products.json`. Tests: `test/analytics.test.ts`.
 
 This page is the contract the JS SDK, the Unity bridge and the products build against. Field names are exact.
+The SDK itself: `clients/js/hawkes-analytics.js` (quick start just below), tested in `test/analytics-sdk.test.ts`.
+
+## Quick start
+
+### A web page or web game
+
+One script tag, in every page of the product (game pages and website pages alike):
+
+```html
+<script src="https://gen.hawkesgen.com/sdk/analytics@1.js" data-product="phorigins" data-build="0.9.1" defer></script>
+```
+
+- `data-product` (required: the id in `analytics/products.json`), `data-build` (a version string), `data-endpoint`
+  (default `https://gen.hawkesgen.com/v1/analytics/collect`), `data-debug="1"`.
+- Or set `window.HAWKES_BUILD = { version, commit, date }` before it (it wins over `data-build`), or call
+  `hawkesAnalytics.init({ product, build, endpoint, debug, context })` yourself.
+- Bundled games can keep a copy instead (`clients/js/sdk.json`, `node bin/hawkesgen-sdk.mjs sync`):
+  `import hawkesAnalytics from './hawkes-analytics.mjs'` (next to `hawkes-analytics.js`; types in the `.d.ts`), then
+  `hawkesAnalytics.init({ product: 'phorigins', build: { version, commit } })`.
+
+That alone gives page views (SPA route changes too), sessions, active time, referrer and UTM, the device, load
+timings (`page_load`: ttfb, dom, load), errors and unhandled rejections (once per signature), fps per active minute
+(`perf`), outbound links (`outbound`), rage clicks (`rage_click`), and an `exit` snapshot when the page hides.
+
+What the game adds (all optional; none of them ever throws):
+
+```js
+const a = window.hawkesAnalytics;
+a.loadStart();                           // game_load_start: the engine starts loading
+a.ready();                               // game_ready: the player can play (ms since loadStart, else since navigation)
+a.screen('title');                       // screen
+a.setContext({ mode: 'story', character: 'susan' });   // copied onto every event; null removes a key
+a.levelStart(2);                         // level_start (attempts counted); sets ctx.level
+a.death('imp', { where: 'bridge' });     // death; counted into the open level
+a.levelEnd(2, 'complete', { score: 10 }); // level_end with duration (s) and deaths
+a.choice('door', 'left');  a.feature('rewind');  a.video('intro', 'skip', 3.2);
+a.feedback({ rating: 4, text: 'fun', context: 'level 2' });
+a.track('shop_purchase', { item: 'boots' });   // custom: ^[a-z][a-z0-9_]{1,39}$
+a.error(err, 'asset');
+```
+
+**The feedback card** (`ask`): a small, dismissible card in the corner (thumbs or 1–5 stars, an optional comment),
+keyboard and touch friendly, in a shadow root so the page's CSS can't touch it, and keys typed in it don't reach the
+game. Call it at a natural pause (after a level, on a death screen, at the end of a story branch), **never mid-play**.
+Each `id` shows at most once per session, and not again for 7 days after the player closes it. It resolves with the
+answer (or `null`) and sends a `feedback` event.
+
+```js
+const answer = await hawkesAnalytics.ask({ id: 'after-level-2', question: 'How was that level?', context: 'level 2',
+  kind: 'stars', comment: true, theme: { background: '#111', color: '#fff', accent: '#e33', font: 'Georgia', radius: '6px' } });
+```
+
+**Identity and flags:** an anonymous random id in `localStorage` (`hawkes.anon`, with `hawkes.first` and
+`hawkes.visits`); no cookies, no fingerprinting. The session lives in `sessionStorage` (a reload continues it, a new
+tab or 30 idle minutes start a new one). `env` comes from the hostname. `flags.webdriver` is `navigator.webdriver`;
+`flags.playtest` is set when the page was opened with `?playtest=`/`?hawkesPlaytest` or the runner called
+`hawkesPlaytest.start()`. Open any page once with `?hawkes-internal=1` to mark that browser as J's (remembered;
+`?hawkes-internal=0` clears it). `hawkesAnalytics.optOut()` / `optIn()` (remembered) stop and restart everything.
+
+**Sending:** batches every 5 s or at 20 events, one session per batch, under 60 KB; `sendBeacon` (text/plain), else
+`fetch` with `keepalive`. While offline, or when both fail, batches wait in `localStorage` (`hawkes.outbox`, up to 40
+batches / 300 KB) and go on the next visit or when the browser is back online.
+
+**Debug:** `?hawkes-analytics-debug=1` or `init({ debug: true })` logs each event to the console and keeps every
+event on `window.hawkesAnalytics.debugLog` (each gets `sent` when its batch goes out), so a playtest can read what
+went out.
+
+### A Unity WebGL game
+
+`clients/unity/com.hawkes.analytics` (a runtime package; `com.hawkes.gen` is editor-only):
+
+1. `Packages/manifest.json`: `"com.hawkes.analytics": "file:C:/Projects/hawkesgen/clients/unity/com.hawkes.analytics"`.
+2. Assets > Create > Hawkes > Analytics Settings, saved as `Assets/Resources/HawkesAnalyticsSettings.asset`; set the
+   product. It starts itself when the game boots.
+3. Call it from the game:
+
+```csharp
+using Hawkes;
+HawkesAnalytics.Ready();
+HawkesAnalytics.SetContext("character", "susan");
+HawkesAnalytics.LevelStart("3");
+HawkesAnalytics.Death("imp", new Dictionary<string, object> { { "where", "bridge" } });
+HawkesAnalytics.LevelEnd("3", "complete");
+HawkesAnalytics.Track("shop_purchase", "{\"item\":\"boots\"}");   // props as a dictionary or a JSON string
+HawkesAnalytics.Ask("after-level-3", "How was that level?", "level 3", stars: true);
+```
+
+The `.jslib` calls `window.hawkesAnalytics`. If the page hasn't loaded the SDK, it adds the script tag itself
+(`sdkUrl` in the settings) with the product, so **the game's website needs no change**; calls made before it loads
+are queued (`window.hawkesAnalyticsQ`) and played back. The build is `Application.version`, plus `+v<n>` when the
+build was loaded from a `Game/v<n>/` folder, unless the page sets `window.HAWKES_BUILD`. Uncaught exceptions become
+`error` events (`source: unity`). In the Editor and outside WebGL nothing is sent (`logOutsideWebGL` logs each
+call to the Console).
 
 ## Sending events
 
@@ -44,7 +137,7 @@ Content-Type: text/plain;charset=UTF-8          (or application/json)
 | `session` | A random id per session: new after 30 minutes without activity or a new tab | 8–64 of `A-Z a-z 0-9 _ -`; required |
 | `flags.webdriver` | `navigator.webdriver` | `true` marks the session as a bot |
 | `flags.playtest` | Studio's playtests (the page was opened by `playtest.run`: `?hawkesPlaytest`, or `window.hawkesPlaytest` driven by a bot) | `true` marks the session as a bot |
-| `flags.internal` | J's own devices: opted in by `localStorage['hawkes.internal'] = '1'` (the SDK's `internal(true)`) | `true` marks the session internal |
+| `flags.internal` | J's own devices: opted in by `localStorage['hawkes.internal'] = '1'` (open a page once with `?hawkes-internal=1`, or the SDK's `internal(true)`) | `true` marks the session internal |
 | `device.screen` | `screen.width x screen.height` | `WxH` |
 | `device.lang` | `navigator.language` | ≤ 35 chars |
 | `device.tz` | `Intl.DateTimeFormat().resolvedOptions().timeZone` | used when the GeoIP has no time zone |
@@ -68,7 +161,7 @@ Each event:
 
 ### Sending
 
-- Batch in memory; send every 10 s while there are events, and on `visibilitychange` → hidden and `pagehide` with
+- Batch in memory; send every 5 s while there are events (or at 20 events), and on `visibilitychange` → hidden and `pagehide` with
   `navigator.sendBeacon(url, JSON.stringify(batch))`. A string body goes as `text/plain`, so there's **no CORS
   preflight**. Use `fetch(url, { method: 'POST', body, keepalive: true })` when `sendBeacon` returns false.
 - Keep each batch under **64 KB** (bigger ones are refused with 413); split when needed.
@@ -233,7 +326,9 @@ yet. The change goes in `hawkesstudio/deploy/deploy.mjs` (`installCaddy`, the `g
 ```
 
 Keep `header_up Authorization` out of this block: the collect door needs no key, and a forwarded key would make the
-request an owner's. `/sdk/*` is for the JS SDK files (the next task). Check with:
+request an owner's. `/sdk/*` serves the JS SDK (`/sdk/analytics.js`, `/sdk/analytics@1.js`). Until this is deployed,
+pages (and Unity games) that load the SDK from Gen get the sign-in page instead of the script: a console error, nothing
+sent, the game unaffected. Check with:
 
 ```bash
 curl -si https://gen.hawkesgen.com/v1/analytics/collect -H 'Origin: https://sickofitgame.com' -A 'Mozilla/5.0 Chrome/141.0' \

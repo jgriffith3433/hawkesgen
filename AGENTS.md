@@ -70,7 +70,7 @@ each job).
 | `post/` | Python: `prep.py` (frame, motion, canvas), `cutout.py` (rembg), `texture.py` (tile, material maps) |
 | `server/` | What GPU servers install at launch: `bootstrap.sh`, `models.json` (core models by family), `templates/` |
 | `dashboard/` | The web UI (plain JS over the API) |
-| `clients/` | `js/hawkesgen.mjs`, `python/hawkesgen.py`, `unity/com.hawkes.gen` (editor package). Projects copy the JS/Python files; Unity projects reference the package by path |
+| `clients/` | `js/hawkesgen.mjs`, `python/hawkesgen.py`, `unity/com.hawkes.gen` (editor package). Projects copy the JS/Python files; Unity projects reference the package by path. Player analytics: `js/hawkes-analytics.js` (the page SDK, served at `/sdk/analytics@1.js`; `.mjs` and `.d.ts` beside it) and `unity/com.hawkes.analytics` (the runtime WebGL bridge) |
 | `test/` | `node --test` suites |
 | `.data/` | Everything generated: `hawkesgen.db`, `library/`, `blobs/`, `fleet/` (tokens, SSH keys), `graphs/`, `comfy-cache/` (object_info, template index, templates, thumbnails), `tmp/` |
 
@@ -188,7 +188,7 @@ returns a verdict, scores and findings.
 Products keep copies of the JS SDK (`clients/js`: the client, the web components, the folder bridge): their own CI
 and site builds can't read this private repo. `clients/js/sdk.json` lists where each product keeps them, and
 `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one (`status` lists the ones behind). Sync and
-commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`) when behavior
+commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`, `ANALYTICS_VERSION`) when behavior
 changes. Every client sends `X-Hawkes-Client` (js/7, py/6, unity/0.2.0); `GET /v1/health` lists callers behind.
 
 ## Checking your changes
