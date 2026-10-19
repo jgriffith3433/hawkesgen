@@ -154,6 +154,7 @@ Builds are jobs: `unity.build` with `{ project, site, method }`.
 | Route | What |
 |---|---|
 | `POST /v1/analytics/collect` | **Public, no key.** A batch of player events (JSON, also as `text/plain` for `sendBeacon`), from the product's registered origins only (`analytics/products.json`). 64 KB, 200 events, a per-IP rate limit; `202 { accepted, dropped }`, never a 5xx |
+| `GET /sdk/analytics.js`, `/sdk/analytics@1.js` | **Public, no key.** The JS SDK (`clients/js/hawkes-analytics.js`). `@1` is what pages pin (cached an hour), the plain name 5 minutes; both revalidate by `ETag` (`304`) |
 | `GET /v1/analytics/products` | The registry |
 | `GET /v1/analytics/overview` | Every product: active now, visitors and sessions today / 7d / 30d with trends, a daily series, new vs returning, active time, D1/D7, the biggest drop-off, error rate, rating |
 | `GET /v1/analytics/:product[/:section]` | `traffic`, `sessions`, `retention`, `funnel?steps=`, `dropoff`, `levels`, `deaths`, `features`, `feedback`, `errors`, `perf`, `builds?a=&b=`, `insights`, `export?what=&format=csv`; `sessions/list`, `sessions/:id` (a timeline). Without a section: all of them |

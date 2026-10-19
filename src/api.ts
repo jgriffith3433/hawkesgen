@@ -3,6 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX } from './config.ts';
 import { authenticate, canProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
@@ -104,6 +105,17 @@ function noteClient(req: IncomingMessage) {
   if (clientsSeen.size > 200) clientsSeen.delete(clientsSeen.keys().next().value!);
 }
 
+let sdkCache: { mtime: number; body: Buffer; etag: string } | null = null;
+function analyticsSdk() {
+  const file = path.join(paths.server, '..', 'clients', 'js', 'hawkes-analytics.js');
+  const mtime = fs.statSync(file).mtimeMs;
+  if (sdkCache?.mtime !== mtime) {
+    const body = fs.readFileSync(file);
+    sdkCache = { mtime, body, etag: `"${crypto.createHash('sha256').update(body).digest('base64url').slice(0, 20)}"` };
+  }
+  return sdkCache;
+}
+
 export async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = url.pathname;
@@ -130,6 +142,17 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   if (kit && method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' });
     return void fs.createReadStream(path.join(paths.server, '..', 'clients', 'js', kit[1])).pipe(res);
+  }
+
+  // The analytics SDK (clients/js/hawkes-analytics.js, docs/analytics.md): public, cached, revalidated by ETag.
+  // @1 is the major version pages pin; plain analytics.js follows the newest and is cached for less.
+  const sdkFile = /^\/sdk\/analytics(@1)?\.js$/.exec(route);
+  if (sdkFile && (method === 'GET' || method === 'HEAD')) {
+    const sdk = analyticsSdk();
+    const headers = { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': sdkFile[1] ? 'public, max-age=3600, stale-while-revalidate=86400' : 'public, max-age=300, stale-while-revalidate=86400', ETag: sdk.etag, 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff' };
+    if (req.headers['if-none-match'] === sdk.etag) return void res.writeHead(304, headers).end();
+    res.writeHead(200, { ...headers, 'Content-Length': sdk.body.length });
+    return void res.end(method === 'HEAD' ? undefined : sdk.body);
   }
 
   // Dashboard.
