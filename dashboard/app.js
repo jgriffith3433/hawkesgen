@@ -319,6 +319,7 @@ render.fleet = async () => {
     <div class="row spread"><h2>GPU fleet</h2><div class="row">
       <button id="fl-access">Refresh access</button><button id="fl-scale">Start servers…</button><button id="fl-launch">Launch new…</button><button class="danger" id="fl-stopall">Stop all</button></div></div>
     ${f.error ? `<div class="card" style="color:var(--bad)">${esc(f.error)}</div>` : ''}
+    ${f.servers.filter((sv) => sv.state === 'running' && f.disks?.[sv.id]?.pct >= 90).map((sv) => `<div class="card"><b style="color:var(--${f.disks[sv.id].pct >= 95 ? 'bad' : 'warn'})">${esc(sv.id)}'s disk is ${f.disks[sv.id].pct}% full</b> (${f.disks[sv.id].free == null ? '?' : Math.round(f.disks[sv.id].free / 1e9)} GB free). Models install on first use and the least recently used are removed when space runs short: check its Models, or the Machines tab.</div>`).join('')}
     ${f.lastFailure ? `<div class="card"><b style="color:var(--warn)">Last start/launch failed (${esc(f.lastFailure.kind)}):</b> ${esc(f.lastFailure.message)}</div>` : ''}
     ${f.retry?.active ? `<div class="card"><div class="row spread"><span>Keep trying to <b>${esc(f.retry.action)}</b>: try ${f.retry.tries}, next ${f.retry.next ? new Date(f.retry.next).toLocaleTimeString() : '—'}, until ${new Date(f.retry.until).toLocaleTimeString()}</span><button id="fl-rstop">Stop trying</button></div><div class="small muted">${esc(f.retry.log?.at(-1)?.message ?? '')}</div></div>` : ''}
     <div class="card">${f.servers.length ? `<table><thead><tr><th>Server</th><th>State</th><th>Loaded / busy</th><th class="num">$/hr</th><th></th></tr></thead><tbody>${f.servers.map((sv) => `<tr>
@@ -431,6 +432,69 @@ function launchDialog(f) {
       .catch(fail);
   };
 }
+
+// ---------------------------------------------------------------- machines
+// The machines Gen runs (src/machines.ts): what needs action, then a card per machine with the last hour and 24 h.
+const pctOf = (a, b) => (a != null && b ? (100 * a) / b : null);
+const bytes = (b) => (b == null ? '—' : b >= 1e12 ? `${(b / 1e12).toFixed(1)} TB` : b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} KB` : `${Math.round(b)} B`);
+const span = (s) => (s == null ? '—' : s < 3600 ? `${Math.round(s / 60)} min` : s < 86400 ? `${(s / 3600).toFixed(1)} h` : `${(s / 86400).toFixed(1)} days`);
+
+/** A small line of the points' values (percent metrics on 0-100, others on their own peak). */
+function sparkline(points, key, percent) {
+  const vals = (points ?? []).filter((p) => p[key] != null);
+  if (vals.length < 2) return '<span class="small muted">—</span>';
+  const t0 = vals[0].at;
+  const t1 = vals.at(-1).at;
+  const top = percent ? 100 : Math.max(...vals.map((p) => p[key])) || 1;
+  const xy = vals.map((p) => `${(((p.at - t0) / (t1 - t0 || 1)) * 120).toFixed(1)},${(26 - (p[key] / top) * 24).toFixed(1)}`).join(' ');
+  const peak = Math.max(...vals.map((p) => p[key]));
+  return `<svg class="spark" viewBox="0 0 120 28" preserveAspectRatio="none" role="img" aria-label="peak ${esc(percent ? `${Math.round(peak)}%` : bytes(peak))}"><polyline points="${xy}"/></svg><span class="small muted"> peak ${esc(percent ? `${Math.round(peak)}%` : `${bytes(peak)}/s`)}</span>`;
+}
+
+function machineCard(m, h1, h24) {
+  const x = m.metrics;
+  const running = m.state === 'running';
+  const head = `<div class="row spread"><h3>${esc(m.name)} <span class="status s-${running ? 'ready' : m.state === 'none' ? 'stopped' : ['pending', 'stopping'].includes(m.state) ? 'booting' : 'stopped'}">${esc(m.state === 'pending' ? 'starting' : m.state === 'none' ? 'not launched' : m.state)}</span></h3>
+    <span class="small muted">${m.type ? `${esc(m.type)} · ${esc(m.region)} · ${money(m.pricePerHour)}/hr` : ''}</span></div>`;
+  if (m.state === 'unknown') return `<div class="card">${head}<p class="small" style="color:var(--bad)">${esc(m.error)}</p></div>`;
+  if (m.state === 'none') return `<div class="card">${head}<p class="small muted">No ${esc(m.name.toLowerCase())} yet (the GPU fleet tab launches one).</p></div>`;
+  const facts = [];
+  if (running) facts.push(`up ${span(x?.uptime ?? (m.launched ? (Date.now() - Date.parse(m.launched)) / 1000 : null))}`);
+  if (m.idle) facts.push(m.idle.busy ? 'busy now' : `idle ${m.idle.minutes} min${m.idle.stopsAt ? ` · ${m.idle.action} ${m.idle.stopsAt > Date.now() ? `at about ${new Date(m.idle.stopsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'at its next idle check'}` : ''}`);
+  if (m.purpose) facts.push(esc(m.purpose));
+  if (x?.stage && x.stage !== 'ready') facts.push(`install: ${esc(x.stage)}`);
+  if (x?.service === 'down') facts.push(`<b style="color:var(--bad)">${m.kind === 'playtester' ? 'browser server down' : 'ComfyUI not answering'}</b>`);
+  const jobs = m.jobs.length ? `<div class="small">Running ${m.jobs.map((j) => `<a href="#" data-job-link="${esc(j.id)}">${esc(j.tool)}</a> <span class="muted">${esc(j.project)}</span>`).join(', ')}</div>` : running ? '<div class="small muted">No job running.</div>' : '';
+  const err = m.error ? `<p class="small" style="color:var(--bad)">${esc(m.error)}</p>` : '';
+  const rows = [
+    ['CPU', x?.cpu != null ? `${Math.round(x.cpu)}%` : '—', 'cpu', true],
+    ['Memory', x?.memTotal ? `${bytes(x.memUsed)} of ${bytes(x.memTotal)} (${Math.round(pctOf(x.memUsed, x.memTotal))}%)` : '—', 'mem', true],
+    ...(m.kind !== 'builder' ? [
+      ['GPU', x?.gpu != null ? `${Math.round(x.gpu)}%` : '—', 'gpu', true],
+      ['VRAM', x?.vramTotal ? `${bytes(x.vramUsed)} of ${bytes(x.vramTotal)}` : '—', 'vram', true],
+      ['GPU temp', x?.temp != null ? `${x.temp}°C` : '—', 'temp', false],
+    ] : []),
+    ['Disk', x?.diskSize ? `${bytes(x.diskUsed)} of ${bytes(x.diskSize)} (${Math.round(pctOf(x.diskUsed, x.diskSize))}%, ${bytes(x.diskFree)} free)` : '—', 'disk', true],
+    ['Network in', x?.netIn != null ? `${bytes(x.netIn)}/s` : '—', 'netIn', false],
+    ['Network out', x?.netOut != null ? `${bytes(x.netOut)}/s` : '—', 'netOut', false],
+  ];
+  const diskPct = pctOf(x?.diskUsed, x?.diskSize);
+  const table = running || h24?.length ? `<table><thead><tr><th>Measure</th><th>Now</th><th>Last hour</th><th>Last 24 h</th></tr></thead><tbody>${rows.map(([label, now, key, pct]) => `<tr><td><b>${label}</b></td><td class="small"${key === 'disk' && diskPct >= 90 ? ' style="color:var(--warn)"' : ''}>${running ? now : '—'}</td><td>${sparkline(h1, key, pct)}</td><td>${sparkline(h24, key, pct)}</td></tr>`).join('')}</tbody></table>` : '';
+  return `<div class="card">${head}<div class="small muted">${esc(m.id)}${facts.length ? ` · ${facts.join(' · ')}` : ''}</div>${jobs}${err}${table}</div>`;
+}
+
+render.machines = async () => {
+  const [r, h1, h24] = await Promise.all([api('/machines?live=1'), api('/machines/history?hours=1&points=60'), api('/machines/history?hours=24&points=96')]);
+  const order = { gpu: 0, builder: 1, playtester: 2 };
+  const list = [...r.machines].sort((a, b) => (a.state === 'running' ? 0 : 1) - (b.state === 'running' ? 0 : 1) || order[a.kind] - order[b.kind]);
+  const running = list.filter((m) => m.state === 'running');
+  const perHour = running.reduce((n, m) => n + m.pricePerHour, 0);
+  $('#machines').innerHTML = `<div class="row spread"><h2>Machines <span class="small muted">${running.length} running · ${money(perHour)}/hr</span></h2><span class="small muted">measured ${esc(new Date(r.at).toLocaleTimeString())} · refreshes every 15 s</span></div>
+    <div class="card"><h3>Needs action</h3>${r.alerts.length ? `<table><thead><tr><th>What</th></tr></thead><tbody>${r.alerts.map((a) => `<tr><td><b style="color:var(--${a.level})">${esc(a.text)}</b></td></tr>`).join('')}</tbody></table>` : '<p class="small muted">Nothing: every running machine answers, no disk over 90%, nothing idle for 30 minutes.</p>'}</div>
+    ${list.map((m) => machineCard(m, h1.machines[m.id], h24.machines[m.id])).join('')}
+    <p class="small muted">Running machines are measured over SSH every minute (kept 7 days) and every 15 s while this page is open. Stopped machines are never started to measure them. The control server itself is on Studio's Resources page.</p>`;
+  for (const l of document.querySelectorAll('#machines [data-job-link]')) l.onclick = (e) => { e.preventDefault(); showJob(l.dataset.jobLink); };
+};
 
 // ---------------------------------------------------------------- tools
 function field(name, spec) {
@@ -703,4 +767,4 @@ render.settings = async () => {
 
 // ---------------------------------------------------------------- start
 api('/tools').then((r) => { state.tools = r.tools; }).catch(() => {}).finally(() => { connect(); show(current); });
-setInterval(() => { if (current === 'fleet' && !$('#modal').open) render.fleet().catch(() => {}); }, 15000);
+setInterval(() => { if (['fleet', 'machines'].includes(current) && !$('#modal').open) render[current]().catch(() => {}); }, 15000);

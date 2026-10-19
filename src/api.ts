@@ -23,6 +23,7 @@ import * as fleet from './providers/comfy/fleet.ts';
 import * as fleetImage from './providers/comfy/image.ts';
 import * as builder from './providers/builder/builder.ts';
 import * as playtester from './providers/playtester/playtester.ts';
+import * as machines from './machines.ts';
 import { Retry } from './providers/comfy/retry.ts';
 import * as eleven from './providers/elevenlabs.ts';
 import * as claude from './providers/anthropic.ts';
@@ -409,8 +410,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, {
         servers, error, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
         busy, autoStart: queue.autoStartState(), families: Object.fromEntries(queue.families), types: fleet.TYPES, regions: fleet.REGIONS, defaultType: fleet.DEFAULT_TYPE, diskPerMonth: fleet.DISK_PER_MONTH,
+        disks: machines.lastDisks(),
       });
     }
+    // ------------------------------------------------- machines (monitor)
+    if (route === '/v1/machines' && method === 'GET') return send(res, 200, await machines.machines({ live: q('live') === '1' }));
+    if (route === '/v1/machines/history' && method === 'GET') return send(res, 200, machines.history({ id: q('id') || undefined, hours: Number(q('hours')) || 1, points: Number(q('points')) || 120 }));
     if (route === '/v1/fleet/settings' && method === 'POST') {
       requireRole(client, 'admin');
       const body = await readJson(req);
