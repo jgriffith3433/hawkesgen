@@ -10,6 +10,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.
 - `docs/blender.md` covers Blender shots to video (`blender.render`, `video.control`) and rigging generated characters (`mesh.rig`).
+- `docs/3d-characters.md` covers `blender.character` (clean, bake, props, retarget, clip edits, FBX/GLB) and the `character3d` kind.
 - `docs/library.md` covers the library every product builds on: entities, slots, versions, slot references, make/revise/pick.
 - `docs/analytics.md` is the player-analytics contract (events every product sends, the collect door, the queries).
 - `DESIGN.md` has J's decisions and the roadmap.
@@ -58,7 +59,7 @@ each job).
 | `src/presets.ts` | Loading and applying presets |
 | `src/providers/comfy/` | `fleet.ts` (AWS launch/start/stop/adopt, SSH, model install/prune), `client.ts` (ComfyUI HTTP), `graphs.ts` (the code-built graphs), `retry.ts` (keep trying) |
 | `src/providers/builder/builder.ts` | The Unity build server: launch (Windows + Unity via `server/builder/bootstrap.ps1`), start/stop, SSH, incremental sync of `C:\Projects` folders, detached builds (`server/builder/build.ps1`), pulling the build back |
-| `src/tools/blender.ts`, `src/providers/blender/` | `blender.render`: Blender 5.0 on a GPU server (installed on first use; `install.ts` is shared with `bootstrap.sh`), a job workspace in `/var/tmp/hawkes-blender`, a detached render followed over SSH. The scripts are `post/blender/hawkes_blender.py` (inside Blender) and `post/pose_draw.py`. `src/tools/rig.ts` is `mesh.rig` on the same machinery (`post/blender/hawkes_rig.py`) |
+| `src/tools/blender.ts`, `src/providers/blender/` | `blender.render`: Blender 5.0 on a GPU server (installed on first use; `install.ts` is shared with `bootstrap.sh`), a job workspace in `/var/tmp/hawkes-blender`, a detached render followed over SSH. The scripts are `post/blender/hawkes_blender.py` (inside Blender) and `post/pose_draw.py`. `src/tools/rig.ts` is `mesh.rig` on the same machinery (`post/blender/hawkes_rig.py`); `src/tools/character.ts` is `blender.character` (`post/blender/hawkes_character.py`: named ops only, checked by `checkOps` before a server is claimed) |
 | `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
 | `src/analytics/`, `analytics/products.json` | Player analytics (docs/analytics.md): `collect.ts` (the public door: validation, limits, CORS, rate limit), `geo.ts` + `mmdb.ts` (DB-IP Lite GeoIP), `ua.ts`, `store.ts` (`.data/analytics.db`: events, sessions, daily rollups, the purge), `query.ts` + `routes.ts` (the reads). The registry lists each product's origins |
 | `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |

@@ -290,7 +290,8 @@ export function fillTemplate<T>(value: T, vars: Record<string, string>): T {
   const walk = (v: any): any => {
     if (typeof v === 'string') return v.includes('{') ? v.replace(/\{(\w+)\}/g, (all, k) => (k in vars ? vars[k] : all)).replace(/\s{2,}/g, ' ').trim() : v;
     if (Array.isArray(v)) return v.map(walk);
-    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    // Keys too: a recipe's saves map titles like "preview/{part}" to slots.
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [walk(k), walk(x)]));
     return v;
   };
   return walk(value);
@@ -298,7 +299,8 @@ export function fillTemplate<T>(value: T, vars: Record<string, string>): T {
 
 /**
  * The job spec that makes something for a slot (the caller submits it). Its outputs come back to the slot as takes:
- * a single tool's outputs all go to the slot; a chain's saved outputs go where `saves` says (others to the slot).
+ * a single tool's outputs all go to the slot, or with `saves` where it says by output title (others are left out); a
+ * chain's saved outputs go where `saves` says (others to the slot).
  */
 export function slotJobSpec(client: Client, b: { entity: string; slot: string; make?: MakeSpec | null; feedback?: string; count?: number; params?: Record<string, any>; note?: string }) {
   const e = mustEntity(client, b.entity);
@@ -332,6 +334,8 @@ export function slotJobSpec(client: Client, b: { entity: string; slot: string; m
   const params = { ...(filled.params ?? {}), ...(b.params ?? {}) };
   if (b.count) params.count = b.count;
   if (b.feedback && typeof params.prompt === 'string' && !spec.params?.prompt?.includes?.('{feedback}')) params.prompt = `${params.prompt} ${b.feedback}`.trim();
+  // A tool that makes several things (blender.character: a GLB and a preview) files each by its title, as a chain does.
+  if (filled.saves) labels.slots = filled.saves;
   return { tool: filled.tool, preset: filled.preset, project: e.project, self: e.id, labels, params, inputs: filled.inputs ?? {} };
 }
 

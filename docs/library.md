@@ -50,10 +50,12 @@ side view, and everything made from the old one reads as out of date, so it's ma
   slot as takes when it ends; takes the library hands back (`reuse`) land there too. The recipe comes from, in order:
   1. the request's `make`
   2. the entity's `data.slots.<slot>.make`
-  3. the project's `kinds.<kind>.slots.<slot>` in `presets/<project>.json` (`pose/*` matches every pose)
+  3. the project's `kinds.<kind>.slots.<slot>` in `presets/<project>.json` (`pose/*` matches every pose), or a shared
+     kind every project has (`presets/shared/kinds.json`: `character3d`, docs/3d-characters.md)
 
   A recipe is `{ tool | preset, params, inputs }`, or a chain `{ steps, candidates, pick, pickAt, saves }`. `saves`
-  maps a step's save name to a slot, so one chain fills several slots (Blender render → look → video).
+  maps a step's save name to a slot, so one chain fills several slots (Blender render → look → video). A single tool's
+  recipe can have `saves` too: its outputs are filed by title (`{ "glb": "animation/{part}", "preview/{part}": ... }`).
 - **Template fields:** strings in a recipe can use:
   - `{name}`, `{look}`, `{canon}`
   - `{brief}` (the slot's brief)

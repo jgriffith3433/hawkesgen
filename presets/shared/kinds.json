@@ -1,0 +1,96 @@
+{
+  "_about": "Kinds every project has (docs/library.md): a project's own kinds in presets/<project>.json add to these and replace one of the same name. docs/3d-characters.md has how a 3D character is made, slot by slot.",
+  "character3d": {
+    "description": "A 3D character for a game: concept, front A-pose, textured mesh, rig, animation clips, previews, and the files the game loads (FBX for Unity, GLB for the web).",
+    "slots": {
+      "concept": {
+        "description": "A full-body turnaround (front, side, back) to model from.",
+        "make": {
+          "tool": "image.generate",
+          "params": {
+            "prompt": "Character turnaround sheet of {name}, {look}: front, side and back views, full body, neutral A-pose, plain light grey background, even light. {style} {feedback}",
+            "width": 1536,
+            "height": 1024
+          }
+        }
+      },
+      "apose": {
+        "description": "The front view alone: the whole body standing straight in an A-pose, facing the viewer, on a plain background. What the mesh is made from.",
+        "make": {
+          "tool": "image.edit",
+          "params": {
+            "prompt": "Image 1 is a character sheet of {name}. Draw only the front view: the whole body from head to feet, standing straight, arms held 45 degrees down and away from the body, legs a little apart, facing the viewer, plain light grey background, even light, nothing else in the picture. {feedback}",
+            "width": 1024,
+            "height": 1024
+          },
+          "inputs": { "images": ["slot:./concept"] }
+        }
+      },
+      "mesh": {
+        "description": "The textured mesh made from the A-pose (no skeleton yet).",
+        "make": { "tool": "mesh.textured", "inputs": { "image": "slot:./apose" } }
+      },
+      "rig": {
+        "description": "The mesh with a Mixamo-named skeleton and skin weights (a GLB). Clips are retargeted onto this.",
+        "make": {
+          "tool": "mesh.rig",
+          "params": { "height": 1.8 },
+          "inputs": { "mesh": "slot:./mesh" },
+          "saves": { "rigged": "rig", "turntable": "preview/turntable" }
+        }
+      },
+      "animation/*": {
+        "description": "One clip on the rig (a GLB with that animation, named like the slot: animation/walk holds \"walk\"). Its data.source names the motion to retarget: an asset (asset:<id>) or another slot (slot:project/entity/animation/walk), a Mixamo FBX, a GLB or a BVH.",
+        "make": {
+          "tool": "blender.character",
+          "params": {
+            "ops": [
+              { "op": "import", "file": 0, "clips": false },
+              { "op": "retarget", "file": 1, "name": "{part}" },
+              { "op": "export", "format": "glb", "name": "{part}" },
+              { "op": "preview", "turntable": false, "clips": ["{part}"] }
+            ]
+          },
+          "inputs": { "files": ["slot:./rig", "{source}"] },
+          "saves": { "glb": "animation/{part}", "preview/{part}": "preview/{part}" }
+        }
+      },
+      "preview/turntable": {
+        "description": "The rigged character turning once, in its rest pose.",
+        "make": {
+          "tool": "blender.character",
+          "params": { "ops": [{ "op": "import", "file": 0, "clips": false }, { "op": "preview", "clips": false }] },
+          "inputs": { "files": ["slot:./rig"] },
+          "saves": { "turntable": "preview/turntable" }
+        }
+      },
+      "preview/*": {
+        "description": "A video of one clip (preview/walk shows animation/walk).",
+        "make": {
+          "tool": "blender.character",
+          "params": { "ops": [{ "op": "import", "file": 0 }, { "op": "preview", "turntable": false, "clips": ["{part}"] }] },
+          "inputs": { "files": ["slot:./animation/{part}"] },
+          "saves": { "preview/{part}": "preview/{part}" }
+        }
+      },
+      "export/fbx": {
+        "description": "The FBX Unity imports: Mixamo bone names (Humanoid-ready), each clip a named take, 1 unit = 1 m. Make it with inputs.files = [\"slot:./rig\", \"slot:./animation/walk\", ...] to take those clips along.",
+        "make": {
+          "tool": "blender.character",
+          "params": { "ops": [{ "op": "import", "file": 0 }, { "op": "retarget", "file": "*" }, { "op": "export", "format": "fbx" }] },
+          "inputs": { "files": ["slot:./rig"] },
+          "saves": { "fbx": "export/fbx" }
+        }
+      },
+      "export/glb": {
+        "description": "The GLB the web games load: one animation per clip. Make it with inputs.files = [\"slot:./rig\", \"slot:./animation/walk\", ...] to take those clips along.",
+        "make": {
+          "tool": "blender.character",
+          "params": { "ops": [{ "op": "import", "file": 0 }, { "op": "retarget", "file": "*" }, { "op": "export", "format": "glb" }] },
+          "inputs": { "files": ["slot:./rig"] },
+          "saves": { "glb": "export/glb" }
+        }
+      }
+    }
+  }
+}
