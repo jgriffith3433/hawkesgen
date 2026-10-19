@@ -29,6 +29,7 @@ import * as machines from './machines.ts';
 import { Retry } from './providers/comfy/retry.ts';
 import * as eleven from './providers/elevenlabs.ts';
 import * as claude from './providers/anthropic.ts';
+import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf } from './util.ts';
 import { db } from './db.ts';
 import { handleMcp } from './mcp-http.ts';
@@ -229,6 +230,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           elevenlabs: eleven.configured(),
           anthropic: claude.configured(),
           claude: claude.backend(),
+          xai: xaiConfigured(),
+          brain: loadSettings().brain,
           python: fs.existsSync(path.join(paths.post, '..', '.venv')),
         },
         queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),

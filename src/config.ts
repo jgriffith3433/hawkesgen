@@ -79,6 +79,12 @@ export type Settings = {
    * (billed per token). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
    * (inside every job: reviews, judges, captions) and how long one may take. */
   claude: { backend: 'max-plan' | 'api'; concurrency: number; timeoutMinutes: number };
+  /**
+   * Which model answers writing, review and JSON calls, and (via Studio) the coding agents.
+   * "claude" is the Max plan or the API key above. "grok" is Grok 4.7 on xAI (XAI_API_KEY), billed per token.
+   * A settings file that never chose (the server, before this) runs on Grok: Claude usage is out (J, 2026-10-19).
+   */
+  brain: 'claude' | 'grok';
   /** Local requests (127.0.0.1) without an API key act as the owner. Turn off before exposing the service. */
   localOpen: boolean;
   /** Dollars per unit for usage reports, where the provider doesn't say. */
@@ -91,6 +97,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   fleet: { servers: 4, auto: true, autoLaunch: false, idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
   concurrency: { elevenlabs: 3, anthropic: 4, local: 2 },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
+  brain: 'claude',
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
   storage: { bucket: null },
@@ -119,6 +126,7 @@ function clean(s: Settings): Settings {
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
       timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
     },
+    brain: s.brain === 'grok' ? 'grok' : 'claude',
     localOpen: s.localOpen !== false,
     rates: { elevenlabsPer1kChars: Number(s.rates?.elevenlabsPer1kChars ?? SETTINGS_DEFAULTS.rates.elevenlabsPer1kChars) || 0 },
     storage: { bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null },
@@ -131,6 +139,8 @@ export function loadSettings(): Settings {
     // Settings saved before fleet.autoLaunch existed had auto start off by default: J turned it on (2026-10-18, starts
     // only). The first save after this writes autoLaunch, so J's later choice sticks.
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
+    // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
+    if (!raw.brain) raw.brain = 'grok';
     return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
@@ -145,6 +155,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     fleet: { ...cur.fleet, ...(patch.fleet ?? {}) },
     concurrency: { ...cur.concurrency, ...(patch.concurrency ?? {}) },
     claude: { ...cur.claude, ...(patch.claude ?? {}) },
+    brain: patch.brain ?? cur.brain,
     rates: { ...cur.rates, ...(patch.rates ?? {}) },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));

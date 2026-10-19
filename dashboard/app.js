@@ -751,7 +751,8 @@ render.settings = async () => {
       <label><span>ElevenLabs jobs at once</span><input type="number" id="sce" value="${s.concurrency.elevenlabs}" min="1" max="16"></label>
       <label><span>Claude jobs at once</span><input type="number" id="sca" value="${s.concurrency.anthropic}" min="1" max="16"></label>
       <label><span>Local jobs at once</span><input type="number" id="scl" value="${s.concurrency.local}" min="1" max="8"></label>
-      <label><span><b>Claude runs on</b> (Max plan: Claude Code on this server, $0 per call; API: the API key, billed per token)</span><select id="scb"><option value="max-plan" ${s.claude.backend === 'max-plan' ? 'selected' : ''}>Max plan</option><option value="api" ${s.claude.backend === 'api' ? 'selected' : ''}>API key</option></select></label>
+      <label><span><b>Brain</b> (who answers writing, reviews and the agents: Claude, or Grok 4.7 on xAI)</span><select id="sbrain"><option value="claude" ${s.brain !== 'grok' ? 'selected' : ''}>Claude</option><option value="grok" ${s.brain === 'grok' ? 'selected' : ''}>Grok 4.7</option></select></label>
+      <label><span><b>Claude runs on</b> (only when the brain is Claude. Max plan: Claude Code on this server, $0 per call; API: the API key, billed per token)</span><select id="scb"><option value="max-plan" ${s.claude.backend === 'max-plan' ? 'selected' : ''}>Max plan</option><option value="api" ${s.claude.backend === 'api' ? 'selected' : ''}>API key</option></select></label>
       <label><span>Claude calls at once (Max plan)</span><input type="number" id="scc" value="${s.claude.concurrency}" min="1" max="16"></label>
       <label><span>Claude call time limit, minutes (Max plan)</span><input type="number" id="sct" value="${s.claude.timeoutMinutes}" min="1" max="60"></label>
       <label><span>ElevenLabs $ per 1,000 characters (for usage reports)</span><input type="number" step="any" id="sre" value="${s.rates.elevenlabsPer1kChars}"></label>
@@ -761,7 +762,7 @@ render.settings = async () => {
   $('#cadd').onclick = () => post('/clients', { name: $('#cn').value, role: $('#cr').value, projects: $('#cp').value.split(',').map((x) => x.trim()).filter(Boolean) })
     .then((r) => { modal(`<h2>Key for ${esc(r.client.name)}</h2><p>Copy it now. It isn't shown again.</p><pre>${esc(r.key)}</pre>`); render.settings(); }).catch(fail);
   for (const b of document.querySelectorAll('[data-cl]')) b.onclick = () => post(`/clients/${b.dataset.cl}/${b.dataset.dis === '1' ? 'enable' : 'disable'}`).then(() => render.settings()).catch(fail);
-  $('#ssave').onclick = () => post('/settings', { localOpen: $('#slo').value === 'true', concurrency: { elevenlabs: Number($('#sce').value), anthropic: Number($('#sca').value), local: Number($('#scl').value) }, claude: { backend: $('#scb').value, concurrency: Number($('#scc').value), timeoutMinutes: Number($('#sct').value) }, rates: { elevenlabsPer1kChars: Number($('#sre').value) } }).then(() => toast('Saved')).catch(fail);
+  $('#ssave').onclick = () => post('/settings', { localOpen: $('#slo').value === 'true', brain: $('#sbrain').value, concurrency: { elevenlabs: Number($('#sce').value), anthropic: Number($('#sca').value), local: Number($('#scl').value) }, claude: { backend: $('#scb').value, concurrency: Number($('#scc').value), timeoutMinutes: Number($('#sct').value) }, rates: { elevenlabsPer1kChars: Number($('#sre').value) } }).then(() => toast('Saved')).catch(fail);
   $('#adgo').onclick = () => confirm('Copy that folder\'s server tokens and SSH keys into Hawkes Gen?') && post('/fleet/adopt', { confirm: true, from: $('#adf').value }).then((r) => toast(`Adopted ${r.servers.length} servers, ${r.keys.length} keys`)).catch(fail);
 };
 

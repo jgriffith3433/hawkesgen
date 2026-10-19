@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import { env, loadSettings } from '../config.ts';
 import * as maxPlan from './claudecode.ts';
+import * as xai from './xai.ts';
 import { GenError, mimeOf } from '../util.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
@@ -42,20 +43,22 @@ function anthropic() {
 
 export const backend = () => loadSettings().claude.backend;
 
-/** The API path needs its key; the Max plan path needs only the CLI (its login is checked on the first call). */
-export const configured = () => (backend() === 'api' ? Boolean(env('ANTHROPIC_API_KEY')) : true);
+/** The API path needs its key; the Max plan path needs only the CLI (its login is checked on the first call). Grok needs XAI_API_KEY. */
+export const configured = () => (loadSettings().brain === 'grok' ? xai.configured() : backend() === 'api' ? Boolean(env('ANTHROPIC_API_KEY')) : true);
 
-/** A call's usage record: "max-plan" at $0 (like Studio's agents on the subscription), or "anthropic" billed per token. */
-export function usageOf(r: { model: string; usage: any; cost: number; billing: 'max-plan' | 'api' }, detail: string = r.model) {
-  return { provider: r.billing === 'max-plan' ? 'max-plan' : 'anthropic', unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail };
+/** A call's usage record: "max-plan" at $0, "xai" for Grok, or "anthropic" billed per token. */
+export function usageOf(r: { model: string; usage: any; cost: number; billing: 'max-plan' | 'api' | 'xai' }, detail: string = r.model) {
+  const provider = r.billing === 'max-plan' ? 'max-plan' : r.billing === 'xai' ? 'xai' : 'anthropic';
+  return { provider, unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail };
 }
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
 type AskParams = { prompt: string; system?: string; images?: string[]; model?: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown> };
 
-/** One request: text (and images) in, text or schema-valid JSON out, on the backend settings.claude.backend names. */
-export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: 'max-plan' | 'api' }> {
+/** One request: text (and images) in, text or schema-valid JSON out. Grok when settings.brain is grok; otherwise settings.claude.backend. */
+export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: 'max-plan' | 'api' | 'xai' }> {
+  if (loadSettings().brain === 'grok') return xai.ask({ ...p, model: p.model ?? DEFAULT_MODEL }, signal);
   if (backend() === 'api') return askApi(p, signal);
   return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal);
 }
