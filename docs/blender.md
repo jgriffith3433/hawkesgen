@@ -207,6 +207,9 @@ where `rig.json` has `mesh`, `clips` (`[{ "file", "name" }]`), `out`, and option
 `test/rig.test.ts` runs it on a made-up humanoid (`test/fixtures/make_humanoid.py`) and reads the GLB back
 (`test/fixtures/check_rig.py`); it skips where Blender isn't installed (`BLENDER=/path/to/blender` points it at one).
 
+After the rig, `blender.character` does the rest: cleaning, baking, props, clips from other skeletons, clip edits, and
+the FBX and GLB the games load. It's covered in `docs/3d-characters.md`.
+
 ## Repainting the shot
 
 **`video.control`** (LTX-2.3 22B with the Union IC-LoRA, family `ltx-2.3`):

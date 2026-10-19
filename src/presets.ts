@@ -30,24 +30,44 @@ import { GenError } from './util.ts';
 export const PRESETS_DIR = path.join(ROOT, 'presets');
 
 export type Preset = { tool?: string; description?: string; prompt?: string; negative?: string; params?: Record<string, unknown>; inputs?: Record<string, unknown> };
-export type ProjectPresets = { project: string; title?: string; style?: string; negative?: string; notes?: string; presets: Record<string, Preset> };
+export type ProjectPresets = { project: string; title?: string; style?: string; negative?: string; notes?: string; presets: Record<string, Preset>; kinds?: Record<string, any> };
+
+/** Kinds every project has (presets/shared/kinds.json: character3d). A project's own kinds add to them and replace one
+ * of the same name. */
+export function sharedKinds(): Record<string, any> {
+  const f = path.join(PRESETS_DIR, 'shared', 'kinds.json');
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
+}
+
+const withShared = (p: ProjectPresets): ProjectPresets => {
+  const shared = sharedKinds();
+  delete shared._about;
+  return { ...p, kinds: { ...shared, ...(p.kinds ?? {}) } };
+};
 
 export function listPresets(): ProjectPresets[] {
   if (!fs.existsSync(PRESETS_DIR)) return [];
-  return fs.readdirSync(PRESETS_DIR).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(fs.readFileSync(path.join(PRESETS_DIR, f), 'utf8')));
+  return fs.readdirSync(PRESETS_DIR).filter((f) => f.endsWith('.json')).map((f) => withShared(JSON.parse(fs.readFileSync(path.join(PRESETS_DIR, f), 'utf8'))));
 }
 
 export function getProjectPresets(project: string): ProjectPresets | null {
   const f = path.join(PRESETS_DIR, `${project}.json`);
-  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null;
+  return fs.existsSync(f) ? withShared(JSON.parse(fs.readFileSync(f, 'utf8'))) : null;
 }
 
 export function saveProjectPresets(p: ProjectPresets) {
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(p.project ?? '')) throw new GenError('presets need a project name');
   if (!p.presets || typeof p.presets !== 'object') throw new GenError('presets must be an object of named presets');
+  // The shared kinds come with every read; a project file keeps only its own (and its changes to a shared one).
+  if (p.kinds && typeof p.kinds === 'object') {
+    const shared = sharedKinds();
+    const own = Object.fromEntries(Object.entries(p.kinds).filter(([k, v]) => !(k in shared) || JSON.stringify(v) !== JSON.stringify(shared[k])));
+    p = { ...p, kinds: own };
+    if (!Object.keys(own).length) delete p.kinds;
+  }
   fs.mkdirSync(PRESETS_DIR, { recursive: true });
   fs.writeFileSync(path.join(PRESETS_DIR, `${p.project}.json`), JSON.stringify(p, null, 2));
-  return p;
+  return withShared(p);
 }
 
 const fill = (template: string, vars: Record<string, string>) =>

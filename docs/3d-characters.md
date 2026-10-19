@@ -1,0 +1,190 @@
+# 3D characters: blender.character
+
+`blender.character` runs a chain of **named Blender ops** on one 3D character, in one job, on a GPU server. It is
+for everything after a character has a mesh: cleaning it to a game budget, baking its textures, giving it a prop,
+bringing animation clips onto it from other skeletons, editing those clips, and writing the files the games load.
+There is no free-form Blender Python. Each op is a fixed function in `post/blender/hawkes_character.py`, and Gen
+checks the list (`checkOps` in `src/tools/character.ts`) before it claims a server.
+
+It runs on blender.render's machinery (`src/providers/blender/`): family `blender`, Blender 5.0.1 installed on first
+use, a job folder in `/var/tmp/hawkes-blender`, and a detached run followed over SSH.
+
+```
+concept ──image.edit──> apose ──mesh.textured──> mesh ──mesh.rig──> rig ──blender.character──> animation/<clip>
+                                                                      └──blender.character──> export/fbx, export/glb, preview/*
+```
+
+## A job
+
+```json
+{
+  "tool": "blender.character",
+  "project": "phorigins",
+  "inputs": { "files": ["asset:<rigged hero GLB>", "asset:<Walking.fbx from Mixamo>", "asset:<bat GLB>"] },
+  "params": {
+    "ops": [
+      { "op": "import", "file": 0 },
+      { "op": "clean", "triangles": 25000 },
+      { "op": "attach", "file": 2, "bone": "RightHand", "offset": [0, 0.08, 0.02], "rotation": [90, 0, 0], "size": 0.85, "origin": "bottom" },
+      { "op": "retarget", "file": 1, "name": "Walk" },
+      { "op": "inplace", "clip": "Walk" },
+      { "op": "loop", "clip": "Walk", "blend": 6 },
+      { "op": "export", "format": "fbx" },
+      { "op": "export", "format": "glb" },
+      { "op": "preview" }
+    ]
+  }
+}
+```
+
+`files` is a list; ops refer to files by their index. `fps` (default 30, Mixamo's) is the rate clips are sampled and
+exported at. Outputs come back titled `fbx`, `glb`, `blend`, `turntable`, `still`, and `preview/<clip>` (one video per
+clip). The job's result has the height, triangle count, bone names (each bone's canonical name and its axes), the
+clips with their frame counts, what each op did, and the warnings.
+
+## The ops
+
+The first op is always `import`. The rest run in order, and any op can come more than once.
+
+| Op | Fields | What it does |
+|---|---|---|
+| `import` | `file`, `height`, `facing`, `clips` (true), `names`, `map` | The character: GLB/GLTF, FBX or OBJ, with its skeleton and the clips in the file (unless `clips: false`). The object transforms are baked in, so 1 unit = 1 m (a Mixamo FBX comes in at 0.01 scale and turned 90°). It stands on the ground, centered, facing -Y. `facing: "auto"` reads the facing from the hips and shoulders; a number gives the current facing in degrees. `height` scales to that many meters. |
+| `clean` | `triangles` (25000), `merge` (0.0001 m), `normals` (true) | Merges vertices closer than `merge`, recalculates normals to face outward, and collapse-decimates to the triangle budget. Shape keys are dropped, with a warning. A copy of the uncleaned mesh is kept as the bake source. The result says how far the surface moved (`silhouette`: max and 99th percentile, in meters), and there is a warning when the 99th percentile is over 1% of the height. |
+| `bake` | `size` (2048, max 2048), `maps` (`["color", "normal"]`), `high`, `samples` (8), `margin` (16), `extrusion`, `distance`, `roughness` (0.8) | Joins the meshes into one, unwraps them with a new smart-UV map, and bakes base color and a tangent-space normal map from the high-poly. The high-poly is file `high`, else the copy `clean` kept, else the mesh as it was. The meshes get one material with the maps, packed into every export. |
+| `attach` | `file`, `bone`, `offset` (m), `rotation` (degrees XYZ), `size` or `scale`, `origin` (`file`, `center`, `bottom` or `top`), `name` | A prop parented to a bone. `offset` and `rotation` are in the bone's own axes; Mixamo bones point along +Y. `origin` is the grip point: `bottom` for a bat held at the handle. `size` scales the prop's longest side to that many meters. It exports as a child of the bone. |
+| `retarget` | `file` (an index, a list, or `"*"` for every file no other op uses), `name`, `action`, `from` (auto), `map`, `inPlace`, `scale` | Clips from another skeleton: FBX, GLB or BVH. Every animation in the file comes over, or only `action`; `name` renames a single clip. Details below. |
+| `trim` | `clip`, `start`, `end`, `as` | Keeps frames `start` to `end` (1-based, inclusive). |
+| `loop` | `clip`, `blend` (8), `as` | Makes a seamless loop. The last `blend` frames cross-fade into the first ones, and the clip then starts after them, so its last frame leads straight into its first. The clip gets `blend` frames shorter. Root travel carries over. |
+| `inplace` | `clip`, `mode` (`travel` or `lock`), `as` | Removes the walk. `travel` (the default) removes the hips' straight-line travel on the ground and keeps the sway; `lock` pins the hips' ground position. The result says how many meters were removed. |
+| `speed` | `clip`, `factor`, `as` | 2 is twice as fast (half the frames), 0.5 is slow motion. In-betweens are interpolated. |
+| `mirror` | `clip`, `as` | Swaps left and right, as in a mirror. Twins are matched by bone name; the rest pose should be symmetric. |
+| `reverse` | `clip`, `as` | Plays the clip backwards (Holster from Draw). |
+| `concat` | `clips` (two or more), `name`, `blend` (0) | Plays the clips one after another. Each clip starts where the last one ended on the ground. With `blend`, the clips cross-fade over that many frames. |
+| `pose` | `clip`, `bones`, `frame` (1) or `frames`, `mode` (`set` or `add`), `ease` (0), `length`, `as` | Sets key poses from JSON. Details below. |
+| `copy`, `rename`, `remove` | `clip`, `name` / `clips` | Copies, renames or removes clips. |
+| `export` | `format` (`fbx`, `glb` or `blend`), `name` (`character`), `clips` (all), `bones` (FBX: `mixamo`) | Writes the file. Details below. |
+| `preview` | `turntable` (true), `clips` (all), `size` (512), `seconds` (6), `engine` (cycles), `samples` (16), `maxFrames` (300) | Makes a turntable of the rest pose (the camera goes once around) and a still, plus a video of each clip from a three-quarter view. The camera follows a clip that travels. All of these are rendered by `hawkes_blender.py` (blender.render's shot) from a GLB of the character. |
+
+The edit ops (`trim`, `loop`, `inplace`, `speed`, `mirror` and `reverse`) change the clip in place. With `as`, they
+write a new clip and leave the original alone. With `clip: "*"`, they apply to every clip.
+
+### Retargeting
+
+Retargeting matches **bone directions in the world**, not bone names alone. It works like this:
+
+1. For each bone, it compares the direction from its joint to the next joint (upper arm to elbow) on both skeletons at
+   rest.
+2. It turns the character's rest pose so that each bone points where the source's does.
+3. It applies the source's motion from its own rest pose on top.
+
+A T-pose Mixamo clip therefore plays right on an A-pose rig (mesh.rig's), and an A-pose mocap clip plays right on a
+T-pose character. Renaming tracks alone would put the arms 45° off. Both skeletons are turned to face the same way.
+Root motion (the hips' travel) is scaled by the ratio of hip heights, so a short character takes shorter steps.
+`scale` overrides that ratio, and `inPlace: true` drops the ground travel. Bones the source doesn't have keep their rest
+pose relative to their parent, and the result lists them as `missing`.
+
+Bones are matched by **canonical names** (Mixamo's, without a prefix: `Hips`, `Spine`, `Spine1`, `Spine2`, `Neck`,
+`Head`, `LeftShoulder`, `LeftArm`, `LeftForeArm`, `LeftHand`, `LeftUpLeg`, `LeftLeg`, `LeftFoot`, `LeftToeBase`, and the
+fingers as `LeftHandIndex1`...). Each skeleton's names are read through the scheme that matches most of its bones
+(`from` or `names` picks one):
+
+| Scheme | Hips / spine | Arm | Leg |
+|---|---|---|---|
+| `mixamo` | `mixamorig:Hips`, `Spine`, `Spine1`, `Spine2` (any `mixamorigN:` prefix, or none) | `LeftShoulder`, `LeftArm`, `LeftForeArm`, `LeftHand` | `LeftUpLeg`, `LeftLeg`, `LeftFoot`, `LeftToeBase` |
+| `unity` | `Hips`, `Spine`, `Chest`, `UpperChest` | `LeftShoulder`, `LeftUpperArm`, `LeftLowerArm`, `LeftHand` | `LeftUpperLeg`, `LeftLowerLeg`, `LeftFoot`, `LeftToes` |
+| `unreal` | `pelvis`, `spine_01`..`spine_03` | `clavicle_l`, `upperarm_l`, `lowerarm_l`, `hand_l` | `thigh_l`, `calf_l`, `foot_l`, `ball_l` |
+| `rigify` | `DEF-spine`, `DEF-spine.001`..`.003`, `DEF-spine.004` (neck), `DEF-spine.006` (head) | `DEF-shoulder.L`, `DEF-upper_arm.L`, `DEF-forearm.L`, `DEF-hand.L` | `DEF-thigh.L`, `DEF-shin.L`, `DEF-foot.L`, `DEF-toe.L` |
+| `smpl` (SMPL and SOMA-style mocap, AMASS BVH) | `pelvis`, `spine1`..`spine3` | `left_collar`, `left_shoulder` (upper arm), `left_elbow`, `left_wrist` | `left_hip`, `left_knee`, `left_ankle`, `left_foot` |
+| `bvh` (classic BVH) | `Hips`, `Abdomen`, `Chest`, `Chest2` | `LeftCollar`, `LeftShoulder` (upper arm), `LeftElbow`, `LeftWrist` | `LeftHip`, `LeftKnee`, `LeftAnkle`, `LeftToe` |
+
+Left/right can also be spelled `L_`, `l_`, `.L`, `_l` and so on. CMU-style BVH uses Mixamo-like names and reads as
+`mixamo`. For anything else, `map` names the bones yourself: `{ "Bip01 L UpperArm": "LeftArm", ... }`. It works on
+`import` (the character) and on `retarget` (the source). BVH files are Y-up, as mocap exports are.
+
+### Key poses from JSON
+
+An agent can author or fix a pose without Blender:
+
+```json
+{ "op": "pose", "clip": "Wave", "frame": 12, "ease": 6, "bones": { "RightArm": [0, 0, -70], "RightForeArm": [0, 0, -40] } }
+{ "op": "pose", "clip": "Point", "length": 30, "frames": [10, 30], "bones": { "RightArm": [0, 0, -80], "Head": { "quat": [0.98, 0, 0.2, 0] } } }
+```
+
+- **Values:** each bone's rotation relative to its rest pose, as Euler XYZ degrees in the bone's own axes. These are
+  the numbers Blender shows in pose mode. `{ "quat": [w, x, y, z] }` also works.
+- **The bone's axes:** the result lists each bone's `axes`, its X, Y and Z directions in the world (+Z up, character
+  facing -Y). Mixamo bones point along +Y, so a rotation about the bone's Z axis swings it.
+- **`mode`:** `set` replaces the rotation; `add` turns from the current one.
+- **`ease`:** blends that many frames on each side into the new pose.
+- **A new clip:** with `length`, a clip that doesn't exist yet starts from the rest pose.
+- **Bone names:** canonical (`RightArm`) or the rig's own (`mixamorig7:RightArm`).
+
+### Exports
+
+- **FBX for Unity:**
+  - Bones are renamed to Mixamo names (`mixamorig:Hips`...), so Unity's **Humanoid** avatar maps them on its own.
+    `bones: "keep"` keeps the rig's own names. A warning lists the Humanoid bones the rig doesn't have.
+  - Each clip is a named take (an NLA strip). In Unity they show as `Walk`, `Idle`... on the model's Animation tab.
+  - Scale: 1 unit = 1 m (*FBX All* scaling, -Z forward, Y up, no leaf bones). Textures are embedded.
+  - Unity's Humanoid works best from a T-pose rest. A mesh.rig character rests in its A-pose; use *Enforce T-Pose* in
+    the avatar's Configure screen if Unity complains.
+- **GLB for the web:** one animation per clip, by name, with skins, the prop and the baked maps. Babylon.js and
+  three.js play them by name.
+- **`.blend`:** the scene with every clip as an action, to open and finish by hand.
+
+## The library: kind `character3d`
+
+`presets/shared/kinds.json` holds kinds every project has. A project's own kinds in `presets/<project>.json` add to
+them, and replace one of the same name. Reads of a project's presets (`GET /v1/presets/<project>`, the UI, slot recipes)
+include the shared kinds. A save drops any shared kind it didn't change.
+
+`character3d` has these slots:
+
+| Slot | Made by | From |
+|---|---|---|
+| `concept` | `image.generate` | the entity's name and look: a turnaround sheet |
+| `apose` | `image.edit` | `concept`: the front view alone, in an A-pose |
+| `mesh` | `mesh.textured` | `apose` |
+| `rig` | `mesh.rig` (1.8 m) | `mesh`; its turntable goes to `preview/turntable` |
+| `animation/<clip>` | `blender.character` (import, retarget, export glb, preview) | `rig` plus the slot's `data.source` (an `asset:` or `slot:` reference to a Mixamo FBX, a GLB or a BVH). The GLB goes to the slot, the video to `preview/<clip>`. |
+| `preview/turntable`, `preview/<clip>` | `blender.character` (preview) | `rig`, or `animation/<clip>` |
+| `export/fbx`, `export/glb` | `blender.character` (import, retarget `*`, export) | `rig`. To take clips along, make it with `inputs: { files: ["slot:./rig", "slot:./animation/walk", "slot:./animation/idle"] }` |
+
+A recipe's `saves` map files a single tool's outputs by title, as in a chain. For example, `{ "glb": "animation/{part}",
+"preview/{part}": "preview/{part}" }`; template fields work in the keys too. Outputs the map leaves out (the still) are
+not filed.
+
+```bash
+# a new character with a walk from Mixamo
+POST /v1/entities { "project": "phorigins", "name": "Pierce", "kind": "character3d",
+                    "data": { "look": "...", "slots": { "animation/walk": { "source": "asset:<Walking.fbx>" } } } }
+POST /v1/entities/phorigins/pierce/slots/concept/make     # then apose, mesh, rig, animation/walk, export/fbx
+```
+
+## Tested
+
+`test/character.test.ts` runs the whole server script where Blender is installed:
+
+- **The character:** `test/fixtures/make_character.py`, a skinned FBX with Mixamo names in a T-pose.
+- **The clip:** `test/fixtures/make_mocap.py`, an SMPL-named BVH in an A-pose that walks 1 m and raises an arm.
+- **Retarget:** every limb of the retargeted clip points where the mocap's does (cosine > 0.98), and the travel is
+  scaled to the legs.
+- **Edits:** `inplace` removes the travel, `mirror` mirrors, and every edit has the right frame count.
+- **Exports:** the FBX has Mixamo names, a take per clip and the same height as the GLB.
+- **Previews:** the preview videos have the right size and length.
+
+CI has no Blender, so that test skips there.
+
+The first live check used PH Origins' own characters: all 16 PH clips of `ch33-hero.glb` were retargeted onto
+`ch44-hero.glb` (a different Mixamo character, 5% taller), and the GLB and FBX were read back. The limb directions
+matched the source on every frame checked, and the height stayed 1.898 m in both files. That run took 53 s on 4 CPU
+cores with no GPU (16 clips, 3,200 frames), with about 750 MB of memory at the peak.
+
+## Cost
+
+- **Ops alone:** seconds to a minute, CPU-bound on the GPU server.
+- **A 2K bake:** about a minute on the GPU.
+- **Previews:** Cycles at 16 samples, a few seconds per 100 frames on the GPU.
+- **Total:** a typical job is 1 to 4 minutes of a g5/g6 server, a few cents.
+- **Estimate:** `POST /v1/estimate` counts `30 s + 4 s per op`, plus 60 s for a bake and 120 s for previews, until job
+  history replaces it.
