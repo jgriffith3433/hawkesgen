@@ -40,6 +40,8 @@ POST /v1/jobs
 | `GET /v1/jobs/:id` | One job: status, detail, log, outputs, result, error, server, gpu_seconds, cost, graphs |
 | `POST /v1/jobs/:id/cancel` | Cancel (a running GPU job is interrupted on the server) |
 | `POST /v1/jobs/:id/rerun` `{ "sameSeed": false }` | Queue it again |
+| `GET /v1/jobs/:id/shots?since=<i>` | A `playtest.run` job's screenshots, while it plays and after: `{ running, progress, shots: [{ i, t, reason, scene, peer? }] }`. `progress` is the job's latest step (the bot's scene and progress line) to caption the frames; `since` lists only shots after that index (poll with the last `i` you have) |
+| `GET /v1/jobs/:id/shots/:i` | One screenshot (JPEG, as taken: no re-encoding). From the run's scratch file while it plays (`no-cache`), from the filed library asset after (cached a day) |
 | `GET /v1/jobs/:id/graphs/:name` | A ComfyUI graph the job ran (loads into ComfyUI) |
 | `POST /v1/jobs/clear` `{ "project"? }` | Remove finished jobs from the list (admin) |
 | `GET /v1/events` | Server-sent events: `event: job` with each job change |

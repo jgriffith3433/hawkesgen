@@ -14,6 +14,7 @@ import { db } from '../db.ts';
 import { ask, DEFAULT_MODEL, usageOf } from '../providers/anthropic.ts';
 import { openPlaytestHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
 import { awsConfig } from '../providers/comfy/fleet.ts';
+import { startLiveShots, endLiveShots } from './liveShots.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
@@ -99,7 +100,7 @@ export const playtestRunTool: Tool = {
     const problems: Problem[] = [];
     const consoleLines: { type: string; text: string; t: number }[] = [];
     const failed: { url: string; status: number | string }[] = [];
-    const shots: Shot[] = [];
+    const shots = startLiveShots<Shot>(ctx.job.id);
     const timeline: any[] = [];
     let t0 = Date.now();
     const T = () => Math.round((Date.now() - t0) / 100) / 10;
@@ -511,6 +512,7 @@ export const playtestRunTool: Tool = {
       await within(browser?.close() ?? Promise.resolve(), 15_000, 'closing the browser').catch(() => {});
       host?.close();
       release?.();
+      endLiveShots(ctx.job.id);
     }
   },
 };
@@ -603,7 +605,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any) {
   let release: (() => void) | null = null;
 
   const peers: PeerRun[] = [];
-  const shots: (Shot & { peer: number })[] = [];
+  const shots = startLiveShots<Shot & { peer: number }>(ctx.job.id);
   const problems: Problem[] = [];
   const timeline: any[] = [];
   let t0 = Date.now();
@@ -991,6 +993,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any) {
     await within(browser?.close() ?? Promise.resolve(), 15_000, 'closing the browser').catch(() => {});
     host?.close();
     release?.();
+    endLiveShots(ctx.job.id);
   }
 }
 
