@@ -187,7 +187,7 @@ namespace Hawkes
                     case '\r': sb.Append("\\r"); break;
                     case '\t': sb.Append("\\t"); break;
                     default:
-                        if (c < 0x20 || c == ' ' || c == ' ') sb.Append("\\u").Append(((int)c).ToString("x4"));
+                        if (c < 0x20 || c == '\u2028' || c == '\u2029') sb.Append("\\u").Append(((int)c).ToString("x4"));
                         else sb.Append(c);
                         break;
                 }
