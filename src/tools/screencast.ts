@@ -1,5 +1,5 @@
-// Playtest video from a CDP screencast: Chromium sends a JPEG each time it draws a new frame, the runner acks it at
-// once and keeps a 30 fps clock, writing the frame on screen at each tick into an MJPEG stream (no encoding while the
+// Playtest video from a CDP screencast: Chromium sends a JPEG each time it draws a new frame, the runner acks it no
+// faster than 30 a second (AckPacer) and keeps a 30 fps clock, writing the frame on screen at each tick into an MJPEG stream (no encoding while the
 // game plays). After the run, ffmpeg turns the stream into the mp4 on the machine that recorded it (remoteEncodeScript,
 // over SSH), or here if that fails. Playwright's recordVideo also screencasts, but encodes VP8 at 25 fps while the
 // game plays; this keeps up with 30 fps even with two playtests on the playtester's 4 vCPUs. Measurements:
@@ -61,6 +61,47 @@ export class FrameClock {
   }
 }
 
+/**
+ * When to ack a screencast frame. Chromium captures and JPEG-encodes the next frame only after the ack, so acking at
+ * once made it encode every frame the game drew (54 to 59 a second for a 60 fps game) while the clock keeps 30: half
+ * the playtester's capture work and the frames' trip to this machine went to frames that were thrown away. Acking no
+ * sooner than one tick after the previous ack caps it at the video's rate without touching a slower game: a game that
+ * draws 30 or fewer frames a second has its frames acked at once, as before.
+ */
+export class AckPacer {
+  /** When the latest ack went out or is due. */
+  private due = -Infinity;
+  private timers = new Set<ReturnType<typeof setTimeout>>();
+  readonly interval: number;
+  private now: () => number;
+  private later: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
+
+  constructor(fps: number, now: () => number = () => performance.now(), later = (fn: () => void, ms: number) => setTimeout(fn, ms)) {
+    this.interval = 1000 / fps;
+    this.now = now;
+    this.later = later;
+  }
+
+  /** Acks now, or one interval after the previous ack. Every frame gets its ack (Chromium may have more than one out). */
+  frame(ack: () => void) {
+    const now = this.now();
+    this.due = Math.max(now, this.due + this.interval);
+    const wait = this.due - now;
+    if (wait <= 0) return ack();
+    const t = this.later(() => {
+      this.timers.delete(t);
+      ack();
+    }, wait);
+    this.timers.add(t);
+  }
+
+  /** Nothing pending any more (the screencast stopped). */
+  cancel() {
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
+  }
+}
+
 /** Records a Playwright page (Chromium) through a CDP screencast into an MJPEG file at a constant 30 fps. */
 export class ScreencastRecorder {
   file: string;
@@ -68,10 +109,14 @@ export class ScreencastRecorder {
   height: number;
   clock: FrameClock;
   startedAt = 0;
+  /** The newest frame (JPEG) and when it arrived (ms since the epoch): what the live view shows (livePlay.ts). */
+  latest: Buffer | null = null;
+  latestAt = 0;
   private cdp: any = null;
   private stream: fs.WriteStream;
   private lastTs = 0;
   private stopped = false;
+  private pacer = new AckPacer(SCREENCAST_FPS);
 
   constructor(file: string, { width, height }: { width: number; height: number }) {
     this.file = file;
@@ -86,12 +131,15 @@ export class ScreencastRecorder {
     try {
       this.cdp = await context.newCDPSession(page);
       this.cdp.on('Page.screencastFrame', (f: any) => {
-        // Ack first: Chromium sends the next frame only after the ack.
-        this.cdp.send('Page.screencastFrameAck', { sessionId: f.sessionId }).catch(() => {});
+        // Chromium sends the next frame only after the ack: paced to the video's rate (AckPacer).
+        if (!this.stopped) this.pacer.frame(() => { if (!this.stopped) this.cdp.send('Page.screencastFrameAck', { sessionId: f.sessionId }).catch(() => {}); });
         if (this.stopped) return;
         const ts = f.metadata?.timestamp ?? Date.now() / 1000;
         this.lastTs = ts;
-        this.clock.push(Buffer.from(f.data, 'base64'), ts);
+        const frame = Buffer.from(f.data, 'base64');
+        this.latest = frame;
+        this.latestAt = Date.now();
+        this.clock.push(frame, ts);
       });
       await this.cdp.send('Page.startScreencast', { format: 'jpeg', quality: QUALITY, maxWidth: this.width, maxHeight: this.height, everyNthFrame: 1 });
       this.startedAt = Date.now();
@@ -106,6 +154,7 @@ export class ScreencastRecorder {
   async stop() {
     if (!this.stopped) {
       this.stopped = true;
+      this.pacer.cancel();
       await this.cdp?.send('Page.stopScreencast').catch(() => {});
       this.cdp?.detach().catch(() => {});
       // The last frame stays up until now (the browser's clock is another machine's, so no more than a second on).

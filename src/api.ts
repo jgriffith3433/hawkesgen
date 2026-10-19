@@ -14,6 +14,7 @@ import { convertUiWorkflow, checkGraph } from './workflows/convert.ts';
 import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
+import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
 import { submit, getJob, listJobs, cancel, rerun, clearFinished, jobTimings, events, summary, queue, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
 import * as lib from './entities.ts';
@@ -85,6 +86,54 @@ function serveFile(req: IncomingMessage, res: ServerResponse, file: string, mime
 function fleetFail(e: any) {
   if (e instanceof GenError && e.kind && e.kind !== 'other') lastFailure = { at: Date.now(), message: e.message, kind: e.kind, attempts: e.attempts ?? [] };
   throw e;
+}
+
+/**
+ * A live playtest's video (tools/livePlay.ts): the newest frame of a player once, or as an MJPEG stream at about `fps`
+ * (1 to 15) frames a second, only new frames, never more than about 2 MB waiting for a slow viewer. The stream ends
+ * with the run, when the viewer goes, or after an hour.
+ */
+function liveVideo(req: IncomingMessage, res: ServerResponse, job: string, kind: string, player: number, fps: number) {
+  const read = () => {
+    const f = liveFrame(job, Math.max(0, Math.min(3, player)));
+    if (!f) return null;
+    if ('jpeg' in f) return f;
+    try {
+      return { jpeg: fs.readFileSync(f.file), at: fs.statSync(f.file).mtimeMs };
+    } catch {
+      return null;
+    }
+  };
+  if (kind === 'frame') {
+    const f = read();
+    if (!f) throw new GenError('No frame yet', { status: 404 });
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': f.jpeg.length, 'Cache-Control': 'no-store' });
+    return void res.end(f.jpeg);
+  }
+  const rate = Math.max(1, Math.min(15, fps));
+  const B = 'hawkesframe';
+  res.writeHead(200, { 'Content-Type': `multipart/x-mixed-replace; boundary=${B}`, 'Cache-Control': 'no-store, no-transform', 'X-Accel-Buffering': 'no' });
+  let last = -1;
+  let closed = false;
+  const started = Date.now();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const tick = () => {
+    if (closed) return;
+    if (!isLive(job) || Date.now() - started > 3_600_000) return void res.end();
+    const f = read();
+    if (f && f.at !== last && res.writableLength < 2_000_000) {
+      last = f.at;
+      res.write(`--${B}\r\nContent-Type: image/jpeg\r\nContent-Length: ${f.jpeg.length}\r\n\r\n`);
+      res.write(f.jpeg);
+      res.write('\r\n');
+    }
+    timer = setTimeout(tick, 1000 / rate);
+  };
+  req.on('close', () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+  });
+  tick();
 }
 
 function jobVisible(c: Client, j: { project: string }) {
@@ -248,13 +297,28 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const { project } = await readJson(req);
       return send(res, 200, { removed: clearFinished(project) });
     }
-    m = /^\/v1\/jobs\/(j_[0-9a-f]+)(?:\/(cancel|rerun|shots(?:\/\d+)?|graphs\/[\w.-]+))?$/.exec(route);
+    // Every playtest playing or waiting to, with what each is doing (Studio's Playtests page; tools/livePlay.ts).
+    if (route === '/v1/playtests/live' && method === 'GET') {
+      const visible = (status: string) => listJobs({ tool: 'playtest.run', status, limit: 100, projects: client.projects }).filter((j) => jobVisible(client, j));
+      const running = visible('running');
+      const playing = running.map((j) => liveSnapshot(j.id) ?? { job: j.id, project: j.project, live: false, step: j.detail ?? 'starting', startedAt: j.started ?? j.created });
+      const { playtesterCapacity } = await import('./providers/playtester/playtester.ts');
+      return send(res, 200, {
+        at: Date.now(), playing, capacity: await playtesterCapacity().catch(() => null), lanes: queue.tabsInUse(),
+        waiting: visible('queued').map((j) => ({ job: j.id, project: j.project, created: j.created, detail: j.detail ?? null, url: j.params?.url ?? null, scenario: j.params?.scenario ?? null, peers: Number(j.params?.peers) || 1, device: j.params?.mobile ? 'phone' : 'desktop' })),
+      });
+    }
+    m = /^\/v1\/jobs\/(j_[0-9a-f]+)(?:\/(cancel|rerun|live|live\.mjpeg|frame|shots(?:\/\d+)?|graphs\/[\w.-]+))?$/.exec(route);
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
       if (!m[2] && method === 'GET') return send(res, 200, j);
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
       if (m[2] === 'rerun' && method === 'POST') return send(res, 200, rerun(client, j.id, { sameSeed: (await readJson(req)).sameSeed === true }));
+      // A playtest's live state (every step, the players, problems, the timeline); null after the run (the job has the result).
+      if (m[2] === 'live' && method === 'GET') return send(res, 200, { job: j.id, status: j.status, detail: j.detail ?? null, live: liveSnapshot(j.id, { full: true }) });
+      // A player's newest frame once (frame), or a live MJPEG stream (live.mjpeg: multipart/x-mixed-replace, for an <img>).
+      if ((m[2] === 'frame' || m[2] === 'live.mjpeg') && method === 'GET') return liveVideo(req, res, j.id, m[2], Number(q('player')) || 0, Number(q('fps')) || 8);
       // A playtest's screenshots, while it plays (tmp files) and after (the filed assets).
       if (m[2] === 'shots' && method === 'GET') return send(res, 200, shotList(j, Number.isFinite(Number(q('since') ?? 'x')) ? Number(q('since')) : -1));
       if (m[2]?.startsWith('shots/') && method === 'GET') {
@@ -482,7 +546,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
 
     // ------------------------------------------------- playtester (T4 GPU)
-    if (route === '/v1/playtester' && method === 'GET') return send(res, 200, await playtester.playtesterStatus());
+    // The first playtester's status as before, plus every playtester (machines) and their lanes.
+    if (route === '/v1/playtester' && method === 'GET') {
+      const all = await playtester.playtestersStatus();
+      return send(res, 200, { ...(all.machines[0] ?? (await playtester.playtesterStatus())), machines: all.machines, max: all.max, lanes: all.lanes, inUse: all.inUse });
+    }
     m = /^\/v1\/playtester\/(launch|start|ensure|stop|terminate|access|idle|ssh)$/.exec(route);
     if (m && method === 'POST') {
       const act = m[1];
@@ -491,17 +559,19 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       requireRole(client, costly ? 'owner' : 'admin');
       if (costly && body.confirm !== true) throw new GenError(`${act} needs { "confirm": true }`);
       if (act === 'launch') return send(res, 200, { ok: true, ...(await playtester.launchPlaytester({ type: body.type || undefined, region: body.region || undefined, idleMinutes: Number(body.idleMinutes) || 20 })) });
-      if (act === 'start') return send(res, 200, { ok: true, ...(await playtester.startPlaytester()) });
-      if (act === 'ensure') return send(res, 200, { ok: true, ...(await playtester.ensurePlaytester()) });
+      // Which playtester (start, ensure, stop, terminate, idle, ssh): the first one, or every one for stop and idle, without it.
+      const id = typeof body.id === 'string' && /^i-[0-9a-f]+$/.test(body.id) ? body.id : undefined;
+      if (act === 'start') return send(res, 200, { ok: true, ...(await playtester.startPlaytester(id)) });
+      if (act === 'ensure') return send(res, 200, { ok: true, ...(await playtester.ensurePlaytester(() => {}, 15 * 60_000, id)) });
       if (act === 'stop') {
         // ifIdle: leave it running while a playtest is still using it (its idle stop follows).
         if (body.ifIdle && listJobs({ status: 'running', limit: 500 }).some((j) => j.tool === 'playtest.run')) return send(res, 200, { ok: true, skipped: 'a playtest is still running; it stops itself when idle' });
-        return send(res, 200, { ok: true, ...(await playtester.stopPlaytester()) });
+        return send(res, 200, { ok: true, ...(await playtester.stopPlaytester(id)) });
       }
-      if (act === 'terminate') return send(res, 200, { ok: true, ...(await playtester.terminatePlaytester()) });
+      if (act === 'terminate') return send(res, 200, { ok: true, ...(await playtester.terminatePlaytester(id)) });
       if (act === 'access') return send(res, 200, { ok: true, ...(await playtester.playtesterAccess()) });
-      if (act === 'idle') return send(res, 200, { ok: true, ...(await playtester.setPlaytesterIdle(Number(body.minutes))) });
-      if (act === 'ssh') return send(res, 200, { ok: true, output: await playtester.ssh(String(body.command ?? ''), { timeoutMs: Math.min(600_000, Number(body.timeoutMs) || 120_000) }) });
+      if (act === 'idle') return send(res, 200, { ok: true, ...(await playtester.setPlaytesterIdle(Number(body.minutes), id)) });
+      if (act === 'ssh') return send(res, 200, { ok: true, output: await playtester.ssh(String(body.command ?? ''), { id, timeoutMs: Math.min(600_000, Number(body.timeoutMs) || 120_000) }) });
     }
 
     m = /^\/v1\/fleet\/(launch|start|stop|terminate|access|scale|stop-all|sync|fix|retry-stop|adopt)$/.exec(route);

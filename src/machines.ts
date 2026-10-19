@@ -9,6 +9,7 @@ import { getJob, listJobs, queue } from './jobs.ts';
 import * as fleet from './providers/comfy/fleet.ts';
 import * as builder from './providers/builder/builder.ts';
 import * as playtester from './providers/playtester/playtester.ts';
+import { livePlaytester } from './tools/livePlay.ts';
 
 export type Kind = 'gpu' | 'builder' | 'playtester';
 
@@ -186,7 +187,8 @@ let round: Promise<Machine[]> | null = null;
 let lastPurge = 0;
 const lastStored = new Map<string, number>();
 
-const runningJobs = (tool: string) => listJobs({ status: 'running', tool, limit: 20 }).map((j) => ({ id: j.id, tool: j.tool, project: j.project, detail: j.detail }));
+// A playtest says which playtester it plays on (livePlay.ts), so each playtester lists its own.
+const runningJobs = (tool: string) => listJobs({ status: 'running', tool, limit: 20 }).map((j) => ({ id: j.id, tool: j.tool, project: j.project, detail: j.detail, ...(tool === 'playtest.run' ? { machine: livePlaytester(j.id) } : {}) }));
 
 type Found = { instance: any; region: string };
 const base = (f: Found) => ({
@@ -202,7 +204,7 @@ async function inventory(): Promise<Listed[]> {
   const [gpus, b, p] = await Promise.all([
     fleet.listServers().catch(() => [] as Found[]),
     builder.findBuilder().catch((e) => e as Error),
-    playtester.findPlaytester().catch((e) => e as Error),
+    playtester.listPlaytesters({ fresh: true }).catch((e) => e as Error),
   ]);
   for (const f of gpus) {
     const m = base(f);
@@ -222,7 +224,15 @@ async function inventory(): Promise<Listed[]> {
     out.push({ ...m, kind, name, pricePerHour: price(m.type ?? ''), disposable: false, purpose: null, jobs: m.state === 'running' ? runningJobs(tool) : [], found: f });
   };
   one(b, 'builder', 'Build server', (t) => builder.BUILDER_TYPES[t]?.price ?? builder.BUILDER_TYPES[builder.BUILDER_DEFAULT_TYPE].price, 'unity.build');
-  one(p, 'playtester', 'Playtester', (t) => playtester.PLAYTESTER_TYPES[t]?.price ?? playtester.PLAYTESTER_TYPES[playtester.PLAYTESTER_DEFAULT_TYPE].price, 'playtest.run');
+  // Every playtester (there can be several); none at all shows as one missing machine, as before.
+  const ptPrice = (t: string) => playtester.PLAYTESTER_TYPES[t]?.price ?? playtester.PLAYTESTER_TYPES[playtester.PLAYTESTER_DEFAULT_TYPE].price;
+  if (p instanceof Error || !p.length) one(p instanceof Error ? p : null, 'playtester', 'Playtester', ptPrice, 'playtest.run');
+  else for (const [n, f] of p.entries()) {
+    const before = out.length;
+    one(f, 'playtester', p.length > 1 ? `Playtester ${n + 1} (${f.region})` : 'Playtester', ptPrice, 'playtest.run');
+    // Jobs per machine: the playtests whose browser is on this one.
+    if (p.length > 1 && out[before]) out[before].jobs = out[before].jobs.filter((j: any) => !j.machine || j.machine === f.instance.InstanceId);
+  }
   return out;
 }
 

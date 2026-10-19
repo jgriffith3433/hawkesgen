@@ -15,6 +15,7 @@ import { ask, DEFAULT_MODEL, usageOf } from '../providers/anthropic.ts';
 import { openPlaytestHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
 import { awsConfig } from '../providers/comfy/fleet.ts';
 import { startLiveShots, endLiveShots } from './liveShots.ts';
+import { beginLive } from './livePlay.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
@@ -69,7 +70,9 @@ export const playtestRunTool: Tool = {
     const p = ctx.params;
     // Loaded lazily so the service starts without Playwright's browsers installed.
     const { chromium, devices } = await import('playwright');
-    if ((p.peers ?? 1) > 1) return runPeers(ctx, chromium, devices);
+    // What it's doing, live, for Studio's Playtests page (livePlay.ts): every step from here on, and the state below.
+    const live = beginLive(ctx);
+    if ((p.peers ?? 1) > 1) return runPeers(ctx, chromium, devices, live);
     const videoDir = ctx.tmp('video');
     fs.mkdirSync(videoDir, { recursive: true });
     const viewport = p.mobile ? { width: 390, height: 844 } : { width: p.width, height: p.height };
@@ -115,6 +118,15 @@ export const playtestRunTool: Tool = {
     let context: any = null;
     let screencast: ScreencastRecorder | null = null;
     let recorder: any = null;
+    let liveSc: any = null;
+    let liveSt: any = null;
+    let liveOutcome: string | null = null;
+    live.source(() => ({
+      host: host?.server ?? null, playtester: host?.playtester ?? null, recorder: recorder?.kind ?? null, contract,
+      scenario: liveSc ? { id: liveSc.id, title: liveSc.title ?? null, seconds: liveSc.seconds ?? null } : null,
+      players: [{ i: 0, scenario: p.scenario ?? null, state: liveSt, recorder: screencast }],
+      problems, console: consoleLines, failed, shots, timeline, loadSeconds, outcome: liveOutcome,
+    }));
 
     try {
       // The control server (Linux) has no GPU: games run on a GPU fleet server's browser when one is ready.
@@ -247,6 +259,7 @@ export const playtestRunTool: Tool = {
             scenarios = await ev<any[]>(() => (window as any).hawkesPlaytest.scenarios()).catch(() => []);
             const sc = scenarios.find((s: any) => s.id === p.scenario);
             if (!sc) throw new GenError(`No scenario "${p.scenario}". This game has: ${scenarios.map((s: any) => s.id).join(', ') || 'none'}`, { kind: 'contract' });
+            liveSc = sc;
             const limit = (p.timeout ?? Math.max(60, Math.round((sc.seconds || 150) * 2))) * 1000;
             // Now that the scenario's length is known, tighten the watchdog: what's left of loading, the limit, wrapping up.
             arm(Math.max(0, bootEnd - Date.now()) + limit + 300_000);
@@ -296,6 +309,7 @@ export const playtestRunTool: Tool = {
                 lastAnswer = Date.now();
               }
               if (st) {
+                liveSt = st;
                 timeline.push({ t: T(), status: st.status, scene: st.scene, progress: st.progress, fps: st.fps, note: st.note, metrics: st.metrics });
                 if (timeline.length > 5000) timeline.splice(0, 1000);
                 if (st.scene && st.scene !== lastScene) {
@@ -396,6 +410,7 @@ export const playtestRunTool: Tool = {
       const fps = summarizeFps(fpsSamples);
       if (fps.average && fps.average < 30 && !software) problems.push({ severity: 'warning', message: `low frame rate: ${fps.average} fps on average (worst ${fps.worst}) in this browser`, source: 'runner' });
 
+      liveOutcome = outcome;
       const result: any = {
         url: p.url, mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract ? p.scenario : null, outcome,
         stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `GPU server ${host.server}` : 'this machine',
@@ -513,6 +528,7 @@ export const playtestRunTool: Tool = {
       host?.close();
       release?.();
       endLiveShots(ctx.job.id);
+      live.end();
     }
   },
 };
@@ -577,7 +593,7 @@ export function stackArgs(inputs: { file: string; mjpeg: boolean }[], viewport: 
  * the videos are stacked into the job's video and the players' problems and events merged, labelled by peer. Same
  * limits as one player: every await is bounded and a watchdog kills the browser if the run overruns.
  */
-async function runPeers(ctx: RunContext, chromium: any, devices: any) {
+async function runPeers(ctx: RunContext, chromium: any, devices: any, live: ReturnType<typeof beginLive>) {
   const p = ctx.params;
   const n: number = p.peers;
   if (p.mode === 'site' || p.mode === 'generic') throw new GenError(`peers needs a game with the playtest contract (mode auto or contract, not ${p.mode})`, { kind: 'contract' });
@@ -608,6 +624,16 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any) {
   const shots = startLiveShots<Shot & { peer: number }>(ctx.job.id);
   const problems: Problem[] = [];
   const timeline: any[] = [];
+  const liveSt = new Map<number, any>();
+  let liveOutcome: string | null = null;
+  live.source(() => ({
+    host: host?.server ?? null, playtester: host?.playtester ?? null, recorder: peers[0]?.recorder?.kind ?? null, contract: true,
+    scenario: peers[0]?.sc ? { id: peers[0].sc.id, title: peers[0].sc.title ?? null, seconds: peers[0].sc.seconds ?? null } : null,
+    players: peers.map((x) => ({ i: x.i, scenario: x.scenario, state: liveSt.get(x.i) ?? null, detail: x.detail || null, outcome: x.outcome, recorder: x.screencast })),
+    problems: [...problems, ...peers.flatMap((x) => x.problems.map((pr) => ({ ...pr, peer: x.i })))],
+    console: peers.flatMap((x) => x.consoleLines), failed: peers.flatMap((x) => x.failed), shots, timeline,
+    loadSeconds: Math.max(0, ...peers.map((x) => x.loadSeconds ?? 0)) || null, outcome: liveOutcome,
+  }));
   let t0 = Date.now();
   const T = () => Math.round((Date.now() - t0) / 100) / 10;
   let stuck: string | null = null;
@@ -616,7 +642,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any) {
     if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
       const u = new URL(p.url);
       const localPorts = /^(localhost|127\.0\.0\.1)$/.test(u.hostname) ? [Number(u.port || (u.protocol === 'https:' ? 443 : 80))] : [];
-      const opening = openPlaytestHost(localPorts, ctx.step, { startPlaytester: true });
+      const opening = openPlaytestHost(localPorts, ctx.step, { startPlaytester: true, tabs: n });
       host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
         opening.then((h) => h?.close(), () => {});
         if (p.gpu === 'require') throw e;
@@ -790,6 +816,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any) {
           }
           peer.lastAnswer = Date.now();
           if (!st) return;
+          liveSt.set(peer.i, st);
           timeline.push({ t: T(), peer: peer.i, status: st.status, scene: st.scene, progress: st.progress, fps: st.fps, note: st.note, metrics: st.metrics });
           if (timeline.length > 5000) timeline.splice(0, 1000);
           if (st.scene && st.scene !== peer.lastScene) {
@@ -896,6 +923,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any) {
       });
     }
     const merged = mergePeers(peers.map((x) => ({ i: x.i, outcome: x.outcome, problems: x.problems, events: x.report?.events, log: x.report?.log })));
+    liveOutcome = merged.outcome;
     const allConsole = peers.flatMap((x) => x.consoleLines.map((c) => ({ ...c, text: `peer ${x.i}: ${c.text}` })));
     const allErrors = allConsole.filter((c) => c.type === 'error').length;
     const result: any = {
@@ -994,6 +1022,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any) {
     host?.close();
     release?.();
     endLiveShots(ctx.job.id);
+    live.end();
   }
 }
 

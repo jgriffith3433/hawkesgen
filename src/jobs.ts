@@ -309,6 +309,12 @@ class Queue {
   waitReason = '';
   /** Whether a GPU server was ready for playtest browsers, checked at most every 30 s. */
   gpuSeen = { at: 0, ready: false, limit: 3 };
+  /** Running playtests' browser tabs (their players), for the playtest lane. */
+  tabs = new Map<string, number>();
+  /** Browser tabs the running playtests use, and the most the lane admits now. */
+  tabsInUse() {
+    return { used: [...this.tabs.values()].reduce((a, n) => a + n, 0), limit: this.gpuSeen.ready ? this.gpuSeen.limit : 1 };
+  }
 
   start() {
     // Jobs that were running when Hawkes Gen stopped go back in the line.
@@ -344,17 +350,20 @@ class Queue {
     if (!waiting.length) return;
     const settings = loadSettings();
     const toolOf = (j: Job) => getTool(j.tool)!;
-    // Playtests whose browser runs on the playtester (T4, 16 GB) fit two at a time, on a GPU fleet server three; on this PC or
-    // in software, one (playtest.run also keeps the local browser to one at a time itself).
+    // Playtests count browser tabs (a multiplayer run is one per player). They fit in the playtesters' lanes (each
+    // playtester's by its type, every one that exists: a full or stopped one is started by the run), else three on a GPU
+    // fleet server; on this PC or in software, one (playtest.run also keeps the local browser to one at a time itself).
     const playtestLimit = async (j: Job) => {
       if (process.platform === 'win32' || j.params.gpu === 'off') return 1;
       if (Date.now() - this.gpuSeen.at > 30_000) {
-        const { playtesterTarget } = await import('./providers/playtester/playtester.ts');
-        const pt = await playtesterTarget().catch(() => null);
-        this.gpuSeen = { at: Date.now(), ready: Boolean(pt) || (await comfyEndpoints().catch(() => [])).length > 0, limit: pt ? 2 : 3 };
+        const { playtesterCapacity } = await import('./providers/playtester/playtester.ts');
+        const cap = await playtesterCapacity().catch(() => ({ machines: 0, lanes: 0 }));
+        const fleet = cap.machines ? false : (await comfyEndpoints().catch(() => [])).length > 0;
+        this.gpuSeen = { at: Date.now(), ready: cap.machines > 0 || fleet, limit: cap.machines ? cap.lanes : 3 };
       }
       return this.gpuSeen.ready ? this.gpuSeen.limit : 1;
     };
+    const tabsOf = (j: Job) => (j.tool === 'playtest.run' ? Math.max(1, Math.min(4, Number(j.params.peers) || 1)) : 1);
 
     // API and local lanes.
     for (const j of waiting.filter((x) => toolOf(x).provider !== 'comfy')) {
@@ -363,8 +372,11 @@ class Queue {
       this.lanes.set(provider, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
       const limit = provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? 6 : settings.concurrency[provider];
-      if (lane.size >= limit) {
-        this.wait(j, `waiting: ${lane.size} ${provider} jobs already running`);
+      // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
+      const weight = provider === 'playtest' ? tabsOf(j) : 1;
+      const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;
+      if (used >= limit || (used > 0 && used + weight > limit)) {
+        this.wait(j, provider === 'playtest' ? `waiting: ${used} of ${limit} playtest browser tabs in use` : `waiting: ${lane.size} ${provider} jobs already running`);
         continue;
       }
       // A Gen deploy is waiting for the build server to be free (hawkesstudio/deploy/hawkes-pull.mjs drops this file):
@@ -374,8 +386,10 @@ class Queue {
         continue;
       }
       lane.add(j.id);
+      if (provider === 'playtest') this.tabs.set(j.id, weight);
       void this.runJob(j, null).finally(() => {
         lane.delete(j.id);
+        this.tabs.delete(j.id);
         this.pump();
       });
     }

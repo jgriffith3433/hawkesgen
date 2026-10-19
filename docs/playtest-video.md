@@ -43,6 +43,15 @@ The original report of 3 to 14 distinct fps with `recordVideo` didn't reproduce 
 (one alone, two at once) were at its 25 fps ceiling during matches. Whole-video averages are lower (18 to 21) because
 of the still menus and loading.
 
+## Paced acks (2026-10-19)
+
+The recorder used to ack every `Page.screencastFrame` at once, so Chromium captured and JPEG-encoded every frame the game
+drew (54 to 59 a second) while `FrameClock` keeps 30: half of the capture work, and the frames' trip to the control
+server, went to frames that were thrown away. `AckPacer` (`src/tools/screencast.ts`) acks no sooner than one tick (1/30 s)
+after the previous ack: a 60 fps game sends about 30, a game that draws 30 or fewer has its frames acked at once as
+before (tested with fake 60, 30 and 20 fps sources in `test/playtest.test.ts`). The recorder also keeps the newest frame
+for the live view (`src/tools/livePlay.ts`, `GET /v1/jobs/:id/live.mjpeg`).
+
 ## Things found on the way
 
 - **Tab capture needs Chromium's new headless mode.** The default `chromium-headless-shell` refuses `getDisplayMedia`
