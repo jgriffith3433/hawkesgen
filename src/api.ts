@@ -14,7 +14,7 @@ import { convertUiWorkflow, checkGraph } from './workflows/convert.ts';
 import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
-import { submit, getJob, listJobs, cancel, rerun, clearFinished, events, summary, queue, type JobSpec } from './jobs.ts';
+import { submit, getJob, listJobs, cancel, rerun, clearFinished, jobTimings, events, summary, queue, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
@@ -238,6 +238,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/jobs' && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
       return send(res, 200, { jobs: listJobs({ project: q('project'), status: q('status'), tool: q('tool'), limit: Number(q('limit')) || 100, projects: client.projects }).map(summary) });
+    }
+    if (route === '/v1/jobs/timing' && method === 'GET') {
+      const since = q('since') ? Number(q('since')) : Date.now() - (Number(q('days')) || 7) * 24 * 3600 * 1000;
+      return send(res, 200, jobTimings({ since, project: q('project'), projects: client.projects }));
     }
     if (route === '/v1/jobs/clear' && method === 'POST') {
       requireRole(client, 'admin');

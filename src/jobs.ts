@@ -26,7 +26,7 @@ import { applyPreset } from './presets.ts';
 import { canProject, type Client } from './auth.ts';
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { ensureInputs } from './storage.ts';
-import { autoStartRound, type AutoStartRound, type Backoff } from './autostart.ts';
+import { autoStartRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, type Backoff } from './autostart.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
@@ -58,6 +58,55 @@ export function listJobs(q: { project?: string; status?: string; client?: string
   if (q.projects && !q.projects.includes('*')) where.push(`project IN (${q.projects.map((p) => `'${p.replace(/'/g, "''")}'`).join(',')})`);
   const limit = Math.max(1, Math.min(500, q.limit ?? 100));
   return db.prepare(`SELECT * FROM jobs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ${limit}`).all(args as any).map((r) => parseRow<Job>(r, JSON_COLS));
+}
+
+type Spread = { avg: number; p50: number; p90: number; max: number };
+const spread = (xs: number[]): Spread | null => {
+  if (!xs.length) return null;
+  const v = [...xs].sort((a, b) => a - b);
+  const at = (p: number) => v[Math.min(v.length - 1, Math.ceil(p * v.length) - 1)];
+  const r = (n: number) => Math.round(n / 100) / 10;
+  return { avg: r(v.reduce((a, b) => a + b, 0) / v.length), p50: r(at(0.5)), p90: r(at(0.9)), max: r(v[v.length - 1]) };
+};
+
+/**
+ * Where the time goes, per tool (seconds): `wait` is queued to started, `run` started to finished, over the jobs that
+ * finished (done or failed) since `since`; `now` is what is queued or running at this moment, with the longest wait so
+ * far. A job picked up again after a restart counts from its last start.
+ */
+export function jobTimings(q: { since: number; project?: string; projects?: string[]; now?: number }) {
+  const now = q.now ?? Date.now();
+  const where = ['created >= :since'];
+  const args: Record<string, string | number> = { since: q.since };
+  if (q.project) { where.push('project = :project'); args.project = q.project; }
+  if (q.projects && !q.projects.includes('*')) where.push(`project IN (${q.projects.map((p) => `'${p.replace(/'/g, "''")}'`).join(',')})`);
+  const rows = db.prepare(`SELECT tool, status, created, started, finished FROM jobs WHERE ${where.join(' AND ')}`).all(args) as { tool: string; status: string; created: number; started: number | null; finished: number | null }[];
+  const by = new Map<string, { done: number; failed: number; waits: number[]; runs: number[]; queued: number; running: number; waitingNow: number[] }>();
+  for (const j of rows) {
+    const t = by.get(j.tool) ?? { done: 0, failed: 0, waits: [], runs: [], queued: 0, running: 0, waitingNow: [] };
+    by.set(j.tool, t);
+    if (j.status === 'queued') {
+      t.queued += 1;
+      t.waitingNow.push(now - j.created);
+    } else if (j.status === 'running') t.running += 1;
+    else if ((j.status === 'done' || j.status === 'failed') && j.started && j.finished) {
+      if (j.status === 'done') t.done += 1;
+      else t.failed += 1;
+      t.waits.push(Math.max(0, j.started - j.created));
+      t.runs.push(Math.max(0, j.finished - j.started));
+    }
+  }
+  const tools = [...by].map(([tool, t]) => {
+    const wait = spread(t.waits);
+    const run = spread(t.runs);
+    return {
+      tool, done: t.done, failed: t.failed, wait, run,
+      /** Seconds spent waiting and running in all, so the biggest sinks sort first. */
+      total: Math.round((t.waits.reduce((a, b) => a + b, 0) + t.runs.reduce((a, b) => a + b, 0)) / 1000),
+      now: { queued: t.queued, running: t.running, longestWait: t.waitingNow.length ? Math.round(Math.max(...t.waitingNow) / 1000) : 0 },
+    };
+  }).sort((a, b) => b.total - a.total);
+  return { since: q.since, at: now, tools };
 }
 
 function save(job: Job, fields: (keyof Job)[]) {
@@ -363,8 +412,12 @@ class Queue {
     // While servers auto start booted in the last 10 minutes come up, the jobs say so.
     const r = this.autoRound;
     const booting = r && (r.started.length || r.launched) && Date.now() - r.at < 600_000 ? `${r.note} (booting, a few minutes)` : '';
+    // No server could start: say when auto start tries again and about when a server could take the job.
+    const retrying = !booting && r?.nextTry && r.nextTry > Date.now() - ROUND_MS && Date.now() - r.at < 1_800_000
+      ? `no stopped GPU server could start (AWS had no machine free, or no quota); next try in ${Math.max(1, Math.round((r.nextTry - Date.now()) / 60_000))} min (a server in about ${Math.max(1, Math.round((r.nextTry - Date.now()) / 60_000 + BOOT_SECONDS / 60))} min if one is free then)`
+      : '';
     for (const j of left) {
-      this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || this.waitReason}`);
+      this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || retrying || this.waitReason}`);
     }
     if (left.length) {
       if (endpoints.length < Math.min(cap, left.length + this.busy.size)) void this.autoStart(left.length + this.busy.size);
@@ -386,7 +439,7 @@ class Queue {
    */
   async autoStart(want: number) {
     const fleet = loadSettings().fleet;
-    if (!fleet.auto || Date.now() - this.lastAutoStart < 120_000) return;
+    if (!fleet.auto || Date.now() - this.lastAutoStart < ROUND_MS) return;
     this.lastAutoStart = Date.now();
     try {
       const round = await autoStartRound(want, fleet, {
@@ -414,7 +467,10 @@ class Queue {
     const s = loadSettings().fleet;
     return {
       auto: s.auto, autoLaunch: s.autoLaunch, last: this.autoRound,
-      backoff: [...this.autoBackoff].filter(([, b]) => b.until > Date.now()).map(([id, b]) => ({ id, until: b.until, reason: b.reason })),
+      backoff: [...this.autoBackoff].filter(([, b]) => b.until > Date.now()).map(([id, b]) => ({ id, until: b.until, reason: b.reason, misses: b.misses ?? 1 })),
+      // For Studio: when auto start tries a stopped server again, and about how many seconds until one takes jobs.
+      nextTry: this.autoRound?.nextTry ?? null,
+      expectedWait: this.autoRound?.expectedWait == null ? null : Math.max(0, this.autoRound.expectedWait - Math.round((Date.now() - this.autoRound.at) / 1000)),
     };
   }
 
@@ -513,6 +569,8 @@ class Queue {
   /** What a ComfyUI tool gets: uploads (cached per server), graph runs (kept and timed), downloads. */
   async comfyRun(job: Job, ep: Endpoint, step: (d: string) => void, signal: AbortSignal) {
     const comfy = new Comfy(ep);
+    // A server started from stopped is listed ready (its last boot's status) while ComfyUI still loads: wait for it.
+    await comfy.ready({ signal, onWait: () => step(`waiting for ComfyUI to come up on ${ep.id}`) });
     const fam = job.family ?? 'other';
     if (this.families.get(ep.id) !== fam) {
       step(`unloading the last models to make room for ${fam}`);
@@ -540,9 +598,17 @@ class Queue {
         job.graphs.push(name);
         save(job, ['graphs']);
         const t = Date.now();
+        const onProgress = (d: string) => { job.detail = d; events.emit('job', summary(job)); };
         try {
-          const result = await comfy.run(graph, { signal, onProgress: (d) => { job.detail = d; events.emit('job', summary(job)); } });
-          return result.files;
+          try {
+            return (await comfy.run(graph, { signal, onProgress })).files;
+          } catch (e: any) {
+            // ComfyUI crashed mid-run and came back without the graph: once more (its uploads are still on the server's disk).
+            if (!e.lost || signal.aborted) throw e;
+            step(`${e.message}; waiting for it and running the graph once more`);
+            await comfy.ready({ signal });
+            return (await comfy.run(graph, { signal, onProgress })).files;
+          }
         } catch (e: any) {
           if (e.missingModels?.length) {
             throw new GenError(`${e.message}\nThis server doesn't have every model yet. Run "hawkesgen fleet sync" (or Sync models in the dashboard) to download them.`);

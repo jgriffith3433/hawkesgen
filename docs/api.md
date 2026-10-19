@@ -38,6 +38,7 @@ POST /v1/jobs
 |---|---|
 | `GET /v1/jobs?project=&status=queued,running&tool=&limit=` | List (newest first) |
 | `GET /v1/jobs/:id` | One job: status, detail, log, outputs, result, error, server, gpu_seconds, cost, graphs |
+| `GET /v1/jobs/timing?days=7&since=<ms>&project=` | Where the time goes, per tool (seconds), biggest first: `{ since, at, tools: [{ tool, done, failed, wait, run, total, now }] }`. `wait` (queued to started) and `run` (started to finished) are `{ avg, p50, p90, max }` over the jobs that finished since then (null when none); `now` is `{ queued, running, longestWait }` |
 | `POST /v1/jobs/:id/cancel` | Cancel (a running GPU job is interrupted on the server) |
 | `POST /v1/jobs/:id/rerun` `{ "sameSeed": false }` | Queue it again |
 | `GET /v1/jobs/:id/shots?since=<i>` | A `playtest.run` job's screenshots, while it plays and after: `{ running, progress, shots: [{ i, t, reason, scene, peer? }] }`. `progress` is the job's latest step (the bot's scene and progress line) to caption the frames; `since` lists only shots after that index (poll with the last `i` you have) |
@@ -120,7 +121,7 @@ background, and a missing file comes back from S3 when a job or a download needs
 
 | Route | |
 |---|---|
-| `GET /v1/fleet` | Servers (state, boot stage, price, flavor), settings, retry, last failure, account, which job each server runs and which models it has loaded, and `autoStart` (`auto`, `autoLaunch`, `last`: the last round's servers started or failed and its note, `backoff`: servers left alone after a failed start), and `disks` (each running server's last measured disk use: `{ pct, free }`) |
+| `GET /v1/fleet` | Servers (state, boot stage, price, flavor), settings, retry, last failure, account, which job each server runs and which models it has loaded, and `autoStart` (`auto`, `autoLaunch`, `last`: the last round's servers started or failed and its note, `backoff`: servers left alone after a failed start, with their `misses` in a row; `nextTry`: when a stopped server is tried again; `expectedWait`: about how many seconds until a server takes jobs, boot included, or null), and `disks` (each running server's last measured disk use: `{ pct, free }`) |
 | `POST /v1/fleet/settings` `{ servers, auto, autoLaunch, idleMinutes }` | admin. `auto` (on): queued GPU jobs start stopped US servers; `autoLaunch` (off): also launch from the image |
 | `POST /v1/fleet/start` `{ id?, confirm: true, keepTrying?: { minutes, every } }` | owner; costs money |
 | `POST /v1/fleet/launch` `{ confirm: true, type?: "auto"\|"g6e.xlarge"…, region?: "auto"\|…, keepTrying? }` | owner; a new server |
