@@ -151,6 +151,8 @@ returns a verdict, scores and findings.
   `peer=<i>` (peer 0 plays `scenario`, the others `scenarioPeers` or the same), and needs the contract. The videos are
   stacked here with ffmpeg (two side by side, three or four in a half-size 2x2 grid; `stackArgs`); problems, events and
   log lines are labelled `peer <i>` (`mergePeers`), `result.peers` has each player. `peers: 1` takes the old code path.
+- **Watching live:** `GET /v1/jobs/:id/shots` (and `/shots/:i`) reads a run's screenshots while it plays, from its tmp
+  files (`src/tools/liveShots.ts` holds the list), then from the filed assets once it ends. `docs/api.md` has the shape.
 - **Phone:** `mobile: true` plays at 390x844 with touch; the review then scores touch controls, text size and layout.
 - **Visual regression:** `baseline` (the previous run's job) compares screenshots at matching events (load, ready,
   each scene, each page, the end) with `post/visdiff.py` (1 - SSIM). Big changes (>= 25%) become `diff` images and go

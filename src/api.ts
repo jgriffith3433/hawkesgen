@@ -13,6 +13,7 @@ import { objectInfo, refreshCatalog, templates, templateWorkflow, templateThumb,
 import { convertUiWorkflow, checkGraph } from './workflows/convert.ts';
 import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
+import { shotList, shotSource } from './tools/liveShots.ts';
 import { submit, getJob, listJobs, cancel, rerun, clearFinished, events, summary, queue, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
 import * as lib from './entities.ts';
@@ -243,13 +244,22 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const { project } = await readJson(req);
       return send(res, 200, { removed: clearFinished(project) });
     }
-    m = /^\/v1\/jobs\/(j_[0-9a-f]+)(?:\/(cancel|rerun|graphs\/[\w.-]+))?$/.exec(route);
+    m = /^\/v1\/jobs\/(j_[0-9a-f]+)(?:\/(cancel|rerun|shots(?:\/\d+)?|graphs\/[\w.-]+))?$/.exec(route);
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
       if (!m[2] && method === 'GET') return send(res, 200, j);
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
       if (m[2] === 'rerun' && method === 'POST') return send(res, 200, rerun(client, j.id, { sameSeed: (await readJson(req)).sameSeed === true }));
+      // A playtest's screenshots, while it plays (tmp files) and after (the filed assets).
+      if (m[2] === 'shots' && method === 'GET') return send(res, 200, shotList(j, Number.isFinite(Number(q('since') ?? 'x')) ? Number(q('since')) : -1));
+      if (m[2]?.startsWith('shots/') && method === 'GET') {
+        const src = shotSource(j, Number(m[2].slice(6)));
+        if (src && 'file' in src && fs.existsSync(src.file)) return serveFile(req, res, src.file, 'image/jpeg', { 'Cache-Control': 'no-cache' });
+        const a = src && 'asset' in src ? getAsset(src.asset) : null;
+        if (!a || (!fs.existsSync(a.path) && !(await storage.ensureLocal(a)))) throw new GenError('No such screenshot', { status: 404 });
+        return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=86400, immutable' });
+      }
       if (m[2]?.startsWith('graphs/') && method === 'GET') {
         const name = m[2].slice(7);
         if (!j.graphs.includes(name)) throw new GenError('No such graph', { status: 404 });
