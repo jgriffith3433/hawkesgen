@@ -68,6 +68,7 @@ details summary { cursor: pointer; color: var(--muted); margin: 8px 0; }
 #toast.on { opacity: .95; }
 .bar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; } .bar > i { display: block; height: 100%; background: var(--accent); }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
+.spark { width: 120px; height: 28px; vertical-align: middle; } .spark polyline { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 /* Tablets and phones: nothing widens the page; a wide table scrolls inside its card. */
 @media (max-width: 1024px) {
   html { -webkit-text-size-adjust: 100%; }

@@ -118,7 +118,7 @@ background, and a missing file comes back from S3 when a job or a download needs
 
 | Route | |
 |---|---|
-| `GET /v1/fleet` | Servers (state, boot stage, price, flavor), settings, retry, last failure, account, which job each server runs and which models it has loaded, and `autoStart` (`auto`, `autoLaunch`, `last`: the last round's servers started or failed and its note, `backoff`: servers left alone after a failed start) |
+| `GET /v1/fleet` | Servers (state, boot stage, price, flavor), settings, retry, last failure, account, which job each server runs and which models it has loaded, and `autoStart` (`auto`, `autoLaunch`, `last`: the last round's servers started or failed and its note, `backoff`: servers left alone after a failed start), and `disks` (each running server's last measured disk use: `{ pct, free }`) |
 | `POST /v1/fleet/settings` `{ servers, auto, autoLaunch, idleMinutes }` | admin. `auto` (on): queued GPU jobs start stopped US servers; `autoLaunch` (off): also launch from the image |
 | `POST /v1/fleet/start` `{ id?, confirm: true, keepTrying?: { minutes, every } }` | owner; costs money |
 | `POST /v1/fleet/launch` `{ confirm: true, type?: "auto"\|"g6e.xlarge"…, region?: "auto"\|…, keepTrying? }` | owner; a new server |
@@ -134,6 +134,18 @@ background, and a missing file comes back from S3 when a job or a download needs
 | `GET /v1/fleet/models?id=&refresh=1` | A server's model files, sizes, free disk, and which tools use each |
 | `POST /v1/fleet/models/install` `{ id, tool, confirm: true }` | owner; install a workflow tool's models ahead of time |
 | `POST /v1/fleet/models/prune` `{ id, files, confirm: true }` | owner; remove model files (never core ones) |
+
+## Machines (monitor)
+
+The GPU servers, the build server and the playtester (`src/machines.ts`, the dashboard's Machines tab). EC2 Describe
+for what exists; one SSH command per running machine for the numbers. Nothing is started to measure it, and no
+CloudWatch. Running machines are measured every 60 s (kept 7 days); `live=1` measures again if the last reading is
+over 15 s old.
+
+| Route | |
+|---|---|
+| `GET /v1/machines?live=1` | `{ alerts: [{ level: bad\|warn, machine, text }], machines: [{ id, kind: gpu\|builder\|playtester, name, state, region, type, pricePerHour, launched, jobs, idle: { minutes, busy, stopsAt, action }, metrics: { cpu, memUsed, memTotal, gpu, vramUsed, vramTotal, temp, diskSize, diskUsed, diskFree, netIn, netOut, uptime, stage, service }, error }] }`. Alerts: not answering, ComfyUI or the browser server down, disk over 90%, idle 30+ min, GPU at 85°C, memory over 95% |
+| `GET /v1/machines/history?hours=1&points=120&id=` | Per machine, averaged buckets: `{ machines: { <id>: [{ at, cpu, mem, gpu, vram, temp, disk (percents), netIn, netOut (bytes/s) }] } }`; up to 168 hours |
 
 ## Unity build server
 

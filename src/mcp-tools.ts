@@ -201,16 +201,17 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
     },
     {
       name: 'hawkesgen_fleet',
-      description: 'GPU fleet status: servers, which are ready, what each is running and costs per hour. start, stop and stop-all need the owner key (J\'s): Talk and agents get "This needs the owner role", so don\'t try them there; ask J instead (studio_inbox ask, with hawkesgen_estimate\'s price). An approval of the work is not a key. quota shows a region\'s GPU quota (vCPUs of "Running On-Demand G and VT instances") and its increase requests (PENDING, CASE_OPENED, APPROVED, DENIED...); request-quota asks AWS for more (free, launches nothing; owner key too).',
-      inputSchema: obj({ action: str('Optional: start, stop, access (refresh IP), stop-all, quota, request-quota'), id: str('Server id for start/stop'), region: str('Region for quota/request-quota (default us-east-1)'), value: { type: 'number', description: 'request-quota: the vCPUs wanted in total (e.g. 16 = two g6e.xlarge)' }, confirm: { type: 'boolean', description: 'Required true for start (it costs money). Only after the user agreed.' } }),
+      description: 'GPU fleet status: servers, which are ready, what each is running and costs per hour. start, stop and stop-all need the owner key (J\'s): Talk and agents get "This needs the owner role", so don\'t try them there; ask J instead (studio_inbox ask, with hawkesgen_estimate\'s price). An approval of the work is not a key. quota shows a region\'s GPU quota (vCPUs of "Running On-Demand G and VT instances") and its increase requests (PENDING, CASE_OPENED, APPROVED, DENIED...); request-quota asks AWS for more (free, launches nothing; owner key too). machines: every machine Gen runs (GPU servers, build server, playtester) with CPU, memory, GPU, disk, network, idle time and what needs action (alerts); free, starts nothing.',
+      inputSchema: obj({ action: str('Optional: start, stop, access (refresh IP), stop-all, quota, request-quota, machines'), id: str('Server id for start/stop'), region: str('Region for quota/request-quota (default us-east-1)'), value: { type: 'number', description: 'request-quota: the vCPUs wanted in total (e.g. 16 = two g6e.xlarge)' }, confirm: { type: 'boolean', description: 'Required true for start (it costs money). Only after the user agreed.' } }),
       run: async ({ action, id, region, value, confirm }) => {
         if (!action) {
           const f = await gen.fleet();
           return { settings: f.settings, servers: f.servers.map((s: any) => ({ id: s.id, state: s.state, ready: s.state === 'running' && s.boot?.stage === 'ready', stage: s.boot?.stage ?? null, stuck: s.stuck ?? null, installUnfinished: s.unfinished ?? null, type: s.type, zone: s.zone, perHour: s.pricePerHour, running: f.busy[s.id] ?? null })), error: f.error };
         }
+        if (action === 'machines') return gen.request('/machines?live=1');
         if (action === 'quota') return gen.request(`/fleet/quota?region=${encodeURIComponent(region || 'us-east-1')}`);
         if (action === 'request-quota') return gen.request('/fleet/quota', { method: 'POST', body: { region: region || 'us-east-1', value } });
-        if (!['start', 'stop', 'access', 'stop-all'].includes(action)) throw new Error('action must be start, stop, access, stop-all, quota or request-quota');
+        if (!['start', 'stop', 'access', 'stop-all'].includes(action)) throw new Error('action must be start, stop, access, stop-all, quota, request-quota or machines');
         return gen.fleetAction(action, { id, confirm: confirm === true });
       },
     },

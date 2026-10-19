@@ -37,6 +37,8 @@ server.listen(PORT, HOST, () => {
     void refresh();
     setInterval(refresh, 24 * 3600 * 1000).unref();
   });
+  // The Machines tab's history: running machines measured every minute (EC2 Describe and one SSH command each).
+  void import('./machines.ts').then((m) => m.startMonitor()).catch((e) => console.warn(`[machines] ${e.message}`));
   void import('./providers/comfy/image.ts').then((m) => m.resumeImageBuild()).catch((e) => console.warn(`[image] ${e.message}`));
   // On the cloud control server, make sure the GPU fleet and the build server let this machine in.
   if (process.env.HAWKES_AWS_ROLE) {
