@@ -91,14 +91,23 @@ this before changing server flags, models or workflows.
   `node tools/gpu/capacity.mjs` prints AWS's capacity hints.
 - **Auto start** (`fleet.auto`, on since 2026-10-18; `src/autostart.ts`):
   when GPU jobs wait and fewer servers run than jobs (up to `fleet.servers`),
-  the queue starts stopped servers in US regions, at most every 2 minutes. A
-  start that fails moves on in the same round to a server in another zone
-  (capacity) or region (quota), and the failed server is left alone for 15
-  minutes. It launches new servers from the image only with
-  `fleet.autoLaunch` (off: J approved starts, not launches). Each start goes
-  in the waiting jobs' logs, and `GET /v1/fleet` has `autoStart` (last
-  round, servers left alone). Disposable servers are terminated when idle,
-  so with autoLaunch off only kept (stopped) servers can come back.
+  the queue starts stopped servers in US regions, at most every 2 minutes,
+  servers in different zones at the same time (one per server still wanted).
+  A start that fails moves on in the same round to a server in another zone
+  (capacity) or region (quota), and the failed server is left alone for 2
+  minutes, doubling with each miss in a row up to 15. It launches new servers
+  from the image only with `fleet.autoLaunch` (off: J approved starts, not
+  launches). Each start goes in the waiting jobs' logs; while nothing can
+  start, the waiting jobs say when the next try is. `GET /v1/fleet` has
+  `autoStart` (last round, servers left alone, `nextTry`, and `expectedWait`:
+  about how many seconds until a server takes jobs, boot included).
+  Disposable servers are terminated when idle, so with autoLaunch off only
+  kept (stopped) servers can come back.
+- **A started server isn't ComfyUI ready yet:** its `/gen/status.json` still
+  says ready from its last boot while ComfyUI loads (nginx answers 502). A GPU
+  job waits for ComfyUI first (`Comfy.ready`, up to 5 minutes), every ComfyUI
+  request waits out 502/503/504 for up to 3 minutes, and a graph lost to a
+  ComfyUI restart (out of memory) runs once more (`src/providers/comfy/client.ts`).
 
 ## ComfyUI memory flags (v0.40.0)
 

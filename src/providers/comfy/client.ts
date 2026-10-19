@@ -5,8 +5,16 @@
 //   prepare()  fills unset node settings from the server's own defaults and
 //              checks every node, input and model file exists before queueing
 //   run()      queues a graph, waits for it, and returns its output files
+//
+// ComfyUI restarts behind the server's nginx (a server just started, which says "ready" from its last boot before
+// ComfyUI is up; a crash, often out of memory): nginx answers 502 meanwhile. Requests wait that out (up to waitMs)
+// instead of failing the job (2026-10-19: half of Yooba Land's mesh.textured jobs failed on "/upload/image: 502").
 
 import type { Endpoint } from './fleet.ts';
+
+/** What nginx answers while ComfyUI is down or starting behind it. */
+const STARTING = new Set([502, 503, 504]);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export type ComfyFile = { filename: string; subfolder: string; type: string; node?: string };
 export type Graph = Record<string, { class_type: string; inputs: Record<string, any> }>;
@@ -15,19 +23,63 @@ export class Comfy {
   url: string;
   headers: Record<string, string>;
   info: any = null;
+  /** How long a request waits for ComfyUI to come back, and the pause between tries. */
+  waitMs: number;
+  pauseMs: number;
 
-  constructor({ url, headers }: Pick<Endpoint, 'url' | 'headers'>) {
+  constructor({ url, headers }: Pick<Endpoint, 'url' | 'headers'>, { waitMs = 180_000, pauseMs = 5000 } = {}) {
     this.url = url.replace(/\/$/, '');
     this.headers = headers;
+    this.waitMs = waitMs;
+    this.pauseMs = pauseMs;
   }
 
   async request(route: string, init: RequestInit = {}) {
-    const r = await fetch(`${this.url}${route}`, { ...init, headers: { ...this.headers, ...((init.headers as any) ?? {}) } });
-    if (!r.ok) {
+    const until = Date.now() + this.waitMs;
+    // A 504 may mean ComfyUI got the graph and was slow to answer: queueing it again would run it twice.
+    const retryable = (status: number) => STARTING.has(status) && !(status === 504 && route === '/prompt');
+    for (;;) {
+      let r: Response;
+      try {
+        r = await fetch(`${this.url}${route}`, { ...init, headers: { ...this.headers, ...((init.headers as any) ?? {}) } });
+      } catch (e: any) {
+        // Refused or reset: the server is booting or ComfyUI restarting.
+        if (Date.now() < until && !init.signal?.aborted) {
+          await sleep(this.pauseMs);
+          continue;
+        }
+        throw new Error(`ComfyUI ${route}: ${e.cause?.code ?? e.message}`);
+      }
+      if (r.ok) return r;
       const body = await r.text().catch(() => '');
+      if (retryable(r.status) && Date.now() < until && !init.signal?.aborted) {
+        await sleep(this.pauseMs);
+        continue;
+      }
+      if (STARTING.has(r.status)) {
+        throw new Error(`ComfyUI ${route}: ${r.status} for ${Math.round(this.waitMs / 1000)} s: ComfyUI isn't answering on the server (still starting, or it crashed: often out of memory; the server log says which)`);
+      }
       throw new Error(`ComfyUI ${route}: ${r.status} ${body.slice(0, 600)}`);
     }
-    return r;
+  }
+
+  /**
+   * Waits until ComfyUI answers (up to timeoutMs). onWait is called once if it doesn't straight away. A server started
+   * from stopped says "ready" from its last boot while ComfyUI is still loading its custom nodes.
+   */
+  async ready({ timeoutMs = 300_000, onWait, signal }: { timeoutMs?: number; onWait?: () => void; signal?: AbortSignal } = {}) {
+    const until = Date.now() + timeoutMs;
+    for (let told = false; ; told = true) {
+      const r = await fetch(`${this.url}/system_stats`, { headers: this.headers, signal: AbortSignal.timeout(15_000) }).catch(() => null);
+      if (r?.ok) return;
+      const status = r?.status ?? 0;
+      await r?.body?.cancel().catch(() => undefined);
+      if (status && !STARTING.has(status)) throw new Error(`ComfyUI /system_stats: ${status}`);
+      if (signal?.aborted) throw new Error('Cancelled');
+      if (Date.now() >= until) throw new Error(`ComfyUI didn't answer on the server within ${Math.round(timeoutMs / 60_000)} minutes (still starting, or it keeps crashing; the server log says which)`);
+      if (!told) onWait?.();
+      await sleep(this.pauseMs);
+    }
   }
 
   async json(route: string, init?: RequestInit) {
@@ -124,6 +176,8 @@ export class Comfy {
     }
     const promptId = queued.prompt_id;
     const started = Date.now();
+    // Polls in a row where the graph was neither in the history nor in the queue: ComfyUI restarted and lost it.
+    let gone = 0;
     for (;;) {
       if (signal?.aborted) {
         await this.request('/interrupt', { method: 'POST' }).catch(() => undefined);
@@ -139,12 +193,15 @@ export class Comfy {
           throw new Error(`ComfyUI failed in ${err?.node_type ?? 'a node'}: ${err?.exception_message ?? 'see the server log'}`);
         }
         if (st.completed || entry.outputs) return { id: promptId, files: outputFiles(entry.outputs ?? {}), seconds: (Date.now() - started) / 1000 };
-      } else if (onProgress) {
+      } else {
         const q = await this.json('/queue').catch(() => null);
+        const inQueue = (list: any) => (Array.isArray(list) ? list : []).some((p: any) => p?.[1] === promptId);
+        gone = q && !inQueue(q.queue_running) && !inQueue(q.queue_pending) ? gone + 1 : 0;
+        if (gone >= 3) throw Object.assign(new Error('ComfyUI restarted while running the workflow and lost it (it most likely ran out of memory)'), { lost: true });
         const ahead = q ? (q.queue_pending ?? []).findIndex((p: any) => p[1] === promptId) : -1;
-        onProgress(ahead > 0 ? `waiting behind ${ahead} job${ahead > 1 ? 's' : ''} on the server` : `running for ${Math.round((Date.now() - started) / 1000)}s`);
+        onProgress?.(ahead > 0 ? `waiting behind ${ahead} job${ahead > 1 ? 's' : ''} on the server` : `running for ${Math.round((Date.now() - started) / 1000)}s`);
       }
-      await new Promise((r) => setTimeout(r, 3000));
+      await sleep(3000);
     }
   }
 
