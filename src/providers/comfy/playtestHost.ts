@@ -12,7 +12,7 @@ import net from 'node:net';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { sshRun, sshTarget, comfyEndpoints } from './fleet.ts';
 import { paths } from '../../config.ts';
-import { playtesterTarget, playtesterStatus, ensurePlaytester, ssh as playtesterSsh } from '../playtester/playtester.ts';
+import { claimPlaytester, ssh as playtesterSsh } from '../playtester/playtester.ts';
 
 export const PW_VERSION = JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'node_modules', 'playwright', 'package.json'), 'utf8')).version as string;
 export const NODE_URL = 'https://nodejs.org/dist/v24.13.1/node-v24.13.1-linux-x64.tar.xz';
@@ -69,35 +69,35 @@ function freePort(): Promise<number> {
 
 export type PlaytestHost = {
   wsEndpoint: string; server: string; close(): void;
+  /** The playtester it runs on (null on a GPU fleet server), and the lanes it holds there until close(). */ playtester: string | null;
   /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
   /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). */ ssh: { args: string[]; dest: string };
 };
 
 /**
- * A browser on a GPU machine (the playtester first, else a GPU fleet server): ensures the host, opens the tunnel (and reverse tunnels for local game ports) and
- * returns the endpoint for chromium.connect. Null when no GPU server is ready.
+ * A browser on a GPU machine (a playtester with room first, else a GPU fleet server): ensures the host, opens the tunnel
+ * (and reverse tunnels for local game ports) and returns the endpoint for chromium.connect. A playtester's lanes (tabs:
+ * the players in the playtest) are held until close(). Null when no GPU server is ready.
  */
-export async function openPlaytestHost(localPorts: number[], step: (s: string) => void = () => {}, { startPlaytester = false } = {}): Promise<PlaytestHost | null> {
-  // The playtester (a small T4 machine that only plays games) when it's running, else a ready GPU fleet server.
+export async function openPlaytestHost(localPorts: number[], step: (s: string) => void = () => {}, { startPlaytester = false, tabs = 1 } = {}): Promise<PlaytestHost | null> {
+  // A playtester (a small T4 machine that only plays games) with room, else a ready GPU fleet server.
   let ep: { id: string; region: string };
   let sshArgs: string[];
   let dest: string;
-  let pt = await playtesterTarget();
-  // Games need a GPU to be judged: J's rule is that any game playtest starts the playtester when it's off (about
-  // $0.53/hr; it powers off after its idle time). Static-site crawls don't ask for this.
-  if (!pt && startPlaytester) {
-    const st = await playtesterStatus().catch(() => null);
-    if (st?.exists && ['stopped', 'stopping', 'pending', 'running'].includes(st.state ?? '')) {
-      step('starting the playtester (T4 GPU) for this game');
-      await ensurePlaytester(step).catch((e: any) => step(`the playtester didn't start (${e.message}); trying a GPU server`));
-      pt = await playtesterTarget();
-    }
-  }
+  // Games need a GPU to be judged: J's rule is that any game playtest starts a playtester when the running ones are
+  // full or off (about $0.53/hr each; they power off after their idle time). Static-site crawls don't ask for this.
+  const claim = await claimPlaytester(tabs, { start: startPlaytester, onStep: step }).catch((e: any) => {
+    step(`no playtester (${e.message}); trying a GPU server`);
+    return null;
+  });
+  const pt = claim?.target ?? null;
+  let released = false;
+  const release = () => { if (!released) { released = true; claim?.release(); } };
   if (pt) {
     ep = pt;
     sshArgs = pt.args;
     dest = `${pt.user}@${pt.ip}`;
-    await playtesterSsh('touch /var/lib/hawkes/last_busy').catch(() => {});
+    await playtesterSsh('touch /var/lib/hawkes/last_busy', { id: pt.id, timeoutMs: 30_000 }).catch(() => {});
   } else {
     const eps = await comfyEndpoints().catch(() => []);
     if (!eps.length) return null;
@@ -123,6 +123,7 @@ export async function openPlaytestHost(localPorts: number[], step: (s: string) =
     if (ok) break;
     if (Date.now() > end || child.exitCode !== null) {
       child.kill();
+      release();
       throw new Error(`Couldn't open the tunnel to ${pt ? 'the playtester' : 'the GPU server'} ${ep.id}`);
     }
     await new Promise((r) => setTimeout(r, 300));
@@ -133,5 +134,5 @@ export async function openPlaytestHost(localPorts: number[], step: (s: string) =
     if (/^(localhost|127\.0\.0\.1)$/.test(u.hostname) && remote.has(port)) u.port = String(remote.get(port));
     return u.toString();
   };
-  return { wsEndpoint: `ws://127.0.0.1:${local}/`, server: `${ep.id} (${ep.region})`, close: () => child.kill(), mapUrl, ssh: { args: sshArgs, dest } };
+  return { wsEndpoint: `ws://127.0.0.1:${local}/`, server: `${ep.id} (${ep.region})`, playtester: pt?.id ?? null, close: () => { child.kill(); release(); }, mapUrl, ssh: { args: sshArgs, dest } };
 }

@@ -9,7 +9,7 @@
 //   hawkesgen library [--project P] [--kind image]     hawkesgen get <asset id> <file>
 //   hawkesgen fleet [status|start [id]|stop [id]|stop-all|launch|sync [id]|access|adopt <dir>|set k=v] [--yes]
 //   hawkesgen fleet image [status|build [--from <id> [--as-is]] [region=r]|prune [--dry-run]|cancel] [--yes]
-//   hawkesgen playtester [status|launch|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [--yes]
+//   hawkesgen playtester [status|launch [type=..] [region=..]|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [id=i-...] [--yes]
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
 //   hawkesgen storage [status|backfill|restore]      the library's files in S3
 //   hawkesgen usage [--days 30] [--by project]
@@ -160,8 +160,11 @@ async function main() {
       if (action === 'status') {
         const b = await gen.request('/playtester');
         if (!b.exists) return console.log(`No playtester yet. "hawkesgen playtester launch" makes one (g4dn.xlarge with a T4 GPU, about $${b.pricePerHour}/hr while running, plus ~$${Math.round(b.diskPerMonth)}/month for its ${b.diskGb} GB disk).`);
-        console.log(`${b.id}  ${b.state}  ${b.type}  ${b.region}  ${b.ip ?? ''}  $${b.pricePerHour}/hr`);
-        if (b.stage) console.log(`  ${b.stage.stage}: ${b.stage.detail ?? ''}`);
+        for (const m of b.machines ?? [b]) {
+          console.log(`${m.id}  ${m.state}  ${m.type}  ${m.region}  ${m.ip ?? ''}  $${m.pricePerHour}/hr  lanes ${m.inUse ?? 0}/${m.lanes ?? '?'}`);
+          if (m.stage) console.log(`  ${m.stage.stage}: ${m.stage.detail ?? ''}`);
+        }
+        if (b.machines) console.log(`${b.machines.length} of at most ${b.max} playtesters; ${b.inUse}/${b.lanes} browser tabs in use`);
         return;
       }
       const costly = ['launch', 'start', 'ensure', 'terminate', 'ssh'].includes(action);
@@ -169,7 +172,9 @@ async function main() {
       const body: any = { confirm: true };
       if (action === 'idle') body.minutes = Number(rest[1]);
       if (action === 'ssh') body.command = rest.slice(1).join(' ');
-      if (action === 'launch') Object.assign(body, kv(rest.slice(1)));
+      const args = kv(rest.slice(1).filter((a: string) => a.includes('=')));
+      if (args.id) body.id = args.id;
+      if (action === 'launch') Object.assign(body, args);
       const r = await gen.request(`/playtester/${action}`, { method: 'POST', body });
       if (action === 'ssh') return console.log(r.output);
       return console.log(JSON.stringify(r, null, 2));

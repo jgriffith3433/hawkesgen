@@ -129,12 +129,21 @@ returns a verdict, scores and findings.
 - **Never stuck:** every await in `playtest.run` has a hard limit (`within()`), and a watchdog kills the browser and
   tunnel if the run overruns. A hung browser, tunnel or page ends the run as outcome `stuck` (with `result.stuck`
   saying what hung) and keeps what it recorded: shots, the video so far, the report.
-- **Where the browser runs:** on the Linux control server, the **playtester** first (`src/providers/playtester/`: a
-  g4dn.xlarge with a T4, about $0.53/hr; any game playtest starts it when it's off (site crawls don't), Studio's daily run also stops it at the end; it installs itself from
-  `server/playtester/bootstrap.sh` and powers off after 20 idle minutes; `hawkesgen playtester status|launch|start|stop`),
-  else a ready GPU fleet server, else software. On this PC, its own GPU.
-- **Lanes:** two playtests at a time on the playtester, three on a GPU fleet server, one on this PC or in software (the
-  local browser also takes turns inside `playtest.run`).
+- **Where the browser runs:** on the Linux control server, a **playtester** first (`src/providers/playtester/`: g4dn.xlarge
+  machines with a T4, about $0.53/hr each; up to `HAWKES_PLAYTESTERS_MAX` (2), in any fleet region: every instance named
+  hawkesgen-playtester is one). A playtest claims lanes on a ready one with room (the busiest that fits, so others go
+  idle), else starts a stopped one (site crawls don't start one); Studio's daily run stops them at the end; each installs
+  itself from `server/playtester/bootstrap.sh` and powers off after 20 idle minutes;
+  `hawkesgen playtester status|launch [region=..]|start|stop [id=i-..]`. Else a ready GPU fleet server, else software.
+  On this PC, its own GPU.
+- **Lanes count browser tabs** (a multiplayer run is one per player): each playtester's by its type
+  (`PLAYTESTER_TYPES[..].lanes`: g4dn.xlarge 2, g4dn.2xlarge 4), summed over every playtester that exists (the queue,
+  `jobs.ts`); three on a GPU fleet server; one on this PC or in software (the local browser also takes turns inside
+  `playtest.run`). An empty lane always takes one job, so a run with more players than lanes still plays.
+- **Live** (`src/tools/livePlay.ts`, for Studio's Playtests page): `GET /v1/playtests/live` (everything playing and
+  waiting, with each one's step, players' bot state and note, problems, console errors), `GET /v1/jobs/:id/live` (one, in
+  full: every step, the timeline), `GET /v1/jobs/:id/live.mjpeg?player=&fps=` (the newest screencast frames as MJPEG for
+  an `<img>`, 1 to 15 fps, only while someone watches) and `/frame` (one JPEG).
 - **S3:** each run's video and report also go to `s3://hawkes-playtests-028793236279/<project>/<date>/<job>/`
   (private, objects to Infrequent Access after 30 days; created on first use). `HAWKES_PLAYTEST_BUCKET=off` skips it.
   `result.s3` has the keys; Studio serves them through short-lived signed links.

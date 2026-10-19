@@ -50,6 +50,59 @@ test('FrameClock: holds each frame for the ticks it was on screen, at a constant
   assert.equal(long.written, 600);
 });
 
+test('AckPacer: a 60 fps game is acked about 30 times a second, a 30 fps game at once, and every frame gets its ack', async () => {
+  const { AckPacer } = await import('../src/tools/screencast.ts');
+  // A fake clock and timer queue.
+  let now = 0;
+  const due: { at: number; fn: () => void }[] = [];
+  const later = (fn: () => void, ms: number) => { due.push({ at: now + ms, fn }); return 0 as any; };
+  const run = (until: number) => {
+    for (;;) {
+      due.sort((a, b) => a.at - b.at);
+      if (!due.length || due[0].at > until) break;
+      const d = due.shift()!;
+      now = d.at;
+      d.fn();
+    }
+    now = until;
+  };
+  // Chromium sends the next frame as soon as it is acked, at most one per game frame (every 1000/60 ms).
+  const play = (gameFps: number, seconds: number) => {
+    now = 0;
+    due.length = 0;
+    const p = new AckPacer(30, () => now, later);
+    let acks = 0;
+    let nextDraw = 0;
+    const send = () => p.frame(() => { acks++; nextDraw = Math.max(now, nextDraw + 1000 / gameFps); due.push({ at: nextDraw, fn: send }); });
+    send();
+    run(seconds * 1000);
+    return acks / seconds;
+  };
+  const fast = play(60, 10);
+  assert.ok(fast > 28 && fast <= 31, `60 fps game: ${fast} acks/s`);
+  const slow = play(30, 10);
+  assert.ok(slow > 28 && slow <= 31, `30 fps game: ${slow} acks/s`);
+  const slower = play(20, 10);
+  assert.ok(slower > 19 && slower <= 21, `20 fps game is not slowed: ${slower} acks/s`);
+  // Two frames out at once: both are acked, one interval apart; cancel drops what's pending.
+  now = 0;
+  due.length = 0;
+  const p = new AckPacer(30, () => now, later);
+  const got: number[] = [];
+  p.frame(() => got.push(now));
+  p.frame(() => got.push(now));
+  run(100);
+  assert.equal(got.length, 2);
+  assert.ok(Math.abs(got[1] - got[0] - 1000 / 30) < 1e-6);
+  const real = new AckPacer(30);
+  let late = 0;
+  real.frame(() => {});
+  real.frame(() => late++);
+  real.cancel();
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(late, 0);
+});
+
 const hasFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0;
 
 test('screencast: an MJPEG stream from the clock becomes a 30 fps mp4 at the viewport size', { skip: !hasFfmpeg && 'no ffmpeg' }, async () => {
