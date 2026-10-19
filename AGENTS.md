@@ -11,6 +11,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/comfyui.md` records what works on the GPU servers.
 - `docs/blender.md` covers Blender shots to video (`blender.render`, `video.control`).
 - `docs/library.md` covers the library every product builds on: entities, slots, versions, slot references, make/revise/pick.
+- `docs/analytics.md` is the player-analytics contract (events every product sends, the collect door, the queries).
 - `DESIGN.md` has J's decisions and the roadmap.
 - `CLAUDE.md` just imports this file; edit this one.
 
@@ -59,6 +60,7 @@ each job).
 | `src/providers/builder/builder.ts` | The Unity build server: launch (Windows + Unity via `server/builder/bootstrap.ps1`), start/stop, SSH, incremental sync of `C:\Projects` folders, detached builds (`server/builder/build.ps1`), pulling the build back |
 | `src/tools/blender.ts`, `src/providers/blender/` | `blender.render`: Blender 5.0 on a GPU server (installed on first use; `install.ts` is shared with `bootstrap.sh`), a job workspace in `/var/tmp/hawkes-blender`, a detached render followed over SSH. The scripts are `post/blender/hawkes_blender.py` (inside Blender) and `post/pose_draw.py` |
 | `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
+| `src/analytics/`, `analytics/products.json` | Player analytics (docs/analytics.md): `collect.ts` (the public door: validation, limits, CORS, rate limit), `geo.ts` + `mmdb.ts` (DB-IP Lite GeoIP), `ua.ts`, `store.ts` (`.data/analytics.db`: events, sessions, daily rollups, the purge), `query.ts` + `routes.ts` (the reads). The registry lists each product's origins |
 | `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |
 | `src/providers/elevenlabs.ts`, `anthropic.ts` | API clients. Every Claude call goes through `anthropic.ts` `ask()`, which by default runs Claude Code on J's Max plan (`claudecode.ts`: `claude -p`, stream-json, $0, usage as `max-plan`, capped by `settings.claude`); `settings.claude.backend: "api"` brings back the API key |
 | `src/storage.ts` | The library's files in S3 (opt-in: `settings.storage.bucket`): every new file backed up by content in the background, `backfill` for older ones, and missing files restored on demand (a job's inputs, a download) or all at once (`hawkesgen storage restore`) |

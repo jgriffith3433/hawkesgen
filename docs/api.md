@@ -149,6 +149,18 @@ background, and a missing file comes back from S3 when a job or a download needs
 
 Builds are jobs: `unity.build` with `{ project, site, method }`.
 
+## Analytics (docs/analytics.md)
+
+| Route | What |
+|---|---|
+| `POST /v1/analytics/collect` | **Public, no key.** A batch of player events (JSON, also as `text/plain` for `sendBeacon`), from the product's registered origins only (`analytics/products.json`). 64 KB, 200 events, a per-IP rate limit; `202 { accepted, dropped }`, never a 5xx |
+| `GET /v1/analytics/products` | The registry |
+| `GET /v1/analytics/overview` | Every product: active now, visitors and sessions today / 7d / 30d with trends, a daily series, new vs returning, active time, D1/D7, the biggest drop-off, error rate, rating |
+| `GET /v1/analytics/:product[/:section]` | `traffic`, `sessions`, `retention`, `funnel?steps=`, `dropoff`, `levels`, `deaths`, `features`, `feedback`, `errors`, `perf`, `builds?a=&b=`, `insights`, `export?what=&format=csv`; `sessions/list`, `sessions/:id` (a timeline). Without a section: all of them |
+
+Filters on every read: `range` (`30d`) or `from`/`to`, `env` (`live`; `all`), `build`, `device`, `browser`, `country`,
+`bots=1`, `internal=1`.
+
 ## Other
 
 | Route | |

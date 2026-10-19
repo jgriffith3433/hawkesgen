@@ -44,6 +44,10 @@ export const paths = {
   graphs: path.join(DATA_DIR, 'graphs'),
   tmp: path.join(DATA_DIR, 'tmp'),
   settings: path.join(DATA_DIR, 'settings.json'),
+  /** Player analytics (src/analytics/): its own database, and the GeoIP database it reads. */
+  analytics: path.join(DATA_DIR, 'analytics.db'),
+  geo: path.join(DATA_DIR, 'geo'),
+  analyticsProducts: path.join(ROOT, 'analytics', 'products.json'),
   server: path.join(ROOT, 'server'),
   post: path.join(ROOT, 'post'),
   dashboard: path.join(ROOT, 'dashboard'),

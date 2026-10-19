@@ -100,6 +100,23 @@ repaint the shot in any look from a styled first frame. `asset.make` can pick ca
 pass on outputs by title (`$step1:depth`), so the chain is one recipe. `docs/blender.md`. Verified on this PC
 (the Blender script and every pass); the GPU servers and the two video models still need a live run.
 
+### Added on 2026-10-18: player analytics (decision m_e4959acc8abd)
+
+J: "Let's use our own home grown solution that posts to our hawkesgen.com studio ... make sure to capture the build
+they are on, date etc ... make a new one for our hawkes gen so we can even add it to our product page for hawkes gen
+as part of the sdk/api ... implement analytics fully so I know where players are dropping off, why, what they like,
+what they don't like, browsers, location etc."
+
+Analytics is part of Gen's SDK and API, not a third-party script: `POST /v1/analytics/collect` (public, per-product
+origins, `sendBeacon`-friendly), enrichment on the server (DB-IP Lite GeoIP, user agents, bot and internal marks; the
+IP is never stored), its own database (raw events 13 months, sessions and daily rollups forever) and a query API for
+Studio and agents (overview, funnels, drop-off, retention, levels, errors, perf, builds side by side, insights).
+`docs/analytics.md` is the contract. Order: this backend, then the JS SDK and the Unity bridge, then Studio's
+dashboard, then the products. The public Caddy route waits for J's OK (the snippet is in the doc).
+
+It is also a **paid-service candidate**: the same door and queries work for anyone's game with a product entry and
+a key, the way the rest of Gen does (see Roadmap 5).
+
 ## Roadmap
 
 1. ~~**Sick Of It audio:** move the C# ElevenLabs sound generator to `audio.sfx` through `com.hawkes.gen`.~~ Done
@@ -118,5 +135,6 @@ pass on outputs by title (`$step1:depth`), so the chain is one recipe. `docs/ble
    - store the library in S3
    - put HTTPS and auth in front
    - add per-client limits, and invoices from `usage`
+   - offer analytics (docs/analytics.md) to other studios' games: a product entry per customer, their own origins
 
    Do this only when it pays.
