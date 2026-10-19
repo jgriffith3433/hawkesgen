@@ -67,7 +67,7 @@ function lineFor(tool: Tool, params: Record<string, any>, count: number, label: 
     return { label, tool: tool.id, count, gpuSeconds: Math.round(per * count), apiCost: 0, family: (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null, basis };
   }
   // Claude on the Max plan costs nothing per call (settings.claude.backend).
-  if (tool.provider === 'anthropic' && loadSettings().brain === 'grok') return { label, tool: tool.id, count, gpuSeconds: 0, apiCost: 0.02 * count, family: null, basis: 'Grok 4.7 (xAI, a short call)' };
+  if (tool.provider === 'anthropic' && loadSettings().brain === 'cursor') return { label, tool: tool.id, count, gpuSeconds: 0, apiCost: 0, family: null, basis: 'Cursor plan' };
   if (tool.provider === 'anthropic' && loadSettings().claude.backend === 'max-plan') return { label, tool: tool.id, count, gpuSeconds: 0, apiCost: 0, family: null, basis: 'Claude Max plan ($0 per call)' };
   const costPast = past.map((h) => h.cost).filter((c) => c > 0);
   const per = costPast.length ? median(costPast) : tool.provider === 'anthropic' ? 0.05 : tool.provider === 'elevenlabs' ? 0.03 : 0;
@@ -103,8 +103,8 @@ export function estimate(project: string, items: EstimateItem[], opts: { servers
         const r = resolve(project, s);
         lines.push(lineFor(r.tool, r.params, count * (k === pickAt ? n : 1), `${label} · step ${k + 1}`));
       });
-      const pick = loadSettings().brain === 'grok' ? 0.02 : loadSettings().claude.backend === 'max-plan' ? 0 : PICK_COST;
-      if (n > 1) lines.push({ label: `${label} · pick`, tool: 'llm (pick)', count, gpuSeconds: 0, apiCost: pick * count, family: null, basis: loadSettings().brain === 'grok' ? 'one Grok pick per asset' : 'one Claude pick per asset' });
+      const pick = loadSettings().brain === 'cursor' || loadSettings().claude.backend === 'max-plan' ? 0 : PICK_COST;
+      if (n > 1) lines.push({ label: `${label} · pick`, tool: 'llm (pick)', count, gpuSeconds: 0, apiCost: pick * count, family: null, basis: loadSettings().brain === 'cursor' ? 'one Cursor pick per asset' : 'one Claude pick per asset' });
       continue;
     }
     lines.push(lineFor(tool, params, count, label));
