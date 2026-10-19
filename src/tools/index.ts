@@ -13,6 +13,7 @@ import { libraryJudgeTool } from './judge.ts';
 import { loraTrainTool, imageCharacterTool } from './lora.ts';
 import { blenderRenderTool } from './blender.ts';
 import { composeTool } from './compose.ts';
+import { meshRigTool } from './rig.ts';
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
@@ -21,7 +22,7 @@ const BUILT_IN: Tool[] = [
   llmTextTool, llmJsonTool,
   cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
-  blenderRenderTool, composeTool,
+  blenderRenderTool, composeTool, meshRigTool,
 ];
 
 export let TOOLS: Tool[] = [];

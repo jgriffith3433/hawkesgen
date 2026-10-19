@@ -127,6 +127,86 @@ height, warnings, and the seconds each pass took.
 
 Moves ease in and out.
 
+## mesh.rig: rig a generated character
+
+`mesh.rig` takes a humanoid from `mesh.from-image` or `mesh.textured` and turns it into a game-ready animated
+character: a Mixamo-named skeleton, skin weights, and your animation clips baked on. The result is one GLB. It runs
+in Blender on a GPU server, like `blender.render` (family `blender`), in about a minute.
+
+**Inputs:**
+
+| Input | What |
+|---|---|
+| `mesh` | The character (GLB/GLTF, FBX or OBJ): one humanoid standing upright, arms out in a T-pose or an A-pose. A rig it already has is dropped. |
+| `clips` | Animation files with a Mixamo-named skeleton: Mixamo FBX downloads ("without skin" is enough), or GLBs. Any prefix works (`mixamorig:`, `mixamorig7:`, `rig:`). |
+
+**Params:**
+
+| Param | Default | What |
+|---|---|---|
+| `names` | the file names | A name per clip, in order. These are the animation names in the GLB (`["Idle", "Walk", "Wave"]`). Library files have hash names, so name them. |
+| `height` | keep | Scale the character to this many meters. |
+| `facing` | 0 | Which way the mesh faces now, in degrees: 0 is toward the viewer (glTF +Z, how the mesh tools make them), 90 or -90 a side view, 180 the back. |
+| `fps` | 30 | The frame rate clips are baked at (Mixamo's). |
+| `turntable` | true | Also render the first clip playing while the camera goes around once (`seconds`, 6; `size`, 640 square; `engine`, cycles at `samples` 16). |
+| `actions` | | For files with several animations: which one to take from each, by name. |
+| `weights` | proxy | `proxy` weights a voxel-remeshed copy and copies the weights over; `direct` runs bone heat on the mesh itself. `voxel` sets the proxy's voxel size. |
+
+**Outputs:** `rigged` (the GLB: the mesh, the skeleton, one animation per clip), `turntable` (mp4) and `preview` (a
+PNG of its first frame). The result has the bones, where each joint was put, each clip's frames and the bones it
+didn't have (`missing`), the weighting, and warnings.
+
+**The skeleton** is Mixamo's body without fingers: `mixamorig:Hips`, `Spine`, `Spine1`, `Spine2`, `Neck`, `Head`,
+`HeadTop_End`, and per side `Shoulder`, `Arm`, `ForeArm`, `Hand`, `UpLeg`, `Leg`, `Foot`, `ToeBase`, `Toe_End`.
+Unity's Humanoid avatar, three.js and Babylon.js read it as is, and `blender.render` plays its clips by name.
+
+**How it works** (`post/blender/hawkes_rig.py`):
+1. The mesh is joined into one object, turned to face -Y in Blender (the front), scaled, and stood on the ground.
+2. The joints are found from the mesh's shape: the two leg columns, the crotch (the top of the gap between them), the
+   neck (the narrowest part of the upper body), the hands (the farthest points out to each side), the toes (the front
+   of the feet). The rest follow Mixamo's proportions between them.
+3. Skin weights come from Blender's automatic weights (bone heat). Generated meshes have holes, inner faces and
+   loose bits that make bone heat fail, so by default it weights a closed voxel-remeshed copy and copies the weights
+   onto the real mesh by nearest surface. Anything left unweighted follows its nearest bones (a warning says how many).
+   Four influences per vertex, normalized.
+4. Each clip is retargeted by bone name in world space: every bone turns the way the clip's bone turns from its rest
+   pose, after lining up the two rest poses bone by bone. So a T-pose Mixamo clip plays right on a rig built in an
+   A-pose, and the clip's hip travel is scaled to this character's legs. Each clip is baked as its own action.
+5. The GLB is exported with every action; `hawkes_blender.py` renders the turntable from it.
+
+**Why this way:**
+- **Not Rigify.** Its deform bones are named `DEF-upper_arm.L` and so on, and it needs a metarig fitted by hand or
+  by the same joint finding. Renaming them to Mixamo's and dropping its control rig leaves what this builds directly.
+- **Not an auto-rig model (UniRig, Puppeteer, RigAnything) on ComfyUI.** None has a maintained ComfyUI node. They
+  predict their own skeletons (bone counts and names vary per mesh), so clips still need mapping. They also need their
+  own CUDA environments and model downloads on the fleet. For upright humanoids from the mesh tools, a fixed Mixamo
+  skeleton plus bone heat is predictable, free to install (Blender is already there) and fast. Revisit if
+  non-humanoid or odd-pose characters are needed.
+
+**Limits:** humanoids only, standing, arms away from the body. Hands are rigid (no finger bones), and so are long
+skirts, capes and hair (they follow the nearest bone). A mesh facing sideways needs `facing`.
+
+**Example** (`asset.make` from a picture of the character, then the rig):
+
+```json
+{
+  "tool": "asset.make",
+  "params": {
+    "steps": [
+      { "tool": "mesh.textured", "inputs": { "image": "$input:0" }, "save": "model" },
+      { "tool": "mesh.rig", "inputs": { "mesh": "$prev", "clips": ["$input:1", "$input:2"] },
+        "params": { "names": ["Idle", "Walk"], "height": 1.2 }, "save": "rigged" }
+    ]
+  },
+  "inputs": { "files": ["character-front.png", "Idle.fbx", "Walking.fbx"] }
+}
+```
+
+To try the script on this PC: `blender -b --factory-startup --python-exit-code 1 -P post/blender/hawkes_rig.py -- rig.json`,
+where `rig.json` has `mesh`, `clips` (`[{ "file", "name" }]`), `out`, and optionally `height`, `facing`, `fps`, `weights`.
+`test/rig.test.ts` runs it on a made-up humanoid (`test/fixtures/make_humanoid.py`) and reads the GLB back
+(`test/fixtures/check_rig.py`); it skips where Blender isn't installed (`BLENDER=/path/to/blender` points it at one).
+
 ## Repainting the shot
 
 **`video.control`** (LTX-2.3 22B with the Union IC-LoRA, family `ltx-2.3`):
