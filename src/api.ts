@@ -28,6 +28,8 @@ import * as claude from './providers/anthropic.ts';
 import { GenError, sha256File, mimeOf } from './util.ts';
 import { db } from './db.ts';
 import { handleMcp } from './mcp-http.ts';
+import { handleCollect } from './analytics/collect.ts';
+import { handleAnalytics } from './analytics/routes.ts';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'package.json'), 'utf8')).version;
 
@@ -108,6 +110,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   const method = req.method ?? 'GET';
 
+  // Player analytics from every product's pages: public, with its own CORS for the registered origins (src/analytics/).
+  if (route === '/v1/analytics/collect') return handleCollect(req, res);
+
   // CORS: games' dev servers (other localhost ports) call the API from the browser.
   const origin = String(req.headers.origin ?? '');
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
@@ -164,6 +169,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...)' });
 
     if (route === '/v1/me') return send(res, 200, client);
+
+    // ------------------------------------------------------------ analytics
+    // Reading what players did (src/analytics/routes.ts, docs/analytics.md).
+    if (handleAnalytics(client, route, method, q, res, send, url.search)) return;
 
     // ---------------------------------------------------------------- tools
     if (route === '/v1/tools' && method === 'GET') return send(res, 200, { tools: TOOLS.map(describeTool) });

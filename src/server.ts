@@ -30,6 +30,13 @@ server.listen(PORT, HOST, () => {
   console.log(`Hawkes Gen on http://${HOST}:${PORT}  (data: ${DATA_DIR})`);
   queue.start();
   void import('./storage.ts').then((m) => m.resumeOnStart()).catch((e) => console.warn(`[storage] ${e.message}`));
+  // Analytics: the daily rollups and the 13-month purge, and the GeoIP database (downloaded monthly).
+  void import('./analytics/store.ts').then((m) => m.startMaintenance()).catch((e) => console.warn(`[analytics] ${e.message}`));
+  void import('./analytics/geo.ts').then((m) => {
+    const refresh = () => m.refreshGeo().then((r) => r !== 'fresh' && console.log(`[analytics] geo: ${r}`)).catch((e) => console.warn(`[analytics] ${e.message}`));
+    void refresh();
+    setInterval(refresh, 24 * 3600 * 1000).unref();
+  });
   void import('./providers/comfy/image.ts').then((m) => m.resumeImageBuild()).catch((e) => console.warn(`[image] ${e.message}`));
   // On the cloud control server, make sure the GPU fleet and the build server let this machine in.
   if (process.env.HAWKES_AWS_ROLE) {

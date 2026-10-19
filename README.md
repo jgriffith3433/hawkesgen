@@ -18,6 +18,9 @@ generative AI, so projects never deal with GPU servers, ComfyUI, models or API k
   people.
 - **A library** of everything made, with the recipe that made it, browsable across projects.
 - **Usage and cost** per project and per API key.
+- **Player analytics** for every product: its own collect door, GeoIP and user agents on the server (no IP kept),
+  sessions, funnels, drop-off, retention, levels, errors, perf, builds side by side and plain-sentence insights
+  (`docs/analytics.md`).
 - **Clients for everything:**
   - JS and Python libraries
   - a Unity editor package
@@ -99,5 +102,6 @@ await gen.download(job.outputs[0].asset, 'imp.png');
 | `docs/api.md` | Every API route |
 | `docs/comfyui.md` | What works on the GPU servers (and what hangs them) |
 | `docs/library.md` | The library: entities, slots, versions, and how a product's tools use it |
+| `docs/analytics.md` | Player analytics: the event contract every product follows, the collect door, the query API |
 | `docs/blender.md` | Blender shots to video: `blender.render`, the shot format, `video.control`, and the cut (`video.compose`) |
 | `DESIGN.md` | J's decisions and the roadmap |
