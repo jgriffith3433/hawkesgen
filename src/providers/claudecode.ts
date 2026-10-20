@@ -4,9 +4,9 @@
 // (--json-schema, returned as JSON text so callers parse it as before). No tools, no MCP servers, no settings files,
 // no saved session, in an empty scratch folder: a plain question and answer.
 //
-// Login: the CLI's own. On the control server that's J's subscription token (CLAUDE_CODE_OAUTH_TOKEN, the secret
-// hawkes/claude that Studio's agents use): from Gen's environment or .env, else from /run/hawkes/claude.env
-// (HAWKESGEN_CLAUDE_ENV), which Gen's user can read. The API key is always removed from the CLI's environment: Claude
+// Login: the CLI's own. On the control server that's J's subscription token (CLAUDE_CODE_OAUTH_TOKEN): from Gen's
+// environment or .env, else the Claude account picked in Studio's Settings, else the secret hawkes/claude in
+// /run/hawkes/claude.env (claudeEnvFiles below), which Gen's user can read. The API key is always removed from the CLI's environment: Claude
 // Code prefers it over the subscription, and billing it is exactly what this backend avoids.
 //
 // Calls at once are capped (settings.claude.concurrency, default 3), each has a timeout (settings.claude.timeoutMinutes),
@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { env, loadSettings, paths } from '../config.ts';
+import { ROOT, env, loadSettings, paths } from '../config.ts';
 import { GenError, id, mimeOf, sleep } from '../util.ts';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -49,16 +49,27 @@ function release() {
 export const load = () => ({ running, waiting: waiting.length, cap: cap() });
 
 // -------------------------------------------------------------------- login
+/**
+ * The account in use: Gen's own token if it has one, else the Claude account J picked in Studio's Settings
+ * (hawkesstudio/.data/claude/active.env, written by Studio's claude-accounts.ts; read on every call, so switching needs
+ * no restart), else the server's secret (/run/hawkes/claude.env). HAWKESGEN_CLAUDE_ENV names one file instead.
+ */
+export function claudeEnvFiles() {
+  const one = env('HAWKESGEN_CLAUDE_ENV');
+  return one ? [one] : [path.resolve(ROOT, '..', 'hawkesstudio', '.data', 'claude', 'active.env'), '/run/hawkes/claude.env'];
+}
+
 function subscriptionToken(): string | undefined {
   const own = env('CLAUDE_CODE_OAUTH_TOKEN');
   if (own) return own;
-  const file = env('HAWKESGEN_CLAUDE_ENV') ?? '/run/hawkes/claude.env';
-  try {
-    const m = /^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.*?)\s*$/m.exec(fs.readFileSync(file, 'utf8'));
-    return m?.[1].replace(/^['"]|['"]$/g, '') || undefined;
-  } catch {
-    return undefined;
+  for (const file of claudeEnvFiles()) {
+    try {
+      const m = /^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.*?)\s*$/m.exec(fs.readFileSync(file, 'utf8'));
+      const token = m?.[1].replace(/^['"]|['"]$/g, '');
+      if (token) return token;
+    } catch { /* not there */ }
   }
+  return undefined;
 }
 
 function cliEnv(): NodeJS.ProcessEnv {
