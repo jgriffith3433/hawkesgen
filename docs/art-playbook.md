@@ -25,6 +25,8 @@ GPU rules and server notes: `comfyui.md`. Blender ops: `3d-characters.md`. Workf
 | 3D from one image, quick | `mesh.from-image` (HY 3D 2.1), `mesh.textured` (TRELLIS.2, PBR) | Back is guessed. |
 | 3D from several views | `mesh.views3d` (Pixal3D multi-view + TRELLIS.2), `mesh.from-views` (HY 3D 2.0 MV) | Best shape and texture. Needs the 4-view sheet. |
 | Fix, retopo, bake, LOD, budget | `blender.character` | Ops table in `3d-characters.md`. |
+| Smaller files for the web or mobile | `blender.character`: `pack`, `export` with `compress: "draco"`, `textures: "webp"` | Draco needs the engine's decoder (three.js `DRACOLoader`, Unity/Godot plugins). Keep an uncompressed GLB for editing. |
+| Physics shapes | `blender.character`: `collision` | `hulls` for characters and props, `capsule` or `box` for numbers only. Never collide on the render mesh. |
 | Rig a humanoid | `mesh.rig` | Then `blender.character` for clips, `motion:` library for CC0 clips. |
 | Clips from text | `motion.from-text` | Kimodo SOMA / HY-Motion. |
 | Depth, normals, albedo from an image | `image.depth`, `image.normals`, `image.albedo` | For material maps. Seamless: `image.tile`. |
@@ -65,5 +67,10 @@ map, not the mesh; share atlases across props; keep textures a power of two.
 - Floating shards, holes, doubled vertices, flipped normals: `fix`. Uneven sides: `symmetrize`.
 - Dense triangle soup from the generator (100k+): `retopo`, with the raw mesh as the bake source.
 - Back of the character smeared: you used one view. Use four.
+- **Wrong character on the back or side views:** a step got the mask instead of the cutout. `image.remove-background` returns
+  `[mask, cutout]`, so `$stepN` and `$prev` are the mask. Always write `$stepN:cutout`. A test guards the shared presets.
+- **Squished character:** never stretch a non-square image into a square. `image.edit` with `width` and `height` now pads the input
+  on flat grey (it used to stretch). Transparent inputs are flattened the same way, which stops a baked checkerboard.
+- Ship the right file: `mesh` (uncompressed GLB) feeds `mesh.rig`; the `web` GLB (Draco, WebP) is for the game build.
 - `bmesh.ops.holes_fill` does nothing in Blender 5.0; the ops use `edgeloop_fill`.
 - Blender tests skip in CI (no Blender); they run on a developer machine.

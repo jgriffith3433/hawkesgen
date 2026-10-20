@@ -121,7 +121,10 @@
                 },
                 { "op": "report" },
                 { "op": "lod", "levels": [0.5, 0.25, 0.1] },
-                { "op": "export", "format": "glb", "title": "mesh" }
+                { "op": "budget", "target": "desktop" },
+                { "op": "export", "format": "glb", "title": "mesh" },
+                { "op": "export", "format": "glb", "name": "character_web", "title": "web", "compress": "draco", "textures": "webp" },
+                { "op": "collision", "mode": "hulls", "parts": 5 }
               ]
             },
             "inputs": { "files": ["$step5", "$step2:cutout", "$step4:cutout"] },
@@ -212,7 +215,10 @@
                 { "op": "bake", "size": 2048 },
                 { "op": "report" },
                 { "op": "lod", "levels": [0.5, 0.25, 0.1] },
-                { "op": "export", "format": "glb", "title": "mesh" }
+                { "op": "budget", "target": "desktop" },
+                { "op": "export", "format": "glb", "title": "mesh" },
+                { "op": "export", "format": "glb", "name": "character_web", "title": "web", "compress": "draco", "textures": "webp" },
+                { "op": "collision", "mode": "hulls", "parts": 5 }
               ]
             },
             "inputs": { "files": ["$step10"] },

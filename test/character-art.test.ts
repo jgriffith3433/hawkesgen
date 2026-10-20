@@ -119,3 +119,42 @@ test('Blender: a messy generated mesh is repaired, retopologised, projected from
   assert.ok(info.budget.checks.triangles.value > 0 && info.budget.checks.triangles.value <= 9000, JSON.stringify(info.budget));
   void python;
 });
+
+test('Blender: ORM packing, collision proxies and a Draco GLB', { skip, timeout: 240_000 }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hgart2-'));
+  const mk = spawnSync(blender!, ['-b', '--factory-startup', '--python-exit-code', '1', '-P', 'test/fixtures/make_messy.py', '--', path.join(dir, 'messy.glb'), path.join(dir, 'front.png'), path.join(dir, 'back.png')], { encoding: 'utf8' });
+  assert.equal(mk.status, 0, mk.stderr || mk.stdout);
+  const out = path.join(dir, 'out');
+  const spec = {
+    out, fps: 30, device: 'cpu',
+    files: [path.join(dir, 'messy.glb'), path.join(dir, 'front.png')],
+    ops: [
+      { op: 'import', file: 0 },
+      { op: 'pack', ao: 1, size: 256 },
+      { op: 'collision', mode: 'hulls', parts: 4, name: 'dummy' },
+      { op: 'collision', mode: 'capsule' },
+      { op: 'export', format: 'glb', name: 'plain' },
+      { op: 'export', format: 'glb', name: 'small', compress: 'draco', textures: 'webp' },
+    ],
+  };
+  fs.writeFileSync(path.join(dir, 'spec.json'), JSON.stringify(spec));
+  const r = spawnSync(blender!, ['-b', '--factory-startup', '--python-exit-code', '1', '-P', 'post/blender/hawkes_character.py', '--', path.join(dir, 'spec.json')], { encoding: 'utf8', cwd: process.cwd(), timeout: 220_000 });
+  assert.equal(r.status, 0, (r.stderr || '') + (r.stdout || '').slice(-2000));
+  const info = JSON.parse(fs.readFileSync(path.join(out, 'character.json'), 'utf8'));
+  const [pack, hulls, capsule, plain, small] = info.ops.slice(1);
+  assert.equal(pack.packed.length > 0 ? pack.packed[0].size : 0, 256, JSON.stringify(pack));
+  assert.ok(hulls.hulls >= 2 && hulls.faces.every((f: number) => f <= 64), JSON.stringify(hulls));
+  assert.ok(capsule.capsule.radius > 0 && capsule.capsule.height > 0);
+  const files = fs.readdirSync(path.join(out, 'files'));
+  assert.ok(files.includes('dummy_collision.glb'), files.join(','));
+  assert.ok(small.bytes < plain.bytes, `draco ${small.bytes} vs plain ${plain.bytes}`);
+});
+
+test('checkOps: pack, collision and compressed export are validated', () => {
+  const imp = { op: 'import', file: 0 };
+  checkOps([imp, { op: 'pack', size: 1024 }, { op: 'collision', mode: 'hulls', parts: 6 }, { op: 'export', format: 'glb', compress: 'draco', textures: 'webp' }], ['a.glb']);
+  assert.throws(() => checkOps([imp, { op: 'collision', mode: 'sphere' }], ['a.glb']), /mode is/);
+  assert.throws(() => checkOps([imp, { op: 'pack', ao: 0 }], ['a.glb']), /takes/);
+  assert.throws(() => checkOps([imp, { op: 'export', format: 'glb', compress: 'zip' }], ['a.glb']), /compress/);
+  assert.throws(() => checkOps([imp, { op: 'collision', faces: 2 }], ['a.glb']), /faces/);
+});

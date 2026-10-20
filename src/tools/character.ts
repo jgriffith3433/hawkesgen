@@ -28,8 +28,10 @@ export const OPS: Record<string, string[]> = {
   symmetrize: ['side', 'center', 'merge'],
   retopo: ['faces', 'mode', 'symmetry', 'fix', 'seed'],
   project: ['views!', 'size', 'sharpness', 'margin', 'rebuild_uv'],
-  lod: ['levels', 'name'],
+  lod: ['levels', 'name', 'compress', 'textures', 'level'],
   report: [],
+  pack: ['size', 'ao'],
+  collision: ['mode', 'faces', 'parts', 'name'],
   budget: ['target', 'triangles', 'materials', 'bones', 'texture', 'strict'],
   bake: ['size', 'maps', 'high', 'samples', 'margin', 'extrusion', 'distance', 'roughness', 'islandMargin'],
   attach: ['file!', 'bone!', 'offset', 'rotation', 'size', 'scale', 'origin', 'name'],
@@ -49,7 +51,7 @@ export const OPS: Record<string, string[]> = {
   template: ['kind!', 'parts', 'segments', 'smooth'],
   clips: ['list', 'clips', 'kind', 'segments'],
   angles: ['size'],
-  export: ['format!', 'name', 'clips', 'bones', 'title'],
+  export: ['format!', 'name', 'clips', 'bones', 'title', 'compress', 'textures', 'level'],
   preview: ['turntable', 'clips', 'size', 'seconds', 'engine', 'samples', 'maxFrames'],
 };
 const NAMES = ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'soma', 'bvh'];
@@ -103,6 +105,17 @@ export function checkOps(ops: unknown, files: string[]): CharacterPlan {
     if (o.op === 'fix' && o.shards != null && !(o.shards >= 0 && o.shards <= 0.5)) throw new GenError(`ops[${k}] fix: shards is 0 to 0.5 (a piece smaller than this share of the biggest one is removed)`);
     if (o.op === 'symmetrize' && o.side != null && !['auto', '+X', '-X'].includes(o.side)) throw new GenError(`ops[${k}] symmetrize: side is auto, +X or -X`);
     if (o.op === 'budget' && o.target != null && !['web', 'mobile', 'desktop', 'hero'].includes(o.target)) throw new GenError(`ops[${k}] budget: target is web, mobile, desktop or hero`);
+    if (o.op === 'pack') {
+      if (o.ao != null) fileRef(o, k, 'ao', IMAGES);
+      if (o.size != null && !(o.size >= 64 && o.size <= 4096)) throw new GenError(`ops[${k}] pack: size is 64 to 4096`);
+    }
+    if (o.op === 'collision') {
+      if (o.mode != null && !['box', 'capsule', 'hull', 'hulls'].includes(o.mode)) throw new GenError(`ops[${k}] collision: mode is box, capsule, hull or hulls`);
+      if (o.faces != null && !(Number.isInteger(o.faces) && o.faces >= 8 && o.faces <= 256)) throw new GenError(`ops[${k}] collision: faces is 8 to 256 per hull`);
+      if (o.parts != null && !(Number.isInteger(o.parts) && o.parts >= 1 && o.parts <= 16)) throw new GenError(`ops[${k}] collision: parts is 1 to 16`);
+    }
+    if ((o.op === 'export' || o.op === 'lod') && o.compress != null && !['draco', 'none', true, false].includes(o.compress)) throw new GenError(`ops[${k}] ${o.op}: compress is draco`);
+    if ((o.op === 'export' || o.op === 'lod') && o.textures != null && !['webp', 'jpeg', 'png', 'auto'].includes(o.textures)) throw new GenError(`ops[${k}] ${o.op}: textures is webp, jpeg or png`);
     if (o.op === 'lod' && o.levels != null && !(Array.isArray(o.levels) && o.levels.length && o.levels.every((r: unknown) => typeof r === 'number' && r >= 0.01 && r < 1))) {
       throw new GenError(`ops[${k}] lod: levels is a list of ratios from 0.01 to below 1, e.g. [0.5, 0.25, 0.1]`);
     }

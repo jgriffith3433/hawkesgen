@@ -1342,14 +1342,44 @@ def which_clips(o):
     return list(names)
 
 
-def export_glb(path, names):
+def glb_compression(o):
+    """Exporter options for the smaller GLB an op asks for: compress "draco" (mesh) and textures "webp" | "jpeg"."""
+    kw = {}
+    comp = o.get("compress")
+    if comp in (True, "draco"):
+        kw.update(export_draco_mesh_compression_enable=True, export_draco_mesh_compression_level=int(o.get("level", 6)),
+                  export_draco_position_quantization=14, export_draco_normal_quantization=10,
+                  export_draco_texcoord_quantization=12)
+    elif comp not in (None, False, "none"):
+        fail(f"{o.get('op')}: compress is draco (or leave it out)")
+    tex = o.get("textures")
+    if tex in ("webp", "jpeg"):
+        kw["export_image_format"] = tex.upper()
+    elif tex not in (None, "auto", "png"):
+        fail(f"{o.get('op')}: textures is webp, jpeg or png")
+    return kw
+
+
+def gltf_export(path, **kw):
+    """bpy's glTF export with the options this Blender knows; an unknown compression option is dropped with a warning."""
+    try:
+        bpy.ops.export_scene.gltf(filepath=path, **kw)
+    except TypeError:
+        base = {k: v for k, v in kw.items() if not k.startswith("export_draco") and k != "export_image_format"}
+        if base == kw:
+            raise
+        warn("this Blender's glTF exporter has no Draco/WebP options; wrote the GLB uncompressed")
+        bpy.ops.export_scene.gltf(filepath=path, **base)
+
+
+def export_glb(path, names, extra=None):
     arm = CHAR["arm"]
     acts = write_clips(names, CHAR["bones"]) if arm and names else []
     select(export_objects(), arm or CHAR["meshes"][0])
-    bpy.ops.export_scene.gltf(
-        filepath=path, export_format="GLB", use_selection=True, export_yup=True, export_skins=True,
+    gltf_export(
+        path, export_format="GLB", use_selection=True, export_yup=True, export_skins=True,
         export_animations=bool(acts), export_animation_mode="NLA_TRACKS", export_force_sampling=True,
-        export_anim_slide_to_zero=True, export_materials="EXPORT", export_apply=False,
+        export_anim_slide_to_zero=True, export_materials="EXPORT", export_apply=False, **(extra or {}),
     )
     drop_actions(acts)
 
@@ -1364,7 +1394,10 @@ def op_export(o):
     if fmt == "glb":
         path = os.path.join(FILES_OUT, f"{stem}.glb")
         say("step", f"writing {stem}.glb ({len(names)} clips)")
-        export_glb(path, names)
+        export_glb(path, names, glb_compression(o))
+        got["bytes"] = os.path.getsize(path)
+        if o.get("compress") in (True, "draco"):
+            got["compress"] = "draco"
     elif fmt == "fbx":
         path = os.path.join(FILES_OUT, f"{stem}.fbx")
         say("step", f"writing {stem}.fbx for Unity ({len(names)} takes)")
@@ -2149,8 +2182,8 @@ def op_lod(o):
         say("step", f"writing {stem}_LOD{k}.glb ({triangles(copy)} triangles)")
         keep = ([CHAR["arm"]] if CHAR["arm"] else []) + [copy]
         select(keep, keep[0])
-        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True, export_yup=True,
-                                  export_skins=True, export_animations=False, export_materials="EXPORT", export_apply=False)
+        gltf_export(path, export_format="GLB", use_selection=True, export_yup=True, export_skins=True,
+                    export_animations=False, export_materials="EXPORT", export_apply=False, **glb_compression(o))
         info["outputs"].append({"file": os.path.basename(path), "title": f"LOD{k}", "ext": ".glb"})
         made.append({"level": k, "ratio": r, "triangles": triangles(copy), "file": os.path.basename(path)})
         remove([copy])
@@ -2394,10 +2427,188 @@ def op_budget(o):
     return {"op": "budget", "target": target, "ok": ok, "checks": checks}
 
 
+def _linked_image(sock):
+    """The image texture feeding a socket (through a Separate Color/RGB or Math node), and the channel it is read from."""
+    if not sock.is_linked:
+        return None, None
+    node, chan = sock.links[0].from_node, sock.links[0].from_socket.name
+    for _ in range(3):
+        if node.type == "TEX_IMAGE":
+            return node.image, chan
+        ins = [i for i in node.inputs if i.is_linked]
+        if not ins:
+            return None, None
+        node, chan = ins[0].links[0].from_node, {"Red": "Red", "Green": "Green", "Blue": "Blue"}.get(ins[0].links[0].from_socket.name, chan)
+    return None, None
+
+
+def _channel(img, chan, size):
+    """One channel of an image as a (size, size) float array; resized with Blender's own scaler."""
+    w, h = img.size
+    px = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)
+    if (w, h) != (size, size):
+        cp = img.copy()
+        cp.scale(size, size)
+        px = np.empty(size * size * 4, dtype=np.float32)
+        cp.pixels.foreach_get(px)
+        px = px.reshape(size, size, 4)
+        bpy.data.images.remove(cp)
+    return px[..., {"Red": 0, "Green": 1, "Blue": 2}[chan]] if chan in ("Red", "Green", "Blue") else px[..., :3].mean(axis=2)
+
+
+def _occlusion_group():
+    """The "glTF Material Output" node group the glTF exporter reads ambient occlusion from."""
+    g = bpy.data.node_groups.get("glTF Material Output")
+    if g is None:
+        g = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
+        g.interface.new_socket("Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
+    return g
+
+
+def op_pack(o):
+    """Packs each material's roughness and metallic textures (and ambient occlusion, if given) into one ORM texture
+    (R occlusion, G roughness, B metallic: glTF's layout), so a material samples two textures, not four. A material whose
+    roughness and metallic are plain numbers needs no texture; it is left alone (the cheapest outcome)."""
+    need_char("pack")
+    size = int(o.get("size") or 0)
+    if size and not 64 <= size <= 4096:
+        fail("pack: size is 64 to 4096")
+    ao_img = bpy.data.images.load(file_arg(o["ao"], "pack"), check_existing=True) if o.get("ao") is not None else None
+    done, skipped = [], []
+    for m in CHAR["meshes"]:
+        for slot in m.material_slots:
+            mat = slot.material
+            if not mat or not mat.use_nodes or any(d["material"] == mat.name for d in done):
+                continue
+            bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+            if bsdf is None:
+                continue
+            rough_img, rc = _linked_image(bsdf.inputs["Roughness"])
+            metal_img, mc = _linked_image(bsdf.inputs["Metallic"])
+            if rough_img is None and metal_img is None and ao_img is None:
+                skipped.append({"material": mat.name, "why": "roughness and metallic are plain values; no texture to pack"})
+                continue
+            srcs = [i for i in (rough_img, metal_img, ao_img) if i is not None]
+            n = size or max(max(i.size) for i in srcs)
+            n = max(64, min(n, 4096))
+            orm = np.ones((n, n, 4), dtype=np.float32)
+            orm[..., 0] = _channel(ao_img, "Gray", n) if ao_img else 1.0
+            orm[..., 1] = _channel(rough_img, rc, n) if rough_img else bsdf.inputs["Roughness"].default_value
+            orm[..., 2] = _channel(metal_img, mc, n) if metal_img else bsdf.inputs["Metallic"].default_value
+            name = f"{re.sub(r'[^A-Za-z0-9_.-]', '_', mat.name)}_ORM"
+            img = bpy.data.images.new(name, n, n, alpha=False, float_buffer=False)
+            img.pixels.foreach_set(orm.ravel())
+            img.colorspace_settings.name = "Non-Color"
+            img.pack()
+            nt = mat.node_tree
+            tex = nt.nodes.new("ShaderNodeTexImage")
+            tex.image = img
+            sep = nt.nodes.new("ShaderNodeSeparateColor")
+            nt.links.new(tex.outputs["Color"], sep.inputs["Color"])
+            nt.links.new(sep.outputs["Green"], bsdf.inputs["Roughness"])
+            nt.links.new(sep.outputs["Blue"], bsdf.inputs["Metallic"])
+            if ao_img is not None:
+                grp = nt.nodes.new("ShaderNodeGroup")
+                grp.node_tree = _occlusion_group()
+                nt.links.new(sep.outputs["Red"], grp.inputs["Occlusion"])
+            done.append({"material": mat.name, "texture": name, "size": n, "occlusion": ao_img is not None,
+                         "from": [i.name for i in srcs]})
+    return {"op": "pack", "packed": done, "skipped": skipped}
+
+
+def _hull_object(name, pts, max_faces):
+    """A convex hull of world-space points as a new mesh object (decimated to at most max_faces faces); None when flat."""
+    bm = bmesh.new()
+    for p in pts:
+        bm.verts.new(p)
+    bm.verts.ensure_lookup_table()
+    res = bmesh.ops.convex_hull(bm, input=list(bm.verts))
+    dead = list({g for g in res["geom_interior"] + res["geom_unused"] if isinstance(g, bmesh.types.BMVert)})
+    if dead:
+        bmesh.ops.delete(bm, geom=dead, context="VERTS")
+    if len(bm.faces) < 4:
+        bm.free()
+        return None
+    mesh = bpy.data.meshes.new(name)
+    bm.to_mesh(mesh)
+    bm.free()
+    ob = bpy.data.objects.new(name, mesh)
+    scene.collection.objects.link(ob)
+    if len(mesh.polygons) > max_faces:
+        select([ob], ob)
+        mod = ob.modifiers.new("hb_col", "DECIMATE")
+        mod.ratio = max(0.05, max_faces / len(mesh.polygons))
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    return ob
+
+
+def op_collision(o):
+    """Collision proxies for the physics engine, from the mesh: box (axis box), capsule (radius and height, numbers only),
+    hull (one convex hull) or hulls (a convex hull per slab along the height: a character, a tree, a rock stack).
+    Hull modes write name_collision.glb with meshes named UCX_<name>_NN (Unreal reads them as collision; Unity and Godot
+    take them as plain meshes for MeshColliders / ConvexPolygonShape3D)."""
+    need_char("collision")
+    mode = o.get("mode", "hulls")
+    if mode not in ("box", "capsule", "hull", "hulls"):
+        fail("collision: mode is box, capsule, hull or hulls")
+    max_faces = int(o.get("faces", 64))
+    if not 8 <= max_faces <= 256:
+        fail("collision: faces is 8 to 256 per hull")
+    parts = int(o.get("parts", 5))
+    if not 1 <= parts <= 16:
+        fail("collision: parts is 1 to 16")
+    stem = re.sub(r"[^\w.-]", "", str(o.get("name") or "character"))[:60] or "character"
+    pts, _ = world_verts(CHAR["meshes"])
+    if not len(pts):
+        fail("collision: the character has no mesh")
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    size, mid = hi - lo, (hi + lo) / 2
+    got = {"op": "collision", "mode": mode, "bounds": {"min": [round(float(x), 4) for x in lo], "max": [round(float(x), 4) for x in hi]}}
+    made = []
+    if mode == "capsule":
+        radius = float(min(size[0], size[1]) / 2)
+        got["capsule"] = {"radius": round(radius, 4), "height": round(float(size[2]), 4), "center": [round(float(x), 4) for x in mid]}
+    elif mode == "box":
+        corners = [(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+        made.append(_hull_object(f"UCX_{stem}_00", corners, 12))
+        got["box"] = {"size": [round(float(x), 4) for x in size], "center": [round(float(x), 4) for x in mid]}
+    else:
+        if mode == "hull" or parts == 1:
+            slabs = [pts]
+        else:
+            edges = np.linspace(lo[2], hi[2], parts + 1)
+            slabs = []
+            for a, b in zip(edges[:-1], edges[1:]):
+                sel = pts[(pts[:, 2] >= a - 1e-9) & (pts[:, 2] <= b + 1e-9)]
+                if len(sel) >= 4:
+                    slabs.append(sel)
+        for s in slabs:
+            # A hull of every vertex is slow and needlessly dense; its extreme points make the same hull.
+            if len(s) > 4000:
+                s = s[np.random.default_rng(1).choice(len(s), 4000, replace=False)]
+            made.append(_hull_object(f"UCX_{stem}_{len(made):02d}", [tuple(p) for p in s], max_faces))
+    made = [m for m in made if m is not None]
+    got["hulls"] = len(made)
+    if made:
+        path = os.path.join(FILES_OUT, f"{stem}_collision.glb")
+        say("step", f"writing {stem}_collision.glb ({len(made)} hulls)")
+        select(made, made[0])
+        gltf_export(path, export_format="GLB", use_selection=True, export_yup=True, export_skins=False,
+                    export_animations=False, export_materials="NONE", export_apply=False)
+        info["outputs"].append({"file": os.path.basename(path), "title": "collision", "ext": ".glb"})
+        got["file"] = os.path.basename(path)
+        got["faces"] = [len(m.data.polygons) for m in made]
+        remove(made)
+    info["collision"] = got
+    return got
+
+
 OPS = {"import": op_import, "clean": op_clean, "bake": op_bake, "attach": op_attach, "retarget": op_retarget,
        "pose": op_pose, "concat": op_concat, "copy": op_copy, "rename": op_rename, "remove": op_remove,
        "fix": op_fix, "symmetrize": op_symmetrize, "retopo": op_retopo, "lod": op_lod, "project": op_project,
-       "report": op_report, "budget": op_budget,
+       "report": op_report, "budget": op_budget, "pack": op_pack, "collision": op_collision,
        "split": op_split, "template": op_template, "clips": op_clips, "angles": op_angles,
        "export": op_export, "preview": op_preview, **{k: op_edit for k in EDITS}}
 
