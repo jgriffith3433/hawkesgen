@@ -56,6 +56,30 @@ test('characterScript: the ops in Blender, then each preview shot rendered and e
   assert.match(s, /res\/preview-\$n\.mp4/);
   const tool = getTool('blender.character');
   assert.ok(tool && tool.family === 'blender' && tool.output === 'mesh' && tool.inputs.files.multiple);
+  assert.equal(tool!.version, 2);
+});
+
+test('checkOps: robot split / template / clips and generic FBX bones', () => {
+  const plan = checkOps([
+    { op: 'import', file: 0 },
+    { op: 'split', kind: 'quadarm', label: true },
+    { op: 'template', kind: 'quadarm' },
+    { op: 'clips', list: [{ type: 'walk', gait: 'wave' }, { type: 'attack', attack: 'stab' }, 'idle'] },
+    { op: 'export', format: 'fbx', bones: 'generic' },
+    { op: 'export', format: 'glb' },
+  ], files);
+  assert.deepEqual(plan.exports, ['fbx', 'glb']);
+  assert.equal(plan.ops[1].angles, true, 'label: true turns angles on for Claude');
+  assert.doesNotThrow(() => checkOps([
+    { op: 'import', file: 0 }, { op: 'split', kind: 'spider' }, { op: 'template', kind: 'spider' }, { op: 'clips' },
+  ], files));
+  const bad: [unknown, RegExp][] = [
+    [[{ op: 'import', file: 0 }, { op: 'template', kind: 'dragon' }], /kind is spider/],
+    [[{ op: 'import', file: 0 }, { op: 'split', by: 'uv' }], /by is connected/],
+    [[{ op: 'import', file: 0 }, { op: 'clips', list: [{ type: 'dance' }] }], /type is walk/],
+    [[{ op: 'import', file: 0 }, { op: 'export', format: 'fbx', bones: 'maya' }], /bones is mixamo/],
+  ];
+  for (const [ops, re] of bad) assert.throws(() => checkOps(ops, files), re, JSON.stringify(ops));
 });
 
 test('FBX, BVH and .blend files have types, so they file as meshes and files (not .bin)', () => {
@@ -118,6 +142,7 @@ test('blender.character script: clean, bake, a prop, a cross-skeleton retarget, 
     // A bat: a 4 cm x 4 cm x 80 cm box.
     fs.writeFileSync(`${dir}/in/2.obj`, 'v 0 0 0\nv 0.04 0 0\nv 0.04 0.04 0\nv 0 0.04 0\nv 0 0 0.8\nv 0.04 0 0.8\nv 0.04 0.04 0.8\nv 0 0.04 0.8\nf 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 4 8 5 1\n');
     fs.copyFileSync('post/blender/hawkes_character.py', `${dir}/hawkes_character.py`);
+    fs.copyFileSync('post/blender/hawkes_robot.py', `${dir}/hawkes_robot.py`);
     fs.copyFileSync('post/blender/hawkes_blender.py', `${dir}/hawkes_blender.py`);
     const ops = [
       { op: 'import', file: 0 },
@@ -187,6 +212,52 @@ test('blender.character script: clean, bake, a prop, a cross-skeleton retarget, 
 
     const probe = spawnSync(ffmpeg!.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1'), ['-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_frames,width,height', '-of', 'csv=p=0', `${dir}/res/preview-01.mp4`], { encoding: 'utf8' });
     assert.equal(probe.stdout.trim(), '128,128,8');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('blender.character robot: split, quadarm template, procedural clips, generic FBX/GLB', { skip, timeout: 600_000 }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-robot-')).replace(/\\/g, '/');
+  try {
+    fs.mkdirSync(`${dir}/in`);
+    const run = (script: string, args: string[]) => {
+      const r = spawnSync(blender!, ['-b', '--factory-startup', '-P', path.resolve(script), '--', ...args], { encoding: 'utf8' });
+      return r.stdout + r.stderr;
+    };
+    let log = run('test/fixtures/make_robot.py', [`${dir}/in/0.glb`]);
+    assert.ok(fs.existsSync(`${dir}/in/0.glb`), log);
+    fs.copyFileSync('post/blender/hawkes_character.py', `${dir}/hawkes_character.py`);
+    fs.copyFileSync('post/blender/hawkes_robot.py', `${dir}/hawkes_robot.py`);
+    fs.copyFileSync('post/blender/hawkes_blender.py', `${dir}/hawkes_blender.py`);
+    const ops = [
+      { op: 'import', file: 0 },
+      { op: 'split', by: 'connected', kind: 'quadarm' },
+      { op: 'template', kind: 'quadarm' },
+      { op: 'clips', list: [{ type: 'idle', seconds: 0.4 }, { type: 'walk', gait: 'wave', seconds: 0.5 }, { type: 'attack', attack: 'stab', seconds: 0.4 }] },
+      { op: 'export', format: 'fbx', bones: 'generic' },
+      { op: 'export', format: 'glb' },
+    ];
+    const ins = [`${dir}/in/0.glb`];
+    checkOps(ops, ins);
+    fs.writeFileSync(`${dir}/spec.json`, JSON.stringify({ out: `${dir}/out`, files: ins, fps: 30, device: 'cpu', ops }));
+    const py = python!.includes('/') || python!.includes('\\') ? path.resolve(python!).replace(/\\/g, '/') : python!;
+    fs.writeFileSync(`${dir}/run.sh`, characterScript({ blender: blender!, python3: py, ffmpeg: ffmpeg! }));
+    const r = spawnSync(bash!, ['run.sh'], { cwd: dir, encoding: 'utf8' });
+    assert.equal(r.status, 0, (r.stdout + r.stderr).split('\n').filter((l) => !/^Fra:|INFO/.test(l)).slice(-40).join('\n'));
+    for (const f of ['character.json', 'character.fbx', 'character.glb']) assert.ok(fs.existsSync(`${dir}/res/${f}`), f);
+    const info = JSON.parse(fs.readFileSync(`${dir}/res/character.json`, 'utf8'));
+    assert.equal(info.ops.find((o: any) => o.op === 'template')?.kind, 'quadarm');
+    assert.ok(info.bones?.some((b: any) => b.name === 'Body'), JSON.stringify(info.bones?.map((b: any) => b.name)));
+    assert.ok(info.bones?.some((b: any) => b.name === 'LegFL'), 'expected LegFL');
+    assert.ok(info.clips?.length >= 3, JSON.stringify(info.clips));
+    assert.equal(info.names, 'robot:quadarm');
+    const fbxBones = spawnSync(blender!, ['-b', '--factory-startup', '-P', path.resolve('test/fixtures/check_character.py'), '--', `${dir}/res/character.fbx`], { encoding: 'utf8' });
+    const line = (fbxBones.stdout + fbxBones.stderr).split('\n').find((l) => l.startsWith('CHECK '));
+    assert.ok(line, fbxBones.stdout + fbxBones.stderr);
+    const fbx = JSON.parse(line!.slice(6));
+    assert.ok(fbx.bones.includes('Body') && !fbx.bones.some((b: string) => b.startsWith('mixamorig:')), fbx.bones);
+    assert.ok(fbx.skinned);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

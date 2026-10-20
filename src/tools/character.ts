@@ -1,19 +1,24 @@
 // blender.character: a fixed set of named Blender ops on one 3D character, chained in one job: import, clean
 // (decimate to a triangle budget), bake (new UVs, base color and normal maps), attach a prop to a bone, retarget clips
 // from another skeleton (rest-pose aware, across Mixamo / Unity / Unreal / Rigify / SMPL / BVH names), clip edits
-// (trim, loop, in place, speed, mirror, reverse, concat, key poses from JSON), export (FBX for Unity, GLB for the web,
-// the .blend) and previews (a turntable and a video per clip, rendered by blender.render's shot).
+// (trim, loop, in place, speed, mirror, reverse, concat, key poses from JSON), hard-surface robots (split into parts,
+// template rigs, procedural clips), export (FBX for Unity, GLB for the web, the .blend) and previews (a turntable and
+// a video per clip, rendered by blender.render's shot).
 //
-// No free-form bpy: the ops are post/blender/hawkes_character.py; this file checks them before a GPU server is
-// claimed, runs them through blender.render's machinery (src/providers/blender/) and files what they made. The
-// previews are hawkes_blender.py rendering the exported character. docs/3d-characters.md has every op.
+// No free-form bpy: the ops are post/blender/hawkes_character.py (+ hawkes_robot.py); this file checks them before a
+// GPU server is claimed, runs them through blender.render's machinery (src/providers/blender/) and files what they
+// made. The previews are hawkes_blender.py rendering the exported character. docs/3d-characters.md has every op.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { paths } from '../config.ts';
+import { ask, usageOf } from '../providers/anthropic.ts';
 import { ensureBlender, blenderWorkspace, BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+
+const ROBOT_KINDS = ['spider', 'quadarm', 'biped', 'chain'] as const;
+const CLIP_TYPES = ['walk', 'run', 'idle', 'attack', 'hit', 'death', 'jump'] as const;
 
 /** Each op and the fields it takes (required ones first, marked with !). */
 export const OPS: Record<string, string[]> = {
@@ -33,6 +38,9 @@ export const OPS: Record<string, string[]> = {
   copy: ['clip!', 'name'],
   rename: ['clip!', 'name!'],
   remove: ['clip', 'clips'],
+  split: ['by', 'parts', 'kind', 'segments', 'angles', 'label', 'size'],
+  template: ['kind!', 'parts', 'segments', 'smooth'],
+  clips: ['list', 'clips', 'kind', 'segments'],
   export: ['format!', 'name', 'clips', 'bones', 'title'],
   preview: ['turntable', 'clips', 'size', 'seconds', 'engine', 'samples', 'maxFrames'],
 };
@@ -84,8 +92,32 @@ export function checkOps(ops: unknown, files: string[]): CharacterPlan {
     if (o.op === 'speed' && !(o.factor >= 0.05 && o.factor <= 20)) throw new GenError(`ops[${k}] speed: factor is 0.05 to 20`);
     if (o.op === 'pose' && (typeof o.bones !== 'object' || Array.isArray(o.bones) || !Object.keys(o.bones).length)) throw new GenError(`ops[${k}] pose: bones is { "LeftArm": [x, y, z] degrees, ... }`);
     if (o.op === 'concat' && !(Array.isArray(o.clips) && o.clips.length >= 2)) throw new GenError(`ops[${k}] concat: clips is a list of at least two clip names`);
+    if (o.op === 'split') {
+      if (o.by != null && !['connected', 'centers', 'both'].includes(o.by)) throw new GenError(`ops[${k}] split: by is connected, centers or both`);
+      if (o.kind != null && !(ROBOT_KINDS as readonly string[]).includes(o.kind)) throw new GenError(`ops[${k}] split: kind is ${ROBOT_KINDS.join(', ')}`);
+      if (o.parts != null && !Array.isArray(o.parts) && typeof o.parts !== 'object') throw new GenError(`ops[${k}] split: parts is [{ name, center: [x,y,z] }, ...]`);
+      if (o.label && !o.angles) o.angles = true; // Claude needs the four stills
+    }
+    if (o.op === 'template') {
+      if (!(ROBOT_KINDS as readonly string[]).includes(o.kind)) throw new GenError(`ops[${k}] template: kind is ${ROBOT_KINDS.join(', ')}`);
+      if (o.smooth != null && !(o.smooth >= 0 && o.smooth <= 0.5)) throw new GenError(`ops[${k}] template: smooth is 0 to 0.5 metres`);
+    }
+    if (o.op === 'clips') {
+      const list = o.list ?? o.clips;
+      if (list != null && list !== true && list !== '*' && !Array.isArray(list)) throw new GenError(`ops[${k}] clips: list is [{ type: walk|run|idle|... }, ...]`);
+      if (Array.isArray(list)) {
+        for (const [i, c] of list.entries()) {
+          const t = typeof c === 'string' ? c : c?.type;
+          if (!t || !(CLIP_TYPES as readonly string[]).includes(t)) throw new GenError(`ops[${k}] clips: list[${i}] type is ${CLIP_TYPES.join(', ')}`);
+        }
+      }
+      if (o.kind != null && !(ROBOT_KINDS as readonly string[]).includes(o.kind)) throw new GenError(`ops[${k}] clips: kind is ${ROBOT_KINDS.join(', ')}`);
+    }
     if (o.op === 'export') {
       if (!['fbx', 'glb', 'blend'].includes(o.format)) throw new GenError(`ops[${k}] export: format is fbx, glb or blend`);
+      if (o.bones != null && !['mixamo', 'keep', 'generic', 'robot'].includes(o.bones)) {
+        throw new GenError(`ops[${k}] export: bones is mixamo, keep or generic`);
+      }
       plan.exports.push(o.format);
     }
     if (o.op === 'preview') {
@@ -97,6 +129,63 @@ export function checkOps(ops: unknown, files: string[]): CharacterPlan {
     plan.ops.push(o);
   });
   return plan;
+}
+
+const LABEL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['parts'],
+  properties: {
+    parts: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name', 'center'],
+        properties: {
+          name: { type: 'string', description: 'Template role: body, leg1..leg6, leg_fl, arm_l, hips, seg0, ...' },
+          center: {
+            type: 'array', minItems: 3, maxItems: 3,
+            items: { type: 'number' },
+            description: 'Approximate 3D centre of that part in metres (character stands on z=0, faces -Y, origin at feet centre)',
+          },
+        },
+      },
+    },
+  },
+};
+
+/** Claude names hard-surface parts from the four angle stills + optional connected-piece centres. */
+export async function labelRobotParts(opts: {
+  angles: string[];
+  kind: string;
+  height?: number;
+  parts?: { name: string; center: number[] }[];
+  signal?: AbortSignal;
+}): Promise<{ parts: { name: string; center: number[] }[]; usage: ReturnType<typeof usageOf> }> {
+  const roles =
+    opts.kind === 'spider' ? 'body, leg1, leg2, leg3, leg4, leg5, leg6 (six legs around the body, as a mechanical spider)' :
+    opts.kind === 'quadarm' ? 'body, head, leg_fl, leg_fr, leg_bl, leg_br, arm_l, arm_r (quadruped body with two arms, like Yo Bot)' :
+    opts.kind === 'biped' ? 'hips, spine, head, arm_l, arm_r, leg_l, leg_r' :
+    'seg0, seg1, ... along the longest axis (a chain / worm / tentacle)';
+  const known = (opts.parts ?? []).map((p) => `${p.name} @ [${p.center.map((x) => x.toFixed(3)).join(', ')}]`).join('; ') || 'none yet';
+  const r = await ask({
+    system: 'You label hard-surface robot / creature mesh parts for a game rig. Answer only with the JSON schema. Centres are in metres: +Z up, character facing -Y, origin on the ground under the body. Prefer the template role names exactly.',
+    prompt: `Template: ${opts.kind}
+Height of the mesh: ${opts.height ?? 'unknown'} m
+Roles to cover: ${roles}
+Connected pieces already found (name @ centre): ${known}
+
+The images are four views in order: front (-Y), right (+X), back (+Y), left (-X). Pick a centre for every role you can see. If a connected piece already matches a role, keep or nudge its centre. Skip roles that are clearly absent.`,
+    images: opts.angles,
+    schema: LABEL_SCHEMA,
+    effort: 'medium',
+    maxTokens: 2000,
+  }, opts.signal);
+  const parsed = JSON.parse(r.text) as { parts: { name: string; center: number[] }[] };
+  if (!parsed.parts?.length) throw new GenError('Claude returned no parts for the robot split');
+  return { parts: parsed.parts, usage: usageOf(r, `${r.model} robot parts`) };
 }
 
 /** The script the server runs in the job's folder: the ops, then each preview shot rendered and encoded. */
@@ -124,16 +213,17 @@ const MIME_EXT: Record<string, string> = { glb: '.glb', fbx: '.fbx', blend: '.bl
 
 export const blenderCharacterTool: Tool = {
   id: 'blender.character',
-  version: 1,
-  title: '3D character ops in Blender (clean, bake, props, retarget, clip edits, FBX/GLB)',
+  version: 2,
+  title: '3D character ops in Blender (clean, bake, props, retarget, robots, FBX/GLB)',
   description:
     'Runs a chain of named Blender ops on one 3D character, on a GPU server: import (GLB/FBX/OBJ), clean (merge, fix normals, decimate to a ' +
     'triangle budget, default 25k), bake (smart UVs, base color + normal from the high-poly, 2K max), attach a prop to a bone (a bat in ' +
     'RightHand), retarget clips from another skeleton (FBX/GLB/BVH; Mixamo, Unity, Unreal, Rigify, SMPL/SOMA or BVH bone names; rest-pose ' +
     'aware), clip edits (trim, loop with a blended seam, in place, speed, mirror, reverse, concat, key poses from JSON bone rotations), ' +
-    'export (FBX for Unity: Mixamo bone names, a take per clip, 1 unit = 1 m; GLB for the web: one animation per clip; or the .blend) and ' +
-    'previews (a turntable and a video per clip). Ops refer to the job\'s files by index. A file can be motion:<pack>/<clip> from the CC0 ' +
-    'Quaternius library (search it in the library; preset shared/motions puts several clips on one character). For a mesh with no skeleton yet, use mesh.rig first. ' +
+    'hard-surface robots (split into parts by connected pieces or labelled centres; template rigs spider / quadarm / biped / chain with ' +
+    'rigid bind; procedural walk/run/idle/attack/hit/death/jump clips), export (FBX for Unity: Mixamo or Generic bone names; GLB for the ' +
+    'web; or the .blend) and previews (a turntable and a video per clip). Ops refer to the job\'s files by index. A file can be ' +
+    'motion:<pack>/<clip> from the CC0 Quaternius library. For a humanoid mesh with no skeleton yet, use mesh.rig first. ' +
     'docs/3d-characters.md has every op.',
   provider: 'comfy',
   family: 'blender',
@@ -144,13 +234,13 @@ export const blenderCharacterTool: Tool = {
   params: {
     ops: {
       type: 'json', required: true,
-      description: 'The steps, in order: [{ op: import | clean | bake | attach | retarget | trim | loop | inplace | speed | mirror | reverse | concat | pose | copy | rename | remove | export | preview, ... }]. docs/3d-characters.md.',
+      description: 'The steps, in order: [{ op: import | clean | bake | attach | retarget | trim | loop | inplace | speed | mirror | reverse | concat | pose | copy | rename | remove | split | template | clips | export | preview, ... }]. docs/3d-characters.md.',
       example: [
         { op: 'import', file: 0 },
-        { op: 'retarget', file: 1, name: 'Walk' },
-        { op: 'inplace', clip: 'Walk' },
-        { op: 'loop', clip: 'Walk', blend: 6 },
-        { op: 'export', format: 'fbx' },
+        { op: 'split', kind: 'quadarm', label: true },
+        { op: 'template', kind: 'quadarm' },
+        { op: 'clips' },
+        { op: 'export', format: 'fbx', bones: 'generic' },
         { op: 'export', format: 'glb' },
         { op: 'preview' },
       ],
@@ -164,7 +254,8 @@ export const blenderCharacterTool: Tool = {
       const ops: any[] = Array.isArray(p.ops) ? p.ops : [];
       const bake = ops.some((o) => o?.op === 'bake') ? 60 : 0;
       const previews = ops.some((o) => o?.op === 'preview') ? 120 : 0;
-      return 30 + ops.length * 4 + bake + previews;
+      const robot = ops.some((o) => o?.op === 'split' || o?.op === 'template') ? 45 : 0;
+      return 30 + ops.length * 4 + bake + previews + robot;
     } catch {
       return 60;
     }
@@ -174,6 +265,7 @@ export const blenderCharacterTool: Tool = {
     const files: string[] = ctx.inputs.files ?? [];
     const plan = checkOps(ctx.params.ops, files);
     const outDir = ctx.tmp('character');
+    let ops = plan.ops.map((o) => ({ ...o }));
 
     await ensureBlender(c.server.id, ctx.step);
     const ws = await blenderWorkspace(c.server.id, ctx.job.id);
@@ -186,21 +278,61 @@ export const blenderCharacterTool: Tool = {
         return `${ws.dir}/${name}`;
       });
       put['hawkes_character.py'] = path.join(paths.post, 'blender', 'hawkes_character.py');
+      put['hawkes_robot.py'] = path.join(paths.post, 'blender', 'hawkes_robot.py');
       put['hawkes_blender.py'] = path.join(paths.post, 'blender', 'hawkes_blender.py');
       await ws.put(put);
-      const spec = { out: `${ws.dir}/out`, files: remote, fps: ctx.params.fps ?? 30, device: ctx.params.device ?? 'auto', ops: plan.ops };
+
+      const onLine = (line: string) => {
+        const [kind, ...rest] = line.split(' ');
+        if (kind === 'step') ctx.step(rest.join(' '));
+        else if (kind === 'frame') ctx.step(`preview: frame ${rest[0]} of ${rest[1]}`);
+        else if (kind === 'warning' || kind === 'clip' || kind === 'op') ctx.log(`blender ${line}`);
+        else if (kind === 'encoding') ctx.step('making the preview video');
+      };
+
+      // Optional Claude pass: render four angles, label parts, inject centres into split, then run the full chain.
+      const splitAt = ops.findIndex((o) => o.op === 'split' && o.label);
+      if (splitAt >= 0) {
+        const splitOp = ops[splitAt];
+        const tmpl = ops.find((o) => o.op === 'template')?.kind ?? splitOp.kind;
+        if (!tmpl || !(ROBOT_KINDS as readonly string[]).includes(tmpl)) {
+          throw new GenError('split with label: true needs a template kind on split or a following template op (spider, quadarm, biped, chain)');
+        }
+        const phase1 = [
+          ...ops.slice(0, splitAt),
+          { ...splitOp, kind: tmpl, angles: true, label: undefined, parts: splitOp.parts },
+        ];
+        ctx.step(`labelling ${tmpl} parts from four angles (Claude)`);
+        await ws.write({ 'spec.json': JSON.stringify({ out: `${ws.dir}/out`, files: remote, fps: ctx.params.fps ?? 30, device: ctx.params.device ?? 'auto', ops: phase1 }, null, 1) });
+        await c.timed(() => ws.run(characterScript(), { signal: ctx.signal, timeoutMs: 90 * 60_000, onLine }));
+        const labelDir = ctx.tmp('character-label');
+        await ws.get('res', labelDir);
+        const info1 = JSON.parse(fs.readFileSync(path.join(labelDir, 'character.json'), 'utf8'));
+        const angleFiles = ['front', 'right', 'back', 'left']
+          .map((n) => path.join(labelDir, `angle-${n}.png`))
+          .filter((p) => fs.existsSync(p));
+        if (angleFiles.length < 4) throw new GenError(`split label: expected four angle stills, got ${angleFiles.length}`);
+        const labelled = await labelRobotParts({
+          angles: angleFiles, kind: tmpl, height: info1.height, parts: info1.ops?.find((x: any) => x.op === 'split')?.parts, signal: ctx.signal,
+        });
+        ctx.usage(labelled.usage);
+        ctx.log(`labelled ${labelled.parts.length} parts for ${tmpl}`);
+        ops = ops.map((o, i) => {
+          if (i !== splitAt) return o;
+          const { label: _l, ...rest } = o;
+          return { ...rest, kind: tmpl, parts: labelled.parts, angles: o.angles === true };
+        });
+        // Clear the remote out/ so the full run starts clean.
+        await ws.run('rm -rf out res && mkdir -p out res', { signal: ctx.signal, timeoutMs: 60_000 });
+      }
+
+      const spec = { out: `${ws.dir}/out`, files: remote, fps: ctx.params.fps ?? 30, device: ctx.params.device ?? 'auto', ops };
       await ws.write({ 'spec.json': JSON.stringify(spec, null, 1) });
-      ctx.step(`running ${plan.ops.length} ops in Blender ${BLENDER_VERSION}`);
+      ctx.step(`running ${ops.length} ops in Blender ${BLENDER_VERSION}`);
       await c.timed(() => ws.run(characterScript(), {
         signal: ctx.signal,
         timeoutMs: 90 * 60_000,
-        onLine: (line) => {
-          const [kind, ...rest] = line.split(' ');
-          if (kind === 'step') ctx.step(rest.join(' '));
-          else if (kind === 'frame') ctx.step(`preview: frame ${rest[0]} of ${rest[1]}`);
-          else if (kind === 'warning' || kind === 'clip' || kind === 'op') ctx.log(`blender ${line}`);
-          else if (kind === 'encoding') ctx.step('making the preview video');
-        },
+        onLine,
       }));
       ctx.step('fetching the results');
       await ws.get('res', outDir);
@@ -220,6 +352,7 @@ export const blenderCharacterTool: Tool = {
     ctx.result({
       height: info.height, triangles: info.triangles, names: info.names, clips: info.clips, props: info.props,
       bones: info.bones, ops: info.ops, warnings: info.warnings, seconds: info.seconds_total, outputs: outs.map((o: any) => o.title),
+      template: info.ops?.find((x: any) => x.op === 'template')?.kind ?? null,
     });
   },
 };
