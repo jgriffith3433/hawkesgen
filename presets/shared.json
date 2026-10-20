@@ -1,0 +1,11 @@
+{
+  "project": "shared",
+  "title": "Shared",
+  "presets": {
+    "motions": {
+      "tool": "blender.character",
+      "description": "Put Quaternius CC0 clips on a rigged character. params.clips is a list of library clip names (Walk_Loop, or ual2/Melee_Hook when the name is in both packs). Search them with hawkesgen_library (tags: locomotion, melee, hit, death, idle). inputs.files[0] is the character (GLB/FBX, asset:<id> or slot:./rig). params.entity is project/slug: each clip is filed on that character as animation/<name>. params.preview true also renders a video per clip. The library is the free Standard editions, not the paid full packs.",
+      "params": { "fps": 30 }
+    }
+  }
+}

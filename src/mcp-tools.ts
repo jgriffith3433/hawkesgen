@@ -115,11 +115,11 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
     },
     {
       name: 'hawkesgen_library',
-      description: 'Search everything Hawkes Gen has made (all projects): images, videos, audio, 3D. Returns asset ids and local paths; use an asset as an input with asset:<id>.',
+      description: 'Search everything Hawkes Gen has made (all projects): images, videos, audio, 3D, and the CC0 motion library (Quaternius clips: name, tags such as locomotion/melee/hit/death/idle, duration, loop). A motion clip\'s id is motion:<pack>/<name> (motion:ual1/Walk_Loop); use that as a file input. tool "motion.library" lists the clips.',
       inputSchema: obj({ search: str('Text in titles, labels or prompts'), project: str('Project'), kind: str('image, video, audio, mesh, text'), starred: { type: 'boolean' }, limit: { type: 'number' } }),
       run: async (a) => {
         const r = await gen.assets({ ...(a.search ? { q: a.search } : {}), ...(a.project ? { project: a.project } : {}), ...(a.kind ? { kind: a.kind } : {}), ...(a.starred ? { starred: '1' } : {}), limit: String(a.limit ?? 30) });
-        return { total: r.total, items: r.items.map((x: any) => ({ id: x.id, kind: x.kind, project: x.project, tool: x.tool, title: x.title, labels: x.labels, path: remote ? `${filesUrl}/v1/files/${x.id}` : x.path, prompt: x.recipe?.params?.prompt, created: new Date(x.created).toISOString() })) };
+        return { total: r.total, items: r.items.map((x: any) => ({ id: x.id, kind: x.kind, project: x.project, tool: x.tool, title: x.title, labels: x.labels, tags: x.tags?.length ? x.tags : undefined, duration: x.meta?.duration, loop: x.meta?.loop, path: String(x.id).startsWith('motion:') ? x.id : (remote ? `${filesUrl}/v1/files/${x.id}` : x.path), prompt: x.recipe?.params?.prompt, created: new Date(x.created).toISOString() })) };
       },
     },
     {

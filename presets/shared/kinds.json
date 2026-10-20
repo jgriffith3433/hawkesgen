@@ -40,7 +40,7 @@
         }
       },
       "animation/*": {
-        "description": "One clip on the rig (a GLB with that animation, named like the slot: animation/walk holds \"walk\"). Its data.source names the motion to retarget: an asset (asset:<id>) or another slot (slot:project/entity/animation/walk), a Mixamo FBX, a GLB or a BVH.",
+        "description": "One clip on the rig (a GLB with that animation, named like the slot: animation/walk holds \"walk\"). Its data.source names the motion to retarget: an asset (asset:<id>), a library clip (motion:ual1/Walk_Loop) or another slot (slot:project/entity/animation/walk), a Mixamo FBX, a GLB or a BVH.",
         "make": {
           "tool": "blender.character",
           "params": {

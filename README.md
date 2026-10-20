@@ -117,5 +117,5 @@ loads the SDK into the page.
 | `docs/library.md` | The library: entities, slots, versions, and how a product's tools use it |
 | `docs/analytics.md` | Player analytics: the event contract every product follows, the collect door, the query API |
 | `docs/blender.md` | Blender shots to video: `blender.render`, the shot format, `video.control`, and the cut (`video.compose`); rigging a generated character (`mesh.rig`) |
-| `docs/3d-characters.md` | `blender.character`: every op (clean, bake, attach, retarget and its bone-name schemes, clip edits, key poses, FBX/GLB exports, previews) and the library kind `character3d` |
+| `docs/3d-characters.md` | `blender.character`: every op (clean, bake, attach, retarget and its bone-name schemes, clip edits, key poses, FBX/GLB exports, previews), the library kind `character3d`, and the CC0 Quaternius motion library |
 | `DESIGN.md` | J's decisions and the roadmap |

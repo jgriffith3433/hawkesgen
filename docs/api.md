@@ -60,7 +60,7 @@ A finished job has `outputs: [{ asset, seed, mime, kind, title }]` and/or `resul
 
 | Route | |
 |---|---|
-| `GET /v1/assets?project=&kind=image&tool=&q=&starred=1&job=&limit=&offset=` | Browse (`{ items, total }`) |
+| `GET /v1/assets?project=&kind=image&tool=&q=&starred=1&job=&limit=&offset=` | Browse (`{ items, total }`). A text search also returns CC0 motion clips (`motion:<pack>/<name>`, tags, duration, loop); `tool=motion.library` is the whole list. |
 | `GET /v1/assets/:id` | One asset: path, mime, bytes, seed, recipe, labels, tags, title |
 | `PATCH /v1/assets/:id` `{ "title", "tags", "starred", "labels" }` | Organize |
 | `DELETE /v1/assets/:id` | Delete (admin) |
