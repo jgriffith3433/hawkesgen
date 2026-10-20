@@ -36,7 +36,8 @@ test('shared/character3d-4v: steps use real tools, refs point at earlier steps, 
   assert.deepEqual(sheet.inputs.views.map((v: string) => steps[Number(v.slice(5, v.indexOf(':'))) - 1].save), saves);
   const bl = steps.find((s) => s.tool === 'blender.character');
   checkOps(bl.params.ops, ['/a.glb']);
-  assert.equal(steps[Number(bl.inputs.files[0].slice(5)) - 1].tool, 'mesh.views3d');
+  assert.equal(steps[Number(/^\$step(\d+)/.exec(bl.inputs.files[0])![1]) - 1].tool, 'mesh.views3d');
+  assert.match(bl.inputs.files[0], /:mesh$/, 'mesh.views3d also emits preview PNGs: the ref must pick the GLB');
 });
 
 test('presets never feed a background-removal step\'s mask (its first output) onward: refs must name :cutout', async () => {

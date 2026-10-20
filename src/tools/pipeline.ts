@@ -92,7 +92,8 @@ export const assetMakeTool: Tool = {
     /** A step's first output, or the one with this title ("$step1:depth" is blender.render's depth video). */
     const outputOf = (i: number, title?: string) => {
       const outs: any[] = made[i]?.outputs ?? [];
-      const o = title ? outs.find((x) => String(x.title ?? '').toLowerCase() === title.toLowerCase()) : outs[0];
+      const t = title?.toLowerCase();
+      const o = t ? (outs.find((x) => String(x.title ?? '').toLowerCase() === t) ?? outs.find((x) => String(x.kind ?? '').toLowerCase() === t)) : outs[0];
       if (!o) throw new GenError(title ? `step ${i + 1} has no output "${title}" (it made: ${outs.map((x) => x.title ?? '?').join(', ') || 'nothing'})` : `step ${i + 1} has no output to pass on`);
       return `asset:${o.asset}`;
     };

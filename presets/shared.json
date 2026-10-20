@@ -221,7 +221,7 @@
                 { "op": "collision", "mode": "hulls", "parts": 5 }
               ]
             },
-            "inputs": { "files": ["$step10"] },
+            "inputs": { "files": ["$step10:mesh"] },
             "save": "mesh"
           },
           {
