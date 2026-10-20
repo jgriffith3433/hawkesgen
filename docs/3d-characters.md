@@ -119,7 +119,8 @@ fingers as `LeftHandIndex1`...). Each skeleton's names are read through the sche
 | `unity` | `Hips`, `Spine`, `Chest`, `UpperChest` | `LeftShoulder`, `LeftUpperArm`, `LeftLowerArm`, `LeftHand` | `LeftUpperLeg`, `LeftLowerLeg`, `LeftFoot`, `LeftToes` |
 | `unreal` | `pelvis`, `spine_01`..`spine_03` | `clavicle_l`, `upperarm_l`, `lowerarm_l`, `hand_l` | `thigh_l`, `calf_l`, `foot_l`, `ball_l` |
 | `rigify` | `DEF-spine` (or `DEF-hips`), `DEF-spine.001`..`.003`, `DEF-spine.004` or `DEF-neck`, `DEF-spine.006` or `DEF-head` | `DEF-shoulder.L`, `DEF-upper_arm.L`, `DEF-forearm.L`, `DEF-hand.L` | `DEF-thigh.L`, `DEF-shin.L`, `DEF-foot.L`, `DEF-toe.L` |
-| `smpl` (SMPL and SOMA-style mocap, AMASS BVH) | `pelvis`, `spine1`..`spine3` | `left_collar`, `left_shoulder` (upper arm), `left_elbow`, `left_wrist` | `left_hip`, `left_knee`, `left_ankle`, `left_foot` |
+| `smpl` (SMPL, SMPL-H, AMASS BVH) | `pelvis`, `spine1`..`spine3` | `left_collar`, `left_shoulder` (upper arm), `left_elbow`, `left_wrist` | `left_hip`, `left_knee`, `left_ankle`, `left_foot` |
+| `soma` (Kimodo somaskel77, the BVH from `motion.from-text`) | `Hips`, `Spine1`, `Spine2`, `Chest`, `Neck1` | `LeftShoulder`, `LeftArm`, `LeftForeArm`, `LeftHand` | `LeftLeg` (thigh), `LeftShin`, `LeftFoot`, `LeftToeBase` |
 | `bvh` (classic BVH) | `Hips`, `Abdomen`, `Chest`, `Chest2` | `LeftCollar`, `LeftShoulder` (upper arm), `LeftElbow`, `LeftWrist` | `LeftHip`, `LeftKnee`, `LeftAnkle`, `LeftToe` |
 
 Left/right can also be spelled `L_`, `l_`, `.L`, `_l` and so on. CMU-style BVH uses Mixamo-like names and reads as
@@ -172,8 +173,9 @@ include the shared kinds. A save drops any shared kind it didn't change.
 | `apose` | `image.edit` | `concept`: the front view alone, in an A-pose |
 | `mesh` | `mesh.textured` | `apose` |
 | `rig` | `mesh.rig` (1.8 m, kind humanoid) | `mesh`; its walk video goes to `preview/turntable` |
+| `motion/<clip>` | `motion.from-text` | `rig` plus the slot's `data.prompt` (a sentence). The GLB goes to the slot, the video to `preview/<clip>`. Prefer a Quaternius `animation/<clip>` when a library move already fits. |
 | `animation/<clip>` | `blender.character` (import, retarget, export glb, preview) | `rig` plus the slot's `data.source` (an `asset:` or `slot:` reference, or a library clip `motion:ual1/Walk_Loop`: a Mixamo FBX, a GLB or a BVH). The GLB goes to the slot, the video to `preview/<clip>`. |
-| `preview/turntable`, `preview/<clip>` | `blender.character` (preview) | `rig`, or `animation/<clip>` |
+| `preview/turntable`, `preview/<clip>` | `blender.character` (preview) | `rig`, or `animation/<clip>` / `motion/<clip>` |
 | `export/fbx`, `export/glb` | `blender.character` (import, retarget `*`, export) | `rig`. To take clips along, make it with `inputs: { files: ["slot:./rig", "slot:./animation/walk", "slot:./animation/idle"] }` |
 
 A recipe's `saves` map files a single tool's outputs by title, as in a chain. For example, `{ "glb": "animation/{part}",
@@ -266,6 +268,82 @@ on `animation/walk`. Several at once is the preset `shared/motions`:
 `clips` is up to 16 names. A name that is in both packs has to say which (`ual1/A_TPose`). `entity` is the character
 the results are filed on: each clip becomes a take of `animation/<name>` (`animation/walk-loop`, …). `preview: true`
 also files a video on `preview/<name>`. The character file is the rigged GLB or FBX (a `slot:` or `asset:` reference).
+
+## motion.from-text
+
+`motion.from-text` (version 1, family `motion`) makes a humanoid clip from a sentence. It is not a ComfyUI node and
+it is not on the fleet image. The first job on a server installs two venvs under `/opt/hawkes-motion` and refuses to
+start unless the disk has 60 GB free. Prefer a Quaternius clip from the motion library when one already fits; this
+tool is for a new move that is not in those packs.
+
+Kimodo writes the BVH itself, on its **SOMA** skeleton (`somaskel77`), with a standard T-pose as the rest pose.
+`blender.character` retargets that BVH with bone names `soma`. The SMPL-X Kimodo checkpoint is not installed: that one
+is a NVIDIA research license, and SMPL's body-model weights are non-commercial.
+
+| | What runs |
+|---|---|
+| Model | Kimodo-SOMA-RP-v1.2 (`nvidia/Kimodo-SOMA-RP-v1.2`, code commit `e1c219c99b4b`) |
+| Skeleton | SOMA, 77 joints. Not SMPL. |
+| License | Code Apache-2.0. Weights: **NVIDIA Open Model License**. That license grants a perpetual, worldwide, no-charge right to use, sell and distribute the model. NVIDIA claims no ownership of the outputs. Use stays inside NVIDIA's Trustworthy AI terms. The model card says it is ready for commercial use, including animation for games. |
+| Text encoder | Meta-Llama-3-8B-Instruct (Llama 3 Community License, commercial use under 700 million monthly users). It is gated. The server needs a Hugging Face token that has been granted that model, in `/opt/hawkes-motion/hf/token` (Gen writes one there when `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN` is set in Gen's `.env`). Without it Kimodo is skipped. |
+| Fallback | HY-Motion 1.0 (commit `4e426f5a1021`), only when Kimodo writes no BVH. Tencent's community license: commercial use under 1 million monthly users, outside the EU, the UK and South Korea (the same shape of terms as Hunyuan3D). It predicts SMPL-H pose numbers. Those are written to a BVH with SMPL joint names (`from: "smpl"`). The SMPL mesh weights are not downloaded. Text encoder: CLIP (MIT) and Qwen3-8B (Apache-2.0). |
+
+**Params:** `prompt` (a sentence), `seconds` (0.4 to 12, default 2), `loop`, `inPlace`, `poses`, `constraints`, `takes` (1 to 8).
+`loop` and `inPlace` need a `character` (a rigged GLB or FBX). They are blender.character's loop and inplace ops, applied
+after the retarget. `inPlace` is what you want for a punch that should not walk forward. `loop` is for an idle.
+
+**Key poses.** `poses` is the windup, the contact and the follow-through. Each entry is `{ "text", "seconds" }` or
+`{ "text", "at" }` (`at` is seconds from the start). Kimodo hears one sentence per pose, and the lengths are the
+durations. A bat swing:
+
+```json
+{
+  "prompt": "A person swings a baseball bat with both hands",
+  "poses": [
+    { "text": "windup, the bat cocked back over the right shoulder", "seconds": 0.6 },
+    { "text": "contact, the bat level in front of the chest", "seconds": 0.3 },
+    { "text": "follow-through, the bat finishing over the left shoulder", "seconds": 0.7 }
+  ]
+}
+```
+
+`constraints` is optional and advanced: a Kimodo constraints list, or root waypoints
+`{ "type": "root2d", "at": [0, 1.2], "path": [[0, 0], [0, 1.2]] }` (meters, x and z on the ground).
+
+**Outputs.** `bvh` is the generated motion. With a character: `glb` and `fbx` are that clip on the rig (Mixamo bone
+names on the FBX), and `preview` is a video of it. One of each per take. A `character3d` slot `motion/<clip>` files
+the GLB on itself and the video on `preview/<clip>`.
+
+**Best of N.** `takes` (2 to 8) makes that many variations in one job. Give the slot a saves map
+`{ "glb": "motion/<clip>", "preview": "preview/<clip>" }` so every preview lands in one slot and every GLB in the
+other, in the same order. Then `library.judge` on the preview slot, with `criteria` set to the same prompt, picks the
+video. The GLB with the same `take` (on the asset) is the clip that goes with it.
+
+```json
+{ "tool": "library.judge", "params": { "entity": "phorigins/pierce", "slot": "preview/swing", "criteria": "A person swings a baseball bat with both hands" } }
+```
+
+### Prompts that work for game moves
+
+Kimodo was trained on motion-capture descriptions. Write a full sentence in the present tense, name the limbs, and
+say how the move ends. One action. Two to three seconds is enough for an attack. The skeleton has no prop: the bat,
+sword or gun is attached afterwards with blender.character (`attach` on `RightHand`).
+
+| Move | Prompt | Notes |
+|---|---|---|
+| Jab | A person throws a straight right punch and returns the fist to a ready stance in front of the chest. | `inPlace: true`, about 0.8 seconds. |
+| Cross | A person turns the hips and throws a right cross, then brings the hand back to guard. | `inPlace: true`, about 1 second. |
+| Bat swing | A person swings a baseball bat with both hands. | Use the three poses above (windup, contact, follow-through). `inPlace: true`, about 1.6 seconds. |
+| Kick | A person chamber-kicks with the right leg to the front and sets the foot back down beside the left. | `inPlace: true`, about 1.2 seconds. |
+| Hit in the chest | A person is struck in the chest, the shoulders rock back, and they catch their balance without falling. | `inPlace: true`, about 1 second. Do not say "ragdoll". |
+| Hit that staggers | A person takes a heavy hit on the left shoulder and stumbles two steps to the right, staying upright. | Leave `inPlace` off so the stumble travels. |
+| Death, drop | A person clutches their chest, sinks to their knees, and falls onto their back, then lies still. | 3 to 4 seconds. Not a loop. |
+| Death, forward | A person is hit hard in the head and falls forward onto the ground, then lies face down. | 3 seconds. |
+| Idle | A person stands, shifts their weight from one foot to the other, and settles. | `loop: true`, `inPlace: true`, 2 to 4 seconds. |
+| Walk | A person walks forward at a steady pace, arms swinging. | Leave `inPlace` off. `loop: true` if it will tile. |
+
+Prompts that come back muddy: a single word ("attack"), several unrelated actions in one sentence, or a camera
+direction ("side view of a punch"). Ask for the body, not the shot.
 
 ## Tested
 

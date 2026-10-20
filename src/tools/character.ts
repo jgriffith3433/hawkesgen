@@ -44,7 +44,7 @@ export const OPS: Record<string, string[]> = {
   export: ['format!', 'name', 'clips', 'bones', 'title'],
   preview: ['turntable', 'clips', 'size', 'seconds', 'engine', 'samples', 'maxFrames'],
 };
-const NAMES = ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'bvh'];
+const NAMES = ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'soma', 'bvh'];
 const MODELS = ['.glb', '.gltf', '.fbx', '.obj'];
 const MOTION = [...MODELS, '.bvh'];
 

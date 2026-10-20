@@ -223,11 +223,18 @@ SCHEMES = {
         **{f"thumb0{k}{{s}}": f"{{S}}HandThumb{k}" for k in (1, 2, 3)},
         **{f"f{f.lower()}0{k}{{s}}": f"{{S}}Hand{f}{k}" for f in FINGERS[1:] for k in (1, 2, 3)},
     }),
-    # SMPL and SOMA-style mocap skeletons (AMASS BVH exports): "shoulder" is the upper arm, "collar" the clavicle.
+    # SMPL / SMPL-H / AMASS BVH: "shoulder" is the upper arm, "collar" the clavicle. Not Kimodo's SOMA skeleton.
     "smpl": _sides({
         "pelvis": "Hips", "spine1": "Spine", "spine2": "Spine1", "spine3": "Spine2", "neck": "Neck", "head": "Head",
         "{s}hip": "{S}UpLeg", "{s}knee": "{S}Leg", "{s}ankle": "{S}Foot", "{s}foot": "{S}ToeBase",
         "{s}collar": "{S}Shoulder", "{s}shoulder": "{S}Arm", "{s}elbow": "{S}ForeArm", "{s}wrist": "{S}Hand",
+    }),
+    # Kimodo's somaskel77 (motion.from-text). Mixamo-like names, but Spine1 is the first spine and LeftLeg is the thigh.
+    "soma": _sides({
+        "hips": "Hips", "spine1": "Spine", "spine2": "Spine1", "chest": "Spine2", "neck1": "Neck", "head": "Head",
+        "{s}shoulder": "{S}Shoulder", "{s}arm": "{S}Arm", "{s}forearm": "{S}ForeArm", "{s}hand": "{S}Hand",
+        "{s}leg": "{S}UpLeg", "{s}shin": "{S}Leg", "{s}foot": "{S}Foot", "{s}toebase": "{S}ToeBase",
+        **{f"{{s}}hand{f.lower()}{k}": f"{{S}}Hand{f}{k}" for f in FINGERS for k in (1, 2, 3, 4)},
     }),
     # Classic BVH mocap names (Biovision, MotionBuilder exports): collar, shoulder, elbow, wrist; hip, knee, ankle.
     "bvh": _sides({

@@ -39,6 +39,15 @@
           "saves": { "rigged": "rig", "walk": "preview/turntable" }
         }
       },
+      "motion/*": {
+        "description": "A clip generated from a text prompt on the rig (data.prompt is the sentence). The GLB is this slot; the preview video is preview/{part}. For several takes, submit with params.takes and run library.judge on the preview slot against the same prompt. The GLB with the same take is the matching clip.",
+        "make": {
+          "tool": "motion.from-text",
+          "params": { "prompt": "{prompt}", "seconds": 2, "inPlace": false, "loop": false, "takes": 1 },
+          "inputs": { "character": "slot:./rig" },
+          "saves": { "glb": "motion/{part}", "preview": "preview/{part}" }
+        }
+      },
       "animation/*": {
         "description": "One clip on the rig (a GLB with that animation, named like the slot: animation/walk holds \"walk\"). Its data.source names the motion to retarget: an asset (asset:<id>), a library clip (motion:ual1/Walk_Loop) or another slot (slot:project/entity/animation/walk), a Mixamo FBX, a GLB or a BVH.",
         "make": {
