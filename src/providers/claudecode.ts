@@ -179,9 +179,9 @@ export function failureOf(o: Outcome): GenError | null {
   return new GenError(`Claude (Max plan) failed: ${why}`, { status: 502 });
 }
 
-/** First `{` … matching `}`, respecting strings (so braces in values don't throw off the depth). */
-function firstJsonObject(text: string): string | null {
-  const start = text.indexOf('{');
+/** First balanced `{…}` or `[…]` block (whichever opens first), respecting strings so brackets in values don't throw off the depth. */
+function firstJsonBlock(text: string): string | null {
+  const start = text.search(/[{[]/);
   if (start < 0) return null;
   let depth = 0;
   let inString = false;
@@ -195,8 +195,8 @@ function firstJsonObject(text: string): string | null {
       continue;
     }
     if (c === '"') { inString = true; continue; }
-    if (c === '{') depth++;
-    else if (c === '}') {
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') {
       depth--;
       if (depth === 0) return text.slice(start, i + 1);
     }
@@ -204,20 +204,32 @@ function firstJsonObject(text: string): string | null {
   return null;
 }
 
-/** The answer's text: for a schema, the structured output as JSON text (or the text without code fences).
- *  When Claude adds a short prose lead-in before the object, pull out the first JSON object so callers can JSON.parse. */
+const parses = (s: string) => { try { JSON.parse(s); return true; } catch { return false; } };
+
+/** The JSON in a model's reply: bare, wrapped in a ```json fence (with or without prose around it), or the first balanced
+ *  block. A reply with no JSON in it comes back trimmed and unchanged, so the caller's JSON.parse still fails loudly. */
+export function extractJson(reply: string): string {
+  const text = reply.trim();
+  if (parses(text)) return text;
+  const candidates: string[] = [];
+  const fenced = /```[ \t]*(?:json)?[ \t]*\r?\n?([\s\S]*?)```/i.exec(text);
+  if (fenced) candidates.push(fenced[1].trim());
+  const open = /^```[ \t]*(?:json)?\s*/i.exec(text);
+  if (open) candidates.push(text.slice(open[0].length).replace(/\s*```\s*$/, '').trim());
+  candidates.push(text);
+  for (const c of candidates) {
+    if (parses(c)) return c;
+    const block = firstJsonBlock(c);
+    if (block && parses(block)) return block;
+  }
+  return text;
+}
+
+/** The answer's text: for a schema, the structured output as JSON text, or the JSON pulled out of the reply (see extractJson). */
 export function answerText(r: any, schema?: unknown): string {
   if (schema && r.structured_output !== undefined && r.structured_output !== null) return JSON.stringify(r.structured_output);
   const text = String(r.result ?? '');
-  if (!schema) return text;
-  const fenced = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(text);
-  const out = fenced ? fenced[1] : text.trim();
-  try {
-    JSON.parse(out);
-    return out;
-  } catch {
-    return firstJsonObject(out) ?? out;
-  }
+  return schema ? extractJson(text) : text;
 }
 
 /** One request through Claude Code, with the cap, the timeout and retries on rate limits. */

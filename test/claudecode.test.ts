@@ -73,6 +73,20 @@ test('answerText with a schema: pure JSON, fenced JSON, and a prose preamble bef
   assert.deepEqual(JSON.parse(maxPlan.answerText({ result: withPreamble }, schema)), { verdict: 'pass', findings: [] });
 });
 
+test('answerText unwraps fenced JSON, fenced JSON after prose, arrays, and keeps no-JSON replies strict', () => {
+  const schema = { type: 'object' };
+  const obj = '{"verdict":"pass","note":"has } and ``` inside","findings":[1,2]}';
+  assert.equal(maxPlan.answerText({ result: '```json\n' + obj + '\n```' }, schema), obj);
+  assert.equal(maxPlan.answerText({ result: '```\n' + obj + '\n```\n' }, schema), obj);
+  assert.equal(maxPlan.answerText({ result: 'Here is my review:\n\n```json\n' + obj + '\n```\nHope it helps.' }, schema), obj);
+  assert.equal(maxPlan.answerText({ result: '```json {"a":1}```' }, schema), '{"a":1}');
+  assert.equal(maxPlan.answerText({ result: '```json\n{"a":1}' }, schema), '{"a":1}');
+  assert.equal(maxPlan.answerText({ result: 'Sure: [{"a":1},{"b":[2]}] done' }, schema), '[{"a":1},{"b":[2]}]');
+  assert.equal(maxPlan.answerText({ result: '  ' + obj + '\n' }, schema), obj);
+  assert.throws(() => JSON.parse(maxPlan.answerText({ result: 'I could not do that.' }, schema)));
+  assert.equal(maxPlan.answerText({ result: '```json\n{"a":1}\n```' }), '```json\n{"a":1}\n```');
+});
+
 test('no more than the cap at once', async () => {
   saveSettings({ claude: { ...loadSettings().claude, concurrency: 2 } });
   const calls = freshLog();
