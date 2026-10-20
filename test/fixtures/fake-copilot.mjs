@@ -2,6 +2,6 @@
 const out = (type, data) => console.log(JSON.stringify({ type, data }));
 out('session.start', {});
 out('assistant.message_delta', { deltaContent: '{"ok"' });
-out('assistant.message', { content: '{"ok":true}', toolRequests: [] });
+out('assistant.message', { content: process.env.FAKE_COPILOT_ANSWER ?? '{"ok":true}', toolRequests: [] });
 out('assistant.usage', { model: 'gpt-5.4' });
 out('session.idle', {});

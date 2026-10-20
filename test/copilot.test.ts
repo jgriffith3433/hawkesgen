@@ -31,6 +31,20 @@ test('parseJsonl reads the answer and errors', () => {
   assert.match(parseJsonl('{"type":"session.error","data":{"message":"quota exceeded"}}').error, /quota/);
 });
 
+test('a schema answer wrapped in a code fence or prose still parses (the review that failed on 9a1e1ee)', async () => {
+  const schema = { type: 'object' };
+  try {
+    process.env.FAKE_COPILOT_ANSWER = '```json\n{"verdict":"pass","findings":[]}\n```';
+    assert.deepEqual(JSON.parse((await ask({ prompt: 'Review', schema })).text), { verdict: 'pass', findings: [] });
+    process.env.FAKE_COPILOT_ANSWER = 'Here is my review:\n{"verdict":"fail","findings":[]}';
+    assert.equal(JSON.parse((await ask({ prompt: 'Review', schema })).text).verdict, 'fail');
+    process.env.FAKE_COPILOT_ANSWER = 'plain words';
+    assert.equal((await ask({ prompt: 'Say' })).text, 'plain words');
+  } finally {
+    delete process.env.FAKE_COPILOT_ANSWER;
+  }
+});
+
 test('ask() runs the Copilot harness and does not bill tokens', async () => {
   const r = await ask({ prompt: 'Return JSON', model: 'claude-haiku-5-5' });
   assert.equal(r.billing, 'copilot');

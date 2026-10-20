@@ -60,8 +60,11 @@ type AskParams = { prompt: string; system?: string; images?: string[]; model?: s
 
 /** One request: text (and images) in, text or schema-valid JSON out. Grok when settings.brain is grok; otherwise settings.claude.backend. */
 export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: Billing }> {
-  if (loadSettings().brain === 'cursor') return cursor.ask({ ...p, model: loadSettings().model || p.model }, signal);
-  if (loadSettings().brain === 'copilot') return copilot.ask({ ...p, model: loadSettings().model || p.model }, signal);
+  const brain = loadSettings().brain;
+  if (brain === 'cursor' || brain === 'copilot') {
+    const r = await (brain === 'cursor' ? cursor : copilot).ask({ ...p, model: loadSettings().model || p.model }, signal);
+    return p.schema ? { ...r, text: maxPlan.answerText({ result: r.text }, p.schema) } : r;
+  }
   if (backend() === 'api') return askApi(p, signal);
   return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal);
 }
