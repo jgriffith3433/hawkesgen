@@ -63,6 +63,78 @@
           }
         ]
       }
+    },
+    "character3d-mv": {
+      "tool": "asset.make",
+      "description": "Cleaner humanoid 3D character from a concept image (inputs.files[0]), built to avoid messy generated meshes: A-pose → cutout → a back view made from the same cutout → mesh.textured best-of-4 → Blender: report, fix (floating shards, holes, doubles), symmetrize, retopo to ~8k quads (the raw mesh stays the bake source), bake, then project the front and back pictures onto the mesh so both sides are painted from real views, quality report, LODs → mesh.rig. Saves: apose, cutout, back, raw, mesh (GLB + LODs + color texture), rig. The GPU chain is untested end to end; the Blender ops are tested locally. Docs: docs/3d-characters.md.",
+      "params": {
+        "candidates": 4,
+        "pickAt": 5,
+        "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, symmetric, no shards, spikes or holes, texture reads the character on the front and the back.",
+        "refs": [0],
+        "steps": [
+          {
+            "tool": "image.edit",
+            "params": {
+              "prompt": "same character, A-pose, arms 45 degrees down, legs apart, front view, plain background. Keep the exact same design, colors and proportions. Full body from head to feet, facing the viewer, nothing else in the picture.",
+              "width": 1024,
+              "height": 1024
+            },
+            "inputs": { "images": ["$input:0"] },
+            "save": "apose"
+          },
+          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "cutout" },
+          {
+            "tool": "image.edit",
+            "params": {
+              "prompt": "the same character seen from directly behind, same A-pose, same design, colors and proportions. Full body from head to feet, plain background, nothing else in the picture.",
+              "width": 1024,
+              "height": 1024
+            },
+            "inputs": { "images": ["$step2"] },
+            "save": "backview"
+          },
+          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "back" },
+          {
+            "tool": "mesh.textured",
+            "params": { "faces": 100000 },
+            "inputs": { "image": "$step2" },
+            "save": "raw"
+          },
+          {
+            "tool": "blender.character",
+            "params": {
+              "ops": [
+                { "op": "import", "file": 0, "clips": false },
+                { "op": "report" },
+                { "op": "fix", "shards": 0.02, "holes": 24 },
+                { "op": "symmetrize" },
+                { "op": "retopo", "faces": 8000 },
+                { "op": "bake", "size": 2048 },
+                {
+                  "op": "project",
+                  "size": 2048,
+                  "views": [
+                    { "file": 1, "view": "front" },
+                    { "file": 2, "view": "back" }
+                  ]
+                },
+                { "op": "report" },
+                { "op": "lod", "levels": [0.5, 0.25, 0.1] },
+                { "op": "export", "format": "glb", "title": "mesh" }
+              ]
+            },
+            "inputs": { "files": ["$step5", "$step2", "$step4"] },
+            "save": "mesh"
+          },
+          {
+            "tool": "mesh.rig",
+            "params": { "height": 1.8, "kind": "humanoid", "keepTextures": true },
+            "inputs": { "mesh": "$prev:mesh" },
+            "save": "rig"
+          }
+        ]
+      }
     }
   }
 }

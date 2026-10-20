@@ -1894,8 +1894,478 @@ def op_preview(o):
     return {"op": "preview", "videos": [s[0] for s in shots]}
 
 
+# ---------------------------------------------------------------- repair, symmetry, retopology, LODs, quality report
+
+def _components(bm):
+    """The connected pieces of a bmesh, as lists of vertices."""
+    bm.verts.index_update()
+    seen, comps = set(), []
+    for v0 in bm.verts:
+        if v0.index in seen:
+            continue
+        stack, comp = [v0], []
+        seen.add(v0.index)
+        while stack:
+            v = stack.pop()
+            comp.append(v)
+            for e in v.link_edges:
+                w = e.other_vert(v)
+                if w.index not in seen:
+                    seen.add(w.index)
+                    stack.append(w)
+        comps.append(comp)
+    return comps
+
+
+def _comp_area(comp):
+    return sum(f.calc_area() for f in {f for v in comp for f in v.link_faces})
+
+
+def mesh_metrics(objs):
+    """What makes a generated mesh messy, counted on the meshes as they are now (world space), with a 0-100 score."""
+    tris = boundary = nonman = degen = thin = loose = shards = comps = 0
+    pts = []
+    for o in objs:
+        if o.type != "MESH":
+            continue
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        bm.transform(o.matrix_world)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=1e-4)
+        bmesh.ops.triangulate(bm, faces=bm.faces[:])
+        tris += len(bm.faces)
+        boundary += sum(1 for e in bm.edges if len(e.link_faces) == 1)
+        nonman += sum(1 for e in bm.edges if len(e.link_faces) > 2)
+        loose += sum(1 for v in bm.verts if not v.link_edges) + sum(1 for e in bm.edges if not e.link_faces)
+        for f in bm.faces:
+            a = f.calc_area()
+            if a < 1e-10:
+                degen += 1
+            else:
+                longest = max(e.calc_length() for e in f.edges)
+                if longest * longest / a > 40:
+                    thin += 1
+        cs = [c for c in _components(bm) if any(v.link_faces for v in c)]
+        areas = [_comp_area(c) for c in cs]
+        comps += len(cs)
+        top = max(areas, default=0)
+        shards += sum(1 for a in areas if top and a < 0.02 * top)
+        pts += [v.co.copy() for v in bm.verts if v.link_faces]
+        bm.free()
+    sym = 0.0
+    height = 0.0
+    if pts:
+        from mathutils.kdtree import KDTree
+        xs = [p.x for p in pts]
+        zs = [p.z for p in pts]
+        cx = sorted(xs)[len(xs) // 2]
+        height = max(zs) - min(zs)
+        step = max(1, len(pts) // 4000)
+        kd = KDTree(len(pts))
+        for i, p in enumerate(pts):
+            kd.insert(p, i)
+        kd.balance()
+        ds = [kd.find((2 * cx - p.x, p.y, p.z))[2] for p in pts[::step]]
+        sym = float(np.mean(ds)) / height if height > 0 else 0.0
+    t = max(tris, 1)
+    score = 100.0
+    score -= min(30, 6 * shards)
+    score -= min(20, 400 * boundary / t)
+    score -= min(15, 300 * nonman / t)
+    score -= min(15, 200 * thin / t)
+    score -= min(10, 100 * degen / t)
+    score -= min(10, 1000 * sym)
+    score = max(0, round(score))
+    return {"triangles": tris, "components": comps, "shards": shards, "boundaryEdges": boundary, "nonManifoldEdges": nonman,
+            "looseParts": loose, "degenerate": degen, "thin": thin, "asymmetry": round(sym, 4), "height": round(height, 3),
+            "score": score, "verdict": "clean" if score >= 80 else "usable" if score >= 60 else "messy"}
+
+
+def op_report(o):
+    need_char("report")
+    got = {"op": "report", **mesh_metrics(CHAR["meshes"])}
+    info["quality"] = {k: v for k, v in got.items() if k != "op"}
+    return got
+
+
+def op_fix(o):
+    """Repair what generated meshes come with: floating shards, doubles, degenerate faces, loose bits, holes, flipped normals."""
+    need_char("fix")
+    shards = float(o.get("shards", 0.02))
+    holes = int(o.get("holes", 32))
+    merge = float(o.get("merge", 0.0001))
+    smooth = int(o.get("smooth", 0))
+    before = mesh_metrics(CHAR["meshes"])
+    cut = filled = 0
+    for x in CHAR["meshes"]:
+        bm = bmesh.new()
+        bm.from_mesh(x.data)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts[:], dist=merge)
+        bmesh.ops.dissolve_degenerate(bm, dist=merge, edges=bm.edges[:])
+        bmesh.ops.delete(bm, geom=[e for e in bm.edges if not e.link_faces], context="EDGES")
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_edges], context="VERTS")
+        if shards > 0:
+            comps = _components(bm)
+            if len(comps) > 1:
+                areas = [_comp_area(c) for c in comps]
+                top = max(areas)
+                gone = [v for c, a in zip(comps, areas) if a < shards * top for v in c]
+                cut += sum(1 for a in areas if a < shards * top)
+                if gone:
+                    bmesh.ops.delete(bm, geom=gone, context="VERTS")
+        if holes > 0:
+            edges = [e for e in bm.edges if len(e.link_faces) == 1]
+            if edges:
+                n0 = len(bm.faces)
+                left = set(edges)
+                while left:
+                    loop, stack = set(), [left.pop()]
+                    while stack:
+                        e = stack.pop()
+                        loop.add(e)
+                        for v in e.verts:
+                            for e2 in v.link_edges:
+                                if e2 in left:
+                                    left.discard(e2)
+                                    stack.append(e2)
+                    if len(loop) <= holes:
+                        made = bmesh.ops.edgeloop_fill(bm, edges=list(loop))["faces"]
+                        bmesh.ops.triangulate(bm, faces=made)
+                filled += len(bm.faces) - n0
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        for _ in range(smooth):
+            bmesh.ops.smooth_vert(bm, verts=bm.verts, factor=0.5, use_axis_x=True, use_axis_y=True, use_axis_z=True)
+        bm.to_mesh(x.data)
+        bm.free()
+        x.data.update()
+    after = mesh_metrics(CHAR["meshes"])
+    return {"op": "fix", "shardsRemoved": cut, "holeFaces": filled, "before": before, "after": after}
+
+
+def _apply_transforms(x):
+    select([x], x)
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+
+def op_symmetrize(o):
+    """Mirror the denser half onto the other so a generated A-pose figure is left/right the same (static meshes)."""
+    need_char("symmetrize")
+    if CHAR["arm"]:
+        fail("symmetrize: do it before rigging (it rebuilds the mesh); put it before mesh.rig")
+    x = join_meshes()
+    _apply_transforms(x)
+    bm = bmesh.new()
+    bm.from_mesh(x.data)
+    if o.get("center", True):
+        xs = sorted(v.co.x for v in bm.verts)
+        bmesh.ops.translate(bm, verts=bm.verts, vec=V((-xs[len(xs) // 2], 0, 0)))
+    pos = sum(f.calc_area() for f in bm.faces if f.calc_center_median().x > 0)
+    neg = sum(f.calc_area() for f in bm.faces if f.calc_center_median().x < 0)
+    side = o.get("side", "auto")
+    keep = "+X" if (side == "+X" or (side == "auto" and pos >= neg)) else "-X"
+    n0 = len(bm.faces)
+    # bmesh's direction names the half that is copied over the other one.
+    bmesh.ops.symmetrize(bm, input=bm.verts[:] + bm.edges[:] + bm.faces[:], direction="-X" if keep == "+X" else "X", dist=float(o.get("merge", 0.0001)))
+    bm.to_mesh(x.data)
+    bm.free()
+    x.data.update()
+    return {"op": "symmetrize", "kept": keep, "faces": [n0, len(x.data.polygons)]}
+
+
+def op_retopo(o):
+    """A clean, even, low-poly surface from a generated mesh (Quadriflow quads, or a voxel remesh when it can't). The
+    original stays as the bake source, so bake afterwards carries its color and detail onto the new surface."""
+    need_char("retopo")
+    if CHAR["arm"]:
+        fail("retopo: do it before rigging (a remesh drops skin weights); put retopo before mesh.rig")
+    keep_high()
+    fixed = op_fix({"holes": 32}) if o.get("fix", True) else None
+    x = join_meshes()
+    _apply_transforms(x)
+    faces = max(500, min(60000, int(o.get("faces", 8000))))
+    before = triangles(x)
+    if before > 300000:
+        mod = x.modifiers.new("hb_pre", "DECIMATE")
+        mod.ratio = 300000 / before
+        mod.use_collapse_triangulate = True
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    method = "quadriflow"
+    if o.get("mode", "quad") == "voxel":
+        method = "voxel"
+    else:
+        say("step", f"quad remesh to about {faces} faces")
+        try:
+            res = bpy.ops.object.quadriflow_remesh(target_faces=faces, use_mesh_symmetry=bool(o.get("symmetry", False)),
+                                                   use_preserve_sharp=False, use_preserve_boundary=False,
+                                                   smooth_normals=True, seed=int(o.get("seed", 0)))
+            if "FINISHED" not in res or len(x.data.polygons) < faces * 0.3:
+                method = "voxel"
+        except Exception as e:  # not manifold, too thin: fall back rather than fail the job
+            warn(f"retopo: quad remesh failed ({str(e).strip()[:80]}); used a voxel remesh")
+            method = "voxel"
+    if method == "voxel":
+        H = CHAR["height"] or 1.8
+        say("step", "voxel remesh")
+        x.data.remesh_voxel_size = H / 160
+        bpy.ops.object.voxel_remesh()
+        now = triangles(x)
+        if now > faces * 2:
+            mod = x.modifiers.new("hb_post", "DECIMATE")
+            mod.ratio = faces * 2 / now
+            mod.use_collapse_triangulate = False
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+    bpy.ops.object.shade_smooth()
+    err = silhouette_error()
+    got = {"op": "retopo", "method": method, "trianglesBefore": before, "triangles": triangles(x), "polygons": len(x.data.polygons),
+           "silhouette": {"max": round(err[0], 4), "p99": round(err[1], 4)}}
+    if fixed:
+        got["fixed"] = {"shardsRemoved": fixed["shardsRemoved"], "holeFaces": fixed["holeFaces"]}
+    if CHAR["height"] and err[1] > CHAR["height"] * 0.01:
+        warn(f"retopo: the surface moved up to {err[1] * 100:.1f} cm (99th percentile) from the original; raise faces to keep more of the shape")
+    return got
+
+
+def op_lod(o):
+    """Lower-detail copies of the mesh as separate GLBs (name_LOD1.glb ...), each a ratio of the current triangles."""
+    need_char("lod")
+    levels = o.get("levels") or [0.5, 0.25, 0.1]
+    if not isinstance(levels, list) or not all(isinstance(r, (int, float)) and 0.01 <= r < 1 for r in levels):
+        fail("lod: levels is a list of ratios between 0.01 and 1, e.g. [0.5, 0.25, 0.1]")
+    stem = re.sub(r"[^\w.-]", "", str(o.get("name") or "character"))[:60] or "character"
+    base = join_meshes()
+    tris = triangles(base)
+    made = []
+    for k, r in enumerate(levels, 1):
+        copy = base.copy()
+        copy.data = base.data.copy()
+        copy.name = f"{stem}_LOD{k}"
+        scene.collection.objects.link(copy)
+        select([copy], copy)
+        mod = copy.modifiers.new("hb_lod", "DECIMATE")
+        mod.ratio = float(r)
+        mod.use_collapse_triangulate = True
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+        path = os.path.join(FILES_OUT, f"{stem}_LOD{k}.glb")
+        say("step", f"writing {stem}_LOD{k}.glb ({triangles(copy)} triangles)")
+        keep = ([CHAR["arm"]] if CHAR["arm"] else []) + [copy]
+        select(keep, keep[0])
+        bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", use_selection=True, export_yup=True,
+                                  export_skins=True, export_animations=False, export_materials="EXPORT", export_apply=False)
+        info["outputs"].append({"file": os.path.basename(path), "title": f"LOD{k}", "ext": ".glb"})
+        made.append({"level": k, "ratio": r, "triangles": triangles(copy), "file": os.path.basename(path)})
+        remove([copy])
+    return {"op": "lod", "from": tris, "levels": made}
+
+
+VIEW_ANGLES = {"front": 0, "left": 90, "back": 180, "right": 270}
+
+
+def _view_azimuth(v):
+    a = v.get("view", v.get("angle", 0))
+    if isinstance(a, str):
+        if a not in VIEW_ANGLES:
+            fail(f"project: view {a!r} is front, left, back, right or an angle in degrees (0 = the front, 90 = the character's left)")
+        return VIEW_ANGLES[a]
+    return float(a)
+
+
+def _load_view(path):
+    img = bpy.data.images.load(path)
+    w, h = img.size
+    px = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(px)
+    bpy.data.images.remove(img)
+    px = px.reshape(h, w, 4)
+    return px
+
+
+def _mask_of(px):
+    """Where the character is in a view: its alpha, or else whatever differs from the border's color."""
+    a = px[..., 3]
+    if a.min() < 0.99:
+        return a > 0.5
+    border = np.concatenate([px[0, :, :3], px[-1, :, :3], px[:, 0, :3], px[:, -1, :3]])
+    bg = np.median(border, axis=0)
+    return np.abs(px[..., :3] - bg).max(axis=2) > 0.08
+
+
+def _sample(px, u, v):
+    h, w = px.shape[:2]
+    x = np.clip(u * w - 0.5, 0, w - 1.001)
+    y = np.clip(v * h - 0.5, 0, h - 1.001)
+    x0, y0 = x.astype(int), y.astype(int)
+    fx, fy = (x - x0)[:, None], (y - y0)[:, None]
+    c = px[y0, x0] * (1 - fx) * (1 - fy) + px[y0, x0 + 1] * fx * (1 - fy) + px[y0 + 1, x0] * (1 - fx) * fy + px[y0 + 1, x0 + 1] * fx * fy
+    return c
+
+
+def op_project(o):
+    """Paint the color texture from several pictures of the character (front, back, sides) projected onto the mesh,
+    each texel taken from the views that see it head-on and nothing is in front of, blended by how squarely they see it.
+    Views are cutouts (alpha) or plain backgrounds; each is fitted to the mesh by the character's height and center."""
+    need_char("project")
+    views = o.get("views")
+    if not isinstance(views, list) or not views:
+        fail("project: views is a list like [{ file: 1, view: 'front' }, { file: 2, view: 'back' }]")
+    size = max(256, min(4096, int(o.get("size", 1024))))
+    power = float(o.get("sharpness", 3))
+    low = join_meshes()
+    me = low.data
+    if o.get("rebuild_uv") or not me.uv_layers:
+        say("step", "unwrapping (smart UV project)")
+        for layer in list(me.uv_layers):
+            me.uv_layers.remove(layer)
+        uv0 = me.uv_layers.new(name="baked")
+        me.uv_layers.active = uv0
+        select([low], low)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=0.003)
+        bpy.ops.object.mode_set(mode="OBJECT")
+    uvl = me.uv_layers.active
+    me.calc_loop_triangles()
+    mw = low.matrix_world
+    nm = mw.to_3x3().inverted_safe().transposed()
+    lo, hi = mesh_bounds([low])
+    zmin, zmax = lo.z, hi.z
+    H = max(zmax - zmin, 1e-6)
+    ctr = (lo + hi) / 2
+
+    # Rasterize the UV triangles: each texel's 3D point and normal.
+    pos = np.zeros((size, size, 3), dtype=np.float32)
+    nor = np.zeros((size, size, 3), dtype=np.float32)
+    have = np.zeros((size, size), dtype=bool)
+    say("step", f"mapping {len(me.loop_triangles)} triangles to the {size}px texture")
+    uvs = np.empty(len(me.loops) * 2, dtype=np.float32)
+    uvl.uv.foreach_get("vector", uvs)
+    uvs = uvs.reshape(-1, 2)
+    for t in me.loop_triangles:
+        l0, l1, l2 = t.loops
+        p = uvs[[l0, l1, l2]] * size
+        x0, y0 = np.floor(p.min(axis=0)).astype(int)
+        x1, y1 = np.ceil(p.max(axis=0)).astype(int)
+        x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, size - 1), min(y1, size - 1)
+        if x1 < x0 or y1 < y0:
+            continue
+        gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+        d = (p[1, 1] - p[2, 1]) * (p[0, 0] - p[2, 0]) + (p[2, 0] - p[1, 0]) * (p[0, 1] - p[2, 1])
+        if abs(d) < 1e-9:
+            continue
+        a = ((p[1, 1] - p[2, 1]) * (gx - p[2, 0]) + (p[2, 0] - p[1, 0]) * (gy - p[2, 1])) / d
+        b = ((p[2, 1] - p[0, 1]) * (gx - p[2, 0]) + (p[0, 0] - p[2, 0]) * (gy - p[2, 1])) / d
+        c = 1 - a - b
+        inside = (a >= -0.001) & (b >= -0.001) & (c >= -0.001)
+        if not inside.any():
+            continue
+        vs = [me.vertices[i].co for i in t.vertices]
+        w = [mw @ v for v in vs]
+        q = np.array([tuple(v) for v in w], dtype=np.float32)
+        n = np.array(tuple((nm @ t.normal).normalized()), dtype=np.float32)
+        ys, xs = np.nonzero(inside)
+        aa, bb, cc = a[ys, xs][:, None], b[ys, xs][:, None], c[ys, xs][:, None]
+        pos[y0 + ys, x0 + xs] = aa * q[0] + bb * q[1] + cc * q[2]
+        nor[y0 + ys, x0 + xs] = n
+        have[y0 + ys, x0 + xs] = True
+    ys, xs = np.nonzero(have)
+    P = pos[ys, xs]
+    N = nor[ys, xs]
+    dg = bpy.context.evaluated_depsgraph_get()
+    tree = BVHTree.FromObject(low, dg)
+
+    acc = np.zeros((len(P), 3), dtype=np.float64)
+    wsum = np.zeros(len(P), dtype=np.float64)
+    used = []
+    for vw in views:
+        az = math.radians(_view_azimuth(vw))
+        cam = np.array([math.sin(az), -math.cos(az), 0.0])
+        right = np.array([-cam[1], cam[0], 0.0])
+        px = _load_view(file_arg(vw.get("file"), "project.views"))
+        mask = _mask_of(px)
+        rows = np.nonzero(mask.any(axis=1))[0]
+        cols = np.nonzero(mask.any(axis=0))[0]
+        if not len(rows):
+            warn(f"project: view {vw.get('view', vw.get('angle'))} shows nothing (an empty cutout); skipped")
+            continue
+        h_img, w_img = px.shape[:2]
+        top, bottom = rows.max() + 1, rows.min()
+        scale = (top - bottom) / H
+        # Horizontal fit: the cutout's center against the mesh's center along this view's right axis, widths agreeing.
+        cx_img = (cols.max() + 1 + cols.min()) / 2
+        coord = (P - np.array(tuple(ctr))) @ right
+        u = (cx_img + coord * scale) / w_img
+        v = (bottom + (P[:, 2] - zmin) * scale) / h_img
+        facing = N @ cam
+        ok = (facing > 0.1) & (u > 0) & (u < 1) & (v > 0) & (v < 1)
+        idx = np.nonzero(ok)[0]
+        say("step", f"view {vw.get('view', vw.get('angle'))}: {len(idx)} texels face it; checking what is in front")
+        eps = H * 0.002
+        camv = V(tuple(cam))
+        vis = np.zeros(len(P), dtype=bool)
+        for i in idx:
+            origin = V(tuple(P[i])) + V(tuple(N[i])) * eps
+            vis[i] = tree.ray_cast(origin, camv)[0] is None
+        take = np.nonzero(vis)[0]
+        if not len(take):
+            continue
+        col = _sample(px, u[take], v[take])
+        inm = _sample(mask[..., None].astype(np.float32).repeat(4, axis=2), u[take], v[take])[:, 0] > 0.9
+        w = np.power(np.clip(facing[take], 0, 1), power) * inm * float(vw.get("weight", 1))
+        acc[take] += col[:, :3] * w[:, None]
+        wsum[take] += w
+        used.append(vw.get("view", vw.get("angle")))
+
+    # Existing color (a bake) fills what no view reached; otherwise a flat gray, then the seams are grown out.
+    name = f"{low.name}_color"
+    base = None
+    for im in bpy.data.images:
+        if im.name == name and im.size[0] == size and im.size[1] == size:
+            base = np.empty(size * size * 4, dtype=np.float32)
+            im.pixels.foreach_get(base)
+            base = base.reshape(size, size, 4)
+    out = base.copy() if base is not None else np.full((size, size, 4), (0.5, 0.5, 0.5, 1.0), dtype=np.float32)
+    seen = wsum > 1e-4
+    out[ys[seen], xs[seen], :3] = (acc[seen] / wsum[seen][:, None]).astype(np.float32)
+    covered = np.zeros((size, size), dtype=bool)
+    covered[ys[seen], xs[seen]] = True
+    margin = int(o.get("margin", 8))
+    for _ in range(margin):
+        grow = np.zeros_like(covered)
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            src = np.roll(np.roll(covered, dy, 0), dx, 1)
+            new = src & ~covered & ~grow
+            if new.any():
+                out[new, :3] = np.roll(np.roll(out, dy, 0), dx, 1)[new, :3]
+                grow |= new
+        covered |= grow
+    img = bpy.data.images.get(name)
+    if img is None or img.size[0] != size:
+        if img is not None:
+            bpy.data.images.remove(img)
+        img = bpy.data.images.new(name, size, size, alpha=False)
+    img.pixels.foreach_set(out.reshape(-1))
+    mat = low.data.materials[0] if low.data.materials else bpy.data.materials.new("baked")
+    if not low.data.materials:
+        low.data.materials.append(mat)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+    node = next((n for n in nt.nodes if n.type == "TEX_IMAGE" and n.image is not None and n.image.name == name), None) or nt.nodes.new("ShaderNodeTexImage")
+    node.image = img
+    nt.links.new(node.outputs["Color"], bsdf.inputs["Base Color"])
+    tex = os.path.join(OUT, "files")
+    os.makedirs(tex, exist_ok=True)
+    img.filepath_raw = os.path.join(tex, f"{low.name}_color.png")
+    img.file_format = "PNG"
+    img.save()
+    img.pack()
+    info["outputs"].append({"file": f"{low.name}_color.png", "title": "texture/color", "ext": ".png"})
+    return {"op": "project", "size": size, "views": used, "seen": round(float(seen.sum() / max(len(P), 1)), 3)}
+
+
 OPS = {"import": op_import, "clean": op_clean, "bake": op_bake, "attach": op_attach, "retarget": op_retarget,
        "pose": op_pose, "concat": op_concat, "copy": op_copy, "rename": op_rename, "remove": op_remove,
+       "fix": op_fix, "symmetrize": op_symmetrize, "retopo": op_retopo, "lod": op_lod, "project": op_project,
+       "report": op_report,
        "split": op_split, "template": op_template, "clips": op_clips, "angles": op_angles,
        "export": op_export, "preview": op_preview, **{k: op_edit for k in EDITS}}
 
@@ -1928,6 +2398,7 @@ def main():
     info["clips"] = [{"name": n, "frames": len(c["rot"]), "seconds": round((len(c["rot"]) - 1) / FPS, 2), "source": c.get("source")}
                      for n, c in CLIPS.items()]
     info["seconds_total"] = round(time.time() - t0, 1)
+    info["outputs"].sort(key=lambda o: str(o["title"]).startswith(("LOD", "texture/")))
     json.dump(info, open(os.path.join(OUT, "character.json"), "w"), indent=1)
     say("done", info["seconds_total"])
 

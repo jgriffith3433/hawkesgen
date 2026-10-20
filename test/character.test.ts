@@ -56,7 +56,7 @@ test('characterScript: the ops in Blender, then each preview shot rendered and e
   assert.match(s, /res\/preview-\$n\.mp4/);
   const tool = getTool('blender.character');
   assert.ok(tool && tool.family === 'blender' && tool.output === 'mesh' && tool.inputs.files.multiple);
-  assert.equal(tool!.version, 3);
+  assert.equal(tool!.version, 4);
 });
 
 test('checkOps: angles op (four stills for mesh judging)', () => {

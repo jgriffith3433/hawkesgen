@@ -24,6 +24,12 @@ const CLIP_TYPES = ['walk', 'run', 'idle', 'attack', 'hit', 'death', 'jump'] as 
 export const OPS: Record<string, string[]> = {
   import: ['file!', 'height', 'facing', 'clips', 'names', 'map'],
   clean: ['triangles', 'merge', 'normals'],
+  fix: ['shards', 'holes', 'merge', 'smooth'],
+  symmetrize: ['side', 'center', 'merge'],
+  retopo: ['faces', 'mode', 'symmetry', 'fix', 'seed'],
+  project: ['views!', 'size', 'sharpness', 'margin', 'rebuild_uv'],
+  lod: ['levels', 'name'],
+  report: [],
   bake: ['size', 'maps', 'high', 'samples', 'margin', 'extrusion', 'distance', 'roughness', 'islandMargin'],
   attach: ['file!', 'bone!', 'offset', 'rotation', 'size', 'scale', 'origin', 'name'],
   retarget: ['file!', 'name', 'action', 'from', 'map', 'inPlace', 'scale'],
@@ -48,6 +54,7 @@ export const OPS: Record<string, string[]> = {
 const NAMES = ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'soma', 'bvh'];
 const MODELS = ['.glb', '.gltf', '.fbx', '.obj'];
 const MOTION = [...MODELS, '.bvh'];
+const IMAGES = ['.png', '.jpg', '.jpeg', '.webp'];
 
 export type CharacterPlan = { ops: Record<string, any>[]; previews: boolean; turntable: boolean; bake: boolean; exports: string[] };
 
@@ -86,6 +93,27 @@ export function checkOps(ops: unknown, files: string[]): CharacterPlan {
     if (o.op === 'bake') {
       if (o.high != null) fileRef(o, k, 'high', MODELS);
       if (o.size != null && !(o.size >= 64 && o.size <= 2048)) throw new GenError(`ops[${k}] bake: size is 64 to 2048 (2K at most)`);
+      plan.bake = true;
+    }
+    if (o.op === 'retopo') {
+      if (o.faces != null && !(Number.isInteger(o.faces) && o.faces >= 500 && o.faces <= 60000)) throw new GenError(`ops[${k}] retopo: faces is 500 to 60000`);
+      if (o.mode != null && !['quad', 'voxel'].includes(o.mode)) throw new GenError(`ops[${k}] retopo: mode is quad or voxel`);
+    }
+    if (o.op === 'fix' && o.shards != null && !(o.shards >= 0 && o.shards <= 0.5)) throw new GenError(`ops[${k}] fix: shards is 0 to 0.5 (a piece smaller than this share of the biggest one is removed)`);
+    if (o.op === 'symmetrize' && o.side != null && !['auto', '+X', '-X'].includes(o.side)) throw new GenError(`ops[${k}] symmetrize: side is auto, +X or -X`);
+    if (o.op === 'lod' && o.levels != null && !(Array.isArray(o.levels) && o.levels.length && o.levels.every((r: unknown) => typeof r === 'number' && r >= 0.01 && r < 1))) {
+      throw new GenError(`ops[${k}] lod: levels is a list of ratios from 0.01 to below 1, e.g. [0.5, 0.25, 0.1]`);
+    }
+    if (o.op === 'project') {
+      if (!Array.isArray(o.views) || !o.views.length) throw new GenError(`ops[${k}] project: views is [{ file: 1, view: "front" }, { file: 2, view: "back" }, ...]`);
+      o.views.forEach((v: any, i: number) => {
+        if (!v || typeof v !== 'object') throw new GenError(`ops[${k}] project: views[${i}] must be { file, view }`);
+        fileRef({ ...v, op: 'project' }, k, 'file', IMAGES);
+        if (!(typeof v.view === 'string' ? ['front', 'back', 'left', 'right'].includes(v.view) : typeof (v.view ?? v.angle) === 'number')) {
+          throw new GenError(`ops[${k}] project: views[${i}].view is front, back, left, right or an angle in degrees`);
+        }
+      });
+      if (o.size != null && !(o.size >= 256 && o.size <= 4096)) throw new GenError(`ops[${k}] project: size is 256 to 4096`);
       plan.bake = true;
     }
     if (o.op === 'clean' && o.triangles != null && !(Number.isInteger(o.triangles) && o.triangles >= 500 && o.triangles <= 500000)) throw new GenError(`ops[${k}] clean: triangles is 500 to 500000`);
@@ -215,11 +243,15 @@ const MIME_EXT: Record<string, string> = { glb: '.glb', fbx: '.fbx', blend: '.bl
 
 export const blenderCharacterTool: Tool = {
   id: 'blender.character',
-  version: 3,
-  title: '3D character ops in Blender (clean, bake, props, retarget, robots, FBX/GLB)',
+  version: 4,
+  title: '3D character ops in Blender (repair, retopo, bake, multi-view texture, LODs, props, retarget, robots, FBX/GLB)',
   description:
-    'Runs a chain of named Blender ops on one 3D character, on a GPU server: import (GLB/FBX/OBJ), clean (merge, fix normals, decimate to a ' +
-    'triangle budget, default 25k), bake (smart UVs, base color + normal from the high-poly, 2K max), attach a prop to a bone (a bat in ' +
+    'Runs a chain of named Blender ops on one 3D character, on a GPU server: import (GLB/FBX/OBJ), report (mesh quality: shards, holes, ' +
+    'thin triangles, asymmetry, a 0-100 score), fix (remove floating shards, merge doubles, fill holes, fix normals), symmetrize (mirror the ' +
+    'denser half so a generated figure is left/right the same), retopo (clean quad surface via Quadriflow, voxel fallback; the original is ' +
+    'kept as the bake source), clean (merge, fix normals, decimate to a triangle budget, default 25k), bake (smart UVs, base color + normal ' +
+    'from the high-poly, 2K max), project (paint the color texture from front/back/side pictures projected onto the mesh, so every side ' +
+    'comes from a real view), lod (lower-detail GLBs), attach a prop to a bone (a bat in ' +
     'RightHand), retarget clips from another skeleton (FBX/GLB/BVH; Mixamo, Unity, Unreal, Rigify, SMPL/SOMA or BVH bone names; rest-pose ' +
     'aware), clip edits (trim, loop with a blended seam, in place, speed, mirror, reverse, concat, key poses from JSON bone rotations), ' +
     'hard-surface robots (split into parts by connected pieces or labelled centres; template rigs spider / quadarm / biped / chain with ' +
@@ -236,7 +268,7 @@ export const blenderCharacterTool: Tool = {
   params: {
     ops: {
       type: 'json', required: true,
-      description: 'The steps, in order: [{ op: import | clean | bake | attach | retarget | trim | loop | inplace | speed | mirror | reverse | concat | pose | copy | rename | remove | split | template | clips | export | preview, ... }]. docs/3d-characters.md.',
+      description: 'The steps, in order: [{ op: import | report | fix | symmetrize | retopo | clean | bake | project | lod | attach | retarget | trim | loop | inplace | speed | mirror | reverse | concat | pose | copy | rename | remove | split | template | clips | export | preview, ... }]. docs/3d-characters.md.',
       example: [
         { op: 'import', file: 0 },
         { op: 'split', kind: 'quadarm', label: true },
@@ -257,7 +289,8 @@ export const blenderCharacterTool: Tool = {
       const bake = ops.some((o) => o?.op === 'bake') ? 60 : 0;
       const previews = ops.some((o) => o?.op === 'preview') ? 120 : 0;
       const robot = ops.some((o) => o?.op === 'split' || o?.op === 'template') ? 45 : 0;
-      return 30 + ops.length * 4 + bake + previews + robot;
+      const art = (ops.some((o) => o?.op === 'retopo') ? 60 : 0) + (ops.some((o) => o?.op === 'project') ? 90 : 0) + (ops.some((o) => o?.op === 'lod') ? 20 : 0);
+      return 30 + ops.length * 4 + bake + previews + robot + art;
     } catch {
       return 60;
     }
@@ -354,6 +387,7 @@ export const blenderCharacterTool: Tool = {
     ctx.result({
       height: info.height, triangles: info.triangles, names: info.names, clips: info.clips, props: info.props,
       bones: info.bones, ops: info.ops, warnings: info.warnings, seconds: info.seconds_total, outputs: outs.map((o: any) => o.title),
+      quality: info.quality ?? null,
       template: info.ops?.find((x: any) => x.op === 'template')?.kind ?? null,
     });
   },
