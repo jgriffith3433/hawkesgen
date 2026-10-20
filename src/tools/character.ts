@@ -270,7 +270,8 @@ export const blenderCharacterTool: Tool = {
     'RightHand), retarget clips from another skeleton (FBX/GLB/BVH; Mixamo, Unity, Unreal, Rigify, SMPL/SOMA or BVH bone names; rest-pose ' +
     'aware), clip edits (trim, loop with a blended seam, in place, speed, mirror, reverse, concat, key poses from JSON bone rotations), ' +
     'hard-surface robots (split into parts by connected pieces or labelled centres; template rigs spider / quadarm / biped / chain with ' +
-    'rigid bind; procedural walk/run/idle/attack/hit/death/jump clips), export (FBX for Unity: Mixamo or Generic bone names; GLB for the ' +
+    'rigid bind; procedural walk/run/idle/attack/hit/death/jump clips), pack (ORM texture: occlusion, roughness, metal in one image), ' +
+    'collision (physics proxies: box, capsule, hull or hulls), export (FBX for Unity: Mixamo or Generic bone names; GLB for the ' +
     'web; or the .blend) and previews (a turntable and a video per clip). Ops refer to the job\'s files by index. A file can be ' +
     'motion:<pack>/<clip> from the CC0 Quaternius library. For a humanoid mesh with no skeleton yet, use mesh.rig first. ' +
     'docs/3d-characters.md has every op.',
