@@ -911,10 +911,15 @@ async function finishBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks, { 
     const lines = log.toString('utf8').split(/\r?\n/);
     const errors = [...new Set(lines.filter((l) => /\[GameDeploy\].*(ERROR|FAILED)|DEPLOY FAILED|\[Hawkes\].*(error|failed)|error CS\d+|BuildFailedException|Build Failed|Exception:|error:/i.test(l) && !/Licensing::/i.test(l)).map((l) => l.trim()))].slice(0, 20);
     const hardLicense = lines.find((l) => HARD_LICENSE_RE.test(l));
-    if (hardLicense || (!errors.length && (licenseProblem || LICENSE_RE.test(base.logTail)))) {
-      return { ...base, ok: false, error: `Unity isn't licensed on the build server (${(hardLicense ?? licenseProblem) || 'license error'}). Open the Remote Desktop file (hawkesgen builder rdp), sign in to Unity Hub once, then build again.`, kind: 'license', site: null, project: null };
+    if (hardLicense) {
+      return { ...base, ok: false, error: `Unity isn't licensed on the build server (${hardLicense.trim()}). Open the Remote Desktop file (hawkesgen builder rdp), sign in to Unity Hub once, then build again.`, kind: 'license', site: null, project: null };
     }
-    return { ...base, ok: false, error: `Unity exited with code ${exit}${errors.length ? `: ${errors[0]}` : ''}`, errors, kind: 'build', site: null, project: null };
+    // Soft license lines ("Access token is unavailable") are noise; with no other error found, say what the log ended with
+    // instead of blaming the license.
+    const lastLine = errors[0] ?? lines.filter((l) => l.trim() && !/Licensing::/i.test(l)).slice(-1)[0]?.trim();
+    const softLicense = !errors.length && (licenseProblem || LICENSE_RE.test(base.logTail));
+    const hint = softLicense ? ' (the log also has a soft licensing line, "Access token is unavailable", which successful builds log too; it is probably not the cause)' : '';
+    return { ...base, ok: false, error: `Unity exited with code ${exit}${lastLine ? `: ${lastLine}` : ''}${hint}`, errors, kind: 'build', site: null, project: null };
   }
 
   // Pull back what the build changed in the website folder.
