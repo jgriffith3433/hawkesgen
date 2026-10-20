@@ -38,6 +38,15 @@ def frame(src, out, width, height, fill=0.78, color="00ff00", bottom=0.06):
     canvas.convert("RGB").save(out)
 
 
+def fit(src, out, width, height, color="e6e6e6"):
+    im = Image.open(src).convert("RGBA")
+    scale = min(width / im.width, height / im.height)
+    im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.LANCZOS)
+    canvas = Image.new("RGBA", (width, height), (*rgb(color), 255))
+    canvas.alpha_composite(im, ((width - im.width) // 2, (height - im.height) // 2))
+    canvas.convert("RGB").save(out)
+
+
 def motion(src, out, width, height, max_frames, fps=16):
     vf = f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", src, "-vf", vf, "-frames:v", str(max_frames),
@@ -55,6 +64,8 @@ def main():
     cmd, a = sys.argv[1], sys.argv[2:]
     if cmd == "frame":
         frame(a[0], a[1], int(a[2]), int(a[3]), float(a[4]) if len(a) > 4 else 0.78, a[5] if len(a) > 5 else "00ff00", float(a[6]) if len(a) > 6 else 0.06)
+    elif cmd == "fit":
+        fit(a[0], a[1], int(a[2]), int(a[3]), a[4] if len(a) > 4 else "e6e6e6")
     elif cmd == "motion":
         motion(a[0], a[1], int(a[2]), int(a[3]), int(a[4]), int(a[5]) if len(a) > 5 else 16)
     elif cmd == "canvas":

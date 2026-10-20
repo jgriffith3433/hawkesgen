@@ -65,7 +65,14 @@ export const imageEditTool: Tool = {
     if ((p.width === undefined) !== (p.height === undefined)) throw new GenError('Give both width and height, or neither');
     ctx.step('uploading the images');
     const images: string[] = [];
-    for (const f of ctx.inputs.images) images.push(await c.upload(f));
+    for (const [i, f] of ctx.inputs.images.entries()) {
+      if (i === 0 && p.width !== undefined) {
+        // Scaling to exactly width x height stretches a non-square source; pad it instead, flat, so no alpha grid is copied.
+        const fitted = ctx.tmp('fit.png');
+        await ctx.python('prep.py', ['fit', f, fitted, String(p.width), String(p.height)]);
+        images.push(await c.upload(fitted));
+      } else images.push(await c.upload(f));
+    }
     await takes(ctx, (seed) => imageEdit({ images, prompt: p.prompt, negative: p.negative, seed, width: p.width, height: p.height, prefix: `hawkesgen/${ctx.job.project}`, s: qwenS(p) }), '.png', 'image');
   },
 };
