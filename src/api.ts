@@ -25,6 +25,7 @@ import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts
 import * as fleet from './providers/comfy/fleet.ts';
 import * as fleetImage from './providers/comfy/image.ts';
 import * as builder from './providers/builder/builder.ts';
+import { requesterIp } from './providers/builder/rdp.ts';
 import * as playtester from './providers/playtester/playtester.ts';
 import * as machines from './machines.ts';
 import { Retry } from './providers/comfy/retry.ts';
@@ -538,6 +539,25 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     // --------------------------------------------------------- build server
     if (route === '/v1/builder' && method === 'GET') return send(res, 200, await builder.builderStatus());
+    // Remote Desktop from the browser (owner): the .rdp as a download for the server's current address, with the caller's IP let in on 3389.
+    if (route === '/v1/builder/rdp-file' && method === 'GET') {
+      requireRole(client, 'owner');
+      const r = await builder.builderRdpDownload(requesterIp(req));
+      if (!r.ready) return send(res, 409, { error: `The build server is ${r.state}. Start it first.`, ready: false, state: r.state });
+      res.writeHead(200, { 'Content-Type': 'application/x-rdp', 'Content-Disposition': `attachment; filename="${r.filename}"`, 'Cache-Control': 'no-store' });
+      return void res.end(r.content);
+    }
+    // The password is returned only here, on demand, and never logged.
+    if (route === '/v1/builder/password' && method === 'POST') {
+      requireRole(client, 'owner');
+      return send(res, 200, { ok: true, ...builder.builderPassword() });
+    }
+    // The GPU servers are Linux (SSH only): the ssh command, after letting the caller's IP in.
+    if (route === '/v1/fleet/connect' && method === 'GET') {
+      requireRole(client, 'owner');
+      await fleet.refreshAccess(requesterIp(req));
+      return send(res, 200, await fleet.sshCommand(q('id')));
+    }
     m = /^\/v1\/builder\/(launch|start|stop|terminate|access|rdp|idle|ssh|github)$/.exec(route);
     if (m && method === 'POST') {
       const act = m[1];
@@ -546,10 +566,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       requireRole(client, costly || act === 'rdp' ? 'owner' : 'admin');
       if (costly && body.confirm !== true) throw new GenError(`${act} needs { "confirm": true }`);
       if (act === 'launch') return send(res, 200, { ok: true, ...(await builder.launchBuilder({ type: body.type || undefined, region: body.region || undefined, idleMinutes: Number(body.idleMinutes) || 30, unity: body.unity || undefined })) });
-      if (act === 'start') return send(res, 200, { ok: true, ...(await builder.startBuilder()) });
+      if (act === 'start') return send(res, 200, { ok: true, ...(await builder.startBuilder(requesterIp(req))) });
       if (act === 'stop') return send(res, 200, { ok: true, ...(await builder.stopBuilder()) });
       if (act === 'terminate') return send(res, 200, { ok: true, ...(await builder.terminateBuilder()) });
-      if (act === 'access') return send(res, 200, { ok: true, ...(await builder.builderAccess()) });
+      if (act === 'access') return send(res, 200, { ok: true, ...(await builder.builderAccess(requesterIp(req))) });
       if (act === 'github') return send(res, 200, { ok: true, keys: await builder.builderGitHubAccess(Array.isArray(body.repos) && body.repos.length ? body.repos.map(String) : ['jgriffith3433/sickofitgame-unity', 'jgriffith3433/YoobaLand']) });
       if (act === 'rdp') return send(res, 200, { ok: true, ...(await builder.builderRdp()) });
       if (act === 'idle') return send(res, 200, { ok: true, ...(await builder.setBuilderIdle(Number(body.minutes))) });

@@ -33,6 +33,7 @@ import { env, paths } from '../../config.ts';
 import { GenError } from '../../util.ts';
 import { parsePoll, pollLengthOf, type PollAnswer } from './poll.ts';
 import { fetchOrigin, repoIsPrivate, withRepoLock } from './gitfetch.ts';
+import { rdpText } from './rdp.ts';
 
 /** Windows on-demand prices (US East), for estimates. */
 export const BUILDER_TYPES: Record<string, { vcpus: number; memory: number; price: number }> = {
@@ -170,9 +171,9 @@ async function allowOnly(region: string, sg: any, ip: string) {
   await fleetAllowOnly(region, sg, ip, [22, 3389]);
 }
 
-/** Lets this PC's current IP in (SSH and Remote Desktop) and nobody else. */
-export async function builderAccess() {
-  const ip = await myIp();
+/** Lets an IP in (SSH and Remote Desktop) and nobody else but HAWKES_ALLOW_IPS: the caller's, else this machine's. */
+export async function builderAccess(forIp?: string) {
+  const ip = forIp ?? await myIp();
   const region = homeRegion();
   const r = await ec2(region).send(new DescribeSecurityGroupsCommand({ Filters: [{ Name: 'group-name', Values: [SG] }] }));
   for (const sg of r.SecurityGroups ?? []) await allowOnly(region, sg, ip);
@@ -240,9 +241,9 @@ async function requireBuilder() {
   return f;
 }
 
-export async function startBuilder() {
+export async function startBuilder(forIp?: string) {
   const { instance: i, region } = await requireBuilder();
-  await builderAccess();
+  await builderAccess(forIp);
   if (i.State?.Name === 'stopped') {
     try {
       await ec2(region).send(new StartInstancesCommand({ InstanceIds: [i.InstanceId] }));
@@ -288,8 +289,35 @@ export async function builderRdp() {
   const { instance: i } = await requireBuilder();
   if (!i.PublicIpAddress) throw fail('The build server has no address until it runs. Start it first.');
   await builderAccess();
-  fs.writeFileSync(rdpPath(), [`full address:s:${i.PublicIpAddress}`, `username:s:${USER}`, 'prompt for credentials:i:1', 'screen mode id:i:1', 'desktopwidth:i:1600', 'desktopheight:i:900', ''].join('\r\n'));
+  fs.writeFileSync(rdpPath(), rdpText(i.PublicIpAddress, USER));
   return { rdpFile: rdpPath(), passwordFile: passwordPath(), user: USER, ip: i.PublicIpAddress };
+}
+
+type RdpDeps = { find: () => Promise<Found | null>; access: (ip?: string) => Promise<unknown> };
+
+/**
+ * The Remote Desktop file for the web UI, built for the server's current public address. Lets the caller's IP in first
+ * (also while the server is stopped, so it works once started). Starts nothing: a server that isn't running comes back
+ * as { ready: false, state } for the UI to offer Start.
+ */
+export async function builderRdpDownload(forIp?: string, deps: RdpDeps = { find: findBuilder, access: builderAccess }) {
+  const found = await deps.find();
+  if (!found) throw fail('There is no build server yet. Launch one first (hawkesgen builder launch).');
+  const i = found.instance;
+  const state = String(i.State?.Name ?? 'unknown');
+  await deps.access(forIp);
+  if (state !== 'running' || !i.PublicIpAddress) return { ready: false as const, state, id: i.InstanceId as string };
+  return { ready: true as const, state, id: i.InstanceId as string, ip: i.PublicIpAddress as string, user: USER, filename: 'hawkes-builder.rdp', content: rdpText(i.PublicIpAddress, USER) };
+}
+
+/** The Administrator password (owner only: the route checks). Never log it. */
+export function builderPassword() {
+  let password = builderState().password;
+  if (!password) {
+    try { password = fs.readFileSync(passwordPath(), 'utf8').trim(); } catch { /* none */ }
+  }
+  if (!password) throw fail('The build server\'s password isn\'t saved on this machine.');
+  return { user: USER, password };
 }
 
 // -------------------------------------------------------------------- ssh

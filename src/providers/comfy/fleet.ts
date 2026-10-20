@@ -539,8 +539,8 @@ export async function allowOnly(region: string, sg: any, ip: string, ports: numb
 }
 
 /** Lets this machine's current IP in, in every region with a server, for both kinds of security group. */
-export async function refreshAccess() {
-  const ip = await myIp();
+export async function refreshAccess(forIp?: string) {
+  const ip = forIp ?? await myIp();
   const regions = [...new Set((await listServers()).map((s) => s.region))];
   if (!regions.length) regions.push(localState().region ?? homeRegion());
   for (const region of regions) {
@@ -886,6 +886,19 @@ export async function sshTarget(instanceId: string) {
   const key = path.join(paths.fleet, `${keyName}.pem`);
   lockKey(key);
   return { ip: ip as string, key };
+}
+
+/** The ssh command for a GPU server (Linux: no Remote Desktop). The key file stays on the control server; only its name is given. */
+export async function sshCommand(instanceId?: string) {
+  const found = await findServer(instanceId);
+  if (!found) throw fleetError('There is no GPU server.');
+  const i = found.instance;
+  const state = String(i.State?.Name ?? 'unknown');
+  const ip = i.PublicIpAddress as string | undefined;
+  if (state !== 'running' || !ip) return { ready: false, state, id: i.InstanceId as string };
+  const keyName = i.KeyName ?? record(i.InstanceId).keyName;
+  const keyFile = keyName ? `${keyName}.pem` : null;
+  return { ready: true, state, id: i.InstanceId as string, ip, user: 'ubuntu', keyFile, command: `ssh ${keyFile ? `-i ${keyFile} ` : ''}ubuntu@${ip}` };
 }
 
 /** Runs a command on a server over SSH with its saved key; resolves to its output. */

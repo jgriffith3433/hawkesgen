@@ -162,10 +162,17 @@ over 15 s old.
 | `POST /v1/builder/start` / `stop` / `terminate` `{ confirm: true }` | owner for start and terminate (terminate deletes every project's Library) |
 | `POST /v1/builder/access` | Lets this PC's IP in (SSH and Remote Desktop) |
 | `POST /v1/builder/rdp` | owner; writes the Remote Desktop file (the password stays in a file, never in the response) |
+| `GET /v1/builder/rdp-file` | owner; the `.rdp` as a download (`Content-Disposition: attachment`) for the server's current public IP, user `Administrator` prefilled. Lets the caller's IP in on 22 and 3389 first (the last `X-Forwarded-For` entry behind Caddy; this machine's IP when called locally). Starts nothing: a server that isn't running answers 409 `{ ready: false, state }` and the UI offers Start |
+| `POST /v1/builder/password` | owner; `{ user, password }`, on demand only (shown/copied in the UI, never logged) |
+| `GET /v1/fleet/connect?id=` | owner; a GPU server's ssh command `{ ready, ip, user, keyFile, command }` after letting the caller's IP in. GPU servers are Linux: SSH only, no Remote Desktop |
 | `POST /v1/builder/idle` `{ minutes }` | How long it waits idle before powering off |
 | `POST /v1/builder/ssh` `{ command, confirm: true }` | owner; runs PowerShell on it |
 
+`POST /v1/builder/start` and `access` also let the caller's IP in (not only this machine's). The dashboard's Unity build server card and Machines tab have **Remote Desktop** (downloads the file, or offers Start if the server is stopped) and **Show password** (copy); GPU server cards have **Copy ssh command**.
+
 Builds are jobs: `unity.build` with `{ project, site, method }`.
+
+The Unity log line `Licensing::Module Error: Access token is unavailable` is benign: successful builds log it too. It used to be reported as a license failure; `finishBuild` in `builder.ts` now blames the license only for hard license errors and otherwise reports the real last error.
 
 ## Analytics (docs/analytics.md)
 
