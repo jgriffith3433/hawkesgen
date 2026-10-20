@@ -56,7 +56,12 @@ test('characterScript: the ops in Blender, then each preview shot rendered and e
   assert.match(s, /res\/preview-\$n\.mp4/);
   const tool = getTool('blender.character');
   assert.ok(tool && tool.family === 'blender' && tool.output === 'mesh' && tool.inputs.files.multiple);
-  assert.equal(tool!.version, 2);
+  assert.equal(tool!.version, 3);
+});
+
+test('checkOps: angles op (four stills for mesh judging)', () => {
+  assert.doesNotThrow(() => checkOps([{ op: 'import', file: 0 }, { op: 'angles', size: 256 }], files));
+  assert.throws(() => checkOps([{ op: 'import', file: 0 }, { op: 'angles', size: 64 }], files), /angles: size/);
 });
 
 test('checkOps: robot split / template / clips and generic FBX bones', () => {
@@ -117,6 +122,46 @@ test('character3d is a kind in every project: an animation slot retargets its so
   assert.deepEqual(s2.inputs.files, ['slot:./rig']);
   assert.throws(() => checkOps(s2.params.ops, ['/r.glb']), /retarget: file must be the index/);
   assert.equal((L.slotJobSpec(owner, { entity: e2.id, slot: 'preview/turntable' }) as any).labels.slots.turntable, 'preview/turntable');
+});
+
+test('character3d mesh is an asset.make chain (100k faces, best-of-N); robot form uses makeRobot; check/humanoid needs unityProject', () => {
+  const owner = { id: 'test', name: 'J', role: 'owner', projects: ['*'] } as any;
+  const kind = getProjectPresets('phorigins')!.kinds!.character3d;
+  for (const s of ['concept', 'apose', 'cutout', 'angles', 'mesh', 'rig', 'export/fbx', 'check/humanoid']) {
+    assert.ok(kind.slots[s]?.make || kind.slots[s]?.makeRobot, s);
+  }
+  const e = L.createEntity(owner, { project: 'phorigins', name: 'Hero', kind: 'character3d', data: { look: 'a knight' } });
+  const mesh: any = L.slotJobSpec(owner, { entity: e.id, slot: 'mesh' });
+  assert.equal(mesh.tool, 'asset.make');
+  assert.equal(mesh.params.candidates, 4);
+  assert.equal(mesh.params.pickAt, 1);
+  assert.equal(mesh.params.steps[0].tool, 'mesh.textured');
+  assert.equal(mesh.params.steps[0].params.faces, 100000);
+  assert.equal(mesh.params.steps[1].tool, 'blender.character');
+  assert.deepEqual(mesh.params.refs, [0]);
+  assert.deepEqual(mesh.inputs.files, ['slot:./concept']);
+  const apose: any = L.slotJobSpec(owner, { entity: e.id, slot: 'apose' });
+  assert.match(apose.params.prompt, /A-pose|arms 45 degrees down/i);
+  const robot = L.createEntity(owner, {
+    project: 'phorigins', name: 'Spider', kind: 'character3d',
+    data: { form: 'robot', template: 'spider' },
+  });
+  const rigRobot: any = L.slotJobSpec(owner, { entity: robot.id, slot: 'rig' });
+  assert.equal(rigRobot.tool, 'blender.character');
+  assert.ok(rigRobot.params.ops.some((o: any) => o.op === 'template' && o.kind === 'spider'));
+  assert.ok(rigRobot.params.ops.some((o: any) => o.op === 'export' && o.bones === 'generic'));
+  const human = L.createEntity(owner, { project: 'phorigins', name: 'Human', kind: 'character3d' });
+  const rigHuman: any = L.slotJobSpec(owner, { entity: human.id, slot: 'rig' });
+  assert.equal(rigHuman.tool, 'mesh.rig');
+  const checked = L.createEntity(owner, {
+    project: 'phorigins', name: 'Checked', kind: 'character3d',
+    data: { unityProject: 'sickofitgame-unity' },
+  });
+  const check: any = L.slotJobSpec(owner, { entity: checked.id, slot: 'check/humanoid' });
+  assert.equal(check.tool, 'unity.test');
+  assert.equal(check.params.project, 'sickofitgame-unity');
+  assert.equal(check.params.category, 'HawkesGen.Humanoid');
+  assert.deepEqual(check.inputs.fbx, 'slot:./export/fbx');
 });
 
 const blender = [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']

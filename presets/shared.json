@@ -6,6 +6,63 @@
       "tool": "blender.character",
       "description": "Put Quaternius CC0 clips on a rigged character. params.clips is a list of library clip names (Walk_Loop, or ual2/Melee_Hook when the name is in both packs). Search them with hawkesgen_library (tags: locomotion, melee, hit, death, idle). inputs.files[0] is the character (GLB/FBX, asset:<id> or slot:./rig). params.entity is project/slug: each clip is filed on that character as animation/<name>. params.preview true also renders a video per clip. The library is the free Standard editions, not the paid full packs.",
       "params": { "fps": 30 }
+    },
+    "character3d": {
+      "tool": "asset.make",
+      "description": "One recipe for a humanoid 3D character from a concept image (inputs.files[0]): A-pose (Qwen 2511) → cutout → side/back views → mesh.textured best-of-4 at 100k faces (Claude judges 4-angle Blender stills against the concept) → clean+bake → mesh.rig. Saves: apose, cutout, angles, mesh, rig, turntable. For robots, use kind character3d with data.form=robot after the mesh exists. Clips and exports are separate slots (animation/*, shared/motions, export/fbx). Docs: docs/3d-characters.md.",
+      "params": {
+        "candidates": 4,
+        "pickAt": 4,
+        "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, no shards or spikes, texture reads the character, usable as a game mesh.",
+        "refs": [0],
+        "steps": [
+          {
+            "tool": "image.edit",
+            "params": {
+              "prompt": "same character, A-pose, arms 45 degrees down, legs apart, front view, plain background. Keep the exact same design, colors and proportions. Full body from head to feet, facing the viewer, nothing else in the picture.",
+              "width": 1024,
+              "height": 1024
+            },
+            "inputs": { "images": ["$input:0"] },
+            "save": "apose"
+          },
+          {
+            "tool": "image.remove-background",
+            "inputs": { "image": "$prev" },
+            "save": "cutout"
+          },
+          {
+            "tool": "image.angles",
+            "inputs": { "image": "$prev" },
+            "save": "angles"
+          },
+          {
+            "tool": "mesh.textured",
+            "params": { "faces": 100000 },
+            "inputs": { "image": "$step2" },
+            "save": "raw"
+          },
+          {
+            "tool": "blender.character",
+            "params": {
+              "ops": [
+                { "op": "import", "file": 0, "clips": false },
+                { "op": "clean", "triangles": 25000 },
+                { "op": "bake", "size": 2048 },
+                { "op": "export", "format": "glb", "title": "mesh" }
+              ]
+            },
+            "inputs": { "files": ["$prev"] },
+            "save": "mesh"
+          },
+          {
+            "tool": "mesh.rig",
+            "params": { "height": 1.8, "kind": "humanoid", "keepTextures": true },
+            "inputs": { "mesh": "$prev" },
+            "save": "rig"
+          }
+        ]
+      }
     }
   }
 }

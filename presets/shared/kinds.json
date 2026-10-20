@@ -1,10 +1,10 @@
 {
-  "_about": "Kinds every project has (docs/library.md): a project's own kinds in presets/<project>.json add to these and replace one of the same name. docs/3d-characters.md has how a 3D character is made, slot by slot.",
+  "_about": "Kinds every project has (docs/library.md): a project's own kinds in presets/<project>.json add to these and replace one of the same name. docs/3d-characters.md has how a 3D character is made, slot by slot. One full recipe is also the preset shared/character3d.",
   "character3d": {
-    "description": "A 3D character for a game: concept, front A-pose, textured mesh, rig, animation clips, previews, and the files the game loads (FBX for Unity, GLB for the web).",
+    "description": "A 3D character for a game: concept → A-pose → cutout → side/back views → textured mesh (best-of-N at 100k faces) → clean+bake → humanoid rig (or robot template) → clips → FBX/GLB and previews. Set data.form to \"robot\" and data.template (spider|quadarm|biped|chain) for hard-surface creatures. data.unityProject names the Unity folder for the Humanoid check. data.triangles is the clean budget (default 25000).",
     "slots": {
       "concept": {
-        "description": "A full-body turnaround (front, side, back) to model from.",
+        "description": "A full-body reference to model from (upload one, or generate a turnaround).",
         "make": {
           "tool": "image.generate",
           "params": {
@@ -15,32 +15,90 @@
         }
       },
       "apose": {
-        "description": "The front view alone: the whole body standing straight in an A-pose, facing the viewer, on a plain background. What the mesh is made from.",
+        "description": "Front view alone: whole body in an A-pose, arms 45° down, legs apart, plain background. What the mesh is made from.",
         "make": {
           "tool": "image.edit",
           "params": {
-            "prompt": "Image 1 is a character sheet of {name}. Draw only the front view: the whole body from head to feet, standing straight, arms held 45 degrees down and away from the body, legs a little apart, facing the viewer, plain light grey background, even light, nothing else in the picture. {feedback}",
+            "prompt": "same character, A-pose, arms 45 degrees down, legs apart, front view, plain background. Image 1 is {name}. Keep the exact same design, colors and proportions. Full body from head to feet, facing the viewer, nothing else in the picture. {feedback}",
             "width": 1024,
             "height": 1024
           },
           "inputs": { "images": ["slot:./concept"] }
         }
       },
+      "cutout": {
+        "description": "The A-pose with the background removed (transparent PNG).",
+        "make": {
+          "tool": "image.remove-background",
+          "inputs": { "image": "slot:./apose" }
+        }
+      },
+      "angles": {
+        "description": "Side and back (and other) views of the same character from the cutout, for reference and judging the mesh.",
+        "make": {
+          "tool": "image.angles",
+          "inputs": { "image": "slot:./cutout" }
+        }
+      },
       "mesh": {
-        "description": "The textured mesh made from the A-pose (no skeleton yet).",
-        "make": { "tool": "mesh.textured", "inputs": { "image": "slot:./apose" } }
+        "description": "Textured mesh at 100k faces (best of 4, judged from 4-angle Blender stills against the concept), then cleaned to the triangle budget and baked. Never ask for few faces at generate time (Yooba lesson).",
+        "make": {
+          "steps": [
+            {
+              "tool": "mesh.textured",
+              "params": { "faces": 100000 },
+              "inputs": { "image": "slot:./cutout" },
+              "save": "raw"
+            },
+            {
+              "tool": "blender.character",
+              "params": {
+                "ops": [
+                  { "op": "import", "file": 0, "clips": false },
+                  { "op": "clean", "triangles": 25000 },
+                  { "op": "bake", "size": 2048 },
+                  { "op": "export", "format": "glb", "title": "mesh" }
+                ]
+              },
+              "inputs": { "files": ["$prev"] },
+              "save": "mesh"
+            }
+          ],
+          "candidates": 4,
+          "pickAt": 1,
+          "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, no shards or spikes, texture reads the character, usable as a game mesh.",
+          "refs": [0],
+          "inputs": { "files": ["slot:./concept"] },
+          "saves": { "mesh": "mesh" }
+        }
       },
       "rig": {
-        "description": "The mesh with a Mixamo-named skeleton and skin weights (a GLB from Make-It-Animatable). Clips are retargeted onto this.",
+        "description": "Humanoid: Mixamo-named skeleton via mesh.rig. Robot (data.form=robot): split + template + procedural clips via blender.character. Clips retarget onto this.",
         "make": {
           "tool": "mesh.rig",
           "params": { "height": 1.8, "kind": "humanoid", "keepTextures": true },
           "inputs": { "mesh": "slot:./mesh" },
           "saves": { "rigged": "rig", "walk": "preview/turntable" }
+        },
+        "makeRobot": {
+          "tool": "blender.character",
+          "params": {
+            "ops": [
+              { "op": "import", "file": 0, "clips": false },
+              { "op": "split", "kind": "{template}", "label": true },
+              { "op": "template", "kind": "{template}" },
+              { "op": "clips" },
+              { "op": "export", "format": "glb", "title": "rigged" },
+              { "op": "export", "format": "fbx", "bones": "generic", "title": "fbx" },
+              { "op": "preview" }
+            ]
+          },
+          "inputs": { "files": ["slot:./mesh"] },
+          "saves": { "rigged": "rig", "fbx": "export/fbx", "turntable": "preview/turntable" }
         }
       },
       "motion/*": {
-        "description": "A clip generated from a text prompt on the rig (data.prompt is the sentence). The GLB is this slot; the preview video is preview/{part}. For several takes, submit with params.takes and run library.judge on the preview slot against the same prompt. The GLB with the same take is the matching clip.",
+        "description": "A clip generated from a text prompt on the rig (data.prompt is the sentence). The GLB is this slot; the preview video is preview/{part}. Prefer a Quaternius animation/* when a library move already fits.",
         "make": {
           "tool": "motion.from-text",
           "params": { "prompt": "{prompt}", "seconds": 2, "inPlace": false, "loop": false, "takes": 1 },
@@ -49,7 +107,7 @@
         }
       },
       "animation/*": {
-        "description": "One clip on the rig (a GLB with that animation, named like the slot: animation/walk holds \"walk\"). Its data.source names the motion to retarget: an asset (asset:<id>), a library clip (motion:ual1/Walk_Loop) or another slot (slot:project/entity/animation/walk), a Mixamo FBX, a GLB or a BVH.",
+        "description": "One clip on the rig (library motion:ual1/Walk_Loop, asset:, or slot:). Procedural robot clips come from remaking the rig with form=robot.",
         "make": {
           "tool": "blender.character",
           "params": {
@@ -98,6 +156,18 @@
           "params": { "ops": [{ "op": "import", "file": 0 }, { "op": "retarget", "file": "*" }, { "op": "export", "format": "glb" }] },
           "inputs": { "files": ["slot:./rig"] },
           "saves": { "glb": "export/glb" }
+        }
+      },
+      "check/humanoid": {
+        "description": "Unity EditMode check: imports export/fbx as Humanoid and asserts avatar.isValid, isHuman, and no missing required bones. Needs data.unityProject (folder under C:\\Projects that has com.hawkes.gen). Returns the NUnit totals.",
+        "make": {
+          "tool": "unity.test",
+          "params": {
+            "project": "{unityProject}",
+            "platform": "EditMode",
+            "category": "HawkesGen.Humanoid"
+          },
+          "inputs": { "fbx": "slot:./export/fbx" }
         }
       }
     }

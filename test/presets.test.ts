@@ -23,18 +23,28 @@ test('presets are valid for their tools', () => {
 });
 
 test("projects' kinds: every slot recipe names a real tool, its inputs and valid params", () => {
+  const checkMake = (where: string, make: any) => {
+    if (!make) return;
+    const tool = getTool(make.tool ?? (make.steps ? 'asset.make' : ''));
+    assert.ok(tool, `${where}: unknown tool ${make.tool}`);
+    for (const name of Object.keys(make.inputs ?? {})) assert.ok(name in tool!.inputs, `${where}: ${tool!.id} has no input ${name}`);
+    const params: Record<string, unknown> = { ...(make.params ?? {}) };
+    if (make.steps) {
+      params.steps = make.steps;
+      if (make.candidates != null) params.candidates = make.candidates;
+      if (make.pick) params.pick = make.pick;
+      if (make.pickAt != null) params.pickAt = make.pickAt;
+      if (make.refs) params.refs = make.refs;
+    }
+    for (const [k2, spec] of Object.entries(tool!.params)) if (spec.required && params[k2] === undefined) params[k2] = spec.type === 'json' ? [] : 'x';
+    assert.doesNotThrow(() => validateParams(tool!, params), where);
+  };
   for (const pp of listPresets() as any[]) {
     for (const [kind, k] of Object.entries<any>(pp.kinds ?? {})) {
       if (kind.startsWith('_')) continue;
       for (const [slot, s] of Object.entries<any>(k.slots ?? {})) {
-        if (!s.make) continue;
-        const where = `${pp.project} kinds.${kind}.${slot}`;
-        const tool = getTool(s.make.tool ?? (s.make.steps ? 'asset.make' : ''));
-        assert.ok(tool, `${where}: unknown tool ${s.make.tool}`);
-        for (const name of Object.keys(s.make.inputs ?? {})) assert.ok(name in tool!.inputs, `${where}: ${tool!.id} has no input ${name}`);
-        const params: Record<string, unknown> = { ...(s.make.params ?? {}) };
-        for (const [k2, spec] of Object.entries(tool!.params)) if (spec.required && params[k2] === undefined) params[k2] = spec.type === 'json' ? [] : 'x';
-        assert.doesNotThrow(() => validateParams(tool!, params), where);
+        checkMake(`${pp.project} kinds.${kind}.${slot}`, s.make);
+        checkMake(`${pp.project} kinds.${kind}.${slot}.makeRobot`, s.makeRobot);
       }
     }
   }

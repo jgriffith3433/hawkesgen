@@ -1845,6 +1845,13 @@ def op_clips(o):
     return {"op": "clips", "kind": kind, "clips": made}
 
 
+def op_angles(o):
+    """Four stills (front, right, back, left) for judging a mesh without splitting it. Titles angle/front…"""
+    need_char("angles")
+    files = render_angles(int(o.get("size", 512)))
+    return {"op": "angles", "files": files}
+
+
 # ---------------------------------------------------------------- previews
 
 def op_preview(o):
@@ -1889,7 +1896,7 @@ def op_preview(o):
 
 OPS = {"import": op_import, "clean": op_clean, "bake": op_bake, "attach": op_attach, "retarget": op_retarget,
        "pose": op_pose, "concat": op_concat, "copy": op_copy, "rename": op_rename, "remove": op_remove,
-       "split": op_split, "template": op_template, "clips": op_clips,
+       "split": op_split, "template": op_template, "clips": op_clips, "angles": op_angles,
        "export": op_export, "preview": op_preview, **{k: op_edit for k in EDITS}}
 
 

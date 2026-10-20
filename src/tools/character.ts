@@ -41,6 +41,7 @@ export const OPS: Record<string, string[]> = {
   split: ['by', 'parts', 'kind', 'segments', 'angles', 'label', 'size'],
   template: ['kind!', 'parts', 'segments', 'smooth'],
   clips: ['list', 'clips', 'kind', 'segments'],
+  angles: ['size'],
   export: ['format!', 'name', 'clips', 'bones', 'title'],
   preview: ['turntable', 'clips', 'size', 'seconds', 'engine', 'samples', 'maxFrames'],
 };
@@ -120,6 +121,7 @@ export function checkOps(ops: unknown, files: string[]): CharacterPlan {
       }
       plan.exports.push(o.format);
     }
+    if (o.op === 'angles' && o.size != null && !(o.size >= 128 && o.size <= 1536)) throw new GenError(`ops[${k}] angles: size is 128 to 1536`);
     if (o.op === 'preview') {
       if (o.size != null && !(o.size >= 128 && o.size <= 1536)) throw new GenError(`ops[${k}] preview: size is 128 to 1536`);
       if (o.engine != null && !['cycles', 'eevee', 'workbench'].includes(o.engine)) throw new GenError(`ops[${k}] preview: engine is cycles, eevee or workbench`);
@@ -213,7 +215,7 @@ const MIME_EXT: Record<string, string> = { glb: '.glb', fbx: '.fbx', blend: '.bl
 
 export const blenderCharacterTool: Tool = {
   id: 'blender.character',
-  version: 2,
+  version: 3,
   title: '3D character ops in Blender (clean, bake, props, retarget, robots, FBX/GLB)',
   description:
     'Runs a chain of named Blender ops on one 3D character, on a GPU server: import (GLB/FBX/OBJ), clean (merge, fix normals, decimate to a ' +

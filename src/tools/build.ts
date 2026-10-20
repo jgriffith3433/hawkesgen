@@ -1,8 +1,10 @@
 // Build tools: Unity WebGL builds on the build server (src/providers/builder/builder.ts).
 
 import fs from 'node:fs';
+import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild } from '../providers/builder/builder.ts';
+import { paths } from '../config.ts';
 import { GenError } from '../util.ts';
 
 export const unityBuild: Tool = {
@@ -68,31 +70,50 @@ export function parseNUnit(xml: string) {
 
 export const unityTest: Tool = {
   id: 'unity.test',
-  version: 1,
+  version: 2,
   title: 'Run a Unity project\'s tests (on the build server)',
   description:
     'Runs EditMode or PlayMode tests in batch mode on the AWS build server (incremental, like unity.build), so J can keep ' +
-    'the editor open here. Returns totals and each failure; the NUnit XML and the Unity log are outputs.',
+    'the editor open here. Returns totals and each failure; the NUnit XML and the Unity log are outputs. Optional fbx input: ' +
+    'copies the file to Assets/HawkesGenCheck/character.fbx in the project before the run (for the HawkesGen.Humanoid ' +
+    'EditMode check in com.hawkes.gen: avatar.isValid, isHuman, no missing required bones).',
   provider: 'builder',
   output: 'json',
-  inputs: {},
+  inputs: {
+    fbx: { kind: 'file', description: 'Optional FBX placed at Assets/HawkesGenCheck/character.fbx for the Humanoid avatar check' },
+  },
   params: {
     project: { type: 'string', required: true, description: 'The Unity project folder under C:\\Projects', example: 'sickofitgame-unity' },
     platform: { type: 'enum', values: ['EditMode', 'PlayMode'], default: 'EditMode' },
-    category: { type: 'string', description: 'Only tests in this category (-testCategory), e.g. Playtest' },
+    category: { type: 'string', description: 'Only tests in this category (-testCategory), e.g. Playtest or HawkesGen.Humanoid' },
     target: { type: 'enum', values: ['WebGL', 'StandaloneWindows64'], default: 'WebGL', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;
-    const r = await runBuild(ctx.job.id, { project: p.project, target: p.target, tests: p.platform, testFilter: p.category || undefined }, { step: ctx.step, log: ctx.log, signal: ctx.signal });
+    const fbx = ctx.inputs.fbx as string | undefined;
+    if (fbx) {
+      const destDir = path.join(paths.projects, p.project, 'Assets', 'HawkesGenCheck');
+      fs.mkdirSync(destDir, { recursive: true });
+      const dest = path.join(destDir, 'character.fbx');
+      fs.copyFileSync(fbx, dest);
+      ctx.log(`placed FBX at ${p.project}/Assets/HawkesGenCheck/character.fbx for Humanoid check`);
+      ctx.step('FBX ready for EditMode Humanoid check');
+    }
+    const category = p.category || (fbx ? 'HawkesGen.Humanoid' : undefined);
+    const r = await runBuild(ctx.job.id, { project: p.project, target: p.target, tests: p.platform, testFilter: category }, { step: ctx.step, log: ctx.log, signal: ctx.signal });
     try {
       ctx.usage({ provider: 'aws-builder', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${p.project} tests` });
       await ctx.emit({ data: r.log, ext: 'log', mime: 'text/plain', title: `Unity log (${p.project} ${p.platform} tests)` });
       if (!r.ok || !r.results) throw new GenError(r.error ?? `the test run produced no results (Unity exit ${r.exitCode})`, { kind: r.kind ?? 'build' });
       await ctx.emit({ data: r.results, ext: 'xml', mime: 'application/xml', title: 'Test results (NUnit)' });
       const t = parseNUnit(r.results.toString('utf8'));
-      ctx.result({ ...t, platform: p.platform, seconds: r.seconds, cost: Math.round(r.cost * 1000) / 1000 });
-      ctx.log(`${t.passed}/${t.total} passed, ${t.failed} failed`);
+      const humanoid = category === 'HawkesGen.Humanoid' ? {
+        ok: t.failed === 0 && t.passed > 0,
+        passed: t.passed, failed: t.failed, failures: t.failures,
+      } : undefined;
+      ctx.result({ ...t, platform: p.platform, category: category ?? null, humanoid, seconds: r.seconds, cost: Math.round(r.cost * 1000) / 1000 });
+      ctx.log(`${t.passed}/${t.total} passed, ${t.failed} failed${humanoid ? ` (Humanoid ${humanoid.ok ? 'ok' : 'failed'})` : ''}`);
+      if (humanoid && !humanoid.ok) throw new GenError(`Humanoid check failed: ${t.failures.map((f) => f.message || f.name).join('; ') || `${t.failed} failed`}`, { kind: 'build' });
     } finally {
       fs.rmSync(r.tmp, { recursive: true, force: true });
     }

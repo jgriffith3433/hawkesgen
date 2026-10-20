@@ -219,7 +219,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     return send(res, 404, { error: 'Not found' });
   }
 
-  // Which SDK each caller runs (X-Hawkes-Client: js/6, py/6, unity/0.2.0): /v1/health lists the ones behind.
+  // Which SDK each caller runs (X-Hawkes-Client: js/6, py/6, unity/0.2.1): /v1/health lists the ones behind.
   noteClient(req);
 
   try {
