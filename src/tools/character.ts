@@ -30,6 +30,7 @@ export const OPS: Record<string, string[]> = {
   project: ['views!', 'size', 'sharpness', 'margin', 'rebuild_uv'],
   lod: ['levels', 'name'],
   report: [],
+  budget: ['target', 'triangles', 'materials', 'bones', 'texture', 'strict'],
   bake: ['size', 'maps', 'high', 'samples', 'margin', 'extrusion', 'distance', 'roughness', 'islandMargin'],
   attach: ['file!', 'bone!', 'offset', 'rotation', 'size', 'scale', 'origin', 'name'],
   retarget: ['file!', 'name', 'action', 'from', 'map', 'inPlace', 'scale'],
@@ -101,6 +102,7 @@ export function checkOps(ops: unknown, files: string[]): CharacterPlan {
     }
     if (o.op === 'fix' && o.shards != null && !(o.shards >= 0 && o.shards <= 0.5)) throw new GenError(`ops[${k}] fix: shards is 0 to 0.5 (a piece smaller than this share of the biggest one is removed)`);
     if (o.op === 'symmetrize' && o.side != null && !['auto', '+X', '-X'].includes(o.side)) throw new GenError(`ops[${k}] symmetrize: side is auto, +X or -X`);
+    if (o.op === 'budget' && o.target != null && !['web', 'mobile', 'desktop', 'hero'].includes(o.target)) throw new GenError(`ops[${k}] budget: target is web, mobile, desktop or hero`);
     if (o.op === 'lod' && o.levels != null && !(Array.isArray(o.levels) && o.levels.length && o.levels.every((r: unknown) => typeof r === 'number' && r >= 0.01 && r < 1))) {
       throw new GenError(`ops[${k}] lod: levels is a list of ratios from 0.01 to below 1, e.g. [0.5, 0.25, 0.1]`);
     }
@@ -268,7 +270,7 @@ export const blenderCharacterTool: Tool = {
   params: {
     ops: {
       type: 'json', required: true,
-      description: 'The steps, in order: [{ op: import | report | fix | symmetrize | retopo | clean | bake | project | lod | attach | retarget | trim | loop | inplace | speed | mirror | reverse | concat | pose | copy | rename | remove | split | template | clips | export | preview, ... }]. docs/3d-characters.md.',
+      description: 'The steps, in order: [{ op: import | report | budget | fix | symmetrize | retopo | clean | bake | project | lod | attach | retarget | trim | loop | inplace | speed | mirror | reverse | concat | pose | copy | rename | remove | split | template | clips | export | preview, ... }]. docs/3d-characters.md.',
       example: [
         { op: 'import', file: 0 },
         { op: 'split', kind: 'quadarm', label: true },
@@ -388,6 +390,7 @@ export const blenderCharacterTool: Tool = {
       height: info.height, triangles: info.triangles, names: info.names, clips: info.clips, props: info.props,
       bones: info.bones, ops: info.ops, warnings: info.warnings, seconds: info.seconds_total, outputs: outs.map((o: any) => o.title),
       quality: info.quality ?? null,
+      budget: info.budget ?? null,
       template: info.ops?.find((x: any) => x.op === 'template')?.kind ?? null,
     });
   },

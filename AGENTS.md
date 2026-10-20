@@ -6,6 +6,7 @@ decides **how**: which GPU server, which ComfyUI workflow and models, which API.
 recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 
 - `README.md` is the overview and the tool list.
+- `docs/art-playbook.md` is the art playbook: which tool for which job, recipes, performance budgets. Read it before making game art.
 - `docs/workflows.md` covers ComfyUI workflows as tools.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.

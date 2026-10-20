@@ -21,6 +21,24 @@ test('shared/character3d-mv: refs point at earlier steps and its Blender ops pas
   assert.ok(p.params.pickAt <= steps.findIndex((s) => s.tool === 'blender.character'));
 });
 
+test('shared/character3d-4v: steps use real tools, refs point at earlier steps, sheet takes front|back|left|right', async () => {
+  const { getProjectPresets } = await import('../src/presets.ts');
+  const { reloadTools, getTool } = await import('../src/tools/index.ts');
+  reloadTools();
+  const p: any = getProjectPresets('shared')!.presets['character3d-4v'];
+  const steps: any[] = p.params.steps;
+  steps.forEach((s, i) => {
+    assert.ok(getTool(s.tool), `unknown tool ${s.tool}`);
+    for (const v of JSON.stringify(s.inputs ?? {}).match(/\$step(\d+)/g) ?? []) assert.ok(Number(v.slice(5)) <= i, `${s.save}: ${v}`);
+  });
+  const sheet = steps.find((s) => s.tool === 'image.sheet');
+  const saves = ['cutout', 'back', 'left', 'right'];
+  assert.deepEqual(sheet.inputs.views.map((v: string) => steps[Number(v.slice(5)) - 1].save), saves);
+  const bl = steps.find((s) => s.tool === 'blender.character');
+  checkOps(bl.params.ops, ['/a.glb']);
+  assert.equal(steps[Number(bl.inputs.files[0].slice(5)) - 1].tool, 'mesh.views3d');
+});
+
 test('checkOps: repair, retopo, project and lod ops are validated', () => {
   const plan = checkOps([
     { op: 'import', file: 0 },
@@ -65,6 +83,7 @@ test('Blender: a messy generated mesh is repaired, retopologised, projected from
       { op: 'report' },
       { op: 'bake', size: 512 },
       { op: 'project', size: 512, views: [{ file: 1, view: 'front' }, { file: 2, view: 'back' }] },
+      { op: 'budget', target: 'web' },
       { op: 'lod', levels: [0.5] },
       { op: 'export', format: 'glb' },
     ],
@@ -81,5 +100,8 @@ test('Blender: a messy generated mesh is repaired, retopologised, projected from
   const names = fs.readdirSync(path.join(out, 'files'));
   assert.ok(names.some((n) => /_LOD1\.glb$/.test(n)), names.join(','));
   assert.ok(names.some((n) => /_color\.png$/.test(n)), names.join(','));
+  assert.equal(info.budget.target, 'web');
+  assert.equal(info.budget.checks.texture.value, 512);
+  assert.ok(info.budget.checks.triangles.value > 0 && info.budget.checks.triangles.value <= 9000, JSON.stringify(info.budget));
   void python;
 });

@@ -1,0 +1,142 @@
+{
+    "id":  "mesh.views3d",
+    "version":  1,
+    "title":  "3D character from four views (Pixal3D multi-view)",
+    "description":  "A textured PBR 3D model (GLB) from front, back, left and right views.",
+    "family":  "mesh.views3d",
+    "output":  "mesh",
+    "models":  [
+                   {
+                       "file":  "trellis_2_texture_vae_bf16.safetensors",
+                       "dir":  "vae",
+                       "url":  "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/vae/trellis_2_texture_vae_bf16.safetensors"
+                   },
+                   {
+                       "file":  "dino_v3_L_naf_fp32.safetensors",
+                       "dir":  "clip_vision",
+                       "url":  "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/clip_vision/dino_v3_L_naf_fp32.safetensors"
+                   },
+                   {
+                       "file":  "trellis_2_shape_vae_bf16.safetensors",
+                       "dir":  "vae",
+                       "url":  "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/vae/trellis_2_shape_vae_bf16.safetensors"
+                   },
+                   {
+                       "file":  "birefnet.safetensors",
+                       "dir":  "background_removal",
+                       "url":  "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors"
+                   },
+                   {
+                       "file":  "pixal3d_multiview_int8_convrot.safetensors",
+                       "dir":  "diffusion_models",
+                       "url":  "https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/diffusion_models/pixal3d_multiview_int8_convrot.safetensors"
+                   }
+               ],
+    "inputs":  {
+                   "image":  {
+                                 "kind":  "image",
+                                 "required":  true,
+                                 "description":  "Four-view turnaround sheet: front, back, left, right side by side, equal widths, same scale, plain background",
+                                 "targets":  [
+                                                 [
+                                                     "364",
+                                                     "image"
+                                                 ]
+                                             ]
+                             }
+               },
+    "params":  {
+                   "seed":  {
+                                "type":  "integer",
+                                "min":  0,
+                                "max":  281474976710656,
+                                "description":  "Seed for the first output; the next ones count up. Random when empty.",
+                                "targets":  [
+                                                [
+                                                    "3",
+                                                    "seed"
+                                                ],
+                                                [
+                                                    "12",
+                                                    "seed"
+                                                ],
+                                                [
+                                                    "18",
+                                                    "seed"
+                                                ],
+                                                [
+                                                    "23",
+                                                    "seed"
+                                                ]
+                                            ]
+                            },
+                   "steps":  {
+                                 "type":  "integer",
+                                 "min":  1,
+                                 "max":  200,
+                                 "default":  12,
+                                 "advanced":  true,
+                                 "targets":  [
+                                                 [
+                                                     "3",
+                                                     "steps"
+                                                 ],
+                                                 [
+                                                     "12",
+                                                     "steps"
+                                                 ],
+                                                 [
+                                                     "18",
+                                                     "steps"
+                                                 ],
+                                                 [
+                                                     "23",
+                                                     "steps"
+                                                 ]
+                                             ]
+                             },
+                   "cfg":  {
+                               "type":  "number",
+                               "min":  0,
+                               "max":  30,
+                               "default":  7.5,
+                               "advanced":  true,
+                               "targets":  [
+                                               [
+                                                   "3",
+                                                   "cfg"
+                                               ],
+                                               [
+                                                   "12",
+                                                   "cfg"
+                                               ],
+                                               [
+                                                   "18",
+                                                   "cfg"
+                                               ],
+                                               [
+                                                   "23",
+                                                   "cfg"
+                                               ]
+                                           ]
+                           },
+                   "texture_resolution":  {
+                                              "type":  "integer",
+                                              "default":  4096,
+                                              "description":  "Texture Resolution",
+                                              "targets":  [
+                                                              [
+                                                                  "288",
+                                                                  "value"
+                                                              ]
+                                                          ]
+                                          }
+               },
+    "outputs":  [
+                    "372"
+                ],
+    "source":  {
+                   "template":  "3d_pixal3d_multi_views",
+                   "size":  9341553869
+               }
+}
