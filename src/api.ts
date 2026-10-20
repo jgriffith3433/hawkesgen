@@ -17,6 +17,7 @@ import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
 import { submit, getJob, listJobs, cancel, rerun, clearFinished, jobTimings, events, summary, queue, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
+import { motionRecord, motionsForQuery } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
 import { usageSummary } from './usage.ts';
@@ -406,8 +407,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // --------------------------------------------------------------- assets
     if (route === '/v1/assets' && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
-      return send(res, 200, listAssets({ project: q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', limit: Number(q('limit')) || 60, offset: Number(q('offset')) || 0, projects: client.projects }));
+      const limit = Number(q('limit')) || 60;
+      const offset = Number(q('offset')) || 0;
+      const motions = motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset });
+      if (q('tool') === 'motion.library') return send(res, 200, motions);
+      const assets = listAssets({ project: q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', limit, offset, projects: client.projects });
+      if (!motions.total) return send(res, 200, assets);
+      return send(res, 200, { items: [...motions.items, ...assets.items].slice(0, limit), total: motions.total + assets.total });
     }
+    if (route.startsWith('/v1/assets/motion:') && method === 'GET') return send(res, 200, motionRecord(decodeURIComponent(route.slice('/v1/assets/'.length))));
     m = /^\/v1\/(assets|files)\/(a_[0-9a-f]+)$/.exec(route);
     if (m) {
       const a = getAsset(m[2]);

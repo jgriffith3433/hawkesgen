@@ -195,9 +195,12 @@ SCHEMES = {
         "thigh{s}": "{S}UpLeg", "calf{s}": "{S}Leg", "foot{s}": "{S}Foot", "ball{s}": "{S}ToeBase",
         **{f"{f.lower()}0{k}{{s}}": f"{{S}}Hand{f}{k}" for f in FINGERS for k in (1, 2, 3)},
     }),
+    # hips/neck/head are the names Quaternius uses (DEF-hips, DEF-neck, DEF-head) on the same DEF- chain.
+    # A classic Rigify rig has spine / spine.004 / spine.006 instead, and no separate hips bone, so those still win.
     "rigify": _sides({
-        "spine": "Hips", "spine001": "Spine", "spine002": "Spine1", "spine003": "Spine2", "spine004": "Neck",
-        "spine006": "Head", "shoulder{s}": "{S}Shoulder", "upperarm{s}": "{S}Arm", "forearm{s}": "{S}ForeArm",
+        "spine": "Hips", "hips": "Hips", "spine001": "Spine", "spine002": "Spine1", "spine003": "Spine2",
+        "spine004": "Neck", "neck": "Neck", "spine006": "Head", "head": "Head",
+        "shoulder{s}": "{S}Shoulder", "upperarm{s}": "{S}Arm", "forearm{s}": "{S}ForeArm",
         "hand{s}": "{S}Hand", "thigh{s}": "{S}UpLeg", "shin{s}": "{S}Leg", "foot{s}": "{S}Foot", "toe{s}": "{S}ToeBase",
         **{f"thumb0{k}{{s}}": f"{{S}}HandThumb{k}" for k in (1, 2, 3)},
         **{f"f{f.lower()}0{k}{{s}}": f"{{S}}Hand{f}{k}" for f in FINGERS[1:] for k in (1, 2, 3)},
@@ -1373,7 +1376,8 @@ def op_export(o):
         drop_actions(acts)
     else:
         fail(f"export: unknown format {fmt!r} (fbx, glb, blend)")
-    info["outputs"].append({"file": os.path.basename(path), "title": fmt, "ext": f".{fmt}"})
+    title = str(o.get("title") or fmt).strip() or fmt
+    info["outputs"].append({"file": os.path.basename(path), "title": title, "ext": f".{fmt}"})
     got["file"] = os.path.basename(path)
     return got
 

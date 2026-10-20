@@ -25,6 +25,7 @@ import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, type Client } from './auth.ts';
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
+import { expandMotionRequest, motionFile } from './motions.ts';
 import { ensureInputs } from './storage.ts';
 import { autoStartRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, type Backoff } from './autostart.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
@@ -136,9 +137,10 @@ export type JobSpec = {
   self?: string;
 };
 
-/** Turns an input reference into a local path: a path (local callers only), "asset:<id>" or "blob:<sha256>". */
+/** Turns an input reference into a local path: a path (local callers only), "asset:<id>", "blob:<sha256>" or "motion:<pack>/<clip>". */
 function resolveInput(client: Client, ref: unknown): string {
-  if (typeof ref !== 'string' || !ref) throw new GenError('An input must be a file path, asset:<id> or blob:<sha256>');
+  if (typeof ref !== 'string' || !ref) throw new GenError('An input must be a file path, asset:<id>, blob:<sha256> or motion:<pack>/<clip>');
+  if (ref.startsWith('motion:')) return motionFile(ref);
   if (ref.startsWith('asset:')) {
     const a = getAsset(ref.slice(6));
     if (!a) throw new GenError(`No asset ${ref.slice(6)}`, { status: 404 });
@@ -183,6 +185,13 @@ export function submit(client: Client, spec0: JobSpec): Job {
   // A preset (the project's art direction) fills in the tool, params and inputs.
   const applied = applyPreset({ ...spec0, project: project0 }, (id) => getTool(id)?.params ?? null);
   const spec: JobSpec = { ...spec0, tool: applied.tool ?? spec0.tool, params: applied.params, inputs: applied.inputs, labels: applied.preset ? { ...(spec0.labels ?? {}), preset: applied.preset } : spec0.labels };
+  // Library clips ("clips": ["Walk_Loop"]) become retarget/export ops and motion: file refs before anything else.
+  const motion = expandMotionRequest(client, spec);
+  if (motion) {
+    spec.params = motion.params;
+    spec.inputs = motion.inputs;
+    spec.labels = motion.labels;
+  }
   // Slot references ("slot:doseofdestruction/break/side") become the asset they mean now, in params (asset.make
   // steps) and inputs, so the recipe follows the slot; what was used is kept as the outputs' made_from.
   const expanded = expandSlotRefs(client, { params: spec.params ?? {}, inputs: spec.inputs ?? {} }, spec.self);

@@ -180,7 +180,16 @@ render.jobs = async () => {
 
 // ---------------------------------------------------------------- library
 async function showAsset(id) {
-  const a = await api(`/assets/${id}`);
+  const a = await api(`/assets/${encodeURI(id)}`);
+  if (String(a.id).startsWith('motion:')) {
+    const body = modal(`<div class="row spread"><h2>${esc(a.title)}</h2><div class="row"><button data-act="copy">Copy id</button><button data-act="close">Close</button></div></div>
+      <p>${esc((a.tags ?? []).join(' · '))} · ${a.meta?.duration}s · ${a.meta?.loop ? 'loops' : 'plays once'}</p>
+      <p class="small muted">${esc(a.labels?.pack ?? '')} · ${esc(a.labels?.license ?? 'CC0-1.0')}</p>
+      <p>Use it in a job as <code>${esc(a.id)}</code>, or put several on a character with preset <code>shared/motions</code>.</p>`);
+    body.querySelector('[data-act="close"]').onclick = () => $('#modal').close();
+    body.querySelector('[data-act="copy"]').onclick = () => navigator.clipboard.writeText(a.id).then(() => toast('Copied'));
+    return;
+  }
   const body = modal(`<div class="row spread"><h2>${esc(a.title ?? `${a.tool} · ${a.kind}`)}</h2><div class="row">
       <button class="star ${a.starred ? 'on' : ''}" data-act="star">★</button><a href="/v1/files/${a.id}?download=1"><button>Download</button></a><button data-act="copy">Copy id</button><button class="danger" data-act="delete">Delete</button><button data-act="close">Close</button></div></div>
     <div class="preview">${mediaTag(a, true)}</div>
@@ -215,9 +224,9 @@ render.library = async () => {
       <select id="lp"><option value="">All projects</option>${[...state.projects].sort().map((p) => `<option ${p === f.project ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
       <select id="lk"><option value="">All kinds</option>${['image', 'video', 'audio', 'mesh', 'text', 'file'].map((k) => `<option ${k === f.kind ? 'selected' : ''}>${k}</option>`).join('')}</select>
       <label class="row small"><input type="checkbox" id="ls" ${f.starred ? 'checked' : ''}> starred</label></div></div>
-    ${items.length ? `<div class="lib">${items.map((a) => `<div class="asset"><div class="media" data-asset="${a.id}">${mediaTag(a)}</div><div class="meta">
-      <div class="row spread"><span class="t">${esc(a.title ?? Object.values(a.labels ?? {}).join(' · ') ?? a.tool) || esc(a.tool)}</span><button class="star ${a.starred ? 'on' : ''}" data-star="${a.id}" data-on="${a.starred}">★</button></div>
-      <span class="muted">${esc(a.project)} · ${esc(a.tool)} · ${esc(ago(a.created))}</span></div></div>`).join('')}</div>` : '<div class="card empty">Nothing here yet.</div>'}
+    ${items.length ? `<div class="lib">${items.map((a) => `<div class="asset"><div class="media" data-asset="${esc(a.id)}">${String(a.id).startsWith('motion:') ? '<div class="glyph">▶</div>' : mediaTag(a)}</div><div class="meta">
+      <div class="row spread"><span class="t">${esc(a.title ?? Object.values(a.labels ?? {}).join(' · ') ?? a.tool) || esc(a.tool)}</span>${String(a.id).startsWith('motion:') ? '' : `<button class="star ${a.starred ? 'on' : ''}" data-star="${a.id}" data-on="${a.starred}">★</button>`}</div>
+      <span class="muted">${String(a.id).startsWith('motion:') ? `${esc((a.tags ?? []).join(' · '))} · ${a.meta?.duration}s · ${a.meta?.loop ? 'loops' : 'once'}` : `${esc(a.project)} · ${esc(a.tool)} · ${esc(ago(a.created))}`}</span></div></div>`).join('')}</div>` : '<div class="card empty">Nothing here yet.</div>'}
     <div class="row" style="margin-top:12px">${f.offset ? '<button id="lprev">Newer</button>' : ''}${f.offset + items.length < total ? '<button id="lnext">Older</button>' : ''}</div>`;
   const set = (patch) => { render.library.filter = { ...f, offset: 0, ...patch }; render.library().catch(fail); };
   $('#lq').onchange = (e) => set({ q: e.target.value });

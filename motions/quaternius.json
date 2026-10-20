@@ -1,0 +1,797 @@
+{
+  "_about": "Quaternius Universal Animation Library 1 and 2, free Standard editions only (CC0). Each clip is searchable in the library as motion:<pack>/<name>. The paid Pro/Source zips were not downloaded. docs/3d-characters.md.",
+  "license": "CC0-1.0",
+  "packs": [
+    {
+      "id": "ual1",
+      "title": "Universal Animation Library",
+      "edition": "standard",
+      "released": "2025-03-25",
+      "sourceUrl": "https://opengameart.org/sites/default/files/universal_animation_librarystandard.zip",
+      "sourcePage": "https://opengameart.org/content/universal-animation-library",
+      "authorPage": "https://quaternius.com/packs/universalanimationlibrary.html",
+      "itch": "https://quaternius.itch.io/universal-animation-library",
+      "license": "CC0-1.0",
+      "licenseFile": "motions/licenses/ual1-license.txt",
+      "zipSha256": "18ff1a7215f4852b320203e8aaf02a1578b5c8eef9027fbaedfcedc7b85a3ac2",
+      "glbEntry": "Animation Library[Standard]/Godot/AnimationLibrary_Godot_Standard.glb",
+      "glbSha256": "1b7bf67866360665426bb99e4c71bd619f19b408453c24e30f0c3071601eee5c",
+      "bones": "rigify",
+      "note": "Free Standard edition. Quaternius advertises 120+ clips; the rest is the paid Pro and Source zips, which are not included.",
+      "clips": [
+        {
+          "name": "A_TPose",
+          "tags": [
+            "reference"
+          ],
+          "duration": 0.167,
+          "loop": false
+        },
+        {
+          "name": "Crouch_Fwd_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 2,
+          "loop": true
+        },
+        {
+          "name": "Crouch_Idle_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 2.933,
+          "loop": true
+        },
+        {
+          "name": "Dance_Loop",
+          "tags": [
+            "emote",
+            "loop"
+          ],
+          "duration": 1,
+          "loop": true
+        },
+        {
+          "name": "Death01",
+          "tags": [
+            "death"
+          ],
+          "duration": 2.4,
+          "loop": false
+        },
+        {
+          "name": "Driving_Loop",
+          "tags": [
+            "loop",
+            "action"
+          ],
+          "duration": 1.667,
+          "loop": true
+        },
+        {
+          "name": "Fixing_Kneeling",
+          "tags": [
+            "action"
+          ],
+          "duration": 5.2,
+          "loop": false
+        },
+        {
+          "name": "Hit_Chest",
+          "tags": [
+            "hit"
+          ],
+          "duration": 0.333,
+          "loop": false
+        },
+        {
+          "name": "Hit_Head",
+          "tags": [
+            "hit"
+          ],
+          "duration": 0.433,
+          "loop": false
+        },
+        {
+          "name": "Idle_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 2.5,
+          "loop": true
+        },
+        {
+          "name": "Idle_Talking_Loop",
+          "tags": [
+            "idle",
+            "emote",
+            "loop"
+          ],
+          "duration": 2.933,
+          "loop": true
+        },
+        {
+          "name": "Idle_Torch_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 1.267,
+          "loop": true
+        },
+        {
+          "name": "Interact",
+          "tags": [
+            "action"
+          ],
+          "duration": 2,
+          "loop": false
+        },
+        {
+          "name": "Jog_Fwd_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 0.933,
+          "loop": true
+        },
+        {
+          "name": "Jump_Land",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 1.267,
+          "loop": false
+        },
+        {
+          "name": "Jump_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 2.5,
+          "loop": true
+        },
+        {
+          "name": "Jump_Start",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 1.333,
+          "loop": false
+        },
+        {
+          "name": "PickUp_Table",
+          "tags": [
+            "action"
+          ],
+          "duration": 0.833,
+          "loop": false
+        },
+        {
+          "name": "Pistol_Aim_Down",
+          "tags": [
+            "ranged"
+          ],
+          "duration": 0.167,
+          "loop": false
+        },
+        {
+          "name": "Pistol_Aim_Neutral",
+          "tags": [
+            "ranged"
+          ],
+          "duration": 0.167,
+          "loop": false
+        },
+        {
+          "name": "Pistol_Aim_Up",
+          "tags": [
+            "ranged"
+          ],
+          "duration": 0.167,
+          "loop": false
+        },
+        {
+          "name": "Pistol_Idle_Loop",
+          "tags": [
+            "idle",
+            "ranged",
+            "loop"
+          ],
+          "duration": 1.667,
+          "loop": true
+        },
+        {
+          "name": "Pistol_Reload",
+          "tags": [
+            "ranged"
+          ],
+          "duration": 1.667,
+          "loop": false
+        },
+        {
+          "name": "Pistol_Shoot",
+          "tags": [
+            "ranged"
+          ],
+          "duration": 0.633,
+          "loop": false
+        },
+        {
+          "name": "Punch_Cross",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1,
+          "loop": false
+        },
+        {
+          "name": "Punch_Enter",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.867,
+          "loop": false
+        },
+        {
+          "name": "Punch_Jab",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.867,
+          "loop": false
+        },
+        {
+          "name": "Push_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 2.667,
+          "loop": true
+        },
+        {
+          "name": "Roll",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 1.467,
+          "loop": false
+        },
+        {
+          "name": "Roll_RM",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 1.467,
+          "loop": false
+        },
+        {
+          "name": "Sitting_Enter",
+          "tags": [
+            "action"
+          ],
+          "duration": 1.3,
+          "loop": false
+        },
+        {
+          "name": "Sitting_Exit",
+          "tags": [
+            "action"
+          ],
+          "duration": 1.033,
+          "loop": false
+        },
+        {
+          "name": "Sitting_Idle_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 1.667,
+          "loop": true
+        },
+        {
+          "name": "Sitting_Talking_Loop",
+          "tags": [
+            "emote",
+            "loop",
+            "action"
+          ],
+          "duration": 2.933,
+          "loop": true
+        },
+        {
+          "name": "Spell_Simple_Enter",
+          "tags": [
+            "emote"
+          ],
+          "duration": 0.533,
+          "loop": false
+        },
+        {
+          "name": "Spell_Simple_Exit",
+          "tags": [
+            "emote"
+          ],
+          "duration": 0.433,
+          "loop": false
+        },
+        {
+          "name": "Spell_Simple_Idle_Loop",
+          "tags": [
+            "idle",
+            "emote",
+            "loop"
+          ],
+          "duration": 2.1,
+          "loop": true
+        },
+        {
+          "name": "Spell_Simple_Shoot",
+          "tags": [
+            "ranged",
+            "emote"
+          ],
+          "duration": 0.5,
+          "loop": false
+        },
+        {
+          "name": "Sprint_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 0.667,
+          "loop": true
+        },
+        {
+          "name": "Swim_Fwd_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 1.333,
+          "loop": true
+        },
+        {
+          "name": "Swim_Idle_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 3.333,
+          "loop": true
+        },
+        {
+          "name": "Sword_Attack",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1.533,
+          "loop": false
+        },
+        {
+          "name": "Sword_Attack_RM",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1.533,
+          "loop": false
+        },
+        {
+          "name": "Sword_Idle",
+          "tags": [
+            "idle",
+            "melee"
+          ],
+          "duration": 1.667,
+          "loop": false
+        },
+        {
+          "name": "Walk_Formal_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 1.333,
+          "loop": true
+        },
+        {
+          "name": "Walk_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 1.333,
+          "loop": true
+        }
+      ]
+    },
+    {
+      "id": "ual2",
+      "title": "Universal Animation Library 2",
+      "edition": "standard",
+      "released": "2026-01-23",
+      "sourceUrl": "https://opengameart.org/sites/default/files/universal_animation_library_2standard.zip",
+      "sourcePage": "https://opengameart.org/content/universal-animation-library-2",
+      "authorPage": "https://quaternius.com/packs/universalanimationlibrary2.html",
+      "itch": "https://quaternius.itch.io/universal-animation-library-2",
+      "license": "CC0-1.0",
+      "licenseFile": "motions/licenses/ual2-license.txt",
+      "zipSha256": "ec0e40d6d78fe9aaad59e322f40865a8675c22f0745e291622e54520391a9217",
+      "glbEntry": "Universal Animation Library 2 [Standard]/Unreal-Godot/UAL2_Standard.glb",
+      "glbSha256": "0815dd05531cae9bc313fc9c0ba81330bc72f8e19ec45f73738e74ddc5796a43",
+      "bones": "unreal",
+      "note": "Free Standard edition. Quaternius advertises 130+ clips; the rest is the paid Source zip, which is not included.",
+      "clips": [
+        {
+          "name": "A_TPose",
+          "tags": [
+            "reference"
+          ],
+          "duration": 2.5,
+          "loop": false
+        },
+        {
+          "name": "Chest_Open",
+          "tags": [
+            "action"
+          ],
+          "duration": 1.367,
+          "loop": false
+        },
+        {
+          "name": "ClimbUp_1m_RM",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 0.667,
+          "loop": false
+        },
+        {
+          "name": "Consume",
+          "tags": [
+            "action"
+          ],
+          "duration": 1.333,
+          "loop": false
+        },
+        {
+          "name": "Farm_Harvest",
+          "tags": [
+            "action"
+          ],
+          "duration": 2.5,
+          "loop": false
+        },
+        {
+          "name": "Farm_PlantSeed",
+          "tags": [
+            "action"
+          ],
+          "duration": 2.767,
+          "loop": false
+        },
+        {
+          "name": "Farm_Watering",
+          "tags": [
+            "action"
+          ],
+          "duration": 3.8,
+          "loop": false
+        },
+        {
+          "name": "Hit_Knockback",
+          "tags": [
+            "hit"
+          ],
+          "duration": 0.833,
+          "loop": false
+        },
+        {
+          "name": "Hit_Knockback_RM",
+          "tags": [
+            "hit"
+          ],
+          "duration": 0.833,
+          "loop": false
+        },
+        {
+          "name": "Idle_FoldArms_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 2.5,
+          "loop": true
+        },
+        {
+          "name": "Idle_Lantern_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 2.5,
+          "loop": true
+        },
+        {
+          "name": "Idle_No_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 2.5,
+          "loop": true
+        },
+        {
+          "name": "Idle_Rail_Call",
+          "tags": [
+            "idle"
+          ],
+          "duration": 2.5,
+          "loop": false
+        },
+        {
+          "name": "Idle_Rail_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 2.5,
+          "loop": true
+        },
+        {
+          "name": "Idle_Shield_Break",
+          "tags": [
+            "idle",
+            "melee"
+          ],
+          "duration": 1.067,
+          "loop": false
+        },
+        {
+          "name": "Idle_Shield_Loop",
+          "tags": [
+            "idle",
+            "melee",
+            "loop"
+          ],
+          "duration": 2.5,
+          "loop": true
+        },
+        {
+          "name": "Idle_TalkingPhone_Loop",
+          "tags": [
+            "idle",
+            "emote",
+            "loop"
+          ],
+          "duration": 2.933,
+          "loop": true
+        },
+        {
+          "name": "LayToIdle",
+          "tags": [
+            "idle"
+          ],
+          "duration": 1.533,
+          "loop": false
+        },
+        {
+          "name": "Melee_Hook",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.467,
+          "loop": false
+        },
+        {
+          "name": "Melee_Hook_Rec",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.6,
+          "loop": false
+        },
+        {
+          "name": "NinjaJump_Idle_Loop",
+          "tags": [
+            "idle",
+            "locomotion",
+            "loop"
+          ],
+          "duration": 2,
+          "loop": true
+        },
+        {
+          "name": "NinjaJump_Land",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 1.267,
+          "loop": false
+        },
+        {
+          "name": "NinjaJump_Start",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 0.967,
+          "loop": false
+        },
+        {
+          "name": "OverhandThrow",
+          "tags": [
+            "action"
+          ],
+          "duration": 1.333,
+          "loop": false
+        },
+        {
+          "name": "Shield_Dash_RM",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1.1,
+          "loop": false
+        },
+        {
+          "name": "Shield_OneShot",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.833,
+          "loop": false
+        },
+        {
+          "name": "Slide_Exit",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 0.5,
+          "loop": false
+        },
+        {
+          "name": "Slide_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 2,
+          "loop": true
+        },
+        {
+          "name": "Slide_Start",
+          "tags": [
+            "locomotion"
+          ],
+          "duration": 0.833,
+          "loop": false
+        },
+        {
+          "name": "Sword_Block",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1.233,
+          "loop": false
+        },
+        {
+          "name": "Sword_Dash_RM",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1.567,
+          "loop": false
+        },
+        {
+          "name": "Sword_Regular_A",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.433,
+          "loop": false
+        },
+        {
+          "name": "Sword_Regular_A_Rec",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.967,
+          "loop": false
+        },
+        {
+          "name": "Sword_Regular_B",
+          "tags": [
+            "melee"
+          ],
+          "duration": 0.533,
+          "loop": false
+        },
+        {
+          "name": "Sword_Regular_B_Rec",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1.033,
+          "loop": false
+        },
+        {
+          "name": "Sword_Regular_C",
+          "tags": [
+            "melee"
+          ],
+          "duration": 2,
+          "loop": false
+        },
+        {
+          "name": "Sword_Regular_Combo",
+          "tags": [
+            "melee"
+          ],
+          "duration": 3,
+          "loop": false
+        },
+        {
+          "name": "TreeChopping_Loop",
+          "tags": [
+            "loop",
+            "action"
+          ],
+          "duration": 0.967,
+          "loop": true
+        },
+        {
+          "name": "Walk_Carry_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 2,
+          "loop": true
+        },
+        {
+          "name": "Yes",
+          "tags": [
+            "emote"
+          ],
+          "duration": 2.5,
+          "loop": false
+        },
+        {
+          "name": "Zombie_Idle_Loop",
+          "tags": [
+            "idle",
+            "loop"
+          ],
+          "duration": 1.333,
+          "loop": true
+        },
+        {
+          "name": "Zombie_Scratch",
+          "tags": [
+            "melee"
+          ],
+          "duration": 1.8,
+          "loop": false
+        },
+        {
+          "name": "Zombie_Walk_Fwd_Loop",
+          "tags": [
+            "locomotion",
+            "loop"
+          ],
+          "duration": 1.333,
+          "loop": true
+        }
+      ]
+    }
+  ]
+}

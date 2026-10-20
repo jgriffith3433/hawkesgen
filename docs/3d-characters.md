@@ -62,7 +62,7 @@ The first op is always `import`. The rest run in order, and any op can come more
 | `concat` | `clips` (two or more), `name`, `blend` (0) | Plays the clips one after another. Each clip starts where the last one ended on the ground. With `blend`, the clips cross-fade over that many frames. |
 | `pose` | `clip`, `bones`, `frame` (1) or `frames`, `mode` (`set` or `add`), `ease` (0), `length`, `as` | Sets key poses from JSON. Details below. |
 | `copy`, `rename`, `remove` | `clip`, `name` / `clips` | Copies, renames or removes clips. |
-| `export` | `format` (`fbx`, `glb` or `blend`), `name` (`character`), `clips` (all), `bones` (FBX: `mixamo`) | Writes the file. Details below. |
+| `export` | `format` (`fbx`, `glb` or `blend`), `name` (`character`), `clips` (all), `bones` (FBX: `mixamo`), `title` (the format, unless set) | Writes the file. `title` is the name the library files it under when one job writes several GLBs. Details below. |
 | `preview` | `turntable` (true), `clips` (all), `size` (512), `seconds` (6), `engine` (cycles), `samples` (16), `maxFrames` (300) | Makes a turntable of the rest pose (the camera goes once around) and a still, plus a video of each clip from a three-quarter view. The camera follows a clip that travels. All of these are rendered by `hawkes_blender.py` (blender.render's shot) from a GLB of the character. |
 
 The edit ops (`trim`, `loop`, `inplace`, `speed`, `mirror` and `reverse`) change the clip in place. With `as`, they
@@ -93,7 +93,7 @@ fingers as `LeftHandIndex1`...). Each skeleton's names are read through the sche
 | `mixamo` | `mixamorig:Hips`, `Spine`, `Spine1`, `Spine2` (any `mixamorigN:` prefix, or none) | `LeftShoulder`, `LeftArm`, `LeftForeArm`, `LeftHand` | `LeftUpLeg`, `LeftLeg`, `LeftFoot`, `LeftToeBase` |
 | `unity` | `Hips`, `Spine`, `Chest`, `UpperChest` | `LeftShoulder`, `LeftUpperArm`, `LeftLowerArm`, `LeftHand` | `LeftUpperLeg`, `LeftLowerLeg`, `LeftFoot`, `LeftToes` |
 | `unreal` | `pelvis`, `spine_01`..`spine_03` | `clavicle_l`, `upperarm_l`, `lowerarm_l`, `hand_l` | `thigh_l`, `calf_l`, `foot_l`, `ball_l` |
-| `rigify` | `DEF-spine`, `DEF-spine.001`..`.003`, `DEF-spine.004` (neck), `DEF-spine.006` (head) | `DEF-shoulder.L`, `DEF-upper_arm.L`, `DEF-forearm.L`, `DEF-hand.L` | `DEF-thigh.L`, `DEF-shin.L`, `DEF-foot.L`, `DEF-toe.L` |
+| `rigify` | `DEF-spine` (or `DEF-hips`), `DEF-spine.001`..`.003`, `DEF-spine.004` or `DEF-neck`, `DEF-spine.006` or `DEF-head` | `DEF-shoulder.L`, `DEF-upper_arm.L`, `DEF-forearm.L`, `DEF-hand.L` | `DEF-thigh.L`, `DEF-shin.L`, `DEF-foot.L`, `DEF-toe.L` |
 | `smpl` (SMPL and SOMA-style mocap, AMASS BVH) | `pelvis`, `spine1`..`spine3` | `left_collar`, `left_shoulder` (upper arm), `left_elbow`, `left_wrist` | `left_hip`, `left_knee`, `left_ankle`, `left_foot` |
 | `bvh` (classic BVH) | `Hips`, `Abdomen`, `Chest`, `Chest2` | `LeftCollar`, `LeftShoulder` (upper arm), `LeftElbow`, `LeftWrist` | `LeftHip`, `LeftKnee`, `LeftAnkle`, `LeftToe` |
 
@@ -146,7 +146,7 @@ include the shared kinds. A save drops any shared kind it didn't change.
 | `apose` | `image.edit` | `concept`: the front view alone, in an A-pose |
 | `mesh` | `mesh.textured` | `apose` |
 | `rig` | `mesh.rig` (1.8 m, kind humanoid) | `mesh`; its walk video goes to `preview/turntable` |
-| `animation/<clip>` | `blender.character` (import, retarget, export glb, preview) | `rig` plus the slot's `data.source` (an `asset:` or `slot:` reference to a Mixamo FBX, a GLB or a BVH). The GLB goes to the slot, the video to `preview/<clip>`. |
+| `animation/<clip>` | `blender.character` (import, retarget, export glb, preview) | `rig` plus the slot's `data.source` (an `asset:` or `slot:` reference, or a library clip `motion:ual1/Walk_Loop`: a Mixamo FBX, a GLB or a BVH). The GLB goes to the slot, the video to `preview/<clip>`. |
 | `preview/turntable`, `preview/<clip>` | `blender.character` (preview) | `rig`, or `animation/<clip>` |
 | `export/fbx`, `export/glb` | `blender.character` (import, retarget `*`, export) | `rig`. To take clips along, make it with `inputs: { files: ["slot:./rig", "slot:./animation/walk", "slot:./animation/idle"] }` |
 
@@ -199,6 +199,47 @@ on `rig` and the video on `preview/turntable`.
 
 The first run on a server is the download (several minutes, on the order of a dollar of GPU time while it waits).
 Later runs are the inference plus a short Blender preview.
+
+## The motion library
+
+Quaternius's **Universal Animation Library** and **Universal Animation Library 2** are in the library as CC0 clips
+(locomotion, melee, hits, deaths, idles, and the rest of each free pack). They are humanoid clips on a
+Mixamo-compatible rig. Library 1's bones read as Rigify (`DEF-hips`, `DEF-upper_arm.L`, …). Library 2's read as Unreal
+(`pelvis`, `upperarm_l`, …). `blender.character` retargets either onto a Mixamo rig.
+
+What shipped is the **free Standard edition** of each pack. The license file in each zip is CC0 1.0; the text is
+`motions/licenses/ual1-license.txt` and `motions/licenses/ual2-license.txt`, and the clip list is
+`motions/quaternius.json` (name, tags, duration in seconds, loop). Quaternius advertises 120+ and 130+ clips. Those
+counts are the paid Pro and Source zips. Those were not downloaded.
+
+The free packs are 46 clips and 43 clips. A name ending in `_Loop` loops; the others play once.
+
+Search them like any other library file. `hawkesgen_library` with `search: "melee"` (or `tool: "motion.library"` for
+the whole list) returns each clip's name, tags, duration and whether it loops. The id is `motion:ual1/Walk_Loop` or
+`motion:ual2/Melee_Hook`. The same id is a file input: the zip is downloaded the first time a job uses a clip, checked
+against the sha256 in the catalog, and that one clip is split out as its own GLB.
+
+One clip on a character the slot already knows how to make:
+
+```json
+{ "source": "motion:ual1/Walk_Loop" }
+```
+
+on `animation/walk`. Several at once is the preset `shared/motions`:
+
+```json
+{
+  "tool": "blender.character",
+  "preset": "shared/motions",
+  "project": "phorigins",
+  "params": { "clips": ["Walk_Loop", "Idle_Loop", "ual2/Melee_Hook"], "entity": "phorigins/pierce", "preview": false },
+  "inputs": { "files": ["slot:phorigins/pierce/rig"] }
+}
+```
+
+`clips` is up to 16 names. A name that is in both packs has to say which (`ual1/A_TPose`). `entity` is the character
+the results are filed on: each clip becomes a take of `animation/<name>` (`animation/walk-loop`, …). `preview: true`
+also files a video on `preview/<name>`. The character file is the rigged GLB or FBX (a `slot:` or `asset:` reference).
 
 ## Tested
 

@@ -33,7 +33,7 @@ export const OPS: Record<string, string[]> = {
   copy: ['clip!', 'name'],
   rename: ['clip!', 'name!'],
   remove: ['clip', 'clips'],
-  export: ['format!', 'name', 'clips', 'bones'],
+  export: ['format!', 'name', 'clips', 'bones', 'title'],
   preview: ['turntable', 'clips', 'size', 'seconds', 'engine', 'samples', 'maxFrames'],
 };
 const NAMES = ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'bvh'];
@@ -132,13 +132,14 @@ export const blenderCharacterTool: Tool = {
     'RightHand), retarget clips from another skeleton (FBX/GLB/BVH; Mixamo, Unity, Unreal, Rigify, SMPL/SOMA or BVH bone names; rest-pose ' +
     'aware), clip edits (trim, loop with a blended seam, in place, speed, mirror, reverse, concat, key poses from JSON bone rotations), ' +
     'export (FBX for Unity: Mixamo bone names, a take per clip, 1 unit = 1 m; GLB for the web: one animation per clip; or the .blend) and ' +
-    'previews (a turntable and a video per clip). Ops refer to the job\'s files by index. For a mesh with no skeleton yet, use mesh.rig first. ' +
+    'previews (a turntable and a video per clip). Ops refer to the job\'s files by index. A file can be motion:<pack>/<clip> from the CC0 ' +
+    'Quaternius library (search it in the library; preset shared/motions puts several clips on one character). For a mesh with no skeleton yet, use mesh.rig first. ' +
     'docs/3d-characters.md has every op.',
   provider: 'comfy',
   family: 'blender',
   output: 'mesh',
   inputs: {
-    files: { kind: 'file', multiple: true, max: 32, required: true, description: 'The character, clips (FBX, GLB, BVH), props and a high-poly, by index (ops[].file = 0 is the first).' },
+    files: { kind: 'file', multiple: true, max: 32, required: true, description: 'The character, clips (FBX, GLB, BVH), props and a high-poly, by index (ops[].file = 0 is the first). A library clip is motion:<pack>/<name> (motion:ual1/Walk_Loop).' },
   },
   params: {
     ops: {

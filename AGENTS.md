@@ -10,7 +10,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.
 - `docs/blender.md` covers Blender shots to video (`blender.render`, `video.control`) and rigging generated characters (`mesh.rig`).
-- `docs/3d-characters.md` covers `blender.character` (clean, bake, props, retarget, clip edits, FBX/GLB) and the `character3d` kind.
+- `docs/3d-characters.md` covers `blender.character` (clean, bake, props, retarget, clip edits, FBX/GLB), the `character3d` kind, and the CC0 Quaternius motion library (`motion:<pack>/<clip>`, preset `shared/motions`).
 - `docs/library.md` covers the library every product builds on: entities, slots, versions, slot references, make/revise/pick.
 - `docs/analytics.md` is the player-analytics contract (events every product sends, the collect door, the queries).
 - `DESIGN.md` has J's decisions and the roadmap.

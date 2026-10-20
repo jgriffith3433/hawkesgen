@@ -6,7 +6,7 @@
 //   hawkesgen run <tool|-> --project P [--preset name] [--param k=v ...] [--input name=path ...] [--label k=v] [--out dir] [--no-wait]
 //                                     ("-" for the tool: the preset's)
 //   hawkesgen jobs [--project P] [--status running]    hawkesgen job <id>    hawkesgen cancel <id>
-//   hawkesgen library [--project P] [--kind image]     hawkesgen get <asset id> <file>
+//   hawkesgen library [--project P] [--kind image] [--q melee] [--tool motion.library]     hawkesgen get <asset id> <file>
 //   hawkesgen fleet [status|start [id]|stop [id]|stop-all|launch|sync [id]|access|adopt <dir>|set k=v] [--yes]
 //   hawkesgen fleet image [status|build [--from <id> [--as-is]] [region=r]|prune [--dry-run]|cancel] [--yes]
 //   hawkesgen playtester [status|launch [type=..] [region=..]|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [id=i-...] [--yes]
@@ -96,7 +96,7 @@ async function main() {
       const inputs: Record<string, any> = {};
       for (const s of flags.input ?? []) {
         const [k, v] = s.split(/=(.*)/s);
-        const val = /^(asset|blob):/.test(v) ? v : path.resolve(v);
+        const val = /^(asset|blob|motion):/.test(v) ? v : path.resolve(v);
         inputs[k] = inputs[k] ? [...[inputs[k]].flat(), val] : val;
       }
       const job = await gen.submit(tool === '-' ? null : tool, { params: kv(flags.param), inputs, labels: kv(flags.label), key: flag('key'), preset: flag('preset') });
@@ -127,7 +127,7 @@ async function main() {
     case 'cancel':
       return printJob(await gen.cancel(rest[0]));
     case 'library': {
-      const r = await gen.assets({ ...(flag('project') ? { project: flag('project') } : {}), ...(flag('kind') ? { kind: flag('kind') } : {}), ...(flag('q') ? { q: flag('q') } : {}), limit: flag('limit') ?? '30' });
+      const r = await gen.assets({ ...(flag('project') ? { project: flag('project') } : {}), ...(flag('kind') ? { kind: flag('kind') } : {}), ...(flag('tool') ? { tool: flag('tool') } : {}), ...(flag('q') ? { q: flag('q') } : {}), limit: flag('limit') ?? '30' });
       for (const a of r.items) console.log(`${a.id}  ${a.kind.padEnd(5)} ${a.project.padEnd(18)} ${a.tool.padEnd(15)} ${a.title ?? Object.values(a.labels ?? {}).join(' ')}`);
       console.log(`${r.items.length} of ${r.total}`);
       return;
