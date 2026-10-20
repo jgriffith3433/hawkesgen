@@ -23,7 +23,7 @@ test('an existing settings file with no harness runs on Cursor', () => {
 test('ask() runs the Cursor harness and does not bill tokens', async () => {
   const r = await ask({ prompt: 'Return JSON', system: 'json only', model: 'claude-haiku-5-5', schema: { type: 'object', properties: { ok: { type: 'boolean' } } } });
   assert.equal(r.billing, 'cursor');
-  assert.equal(r.model, 'grok-4.7');
+  assert.equal(r.model, 'auto');
   assert.equal(r.text, '{"ok":true}');
   assert.equal(r.cost, 0);
   assert.equal(usageOf(r).provider, 'cursor');

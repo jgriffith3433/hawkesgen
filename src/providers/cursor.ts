@@ -1,6 +1,7 @@
 // Writing, review and JSON calls through Cursor's `agent` on the Cursor plan. No tools: a prompt in, text out.
-// CURSOR_API_KEY is the account key (hawkes/cursor on the server). A Claude model id from a caller is Grok 4.7
-// here, so a third-party model is not billed on top of the plan. Tests point HAWKESGEN_CURSOR at a stand-in.
+// CURSOR_API_KEY is the account key (hawkes/cursor on the server). A Claude model id from a caller becomes
+// `auto` (Cursor's router), so a third-party model is not billed on top of the plan. Tests point
+// HAWKESGEN_CURSOR at a stand-in.
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -9,7 +10,7 @@ import path from 'node:path';
 import { env } from '../config.ts';
 import { GenError } from '../util.ts';
 
-export const CURSOR_MODEL = 'grok-4.7';
+export const CURSOR_MODEL = 'auto';
 export const configured = () => Boolean(env('CURSOR_API_KEY') || env('HAWKESGEN_CURSOR'));
 
 function bin() {
