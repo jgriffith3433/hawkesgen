@@ -224,6 +224,38 @@ def joints(co):
     return j, H
 
 
+def shape_report(co):
+    """Whether this mesh is an upright biped with its arms out. A failure here sends kind=auto to SkinTokens."""
+    top = float(co[:, 2].max())
+    height = float(co[:, 2].max() - co[:, 2].min())
+    width = float(co[:, 0].max() - co[:, 0].min())
+    reasons = []
+    sl = max(top * 0.02, 1e-4)
+    shin = band(co, top * 0.12, top * 0.32)
+    two = len(shin) >= 10 and (shin[:, 0] > 0).sum() >= 3 and (shin[:, 0] < 0).sum() >= 3
+    if two:
+        lx = (shin[shin[:, 0] > 0][:, 0].mean() - shin[shin[:, 0] < 0][:, 0].mean()) / 2
+    else:
+        lx = top * 0.055
+        reasons.append("no two leg columns")
+    crotch = None
+    for z in np.arange(top * 0.2, top * 0.62, sl / 2):
+        s = band(co, z - sl / 2, z + sl / 2)
+        if len(s) and (np.abs(s[:, 0]) < max(lx, 1e-4) * 0.2).sum() == 0:
+            crotch = float(z)
+        elif crotch is not None or z > top * 0.3:
+            break
+    if crotch is None or crotch < top * 0.3:
+        reasons.append("no gap between the legs")
+    upper = co[co[:, 2] > (crotch or top * 0.46)]
+    reach = max(abs(float(upper[:, 0].min())), abs(float(upper[:, 0].max()))) if len(upper) else 0.0
+    if reach < lx * 2 + top * 0.1:
+        reasons.append("arms are not held out from the body")
+    if height < max(width, 1e-6) * 0.9:
+        reasons.append("the mesh is wider than it is tall")
+    return {"humanoid": not reasons, "reasons": reasons, "height": round(height, 3)}
+
+
 # name: (head joint, tail joint, parent, deforms)
 BONES = [
     ("Hips", "Hips", "Spine", None, True),
@@ -523,6 +555,256 @@ def bake_clip(arm, clip, k):
     say("clip", json.dumps(got))
 
 
+# ---------------------------------------------------------------- model output: walk, textures, FBX and GLB
+
+def rig_parts(path):
+    """Imports a rigged file and returns (meshes, armature) with transforms baked in."""
+    objs = import_file(path)
+    meshes = [o for o in objs if o.type == "MESH"]
+    arms = [o for o in objs if o.type == "ARMATURE"]
+    if not meshes or not arms:
+        fail(f"{os.path.basename(path)} needs a mesh and a skeleton")
+    keep = meshes + arms
+    for o in objs:
+        if o not in keep:
+            for c in list(o.children):
+                mw = c.matrix_world.copy()
+                c.parent = None
+                c.matrix_world = mw
+            bpy.data.objects.remove(o, do_unlink=True)
+    for o in keep:
+        mw = o.matrix_world.copy()
+        o.parent = None
+        o.matrix_world = mw
+    select(keep, arms[0])
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    return meshes, arms[0]
+
+
+def plant(meshes, arm):
+    """Feet on z = 0, centered on x and y, mesh and bones moved together."""
+    co = np.concatenate([verts(o) for o in meshes])
+    lo, hi = co.min(0), co.max(0)
+    delta = V((-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]))
+    for o in meshes:
+        o.data.transform(M.Translation(delta))
+        o.data.update()
+    select([arm], arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    for b in arm.data.edit_bones:
+        b.head += delta
+        b.tail += delta
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return float(hi[2] - lo[2])
+
+
+def fit_height(meshes, arm, height):
+    co = np.concatenate([verts(o) for o in meshes])
+    h = float(co[:, 2].max() - co[:, 2].min())
+    if not height or h < 1e-5:
+        return h
+    s = float(height) / h
+    if abs(s - 1) < 0.02:
+        return h
+    for o in meshes:
+        o.data.transform(M.Diagonal((s, s, s, 1)))
+        o.data.update()
+    select([arm], arm)
+    bpy.ops.object.mode_set(mode="EDIT")
+    for b in arm.data.edit_bones:
+        b.head *= s
+        b.tail *= s
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return float(height)
+
+
+def copy_textures(meshes, source):
+    """When the rigger dropped materials, copy them from the source if the vertex count still matches."""
+    if not source or not os.path.isfile(source):
+        return
+    before = set(bpy.data.objects)
+    srcs = [o for o in import_file(source) if o.type == "MESH"]
+    if not srcs:
+        return
+    donor = srcs[0]
+
+    def has_image(mesh):
+        for mat in mesh.data.materials:
+            if mat and mat.node_tree and any(n.type == "TEX_IMAGE" and n.image for n in mat.node_tree.nodes):
+                return True
+        return False
+
+    for mesh in meshes:
+        if len(mesh.data.vertices) != len(donor.data.vertices):
+            warn(f"textures were not copied onto {mesh.name}: {len(mesh.data.vertices)} vertices, the source has {len(donor.data.vertices)}")
+            continue
+        if has_image(mesh):
+            continue
+        mesh.data.materials.clear()
+        for mat in donor.data.materials:
+            mesh.data.materials.append(mat)
+        for src_uv in donor.data.uv_layers:
+            if len(src_uv.uv) != len(mesh.data.loops):
+                warn(f"textures on {mesh.name} kept their materials but not UVs (the loop count changed)")
+                continue
+            if src_uv.name not in mesh.data.uv_layers:
+                mesh.data.uv_layers.new(name=src_uv.name)
+            dst = mesh.data.uv_layers[src_uv.name].uv
+            for i in range(len(src_uv.uv)):
+                dst[i].vector = src_uv.uv[i].vector
+    for o in list(bpy.data.objects):
+        if o not in before and o not in meshes:
+            bpy.data.objects.remove(o, do_unlink=True)
+
+
+def add_walk(arm, frames):
+    """One in-place walk named Walk. Mixamo legs swing about world X (the character faces -Y). Other rigs swing bones that hang down."""
+    keys = {bone_key(b.name): b.name for b in arm.data.bones}
+    named = all(k in keys for k in ("hips", "leftupleg", "rightupleg", "leftleg", "rightleg"))
+    plan = []
+    if named:
+        plan = [
+            ("leftupleg", 1, 28, False), ("rightupleg", -1, 28, False),
+            ("leftleg", 1, 40, True), ("rightleg", -1, 40, True),
+            ("leftarm", -1, 20, False), ("rightarm", 1, 20, False),
+            ("leftforearm", -1, 15, True), ("rightforearm", 1, 15, True),
+        ]
+        plan = [(keys[k], sign, deg, knee) for k, sign, deg, knee in plan if k in keys]
+    else:
+        hanging = []
+        for b in arm.data.bones:
+            if not b.use_deform:
+                continue
+            d = b.tail_local - b.head_local
+            if d.length < 1e-5 or d.normalized().z > -0.45:
+                continue
+            hanging.append(b)
+        for side in (1, -1):
+            side_bones = [b for b in hanging if b.head_local.x * side > 0]
+            side_bones.sort(key=lambda b: -b.head_local.z)
+            if side_bones:
+                plan.append((side_bones[0].name, side, 25, False))
+            if len(side_bones) > 1:
+                plan.append((side_bones[1].name, side, 30, True))
+    if len(plan) < 2:
+        warn("no legs to walk with; the preview holds the rest pose")
+        return None
+    say("step", f"walking on {len(plan)} bones")
+    arm_q = arm.matrix_world.to_quaternion()
+    bones = order(arm)
+    tarm = arm.animation_data_create()
+    for t in list(tarm.nla_tracks):
+        tarm.nla_tracks.remove(t)
+    action = bpy.data.actions.new("Walk")
+    action.use_fake_user = True
+    tarm.action = action
+    if hasattr(tarm, "action_slot") and tarm.action_slot is None and len(action.slots):
+        tarm.action_slot = action.slots[0]
+    for pb in arm.pose.bones:
+        pb.rotation_mode = "QUATERNION"
+    prev = {}
+    for f in range(frames):
+        cycle = max(4, int(SPEC.get("cycle") or frames))
+        s = math.sin(2 * math.pi * f / cycle)
+        want = {}
+        for b in bones:
+            pb = arm.pose.bones[b.name]
+            R = b.matrix_local.to_quaternion()
+            hit = next((p for p in plan if p[0] == b.name), None)
+            if hit:
+                _, sign, deg, knee = hit
+                ang = math.radians(deg) * (max(0.0, -s * sign) if knee else s * sign)
+                delta = mathutils.Quaternion(V((1, 0, 0)), ang)
+            else:
+                delta = mathutils.Quaternion()
+            q = (arm_q.inverted() @ (delta @ (arm_q @ R).normalized()).normalized()).normalized()
+            if b.parent:
+                pr = b.parent.matrix_local.to_quaternion()
+                basis = R.inverted() @ pr @ want[b.parent.name].inverted() @ q
+            else:
+                basis = R.inverted() @ q
+            want[b.name] = q
+            basis = compat(basis.normalized(), prev.get(b.name))
+            prev[b.name] = basis.copy()
+            pb.rotation_quaternion = basis
+            pb.keyframe_insert("rotation_quaternion", frame=f + 1, group=b.name)
+            if not b.parent:
+                pb.location = V((0, 0, math.sin(4 * math.pi * f / cycle) * 0.015))
+                pb.keyframe_insert("location", frame=f + 1, group=b.name)
+    tarm.action = None
+    track = tarm.nla_tracks.new()
+    track.name = "Walk"
+    strip = track.strips.new("Walk", 1, action)
+    if hasattr(strip, "action_slot") and strip.action_slot is None and len(action.slots):
+        strip.action_slot = action.slots[0]
+    track.mute = True
+    action.name = "Walk"
+    for pb in arm.pose.bones:
+        pb.matrix_basis = M()
+    return "Walk"
+
+
+def prep():
+    obj = load_mesh(SPEC["mesh"])
+    select([obj], obj)
+    bpy.ops.export_scene.gltf(filepath=SPEC["prepared"], export_format="GLB", use_selection=True, export_animations=False)
+    say("prep", SPEC["prepared"])
+
+
+def classify():
+    obj = load_mesh(SPEC["mesh"])
+    report = shape_report(verts(obj))
+    json.dump(report, open(os.path.join(OUT, "class.json"), "w"), indent=1)
+    say("class", "humanoid" if report["humanoid"] else "other")
+    for reason in report["reasons"]:
+        say("warning", reason)
+
+
+def finish():
+    """The model already rigged the mesh. Plant it, keep textures, add a walk, bake any extra clips, write FBX and GLB."""
+    t0 = time.time()
+    meshes, arm = rig_parts(SPEC["rigged"])
+    if SPEC.get("keepTextures", True) and SPEC.get("source"):
+        copy_textures(meshes, SPEC["source"])
+    h = plant(meshes, arm)
+    h = fit_height(meshes, arm, SPEC.get("height"))
+    info["height"] = round(h, 3)
+    info["vertices"] = int(sum(len(o.data.vertices) for o in meshes))
+    frames = int(SPEC.get("frames") or 24)
+    # One step per second, repeated across the preview, so a longer video is a walk and not one slow stride.
+    SPEC["cycle"] = SPEC.get("cycle") or max(4, int(SPEC.get("fps") or 24))
+    clip_names = {c.get("name") for c in (SPEC.get("clips") or [])}
+    walked = None if "Walk" in clip_names else add_walk(arm, frames)
+    if walked:
+        info["clips"].append({"name": "Walk", "frames": frames, "source": "procedural"})
+    for k, clip in enumerate(SPEC.get("clips") or []):
+        bake_clip(arm, clip, k)
+    scene.frame_set(1)
+    if arm.animation_data:
+        for track in arm.animation_data.nla_tracks:
+            track.mute = False
+    select(meshes + [arm], arm)
+    say("step", "writing the GLB and the FBX")
+    bpy.ops.export_scene.gltf(
+        filepath=os.path.join(OUT, "rigged.glb"), export_format="GLB", use_selection=True,
+        export_animations=True, export_animation_mode="ACTIONS", export_skins=True,
+        export_anim_slide_to_zero=True, export_force_sampling=True, export_yup=True,
+    )
+    bpy.ops.export_scene.fbx(
+        filepath=os.path.join(OUT, "character.fbx"), use_selection=True, object_types={"ARMATURE", "MESH"},
+        apply_unit_scale=True, apply_scale_options="FBX_SCALE_ALL", axis_forward="-Z", axis_up="Y",
+        use_mesh_modifiers=False, mesh_smooth_type="FACE", add_leaf_bones=False,
+        primary_bone_axis="Y", secondary_bone_axis="X", armature_nodetype="NULL",
+        bake_anim=True, bake_anim_use_all_bones=True, bake_anim_use_nla_strips=True,
+        bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True, bake_anim_step=1.0,
+        bake_anim_simplify_factor=0.0, path_mode="COPY", embed_textures=True,
+    )
+    info["bones"] = [b.name for b in arm.data.bones]
+    info["seconds_total"] = round(time.time() - t0, 1)
+    json.dump(info, open(os.path.join(OUT, "rig.json"), "w"), indent=1)
+    say("done", info["seconds_total"])
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -557,4 +839,14 @@ def main():
     say("done", round(time.time() - t0, 1))
 
 
-main()
+mode = SPEC.get("mode") or "rig"
+if mode == "prep":
+    prep()
+elif mode == "classify":
+    classify()
+elif mode == "finish":
+    finish()
+elif mode == "rig":
+    main()
+else:
+    fail(f"unknown mode {mode}")
