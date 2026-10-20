@@ -239,6 +239,42 @@ render.library = async () => {
   for (const s of document.querySelectorAll('#library [data-star]')) s.onclick = () => api(`/assets/${s.dataset.star}`, { method: 'PATCH', body: JSON.stringify({ starred: s.dataset.on !== '1' }) }).then(() => render.library()).catch(fail);
 };
 
+/** Remote Desktop for the build server: downloads the .rdp for its current address (letting this browser's IP in), or offers Start. */
+async function remoteDesktop(refresh) {
+  const r = await fetch('/v1/builder/rdp-file');
+  if (r.ok) {
+    const url = URL.createObjectURL(await r.blob());
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'hawkes-builder.rdp' });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast('Remote Desktop file downloaded. Open it, then use Show password.');
+    return;
+  }
+  const body = await r.json().catch(() => ({}));
+  if (body.ready === false) {
+    if (confirm(`The build server is ${body.state}. Start it? About $0.77/hr while it runs (your IP is let in on Remote Desktop either way).`)) {
+      await post('/builder/start', { confirm: true }).then(() => toast('Starting. Click Remote Desktop again in a few minutes.')).catch(fail);
+      refresh?.();
+    }
+    return;
+  }
+  throw new Error(body.error ?? `HTTP ${r.status}`);
+}
+/** Shows the build server's Administrator password on demand, with a copy button. */
+async function showBuilderPassword() {
+  const r = await post('/builder/password');
+  const body = modal(`<h2>Build server password</h2><p class="small muted">User <b>${esc(r.user)}</b>. Shown only now; it isn't logged.</p><input id="pw" readonly value="${esc(r.password)}" style="width:100%"><div class="row" style="margin-top:12px"><button class="primary" id="pwc">Copy</button><button id="pwx">Close</button></div>`);
+  body.querySelector('#pwc').onclick = () => navigator.clipboard.writeText(r.password).then(() => toast('Password copied'), () => { body.querySelector('#pw').select(); });
+  body.querySelector('#pwx').onclick = () => $('#modal').close();
+}
+/** The ssh command for a GPU server (they're Linux: no Remote Desktop), copied to the clipboard. */
+async function copySsh(id) {
+  const r = await api(`/fleet/connect?id=${encodeURIComponent(id)}`);
+  if (!r.ready) return toast(`The server is ${r.state}: start it first (GPU fleet tab).`);
+  await navigator.clipboard.writeText(r.command).catch(() => {});
+  toast(`${r.command}${r.keyFile ? ` (key file ${r.keyFile} is in the control server's fleet folder)` : ''} copied`);
+}
+
 // ---------------------------------------------------------------- fleet
 /** The Unity build server card (builds Unity games for WebGL; see src/providers/builder). */
 async function renderBuilder() {
@@ -254,16 +290,18 @@ async function renderBuilder() {
   }
   el.innerHTML = `<div class="row spread"><h3>Unity build server</h3><div class="row">
       ${b.state === 'stopped' ? '<button data-b="start">Start</button>' : ''}${['running', 'pending'].includes(b.state) ? '<button data-b="stop">Stop</button>' : ''}
-      ${b.state === 'running' ? '<button data-b="rdp">Remote Desktop file</button>' : ''}<button data-b="access">Refresh access</button><button class="danger" data-b="terminate">Terminate</button></div></div>
+      <button data-b="remote">Remote Desktop</button><button data-b="password">Show password</button><button data-b="access">Refresh access</button><button class="danger" data-b="terminate">Terminate</button></div></div>
     <table><tbody>
       <tr><td>Server</td><td><b>${esc(b.id)}</b> · ${esc(b.type)} · ${esc(b.region)} · ${money(b.pricePerHour)}/hr${b.idleMinutes ? ` · stops after ${b.idleMinutes} idle min` : ''}</td></tr>
       <tr><td>State</td><td>${esc(b.state)}${b.stage ? ` · <b>${esc(b.stage.stage)}</b>: ${esc(b.stage.detail ?? '')}` : ''}</td></tr>
-      ${b.stage?.stage === 'license' ? `<tr><td>To do</td><td style="color:var(--warn)">Open the Remote Desktop file, sign in as Administrator (password in ${esc(b.passwordFile ?? 'the builder folder')}), open Unity Hub and sign in once. Then builds can run.</td></tr>` : ''}
+      ${b.stage?.stage === 'license' ? `<tr><td>To do</td><td style="color:var(--warn)">Click Remote Desktop, open the file, sign in as Administrator (click Show password), open Unity Hub and sign in once. Then builds can run.</td></tr>` : ''}
       ${b.rdpFile ? `<tr><td>Remote Desktop</td><td class="small">${esc(b.rdpFile)}</td></tr>` : ''}
     </tbody></table>`;
   for (const btn of el.querySelectorAll('[data-b]')) {
     btn.onclick = () => {
       const a = btn.dataset.b;
+      if (a === 'remote') return remoteDesktop(renderBuilder).catch(fail);
+      if (a === 'password') return showBuilderPassword().catch(fail);
       if (a === 'terminate' && !confirm('Delete the build server and its disk? Every project Library goes with it (the next builds are clean ones).')) return;
       if (a === 'start' && !confirm('Start the build server? About $0.77/hr while it runs.')) return;
       bact(a, ['start', 'terminate'].includes(a) ? { confirm: true } : {}).then((r) => { if (a === 'rdp' && r) toast(`Saved ${r.rdpFile}`); });
@@ -489,7 +527,8 @@ function machineCard(m, h1, h24) {
   ];
   const diskPct = pctOf(x?.diskUsed, x?.diskSize);
   const table = running || h24?.length ? `<table><thead><tr><th>Measure</th><th>Now</th><th>Last hour</th><th>Last 24 h</th></tr></thead><tbody>${rows.map(([label, now, key, pct]) => `<tr><td><b>${label}</b></td><td class="small"${key === 'disk' && diskPct >= 90 ? ' style="color:var(--warn)"' : ''}>${running ? now : '—'}</td><td>${sparkline(h1, key, pct)}</td><td>${sparkline(h24, key, pct)}</td></tr>`).join('')}</tbody></table>` : '';
-  return `<div class="card">${head}<div class="small muted">${esc(m.id)}${facts.length ? ` · ${facts.join(' · ')}` : ''}</div>${jobs}${err}${table}</div>`;
+  const connect = m.kind === 'builder' ? `<div class="row"><button data-m-rdp>Remote Desktop</button><button data-m-pw>Show password</button></div>` : m.kind === 'gpu' ? `<div class="row"><button data-m-ssh="${esc(m.id)}">Copy ssh command</button></div>` : '';
+  return `<div class="card">${head}<div class="small muted">${esc(m.id)}${facts.length ? ` · ${facts.join(' · ')}` : ''}</div>${connect}${jobs}${err}${table}</div>`;
 }
 
 render.machines = async () => {
@@ -502,6 +541,9 @@ render.machines = async () => {
     <div class="card"><h3>Needs action</h3>${r.alerts.length ? `<table><thead><tr><th>What</th></tr></thead><tbody>${r.alerts.map((a) => `<tr><td><b style="color:var(--${a.level})">${esc(a.text)}</b></td></tr>`).join('')}</tbody></table>` : '<p class="small muted">Nothing: every running machine answers, no disk over 90%, nothing idle for 30 minutes.</p>'}</div>
     ${list.map((m) => machineCard(m, h1.machines[m.id], h24.machines[m.id])).join('')}
     <p class="small muted">Running machines are measured over SSH every minute (kept 7 days) and every 15 s while this page is open. Stopped machines are never started to measure them. The control server itself is on Studio's Resources page.</p>`;
+  for (const b of document.querySelectorAll('#machines [data-m-rdp]')) b.onclick = () => remoteDesktop(() => render.machines()).catch(fail);
+  for (const b of document.querySelectorAll('#machines [data-m-pw]')) b.onclick = () => showBuilderPassword().catch(fail);
+  for (const b of document.querySelectorAll('#machines [data-m-ssh]')) b.onclick = () => copySsh(b.dataset.mSsh).catch(fail);
   for (const l of document.querySelectorAll('#machines [data-job-link]')) l.onclick = (e) => { e.preventDefault(); showJob(l.dataset.jobLink); };
 };
 
