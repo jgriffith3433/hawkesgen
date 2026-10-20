@@ -31,12 +31,12 @@
         "make": { "tool": "mesh.textured", "inputs": { "image": "slot:./apose" } }
       },
       "rig": {
-        "description": "The mesh with a Mixamo-named skeleton and skin weights (a GLB). Clips are retargeted onto this.",
+        "description": "The mesh with a Mixamo-named skeleton and skin weights (a GLB from Make-It-Animatable). Clips are retargeted onto this.",
         "make": {
           "tool": "mesh.rig",
-          "params": { "height": 1.8 },
+          "params": { "height": 1.8, "kind": "humanoid", "keepTextures": true },
           "inputs": { "mesh": "slot:./mesh" },
-          "saves": { "rigged": "rig", "turntable": "preview/turntable" }
+          "saves": { "rigged": "rig", "walk": "preview/turntable" }
         }
       },
       "animation/*": {
@@ -56,7 +56,7 @@
         }
       },
       "preview/turntable": {
-        "description": "The rigged character turning once, in its rest pose.",
+        "description": "A video of the rig. mesh.rig files its walk video here. Making this slot on its own renders a turntable of the rest pose.",
         "make": {
           "tool": "blender.character",
           "params": { "ops": [{ "op": "import", "file": 0, "clips": false }, { "op": "preview", "clips": false }] },

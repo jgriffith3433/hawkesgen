@@ -145,7 +145,7 @@ include the shared kinds. A save drops any shared kind it didn't change.
 | `concept` | `image.generate` | the entity's name and look: a turnaround sheet |
 | `apose` | `image.edit` | `concept`: the front view alone, in an A-pose |
 | `mesh` | `mesh.textured` | `apose` |
-| `rig` | `mesh.rig` (1.8 m) | `mesh`; its turntable goes to `preview/turntable` |
+| `rig` | `mesh.rig` (1.8 m, kind humanoid) | `mesh`; its walk video goes to `preview/turntable` |
 | `animation/<clip>` | `blender.character` (import, retarget, export glb, preview) | `rig` plus the slot's `data.source` (an `asset:` or `slot:` reference to a Mixamo FBX, a GLB or a BVH). The GLB goes to the slot, the video to `preview/<clip>`. |
 | `preview/turntable`, `preview/<clip>` | `blender.character` (preview) | `rig`, or `animation/<clip>` |
 | `export/fbx`, `export/glb` | `blender.character` (import, retarget `*`, export) | `rig`. To take clips along, make it with `inputs: { files: ["slot:./rig", "slot:./animation/walk", "slot:./animation/idle"] }` |
@@ -160,6 +160,45 @@ POST /v1/entities { "project": "phorigins", "name": "Pierce", "kind": "character
                     "data": { "look": "...", "slots": { "animation/walk": { "source": "asset:<Walking.fbx>" } } } }
 POST /v1/entities/phorigins/pierce/slots/concept/make     # then apose, mesh, rig, animation/walk, export/fbx
 ```
+
+## mesh.rig
+
+`mesh.rig` (version 2, family `rig`) rigs the mesh before `blender.character` sees it. It is not a ComfyUI node and
+it is not on the fleet image. The first job on a server installs two venvs under `/opt/hawkes-rig` (the Blender
+install pattern in `src/providers/rig/install.ts`) and refuses to start unless the disk has 30 GB free.
+
+| | Humanoid | Anything else |
+|---|---|---|
+| Param | `kind: humanoid`, or `kind: auto` when the mesh is an upright biped with its arms out | `kind: auto` when it is not, and when Make-It-Animatable fails |
+| Model | Make-It-Animatable v2, commit `bbd8b158d888` | SkinTokens (TokenRig), commit `273b691d3598` |
+| Skeleton | Mixamo names (`mixamorig:Hips`, fingers included) | Whatever SkinTokens predicts for that body. Not Mixamo. Retarget a Mixamo clip onto it only after `blender.character` can name the bones. |
+| License | Code MIT. Weights Apache-2.0 (`jasongzy/Make-It-Animatable`, `output/best/v2`, about 3.05 GB). The shape encoder is Hunyuan3D 2.1's VAE (`hunyuan3d-vae-v2-1`, about 625 MB) under Tencent's community license: commercial use is allowed under 1 million monthly users, outside the EU, UK and South Korea. `mesh.from-image` already runs that model. | Code MIT. Weights MIT (`VAST-AI/SkinTokens`, about 1.6 GB). It reads the Qwen3-0.6B config (Apache-2.0) and not Qwen's own weights. |
+
+UniRig (MIT code, MIT weights) is the predecessor. It is not installed: SkinTokens replaces it, and a second venv
+would spend the disk for a worse skin. The paid Auto-Rig Pro addon is not cloned. The Mixamo dataset on Hugging
+Face is gated, so the 52-bone template Make-It-Animatable reads (`data/Mixamo/bones.fbx`) is generated on the
+server from the bone names and parents (`post/rig/make_template.py`). The attention mask only uses those parents.
+
+**Params:** `kind` (`humanoid` or `auto`), `keepTextures` (default true: copy the source materials back when the
+model dropped them and the vertex count still matches). `height` and `facing` are applied before the model runs.
+
+**Outputs:** `rigged` (GLB, with a clip named Walk), `fbx`, `walk` (the preview), `preview` (its first frame). The
+walk is a one-second cycle repeated for `seconds` (default 4), played in place. A `character3d` rig files the GLB
+on `rig` and the video on `preview/turntable`.
+
+**Memory, as published, before a server has measured a run.** The job result's `resources` is the measurement
+(VRAM used and total, RAM available and total, disk used and free, sampled around each model, plus the install's
+`du` of `/opt/hawkes-rig`).
+
+- **VRAM:** SkinTokens asks for 14 GB. Make-It-Animatable v2 is a feed-forward net on the Hunyuan shape VAE; the
+  fleet's L40S has 48 GB. SkinTokens uses 10 beams at 32 GB and up, 4 beams from 20 GB, 2 beams below that.
+- **RAM:** a g6e.xlarge has 32 GB. The two models are never loaded together. One at a time fits; the sample line
+  `memAvailableBytes` says what was free.
+- **Disk:** the pinned weight files are about 3.05 GB (Make-It-Animatable) + 0.6 GB (Hunyuan VAE) + 1.6 GB
+  (SkinTokens), and then two PyTorch venvs. The install records the real `diskBytes`.
+
+The first run on a server is the download (several minutes, on the order of a dollar of GPU time while it waits).
+Later runs are the inference plus a short Blender preview.
 
 ## Tested
 
