@@ -82,9 +82,10 @@ export type Settings = {
   /**
    * Which harness answers writing, review and JSON calls, and (via Studio) the coding agents.
    * "claude" is Claude Code (the Max plan or the API key above). "cursor" is Cursor's agent on the Cursor plan.
+   * "copilot" is the GitHub Copilot CLI on the Copilot plan.
    * A saved "grok" was the xAI API; it now means Cursor. A file that never chose runs on Cursor (Claude usage is out, J 2026-10-19).
    */
-  brain: 'claude' | 'cursor';
+  brain: 'claude' | 'cursor' | 'copilot';
   /** The Cursor model, when the harness is Cursor. Empty: Grok 4.7. */
   model?: string;
   /** Local requests (127.0.0.1) without an API key act as the owner. Turn off before exposing the service. */
@@ -129,7 +130,7 @@ function clean(s: Settings): Settings {
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
       timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
     },
-    brain: s.brain === 'cursor' || (s.brain as string) === 'grok' ? 'cursor' : 'claude',
+    brain: s.brain === 'cursor' || (s.brain as string) === 'grok' ? 'cursor' : s.brain === 'copilot' ? 'copilot' : 'claude',
     model: typeof (s as { model?: string }).model === 'string' ? (s as { model?: string }).model : '',
     localOpen: s.localOpen !== false,
     rates: { elevenlabsPer1kChars: Number(s.rates?.elevenlabsPer1kChars ?? SETTINGS_DEFAULTS.rates.elevenlabsPer1kChars) || 0 },
