@@ -33,10 +33,24 @@ test('shared/character3d-4v: steps use real tools, refs point at earlier steps, 
   });
   const sheet = steps.find((s) => s.tool === 'image.sheet');
   const saves = ['cutout', 'back', 'left', 'right'];
-  assert.deepEqual(sheet.inputs.views.map((v: string) => steps[Number(v.slice(5)) - 1].save), saves);
+  assert.deepEqual(sheet.inputs.views.map((v: string) => steps[Number(v.slice(5, v.indexOf(':'))) - 1].save), saves);
   const bl = steps.find((s) => s.tool === 'blender.character');
   checkOps(bl.params.ops, ['/a.glb']);
   assert.equal(steps[Number(bl.inputs.files[0].slice(5)) - 1].tool, 'mesh.views3d');
+});
+
+test('presets never feed a background-removal step\'s mask (its first output) onward: refs must name :cutout', async () => {
+  const { getProjectPresets } = await import('../src/presets.ts');
+  const all: any = getProjectPresets('shared')!.presets;
+  for (const [name, preset] of Object.entries<any>(all)) {
+    const steps: any[] = preset.params?.steps ?? [];
+    steps.forEach((s, i) => {
+      for (const ref of JSON.stringify(s.inputs ?? {}).match(/\$(?:prev|step\d+)(?::[a-z]+)?/g) ?? []) {
+        const n = ref.startsWith('$prev') ? i : Number(/^\$step(\d+)/.exec(ref)![1]);
+        if (steps[n - 1]?.tool === 'image.remove-background') assert.match(ref, /:cutout$/, `${name} step ${i + 1} (${s.save}): ${ref} would pass the mask`);
+      }
+    });
+  }
 });
 
 test('checkOps: repair, retopo, project and lod ops are validated', () => {

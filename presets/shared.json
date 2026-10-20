@@ -33,13 +33,13 @@
           },
           {
             "tool": "image.angles",
-            "inputs": { "image": "$prev" },
+            "inputs": { "image": "$prev:cutout" },
             "save": "angles"
           },
           {
             "tool": "mesh.textured",
             "params": { "faces": 100000 },
-            "inputs": { "image": "$step2" },
+            "inputs": { "image": "$step2:cutout" },
             "save": "raw"
           },
           {
@@ -91,14 +91,14 @@
               "width": 1024,
               "height": 1024
             },
-            "inputs": { "images": ["$step2"] },
+            "inputs": { "images": ["$step2:cutout"] },
             "save": "backview"
           },
           { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "back" },
           {
             "tool": "mesh.textured",
             "params": { "faces": 100000 },
-            "inputs": { "image": "$step2" },
+            "inputs": { "image": "$step2:cutout" },
             "save": "raw"
           },
           {
@@ -124,7 +124,7 @@
                 { "op": "export", "format": "glb", "title": "mesh" }
               ]
             },
-            "inputs": { "files": ["$step5", "$step2", "$step4"] },
+            "inputs": { "files": ["$step5", "$step2:cutout", "$step4:cutout"] },
             "save": "mesh"
           },
           {
@@ -163,7 +163,7 @@
               "width": 1024,
               "height": 1024
             },
-            "inputs": { "images": ["$step2"] },
+            "inputs": { "images": ["$step2:cutout"] },
             "save": "backview"
           },
           { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "back" },
@@ -174,7 +174,7 @@
               "width": 1024,
               "height": 1024
             },
-            "inputs": { "images": ["$step2"] },
+            "inputs": { "images": ["$step2:cutout"] },
             "save": "leftview"
           },
           { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "left" },
@@ -185,14 +185,14 @@
               "width": 1024,
               "height": 1024
             },
-            "inputs": { "images": ["$step2"] },
+            "inputs": { "images": ["$step2:cutout"] },
             "save": "rightview"
           },
           { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "right" },
           {
             "tool": "image.sheet",
             "params": { "cell": 1024 },
-            "inputs": { "views": ["$step2", "$step4", "$step6", "$step8"] },
+            "inputs": { "views": ["$step2:cutout", "$step4:cutout", "$step6:cutout", "$step8:cutout"] },
             "save": "sheet"
           },
           {
