@@ -129,62 +129,30 @@ Moves ease in and out.
 
 ## mesh.rig: rig a generated character
 
-`mesh.rig` takes a humanoid from `mesh.from-image` or `mesh.textured` and turns it into a game-ready animated
-character: a Mixamo-named skeleton, skin weights, and your animation clips baked on. The result is one GLB. It runs
-in Blender on a GPU server, like `blender.render` (family `blender`), in about a minute.
+`mesh.rig` takes a mesh from `mesh.textured` (a GLB) and returns a rigged FBX, a rigged GLB, and a video of a
+standard walk. Humanoids go through **Make-It-Animatable v2** (Mixamo bone names). Other organic bodies, and a
+humanoid that model fails on when `kind` is `auto`, go through **SkinTokens**. Both install into their own Python
+venvs the first time a server runs the tool (family `rig`, not a ComfyUI node, so the fleet image stays as it is).
+Licenses, the pinned commits, and the disk and memory notes are in `docs/3d-characters.md` ("mesh.rig").
 
-**Inputs:**
+Blender still does the last step: plant the character, copy textures back when a model dropped them, bake the walk
+(and any extra Mixamo clips), and render the preview. The older geometric rigger remains in `hawkes_rig.py` as
+mode `rig` for its offline test; the tool does not call it.
 
-| Input | What |
-|---|---|
-| `mesh` | The character (GLB/GLTF, FBX or OBJ): one humanoid standing upright, arms out in a T-pose or an A-pose. A rig it already has is dropped. |
-| `clips` | Animation files with a Mixamo-named skeleton: Mixamo FBX downloads ("without skin" is enough), or GLBs. Any prefix works (`mixamorig:`, `mixamorig7:`, `rig:`). |
+**Inputs:** `mesh` (GLB/GLTF, FBX or OBJ) and optional `clips` (Mixamo FBX or GLB, baked on beside the walk).
 
-**Params:**
+**Params:** `kind` (`auto` or `humanoid`), `keepTextures` (true), `height`, `facing`, `fps` (30), `seconds` (4, the
+walk preview). `names` and `actions` name the extra clips.
 
-| Param | Default | What |
-|---|---|---|
-| `names` | the file names | A name per clip, in order. These are the animation names in the GLB (`["Idle", "Walk", "Wave"]`). Library files have hash names, so name them. |
-| `height` | keep | Scale the character to this many meters. |
-| `facing` | 0 | Which way the mesh faces now, in degrees: 0 is toward the viewer (glTF +Z, how the mesh tools make them), 90 or -90 a side view, 180 the back. |
-| `fps` | 30 | The frame rate clips are baked at (Mixamo's). |
-| `turntable` | true | Also render the first clip playing while the camera goes around once (`seconds`, 6; `size`, 640 square; `engine`, cycles at `samples` 16). |
-| `actions` | | For files with several animations: which one to take from each, by name. |
-| `weights` | proxy | `proxy` weights a voxel-remeshed copy and copies the weights over; `direct` runs bone heat on the mesh itself. `voxel` sets the proxy's voxel size. |
+**Outputs:** `rigged` (GLB, clip `Walk`), `fbx`, `walk` (mp4) and `preview` (the first frame). The result includes
+the bone names, the warnings, and `resources` (VRAM, RAM, disk).
 
-**Outputs:** `rigged` (the GLB: the mesh, the skeleton, one animation per clip), `turntable` (mp4) and `preview` (a
-PNG of its first frame). The result has the bones, where each joint was put, each clip's frames and the bones it
-didn't have (`missing`), the weighting, and warnings.
+Make-It-Animatable's skeleton is Mixamo's, fingers included (`mixamorig:Hips` and the finger chains). Unity's
+Humanoid avatar reads those names. SkinTokens picks its own bone names for a non-humanoid.
 
-**The skeleton** is Mixamo's body without fingers: `mixamorig:Hips`, `Spine`, `Spine1`, `Spine2`, `Neck`, `Head`,
-`HeadTop_End`, and per side `Shoulder`, `Arm`, `ForeArm`, `Hand`, `UpLeg`, `Leg`, `Foot`, `ToeBase`, `Toe_End`.
-Unity's Humanoid avatar, three.js and Babylon.js read it as is, and `blender.render` plays its clips by name.
-
-**How it works** (`post/blender/hawkes_rig.py`):
-1. The mesh is joined into one object, turned to face -Y in Blender (the front), scaled, and stood on the ground.
-2. The joints are found from the mesh's shape: the two leg columns, the crotch (the top of the gap between them), the
-   neck (the narrowest part of the upper body), the hands (the farthest points out to each side), the toes (the front
-   of the feet). The rest follow Mixamo's proportions between them.
-3. Skin weights come from Blender's automatic weights (bone heat). Generated meshes have holes, inner faces and
-   loose bits that make bone heat fail, so by default it weights a closed voxel-remeshed copy and copies the weights
-   onto the real mesh by nearest surface. Anything left unweighted follows its nearest bones (a warning says how many).
-   Four influences per vertex, normalized.
-4. Each clip is retargeted by bone name in world space: every bone turns the way the clip's bone turns from its rest
-   pose, after lining up the two rest poses bone by bone. So a T-pose Mixamo clip plays right on a rig built in an
-   A-pose, and the clip's hip travel is scaled to this character's legs. Each clip is baked as its own action.
-5. The GLB is exported with every action; `hawkes_blender.py` renders the turntable from it.
-
-**Why this way:**
-- **Not Rigify.** Its deform bones are named `DEF-upper_arm.L` and so on, and it needs a metarig fitted by hand or
-  by the same joint finding. Renaming them to Mixamo's and dropping its control rig leaves what this builds directly.
-- **Not an auto-rig model (UniRig, Puppeteer, RigAnything) on ComfyUI.** None has a maintained ComfyUI node. They
-  predict their own skeletons (bone counts and names vary per mesh), so clips still need mapping. They also need their
-  own CUDA environments and model downloads on the fleet. For upright humanoids from the mesh tools, a fixed Mixamo
-  skeleton plus bone heat is predictable, free to install (Blender is already there) and fast. Revisit if
-  non-humanoid or odd-pose characters are needed.
-
-**Limits:** humanoids only, standing, arms away from the body. Hands are rigid (no finger bones), and so are long
-skirts, capes and hair (they follow the nearest bone). A mesh facing sideways needs `facing`.
+The geometric joint finder in `hawkes_rig.py` (mode `rig`) is what `test/rig.test.ts` still runs offline: bone-heat
+weights, no fingers, a turntable. The tool's classify mode uses the same shape check (two leg columns, a crotch gap,
+arms out, taller than wide) to decide `auto`.
 
 **Example** (`asset.make` from a picture of the character, then the rig):
 
@@ -194,11 +162,11 @@ skirts, capes and hair (they follow the nearest bone). A mesh facing sideways ne
   "params": {
     "steps": [
       { "tool": "mesh.textured", "inputs": { "image": "$input:0" }, "save": "model" },
-      { "tool": "mesh.rig", "inputs": { "mesh": "$prev", "clips": ["$input:1", "$input:2"] },
-        "params": { "names": ["Idle", "Walk"], "height": 1.2 }, "save": "rigged" }
+      { "tool": "mesh.rig", "inputs": { "mesh": "$prev" },
+        "params": { "kind": "humanoid", "keepTextures": true, "height": 1.2 }, "save": "rigged" }
     ]
   },
-  "inputs": { "files": ["character-front.png", "Idle.fbx", "Walking.fbx"] }
+  "inputs": { "files": ["character-front.png"] }
 }
 ```
 
