@@ -1,0 +1,52 @@
+{
+  "id": "image.pose-detect",
+  "version": 1,
+  "title": "Pose detection (SDPose)",
+  "description": "Detect human poses in an image (SDPose), as a pose map: check a character's A-pose or feed pose control.",
+  "family": "image.pose-detect",
+  "output": "image",
+  "models": [
+    {
+      "file": "sdpose_wholebody_fp16.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/checkpoints/sdpose_wholebody_fp16.safetensors"
+    },
+    {
+      "file": "rt_detr_v4-x-hgnet_fp16.safetensors",
+      "dir": "diffusion_models",
+      "url": "https://huggingface.co/Comfy-Org/SDPose/resolve/main/diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "679",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "longer_size": {
+      "type": "integer",
+      "default": 1024,
+      "targets": [
+        [
+          "688",
+          "value"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "680"
+  ],
+  "source": {
+    "template": "utility_sdpose_multi_person",
+    "size": 2040109466
+  }
+}

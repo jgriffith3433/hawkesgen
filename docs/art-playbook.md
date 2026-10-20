@@ -30,13 +30,16 @@ GPU rules and server notes: `comfyui.md`. Blender ops: `3d-characters.md`. Workf
 | Rig a humanoid | `mesh.rig` | Then `blender.character` for clips, `motion:` library for CC0 clips. |
 | Clips from text | `motion.from-text` | Kimodo SOMA / HY-Motion. |
 | Depth, normals, albedo from an image | `image.depth`, `image.normals`, `image.albedo` | For material maps. Seamless: `image.tile`. |
+| Fine depth or normal map, or a silhouette mask, from one image | `image.geometry` (MoGe 3) | `output`: `normal_opengl` (default; Unity, Blender, glTF), `normal_directx` (Unreal), `depth`, `depth_colored`, `mask`. |
+| Check a character's pose, or get a pose map | `image.pose-detect` (SDPose) | Whole-body pose map, several people. Check an A-pose before rigging, or feed pose control. |
 | Upscale or restore | `image.upscale`, `image.restore` (SeedVR2), `video.upscale` | |
 | Video, cutscenes | `video.t2v`, `video.i2v`, `video.control`, `video.motion` | Wan 2.2, LTX 2.3. Cut with `video.compose`. |
 | Music, voice, sfx | `audio.music`, `voice`, `sfx` | |
 
+Installed since: SAM3 segmentation (`image.segment`), MoGe 3 (`image.geometry`) and SDPose (`image.pose-detect`).
 Not installed yet, available as ComfyUI templates (import with `hawkesgen_import_workflow`): Qwen Image 2.1 Edit, Flux.2 Klein edit,
-Flux Kontext, SAM3 segmentation, SDPose pose estimation, SeedVR2 7B, LTX 2.5, Wan Dancer, Hunyuan Video 1.5, Stable Audio 3, MoGe
-geometry. Browse with `hawkesgen_templates { search }` (search by category word: "3d", "upscale", "audio").
+Flux Kontext, SeedVR2 7B, LTX 2.5, Wan Dancer, Hunyuan Video 1.5, Stable Audio 3. Browse with `hawkesgen_templates { search }`
+(search by category word: "3d", "upscale", "audio").
 
 ## Recipes
 

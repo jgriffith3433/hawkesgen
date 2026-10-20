@@ -1,0 +1,55 @@
+{
+  "id": "image.geometry",
+  "version": 2,
+  "title": "Depth and normals (MoGe 3)",
+  "description": "Fine-detail depth and normal maps from one image (MoGe 3): material maps, relighting, normal-map starts for props and terrain. Pick the map with `output`: normal_opengl (default; Unity, Blender, glTF), normal_directx (Unreal), depth, depth_colored or mask (silhouette only).",
+  "family": "image.geometry",
+  "output": "image",
+  "models": [
+    {
+      "file": "moge_3_vitg_fp16.safetensors",
+      "dir": "geometry_estimation",
+      "url": "https://huggingface.co/Comfy-Org/MoGe/resolve/main/geometry_estimation/moge_3_vitg_fp16.safetensors"
+    }
+  ],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Load Image",
+      "targets": [
+        [
+          "3",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "output": {
+      "type": "enum",
+      "values": [
+        "normal_opengl",
+        "normal_directx",
+        "depth",
+        "depth_colored",
+        "mask"
+      ],
+      "default": "normal_opengl",
+      "description": "Which map to return. normal_opengl: green = up (Unity, Blender, glTF); normal_directx: green = down (Unreal); depth: grey depth; depth_colored: colour-coded depth; mask: white silhouette.",
+      "targets": [
+        [
+          "7:5",
+          "output"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "6"
+  ],
+  "source": {
+    "template": "utility_moge3_geometry_estimation",
+    "size": 2469606195
+  }
+}

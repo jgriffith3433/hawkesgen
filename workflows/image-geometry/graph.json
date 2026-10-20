@@ -1,0 +1,68 @@
+{
+ "3": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "cosmic_suitcase.png"
+  },
+  "_meta": {
+   "title": "Load Image"
+  }
+ },
+ "6": {
+  "class_type": "SaveImage",
+  "inputs": {
+   "images": [
+    "7:5",
+    0
+   ],
+   "filename_prefix": "hawkesgen/preview"
+  },
+  "_meta": {
+   "title": "Preview Image"
+  }
+ },
+ "7:1": {
+  "class_type": "LoadMoGeModel",
+  "inputs": {
+   "model_name": "moge_3_vitg_fp16.safetensors"
+  },
+  "_meta": {
+   "title": "Load MoGe Model"
+  }
+ },
+ "7:2": {
+  "class_type": "MoGeInference",
+  "inputs": {
+   "resolution_level": 9,
+   "fov_x_degrees": 0,
+   "batch_size": 4,
+   "force_projection": true,
+   "apply_mask": true,
+   "refine_steps": 3,
+   "moge_model": [
+    "7:1",
+    0
+   ],
+   "image": [
+    "3",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Run MoGe Inference"
+  }
+ },
+ "7:5": {
+  "class_type": "MoGeRender",
+  "inputs": {
+   "output": "normal_opengl",
+   "moge_geometry": [
+    "7:2",
+    0
+   ]
+  },
+  "_meta": {
+   "title": "Render MoGe Geometry"
+  }
+ }
+}
