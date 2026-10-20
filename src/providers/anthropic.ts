@@ -65,7 +65,10 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
     const r = await (brain === 'cursor' ? cursor : copilot).ask({ ...p, model: loadSettings().model || p.model }, signal);
     return p.schema ? { ...r, text: maxPlan.answerText({ result: r.text }, p.schema) } : r;
   }
-  if (backend() === 'api') return askApi(p, signal);
+  if (backend() === 'api') {
+    const r = await askApi(p, signal);
+    return p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r;
+  }
   return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal);
 }
 
