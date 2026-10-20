@@ -2362,10 +2362,42 @@ def op_project(o):
     return {"op": "project", "size": size, "views": used, "seen": round(float(seen.sum() / max(len(P), 1)), 3)}
 
 
+BUDGETS = {
+    "web": {"triangles": 15000, "materials": 2, "bones": 60, "texture": 1024},
+    "mobile": {"triangles": 10000, "materials": 2, "bones": 50, "texture": 1024},
+    "desktop": {"triangles": 60000, "materials": 4, "bones": 150, "texture": 2048},
+    "hero": {"triangles": 120000, "materials": 6, "bones": 200, "texture": 4096},
+}
+
+
+def op_budget(o):
+    """Checks the character against a game budget (target web | mobile | desktop | hero, any limit overridable) and reports pass/fail per limit."""
+    need_char("budget")
+    target = o.get("target", "web")
+    if target not in BUDGETS:
+        fail(f"budget: target {target!r} is not one of {', '.join(BUDGETS)}")
+    limits = {**BUDGETS[target], **{k: o[k] for k in BUDGETS[target] if k in o}}
+    meshes = CHAR["meshes"]
+    tris = sum(sum(len(p.vertices) - 2 for p in m.data.polygons) for m in meshes)
+    mats = {s.material.name for m in meshes for s in m.material_slots if s.material}
+    tex = 0
+    for img in bpy.data.images:
+        if img.users and img.size[0] and img.type == "IMAGE" and img.name != "Render Result":
+            tex = max(tex, img.size[0], img.size[1])
+    bones = len(CHAR["bones"] or [])
+    got = {"triangles": tris, "materials": len(mats), "bones": bones, "texture": tex}
+    checks = {k: {"value": got[k], "limit": limits[k], "ok": got[k] <= limits[k]} for k in limits}
+    ok = all(c["ok"] for c in checks.values())
+    info["budget"] = {"target": target, "ok": ok, "checks": checks}
+    if o.get("strict") and not ok:
+        fail("budget: over " + ", ".join(f"{k} {c['value']}>{c['limit']}" for k, c in checks.items() if not c["ok"]))
+    return {"op": "budget", "target": target, "ok": ok, "checks": checks}
+
+
 OPS = {"import": op_import, "clean": op_clean, "bake": op_bake, "attach": op_attach, "retarget": op_retarget,
        "pose": op_pose, "concat": op_concat, "copy": op_copy, "rename": op_rename, "remove": op_remove,
        "fix": op_fix, "symmetrize": op_symmetrize, "retopo": op_retopo, "lod": op_lod, "project": op_project,
-       "report": op_report,
+       "report": op_report, "budget": op_budget,
        "split": op_split, "template": op_template, "clips": op_clips, "angles": op_angles,
        "export": op_export, "preview": op_preview, **{k: op_edit for k in EDITS}}
 
