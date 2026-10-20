@@ -32,7 +32,7 @@ import { awsConfig, myIp, classify, lockKey, allowOnly as fleetAllowOnly } from 
 import { env, paths } from '../../config.ts';
 import { GenError } from '../../util.ts';
 import { parsePoll, pollLengthOf, type PollAnswer } from './poll.ts';
-import { fetchOrigin, withRepoLock } from './gitfetch.ts';
+import { fetchOrigin, repoIsPrivate, withRepoLock } from './gitfetch.ts';
 
 /** Windows on-demand prices (US East), for estimates. */
 export const BUILDER_TYPES: Record<string, { vcpus: number; memory: number; price: number }> = {
@@ -526,7 +526,6 @@ function localGit(dir: string, args: string[]) {
 }
 
 type RepoInfo = { top: string; dir: string; slug: string; base: string; branch: string };
-const privateCache = new Map<string, boolean>();
 
 /**
  * The GitHub repo a root lives in (top folder relative to C:\Projects as the server mirrors it, the local checkout,
@@ -550,13 +549,7 @@ export function repoOf(root: string, from?: string): RepoInfo | null {
   return { top: rel, dir: path.resolve(top.out), slug: m[1], base: base.out.trim(), branch: head.replace(/^origin\//, '') };
 }
 
-async function isPrivate(slug: string) {
-  if (!privateCache.has(slug)) {
-    const r = await fetch(`https://api.github.com/repos/${slug}`, { headers: { 'User-Agent': 'hawkesgen' } }).catch(() => null);
-    privateCache.set(slug, !r || r.status === 404);
-  }
-  return privateCache.get(slug)!;
-}
+const isPrivate = (slug: string) => repoIsPrivate(slug, { token: env('GITHUB_TOKEN') });
 
 /**
  * Gives the build server read-only access to J's private repos: a key on the server, added as a read-only deploy

@@ -66,3 +66,18 @@ test('fetches in one checkout wait their turn; other checkouts do not', async ()
   await assert.rejects(withRepoLock(DIR, async () => { throw new Error('boom'); }));
   assert.equal(await withRepoLock(DIR, async () => 'next'), 'next');
 });
+
+test('a rate-limited or failed visibility check means private, and only "public" is remembered', async () => {
+  const { repoIsPrivate } = await import('../src/providers/builder/gitfetch.ts');
+  const answer = (status: number, body?: unknown) => async () => new Response(body === undefined ? 'x' : JSON.stringify(body), { status });
+  assert.equal(await repoIsPrivate('j/limited', { get: answer(403, { message: 'API rate limit exceeded' }) }), true);
+  assert.equal(await repoIsPrivate('j/limited', { get: answer(200, { private: true }) }), true, 'the 403 was not cached as public');
+  assert.equal(await repoIsPrivate('j/gone', { get: answer(404, { message: 'Not Found' }) }), true);
+  assert.equal(await repoIsPrivate('j/down', { get: async () => { throw new Error('fetch failed'); } }), true);
+  assert.equal(await repoIsPrivate('j/odd', { get: answer(200, 'not json') }), true);
+  assert.equal(await repoIsPrivate('j/open', { get: answer(200, { private: false }) }), false);
+  assert.equal(await repoIsPrivate('j/open', { get: async () => { throw new Error('not asked again'); } }), false);
+  let auth = '';
+  await repoIsPrivate('j/tok', { token: 'abc', get: async (_u: any, init: any) => ((auth = init.headers.Authorization), new Response('{}', { status: 200 })) });
+  assert.equal(auth, 'Bearer abc');
+});

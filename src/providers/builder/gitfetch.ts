@@ -73,3 +73,21 @@ export async function fetchOrigin({ run, dir, authArg = '', slug, log = () => {}
     await wait(attempt * 5_000);
   }
 }
+
+const publicRepos = new Set<string>();
+
+/**
+ * Whether git needs credentials for the repo. Only a clear "public" from GitHub counts as public: a check that is rate
+ * limited (403: unauthenticated it's 60 an hour per IP, and a burst of builds hits it) or fails means private, so a
+ * private repo is never fetched without its credentials. Only "public" is remembered: the old cache kept a rate-limited
+ * "public" for hawkesstudio until Gen restarted, and every Unity build failed with "could not read Username for
+ * 'https://github.com'" (2026-10-20). A wrong "private" costs nothing but credentials on the fetch.
+ */
+export async function repoIsPrivate(slug: string, { token, get = fetch }: { token?: string; get?: typeof fetch } = {}) {
+  if (publicRepos.has(slug)) return false;
+  const r = await get(`https://api.github.com/repos/${slug}`, { headers: { 'User-Agent': 'hawkesgen', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, signal: AbortSignal.timeout(20_000) }).catch(() => null);
+  const body: any = r?.ok ? await r.json().catch(() => null) : null;
+  if (body?.private !== false) return true;
+  publicRepos.add(slug);
+  return false;
+}
