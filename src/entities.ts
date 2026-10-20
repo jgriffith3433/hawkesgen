@@ -272,6 +272,8 @@ export type MakeSpec = {
   tool?: string; preset?: string; params?: Record<string, any>; inputs?: Record<string, any>;
   /** A chain (asset.make): its steps, candidates, pick, pickAt; `saves` maps a step's save name to a slot. */
   steps?: any[]; candidates?: number; pick?: string; pickAt?: number; saves?: Record<string, string>;
+  /** Input indexes shown to Claude as on-model references when picking candidates (asset.make `refs`). */
+  refs?: number[];
 };
 
 /** How a slot is made, from the request, else the entity's data.slots, else the project's kinds (presets file). */
@@ -282,7 +284,11 @@ export function makeSpecFor(e: Entity, slot: string, given?: MakeSpec | null): M
   const kinds = (getProjectPresets(e.project) as any)?.kinds ?? {};
   const slots = kinds[e.kind]?.slots ?? {};
   const hit = slots[slot] ?? Object.entries<any>(slots).find(([pat]) => pat.endsWith('/*') && slot.startsWith(pat.slice(0, -1)))?.[1];
-  return hit?.make ? { ...hit.make, ...(given ?? {}) } : null;
+  if (!hit) return null;
+  // character3d robots: data.form=robot uses makeRobot (template rig) instead of mesh.rig.
+  const form = String(e.data?.form ?? 'humanoid').toLowerCase();
+  const make = form === 'robot' && hit.makeRobot ? hit.makeRobot : hit.make;
+  return make ? { ...make, ...(given ?? {}) } : null;
 }
 
 /** Fills {name}, {canon}, {look}, {brief}, {feedback}, {style}, {slot}, {part} (the slot's last word) in a recipe. */
@@ -312,9 +318,13 @@ export function slotJobSpec(client: Client, b: { entity: string; slot: string; m
   const vars = {
     name: e.name, canon: String(e.data?.canon ?? ''), look: String(e.data?.look ?? ''), brief: String(e.data?.slots?.[slot]?.brief ?? ''),
     feedback: b.feedback ? String(b.feedback) : '', style: pp?.style ?? '', slot, part: slot.split('/').pop() ?? slot,
+    form: String(e.data?.form ?? 'humanoid'), template: String(e.data?.template ?? ''),
+    unityProject: String(e.data?.unityProject ?? ''), triangles: String(e.data?.triangles ?? '25000'),
   } as Record<string, string>;
   // The slot's own data fills the rest ({start} and {end} of a clip, say).
   for (const [k, v] of Object.entries<any>(e.data?.slots?.[slot] ?? {})) if ((typeof v === 'string' || typeof v === 'number') && !(k in vars)) vars[k] = String(v);
+  // Entity-level string/number fields fill leftover {keys} (e.g. {prompt} on motion/*).
+  for (const [k, v] of Object.entries<any>(e.data ?? {})) if ((typeof v === 'string' || typeof v === 'number') && !(k in vars)) vars[k] = String(v);
   const filled = fillTemplate(spec, vars);
   // An input still naming a blank ({end} with no end pose) is left out: optional inputs stay optional.
   if (filled.inputs) {
@@ -327,7 +337,11 @@ export function slotJobSpec(client: Client, b: { entity: string; slot: string; m
     if (filled.saves) labels.slots = filled.saves;
     return {
       tool: 'asset.make', project: e.project, self: e.id, labels,
-      params: { steps: filled.steps, candidates: filled.candidates ?? 1, ...(filled.pick ? { pick: filled.pick } : {}), ...(filled.pickAt ? { pickAt: filled.pickAt } : {}) },
+      params: {
+        steps: filled.steps, candidates: filled.candidates ?? 1,
+        ...(filled.pick ? { pick: filled.pick } : {}), ...(filled.pickAt ? { pickAt: filled.pickAt } : {}),
+        ...(Array.isArray(filled.refs) ? { refs: filled.refs } : {}),
+      },
       inputs: filled.inputs ?? {},
     };
   }

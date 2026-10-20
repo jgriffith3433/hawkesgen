@@ -140,11 +140,12 @@ export const assetMakeTool: Tool = {
       if (n > 1) {
         const outs = pickJobs.map((j) => j.outputs?.[0]).filter(Boolean);
         const assets = outs.map((o) => getAsset(o.asset)).filter(Boolean) as any[];
-        // What Claude looks at per candidate: the image, or three frames of a video.
+        // What Claude looks at per candidate: the image, three frames of a video, or four angle stills of a mesh.
         const views: string[][] = [];
         for (const [k, a] of assets.entries()) {
           if (a.kind === 'image') views.push([a.path]);
           else if (a.kind === 'video') views.push(await videoFrames(a.path, ctx.tmp(`cand-${k}`), ctx.signal).catch(() => []));
+          else if (a.kind === 'mesh') views.push(await meshAngles(gen, a, ctx, k).catch(() => []));
           else views.push([]);
         }
         if (assets.length === outs.length && assets.length > 1 && views.every((v) => v.length === views[0].length && v.length)) {
@@ -153,8 +154,11 @@ export const assetMakeTool: Tool = {
           const refIdx: number[] = Array.isArray(ctx.params.refs) ? ctx.params.refs.map(Number) : [];
           const refs = refIdx.map((r) => inputFiles[r]).filter((f) => f && /\.(png|jpe?g|webp|gif)$/i.test(f));
           const per = views[0].length;
+          const meshPick = assets[0]?.kind === 'mesh';
           const layout = (refs.length ? `The first ${refs.length} image(s) are on-model references (what the subject must look like), not candidates. Then ` : 'The images are ') +
-            (per > 1 ? `the candidates, ${per} frames each (start, middle, end of its video), candidates 0 to ${views.length - 1} in order.` : `the candidates 0 to ${views.length - 1}, in order.`);
+            (meshPick ? `the candidates, 4 orthographic stills each (front, right, back, left), candidates 0 to ${views.length - 1} in order.` :
+              per > 1 ? `the candidates, ${per} frames each (start, middle, end of its video), candidates 0 to ${views.length - 1} in order.` :
+                `the candidates 0 to ${views.length - 1}, in order.`);
           const r = await ask({
             system: 'You are the art director for a small game studio. Choose the candidate that best fits the brief, the criteria, the art direction and the canon. Prefer clean, usable game assets: correct subject, on-model with the references, readable silhouette, no artifacts, no text unless asked. A candidate that breaks canon loses even if it looks better.',
             prompt: `Brief (the picked step's params): ${JSON.stringify(steps[i].params ?? {}).slice(0, 2000)}
@@ -207,4 +211,26 @@ export async function videoFrames(file: string, dir: string, signal: AbortSignal
   }
   if (out.length !== 3) throw new GenError('could not read frames from a video candidate');
   return out;
+}
+
+/** Four orthographic stills of a mesh candidate (blender.character angles op), for Claude to judge against a concept. */
+async function meshAngles(gen: any, asset: { id: string }, ctx: { job: { id: string; project: string }; step: (s: string) => void; log: (s: string) => void; signal?: AbortSignal }, k: number): Promise<string[]> {
+  ctx.step(`rendering 4 angles of mesh candidate ${k}`);
+  const job = await gen.submit('blender.character', {
+    params: { ops: [{ op: 'import', file: 0, clips: false }, { op: 'angles', size: 256 }] },
+    inputs: { files: [`asset:${asset.id}`] },
+    labels: { parent: ctx.job.id, step: `pick-angles-${k}` },
+    reuse: false,
+  });
+  const done = job.status === 'done' ? job : await gen.wait(job.id, { throwOnFail: false, signal: ctx.signal });
+  if (done.status !== 'done') throw new GenError(`mesh angles for candidate ${k}: ${done.status}: ${done.error ?? done.detail}`);
+  const paths: string[] = [];
+  for (const name of ['front', 'right', 'back', 'left']) {
+    const o = (done.outputs ?? []).find((x: any) => String(x.title ?? '').toLowerCase() === `angle/${name}`);
+    const a = o ? getAsset(o.asset) : null;
+    if (a?.path && fs.existsSync(a.path)) paths.push(a.path);
+  }
+  if (paths.length !== 4) throw new GenError(`mesh angles for candidate ${k}: expected 4 stills, got ${paths.length}`);
+  ctx.log(`candidate ${k}: 4 angle stills from ${done.id}`);
+  return paths;
 }

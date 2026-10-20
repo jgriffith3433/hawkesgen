@@ -1,4 +1,75 @@
-# 3D characters: blender.character
+# 3D characters
+
+Gen makes a game character as kind **`character3d`** (every project has it in `presets/shared/kinds.json`). One
+preset, **`shared/character3d`**, runs the whole humanoid chain as a single `asset.make`. Slot-by-slot recipes let
+you remake one piece. Price a batch with `POST /v1/estimate` / `hawkesgen_estimate` before starting servers.
+
+```
+concept ─image.edit─> apose ─cutout─> cutout ─image.angles─> angles
+                              └─────────────> mesh.textured (best-of-N @ 100k faces, judged from 4-angle stills)
+                                      └─blender.character clean+bake─> mesh
+                                            ├─mesh.rig─> rig (humanoid)
+                                            └─split+template+clips─> rig (robot: data.form=robot)
+                                                  └─animation/* / motion/* / shared/motions─> clips
+                                                        └─export/fbx, export/glb, check/humanoid
+```
+
+## Making a character
+
+1. **Create the entity** with kind `character3d`, a `look` line, and (for Unity) `unityProject` (folder under
+   `C:\Projects` that already has `com.hawkes.gen`):
+
+   ```bash
+   POST /v1/entities { "project": "phorigins", "name": "Pierce", "kind": "character3d",
+                       "data": { "look": "…", "unityProject": "sickofitgame-unity" } }
+   ```
+
+2. **Put a concept in** (`slot: concept`): upload a full-body reference, or `POST …/slots/concept/make`.
+
+3. **Either one recipe** (humanoid, from the concept image as `inputs.files[0]`):
+
+   ```json
+   { "tool": "asset.make", "preset": "shared/character3d", "project": "phorigins",
+     "inputs": { "files": ["asset:<concept>"] } }
+   ```
+
+   Or **slot by slot** (each files onto the entity): `apose` → `cutout` → `angles` → `mesh` → `rig` →
+   `animation/walk` (with `data.slots.animation/walk.source`) → `export/fbx` → `check/humanoid`.
+
+4. **Robots / creatures** (Spider Bot, Yo Bot): after `mesh` is current, set `data.form` to `"robot"` and
+   `data.template` to `spider` | `quadarm` | `biped` | `chain`, then remake `rig`. That runs split + template +
+   procedural clips and writes a Generic FBX (not Humanoid). Skip `check/humanoid`.
+
+5. **Clips:** prefer Quaternius (`source: "motion:ual1/Walk_Loop"` on `animation/walk`, or preset `shared/motions`).
+   New moves: `motion/<name>` with `data.prompt` (`motion.from-text`). Edits: remake `animation/<name>` with
+   blender.character ops (`trim`, `loop`, `inplace`, …) via an entity override `make`, or a one-off
+   `blender.character` job.
+
+6. **Unity check:** remake `check/humanoid`. Gen copies `export/fbx` into the project's
+   `Assets/HawkesGenCheck/character.fbx`, runs EditMode category `HawkesGen.Humanoid`, and returns
+   `result.humanoid` (`ok`, failures). Needs the build server (~$0.77/hr while up).
+
+### Costs per step (order of magnitude on a running g6e; first use of a family downloads models)
+
+| Step | Tool | Rough cost |
+|---|---|---|
+| A-pose | `image.edit` (Qwen 2511) | ~$0.05–0.15 |
+| Cutout | `image.remove-background` | a few cents |
+| Angles | `image.angles` | ~$0.10–0.30 |
+| Mesh (×4 candidates @ 100k faces) | `mesh.textured` + 4-angle pick renders | ~$1–3 (never ask for few faces; clean after) |
+| Clean + bake | `blender.character` | ~$0.05–0.20 |
+| Humanoid rig | `mesh.rig` | ~$0.20–0.50 (first install on a server is more) |
+| Robot rig | `blender.character` split/template/clips | ~$0.10–0.40 |
+| Library clip | `blender.character` retarget | ~$0.05–0.15 |
+| Text clip | `motion.from-text` | ~$0.30–1 (first install heavy) |
+| Export FBX/GLB | `blender.character` | ~$0.05–0.15 |
+| Humanoid check | `unity.test` | build-server minutes (~$0.02–0.10) |
+
+A full humanoid from concept through rig is often a few dollars of GPU when mesh best-of-N runs; estimate first.
+
+---
+
+## blender.character
 
 `blender.character` runs a chain of **named Blender ops** on one 3D character, in one job, on a GPU server. It is
 for everything after a character has a mesh: cleaning it to a game budget, baking its textures, giving it a prop,
@@ -8,11 +79,6 @@ checks the list (`checkOps` in `src/tools/character.ts`) before it claims a serv
 
 It runs on blender.render's machinery (`src/providers/blender/`): family `blender`, Blender 5.0.1 installed on first
 use, a job folder in `/var/tmp/hawkes-blender`, and a detached run followed over SSH.
-
-```
-concept ──image.edit──> apose ──mesh.textured──> mesh ──mesh.rig──> rig ──blender.character──> animation/<clip>
-                                                                      └──blender.character──> export/fbx, export/glb, preview/*
-```
 
 ## A job
 
@@ -65,6 +131,7 @@ The first op is always `import`. The rest run in order, and any op can come more
 | `split` | `by` (`connected`, `centers` or `both`), `kind`, `parts`, `label`, `angles`, `segments`, `size` | Hard-surface robots: cut the mesh into named parts. `connected` splits loose pieces; `centers` (or a `kind` guess / Claude labels) assigns vertices to the nearest part centre. `label: true` renders four angles and asks Claude for centres that match the template roles, then continues. |
 | `template` | `kind!` (`spider`, `quadarm`, `biped`, `chain`), `parts`, `segments`, `smooth` (0.02 m) | Builds a robot skeleton fitted to the parts and binds each part rigidly to one bone (a short blend only where parts meet). Replaces any previous armature. Spider = 6 legs; quadarm = 4 legs + 2 arms (Yo Bot); biped = simple humanoid; chain = `segments` bones along the long axis. |
 | `clips` | `list` / `clips` (default set), `kind`, `segments` | Procedural takes for the current template: walk / run (gait `tripod` or `wave`), idle sway, attack (`stab` / `swipe` / `slam`), hit, death, jump. Omit `list` for the full starter set. |
+| `angles` | `size` (512) | Four orthographic stills (front / right / back / left) without changing the mesh. Titles `angle/front`… Used when `asset.make` picks among mesh candidates. |
 | `export` | `format` (`fbx`, `glb` or `blend`), `name` (`character`), `clips` (all), `bones` (FBX: `mixamo`, or `generic` / `keep` for robots), `title` (the format, unless set) | Writes the file. `title` is the name the library files it under when one job writes several GLBs. Details below. |
 | `preview` | `turntable` (true), `clips` (all), `size` (512), `seconds` (6), `engine` (cycles), `samples` (16), `maxFrames` (300) | Makes a turntable of the rest pose (the camera goes once around) and a still, plus a video of each clip from a three-quarter view. The camera follows a clip that travels. All of these are rendered by `hawkes_blender.py` (blender.render's shot) from a GLB of the character. |
 
@@ -169,14 +236,20 @@ include the shared kinds. A save drops any shared kind it didn't change.
 
 | Slot | Made by | From |
 |---|---|---|
-| `concept` | `image.generate` | the entity's name and look: a turnaround sheet |
-| `apose` | `image.edit` | `concept`: the front view alone, in an A-pose |
-| `mesh` | `mesh.textured` | `apose` |
-| `rig` | `mesh.rig` (1.8 m, kind humanoid) | `mesh`; its walk video goes to `preview/turntable` |
-| `motion/<clip>` | `motion.from-text` | `rig` plus the slot's `data.prompt` (a sentence). The GLB goes to the slot, the video to `preview/<clip>`. Prefer a Quaternius `animation/<clip>` when a library move already fits. |
-| `animation/<clip>` | `blender.character` (import, retarget, export glb, preview) | `rig` plus the slot's `data.source` (an `asset:` or `slot:` reference, or a library clip `motion:ual1/Walk_Loop`: a Mixamo FBX, a GLB or a BVH). The GLB goes to the slot, the video to `preview/<clip>`. |
+| `concept` | `image.generate` (or upload) | name and look: a turnaround / reference |
+| `apose` | `image.edit` (Qwen 2511) | `concept`: "same character, A-pose, arms 45 degrees down, legs apart, front view, plain background" |
+| `cutout` | `image.remove-background` | `apose` |
+| `angles` | `image.angles` | `cutout`: side/back and other views |
+| `mesh` | `asset.make`: `mesh.textured` @ **100k faces**, 4 candidates, Claude picks from **4-angle Blender stills** against the concept (`refs`), then `blender.character` clean (25k tris) + bake | `cutout` (+ concept as ref) |
+| `rig` | humanoid: `mesh.rig`; robot (`data.form=robot`): `blender.character` split/template/clips (`data.template`) | `mesh`; walk/turntable → `preview/turntable` |
+| `motion/<clip>` | `motion.from-text` | `rig` + slot `data.prompt`. Prefer Quaternius on `animation/<clip>` when a library move fits. |
+| `animation/<clip>` | `blender.character` (retarget, export, preview) | `rig` + `data.source` (`asset:`, `slot:`, or `motion:ual1/Walk_Loop`) |
 | `preview/turntable`, `preview/<clip>` | `blender.character` (preview) | `rig`, or `animation/<clip>` / `motion/<clip>` |
-| `export/fbx`, `export/glb` | `blender.character` (import, retarget `*`, export) | `rig`. To take clips along, make it with `inputs: { files: ["slot:./rig", "slot:./animation/walk", "slot:./animation/idle"] }` |
+| `export/fbx`, `export/glb` | `blender.character` (import, retarget `*`, export) | `rig` (+ optional clip files) |
+| `check/humanoid` | `unity.test` EditMode `HawkesGen.Humanoid` | `export/fbx`; needs `data.unityProject` |
+
+Entity data fields used by recipes: `look`, `canon`, `form` (`humanoid` \| `robot`), `template` (robot kind),
+`unityProject`, `triangles` (documented; clean default is 25k in the shared recipes).
 
 A recipe's `saves` map files a single tool's outputs by title, as in a chain. For example, `{ "glb": "animation/{part}",
 "preview/{part}": "preview/{part}" }`; template fields work in the keys too. Outputs the map leaves out (the still) are
@@ -185,8 +258,11 @@ not filed.
 ```bash
 # a new character with a walk from Mixamo
 POST /v1/entities { "project": "phorigins", "name": "Pierce", "kind": "character3d",
-                    "data": { "look": "...", "slots": { "animation/walk": { "source": "asset:<Walking.fbx>" } } } }
-POST /v1/entities/phorigins/pierce/slots/concept/make     # then apose, mesh, rig, animation/walk, export/fbx
+                    "data": { "look": "…", "unityProject": "sickofitgame-unity",
+                              "slots": { "animation/walk": { "source": "asset:<Walking.fbx>" } } } }
+POST /v1/entities/phorigins/pierce/slots/concept/make
+# then apose, cutout, angles, mesh, rig, animation/walk, export/fbx, check/humanoid
+# or: preset shared/character3d with the concept as inputs.files[0]
 ```
 
 ## mesh.rig
@@ -365,6 +441,8 @@ matched the source on every frame checked, and the height stayed 1.898 m in both
 cores with no GPU (16 clips, 3,200 frames), with about 750 MB of memory at the peak.
 
 ## Cost
+
+See **Costs per step** at the top for the full character recipe. For a lone `blender.character` job:
 
 - **Ops alone:** seconds to a minute, CPU-bound on the GPU server.
 - **A 2K bake:** about a minute on the GPU.
