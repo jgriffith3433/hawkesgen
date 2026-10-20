@@ -168,13 +168,45 @@ export function failureOf(o: Outcome): GenError | null {
   return new GenError(`Claude (Max plan) failed: ${why}`, { status: 502 });
 }
 
-/** The answer's text: for a schema, the structured output as JSON text (or the text without code fences). */
+/** First `{` … matching `}`, respecting strings (so braces in values don't throw off the depth). */
+function firstJsonObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escape) { escape = false; continue; }
+      if (c === '\\') { escape = true; continue; }
+      if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') { inString = true; continue; }
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/** The answer's text: for a schema, the structured output as JSON text (or the text without code fences).
+ *  When Claude adds a short prose lead-in before the object, pull out the first JSON object so callers can JSON.parse. */
 export function answerText(r: any, schema?: unknown): string {
   if (schema && r.structured_output !== undefined && r.structured_output !== null) return JSON.stringify(r.structured_output);
   const text = String(r.result ?? '');
   if (!schema) return text;
   const fenced = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(text);
-  return fenced ? fenced[1] : text.trim();
+  const out = fenced ? fenced[1] : text.trim();
+  try {
+    JSON.parse(out);
+    return out;
+  } catch {
+    return firstJsonObject(out) ?? out;
+  }
 }
 
 /** One request through Claude Code, with the cap, the timeout and retries on rate limits. */

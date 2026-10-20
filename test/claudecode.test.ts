@@ -61,8 +61,16 @@ test('JSON mode: the schema goes to --json-schema and the structured output come
   assert.deepEqual(JSON.parse(r.text), { echo: 'Score it', images: 0 });
   const [c] = calls();
   assert.deepEqual(JSON.parse(c.args[c.args.indexOf('--json-schema') + 1]), schema);
-  // Without structured output, a fenced answer is unwrapped.
+});
+
+test('answerText with a schema: pure JSON, fenced JSON, and a prose preamble before the object', () => {
+  const schema = { type: 'object' };
+  assert.equal(maxPlan.answerText({ result: '{"a":1}' }, schema), '{"a":1}');
   assert.equal(maxPlan.answerText({ result: '```json\n{"a":1}\n```' }, schema), '{"a":1}');
+  // Claude (Max plan) sometimes leads with "I'll review…" instead of pure JSON; playtest.review JSON.parses this.
+  const withPreamble = 'I\'ll review this playtest carefully.\n{"verdict":"pass","findings":[]}';
+  assert.equal(maxPlan.answerText({ result: withPreamble }, schema), '{"verdict":"pass","findings":[]}');
+  assert.deepEqual(JSON.parse(maxPlan.answerText({ result: withPreamble }, schema)), { verdict: 'pass', findings: [] });
 });
 
 test('no more than the cap at once', async () => {
