@@ -13,8 +13,11 @@ A fixed set of named ops, run in order on one character (no free-form bpy):
     retarget  clips from another skeleton (FBX, GLB, BVH; Mixamo, Unity, Unreal, Rigify, SMPL/SOMA, BVH names),
               rest-pose aware: bone directions are matched in world space, so a T-pose clip plays on an A-pose rig
     trim, loop, inplace, speed, mirror, reverse, concat, pose, copy, rename, remove    clip edits
-    export    FBX for Unity (Mixamo bone names, a take per clip, 1 unit = 1 m), GLB for the web (a clip per NLA
-              track), or the .blend
+    split     hard-surface parts: by connected pieces and/or labelled centers (Claude or a guess for a template)
+    template  fit a robot skeleton (spider / quadarm / biped / chain) to the parts and bind each part rigidly
+    clips     procedural walk/run/idle/attack/hit/death/jump for that template
+    export    FBX for Unity (Mixamo bone names, a take per clip, 1 unit = 1 m; bones: keep for Generic robots),
+              GLB for the web (a clip per NLA track), or the .blend
     preview   writes the shots hawkes_blender.py renders afterwards: a turntable and one video per clip
 
 Clips are kept as sampled poses (each bone's rotation and location relative to its rest, per frame) and written to
@@ -35,6 +38,21 @@ import bmesh
 import mathutils
 import numpy as np
 from mathutils.bvhtree import BVHTree
+
+# Same folder on the GPU server (character.ts copies both scripts). Loaded when a robot op runs.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+robot = None
+
+
+def need_robot(what):
+    global robot
+    if robot is None:
+        try:
+            import hawkes_robot as _robot
+        except ImportError:
+            fail(f"{what}: hawkes_robot.py is missing next to hawkes_character.py (Gen should have copied it)")
+        robot = _robot
+    return robot
 
 V = mathutils.Vector
 M = mathutils.Matrix
@@ -247,7 +265,12 @@ def canon_map(arm, scheme="auto", extra=None):
 
 # ---------------------------------------------------------------- the character
 
-CHAR = {"arm": None, "meshes": [], "props": [], "high": [], "map": {}, "scheme": None, "bones": [], "height": None}
+CHAR = {
+    "arm": None, "meshes": [], "props": [], "high": [], "map": {}, "scheme": None, "bones": [], "height": None,
+    "parts": [],  # [{name, center, triangles}] after split
+    "template": None,  # spider | quadarm | biped | chain
+    "roles": [],  # per bone, same order as bones (for procedural clips)
+}
 CLIPS = {}  # name -> {"rot": (F, B, 4), "loc": (F, B, 3), "source": str}
 
 
@@ -1339,7 +1362,10 @@ def op_export(o):
         path = os.path.join(FILES_OUT, f"{stem}.fbx")
         say("step", f"writing {stem}.fbx for Unity ({len(names)} takes)")
         renamed = {}
-        if arm and o.get("bones", "mixamo") == "mixamo":
+        bone_mode = o.get("bones", "mixamo")
+        if bone_mode in ("keep", "generic", "robot"):
+            bone_mode = "keep"
+        if arm and bone_mode == "mixamo":
             for c, b in CHAR["map"].items():
                 want = f"mixamorig:{c}"
                 if b != want and want not in arm.data.bones:
@@ -1349,6 +1375,8 @@ def op_export(o):
             got["humanoid"] = not miss
             if miss:
                 warn(f"export fbx: Unity's Humanoid needs {', '.join(miss)}; set the avatar up by hand (or name them with map at import)")
+            if CHAR.get("template"):
+                warn("export fbx: this is a robot template rig — use bones: \"generic\" (Unity Generic) instead of Mixamo/Humanoid")
         back = {b: want for want, b in renamed.items()}
         names_now = [back.get(b, b) for b in CHAR["bones"]]
         acts = write_clips(names, names_now) if arm and names else []
@@ -1365,7 +1393,7 @@ def op_export(o):
         drop_actions(acts)
         for want, b in renamed.items():
             arm.data.bones[want].name = b
-        got["bones"] = "mixamo" if renamed or (arm and o.get("bones", "mixamo") == "mixamo") else "kept"
+        got["bones"] = "mixamo" if bone_mode == "mixamo" else "generic"
     elif fmt == "blend":
         path = os.path.join(FILES_OUT, f"{stem}.blend")
         say("step", f"writing {stem}.blend")
@@ -1380,6 +1408,434 @@ def op_export(o):
     info["outputs"].append({"file": os.path.basename(path), "title": title, "ext": f".{fmt}"})
     got["file"] = os.path.basename(path)
     return got
+
+
+# ---------------------------------------------------------------- hard-surface robots (split, template, clips)
+
+def world_verts(meshes):
+    """All mesh vertices in world space as (N, 3) float64, plus (obj, local_index) for each."""
+    coords, owners = [], []
+    for o in meshes:
+        mw = o.matrix_world
+        for i, v in enumerate(o.data.vertices):
+            coords.append(tuple(mw @ v.co))
+            owners.append((o, i))
+    if not coords:
+        return np.zeros((0, 3)), []
+    return np.asarray(coords, dtype=np.float64), owners
+
+
+def separate_by_mask(obj, labels: np.ndarray, names: list[str]):
+    """Split one mesh object into one object per label id (names[label]). Returns the new objects."""
+    if not len(obj.data.vertices):
+        return []
+    # Island by face: a face goes with the majority of its verts' labels.
+    me = obj.data
+    face_lab = []
+    for p in me.polygons:
+        labs = [int(labels[v]) for v in p.vertices]
+        face_lab.append(max(set(labs), key=labs.count))
+    made = []
+    src_mw = obj.matrix_world.copy()
+    for lid, name in enumerate(names):
+        faces = [i for i, L in enumerate(face_lab) if L == lid]
+        if not faces:
+            continue
+        new_me = me.copy()
+        new_o = bpy.data.objects.new(re.sub(r"[^\w.-]", "_", name)[:50] or f"part{lid}", new_me)
+        scene.collection.objects.link(new_o)
+        new_o.matrix_world = src_mw
+        select([new_o], new_o)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bm = bmesh.from_edit_mesh(new_me)
+        bm.faces.ensure_lookup_table()
+        keep = set(faces)
+        bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.index not in keep], context="FACES")
+        bmesh.update_edit_mesh(new_me)
+        bpy.ops.object.mode_set(mode="OBJECT")
+        # Drop loose verts left behind.
+        select([new_o], new_o)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.delete_loose()
+        bpy.ops.object.mode_set(mode="OBJECT")
+        if len(new_o.data.vertices) == 0:
+            remove([new_o])
+            continue
+        made.append(new_o)
+    remove([obj])
+    return made
+
+
+def connected_parts(meshes):
+    """Split every mesh into its loose connected pieces; return the new mesh list."""
+    out = []
+    for o in list(meshes):
+        select([o], o)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.separate(type="LOOSE")
+        bpy.ops.object.mode_set(mode="OBJECT")
+        # separate(LOOSE) leaves the active plus new objects selected.
+        parts = [x for x in bpy.context.selected_objects if x.type == "MESH"]
+        if not parts:
+            parts = [o]
+        out.extend(parts)
+    return out
+
+
+def render_angles(size=512):
+    """Four orthographic-ish stills (front, right, back, left) for Claude to label parts. Cycles, few samples."""
+    need_char("split")
+    adir = os.path.join(OUT, "angles")
+    os.makedirs(adir, exist_ok=True)
+    lo, hi = mesh_bounds(CHAR["meshes"])
+    mid = (lo + hi) * 0.5
+    H = max(float(hi.z - lo.z), 0.05)
+    dist = max(float(hi.x - lo.x), float(hi.y - lo.y), H) * 2.2
+    # Save and restore scene render settings.
+    prev = (scene.render.engine, scene.render.resolution_x, scene.render.resolution_y,
+            scene.cycles.samples if hasattr(scene, "cycles") else None,
+            scene.camera)
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = 2
+    scene.cycles.use_denoising = False
+    scene.render.resolution_x = scene.render.resolution_y = int(size)
+    scene.render.film_transparent = True
+    # Lights
+    lights = []
+    for i, loc in enumerate(((dist, -dist, dist), (-dist, -dist * 0.5, dist * 0.6))):
+        L = bpy.data.lights.new(f"hb_ang_L{i}", "AREA")
+        L.energy = 200
+        Lo = bpy.data.objects.new(f"hb_ang_L{i}", L)
+        Lo.location = mid + V(loc) * 0.01 * dist  # noqa: scale via mid offset below
+        Lo.location = V(loc) * 0.5 + mid
+        scene.collection.objects.link(Lo)
+        lights.append(Lo)
+    cam_data = bpy.data.cameras.new("hb_ang_cam")
+    cam_data.lens = 50
+    cam = bpy.data.objects.new("hb_ang_cam", cam_data)
+    scene.collection.objects.link(cam)
+    scene.camera = cam
+    views = [("front", (0, -1)), ("right", (1, 0)), ("back", (0, 1)), ("left", (-1, 0))]
+    files = []
+    for name, (dx, dy) in views:
+        cam.location = mid + V((dx * dist, dy * dist, H * 0.35))
+        direction = mid - cam.location
+        cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+        path = os.path.join(adir, f"{name}.png")
+        scene.render.filepath = path
+        say("step", f"angle {name}")
+        bpy.ops.render.render(write_still=True)
+        files.append(os.path.basename(path))
+        dest = os.path.join(FILES_OUT, f"angle-{name}.png")
+        if os.path.isfile(path):
+            import shutil
+            shutil.copy2(path, dest)
+            info["outputs"].append({"file": f"angle-{name}.png", "title": f"angle/{name}", "ext": ".png"})
+    remove([cam] + lights)
+    scene.render.engine, scene.render.resolution_x, scene.render.resolution_y, samp, scene.camera = prev
+    if samp is not None:
+        scene.cycles.samples = samp
+    return files
+
+
+def op_split(o):
+    """Split the character mesh into named hard-surface parts.
+
+    by: "connected" (loose pieces) and/or centres from parts: [{name, center:[x,y,z]}] or a template kind guess.
+    angles: true writes four stills (front/right/back/left) for Claude to label.
+    kind: when set and parts are missing, guess centres for that template (spider, quadarm, biped, chain).
+    """
+    need_char("split")
+    if CHAR["arm"]:
+        warn("split: the mesh already has a skeleton; parts are cut from the posed rest mesh")
+        rest_pose(CHAR["arm"])
+    by = o.get("by", "connected")
+    if by not in ("connected", "centers", "both"):
+        fail(f"split: by is connected, centers or both (got {by!r})")
+    kind = o.get("kind")
+    segments = int(o.get("segments", 6))
+    R = need_robot("split") if (kind or o.get("parts") or by in ("centers", "both")) else None
+    if kind and kind not in R.KINDS:
+        fail(f"split: kind is {', '.join(R.KINDS)}")
+
+    meshes = list(CHAR["meshes"])
+    # Drop any old armature modifiers before cutting; template will rebind.
+    for m in meshes:
+        for mod in list(m.modifiers):
+            if mod.type == "ARMATURE":
+                m.modifiers.remove(mod)
+
+    if by in ("connected", "both"):
+        meshes = connected_parts(meshes)
+        CHAR["meshes"] = meshes
+
+    # Build centres: explicit parts, else one centre per connected piece, else a template guess on the whole cloud.
+    coords, owners = world_verts(meshes)
+    centers = {}
+    raw_parts = o.get("parts") or []
+    if isinstance(raw_parts, dict):
+        raw_parts = [{"name": k, "center": v} for k, v in raw_parts.items()]
+    roles = R.part_roles(kind, segments) if kind and R else []
+    for p in raw_parts:
+        if not isinstance(p, dict) or p.get("name") is None or p.get("center") is None:
+            fail("split: parts is [{ name, center: [x,y,z] }, ...]")
+        name = str(p["name"])
+        if roles:
+            mapped = R.match_part(name, roles)
+            if mapped:
+                name = mapped
+        c = p["center"]
+        if not (isinstance(c, (list, tuple)) and len(c) == 3):
+            fail(f"split: part {name!r} center must be [x,y,z]")
+        centers[name] = np.asarray(c, dtype=np.float64)
+
+    if not centers and by == "connected" and len(meshes) > 1:
+        for i, m in enumerate(meshes):
+            lo, hi = mesh_bounds([m])
+            name = roles[i] if roles and i < len(roles) else (m.name if not m.name.startswith("Mesh") else f"part{i + 1}")
+            if roles and len(meshes) == len(roles):
+                name = roles[i]
+            centers[name] = np.asarray(((lo + hi) * 0.5), dtype=np.float64)
+        # Rename objects to match.
+        for m, name in zip(meshes, centers):
+            m.name = re.sub(r"[^\w.-]", "_", name)[:50]
+
+    if not centers and kind:
+        centers = R.guess_centers(coords, kind, segments)
+        by = "centers"
+
+    if centers and (by in ("centers", "both") or len(meshes) == 1):
+        names = list(centers)
+        # Assign every vertex across all meshes, then split each mesh.
+        # Build a global label array aligned with world_verts order.
+        labels = R.assign_vertices(coords, centers)
+        # Per-object local labels.
+        new_meshes = []
+        cursor = 0
+        for m in list(meshes):
+            n = len(m.data.vertices)
+            local = labels[cursor:cursor + n]
+            cursor += n
+            # If the object is already a single part, just rename.
+            used = sorted(set(int(x) for x in local))
+            if len(used) <= 1:
+                lid = used[0] if used else 0
+                m.name = re.sub(r"[^\w.-]", "_", names[lid])[:50]
+                new_meshes.append(m)
+                continue
+            new_meshes.extend(separate_by_mask(m, local, names))
+        CHAR["meshes"] = new_meshes
+        meshes = new_meshes
+
+    # Record part stats.
+    parts = []
+    for m in CHAR["meshes"]:
+        lo, hi = mesh_bounds([m])
+        mid = (lo + hi) * 0.5
+        parts.append({
+            "name": m.name, "center": [round(float(x), 4) for x in mid],
+            "size": [round(float(x), 4) for x in (hi - lo)],
+            "triangles": triangles(m),
+        })
+    CHAR["parts"] = parts
+    if kind:
+        CHAR["template"] = kind
+
+    got = {"op": "split", "by": by, "parts": parts, "kind": kind}
+    if o.get("angles"):
+        got["angles"] = render_angles(int(o.get("size", 512)))
+    # Stand on ground again after cuts (origins may have drifted).
+    lo, hi = mesh_bounds(CHAR["meshes"])
+    CHAR["height"] = float(hi.z - lo.z)
+    got["height"] = round(CHAR["height"], 3)
+    return got
+
+
+def op_template(o):
+    """Fit a robot template skeleton to the parts and bind each part rigidly (smooth only at seams)."""
+    need_char("template")
+    R = need_robot("template")
+    kind = o.get("kind") or CHAR.get("template")
+    if kind not in R.KINDS:
+        fail(f"template: kind is required ({', '.join(R.KINDS)})")
+    segments = int(o.get("segments", 6))
+    smooth = float(o.get("smooth", 0.02))
+    if CHAR["arm"]:
+        # Drop the old humanoid / SkinTokens rig; this op replaces it.
+        old = CHAR["arm"]
+        for m in CHAR["meshes"]:
+            for mod in list(m.modifiers):
+                if mod.type == "ARMATURE":
+                    m.modifiers.remove(mod)
+            while m.vertex_groups:
+                m.vertex_groups.remove(m.vertex_groups[0])
+            if m.parent == old:
+                mw = m.matrix_world.copy()
+                m.parent = None
+                m.matrix_world = mw
+        remove([old])
+        CHAR["arm"] = None
+        CLIPS.clear()
+
+    # Centres from current part objects (preferred) or a guess.
+    centers = {}
+    roles = R.part_roles(kind, segments)
+    if CHAR["parts"]:
+        for p in CHAR["parts"]:
+            mapped = R.match_part(p["name"], roles) or p["name"]
+            centers[mapped] = np.asarray(p["center"], dtype=np.float64)
+    for p in (o.get("parts") or []):
+        if isinstance(p, dict) and p.get("name") is not None and p.get("center") is not None:
+            mapped = R.match_part(str(p["name"]), roles) or str(p["name"])
+            centers[mapped] = np.asarray(p["center"], dtype=np.float64)
+    coords, _ = world_verts(CHAR["meshes"])
+    for r, c in R.guess_centers(coords, kind, segments).items():
+        centers.setdefault(r, c)
+
+    # Rename mesh objects toward role names when we can match them.
+    for m in CHAR["meshes"]:
+        mapped = R.match_part(m.name, roles)
+        if mapped:
+            m.name = mapped
+
+    placements = R.bone_placements(kind, centers, segments)
+    data = bpy.data.armatures.new("Robot")
+    arm = bpy.data.objects.new("Robot", data)
+    scene.collection.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    ebs = {}
+    for name, parent, head, tail, role in placements:
+        b = data.edit_bones.new(name)
+        b.head, b.tail = head, tail
+        if parent and parent in ebs:
+            b.parent = ebs[parent]
+            b.use_connect = False
+        ebs[name] = b
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    # Bind: each part object → its bone (upper bone for a limb part); seam blend within `smooth` metres.
+    bone_for_part = {}
+    if kind == "spider":
+        bone_for_part = {"body": "Body", **{f"leg{i}": f"Leg{i}" for i in range(1, 7)}}
+    elif kind == "quadarm":
+        bone_for_part = {
+            "body": "Body", "head": "Head",
+            "leg_fl": "LegFL", "leg_fr": "LegFR", "leg_bl": "LegBL", "leg_br": "LegBR",
+            "arm_l": "ArmL", "arm_r": "ArmR",
+        }
+    elif kind == "biped":
+        bone_for_part = {
+            "hips": "Hips", "spine": "Spine", "head": "Head",
+            "arm_l": "ArmL", "arm_r": "ArmR", "leg_l": "LegL", "leg_r": "LegR",
+        }
+    elif kind == "chain":
+        bone_for_part = {f"seg{i}": f"Seg{i}" for i in range(segments)}
+
+    # World-space points per part for seam detection.
+    part_pts = {}
+    for m in CHAR["meshes"]:
+        role = R.match_part(m.name, roles) or m.name
+        mw = m.matrix_world
+        part_pts[role] = np.asarray([tuple(mw @ v.co) for v in m.data.vertices], dtype=np.float64)
+
+    for m in CHAR["meshes"]:
+        role = R.match_part(m.name, roles) or m.name
+        bone = bone_for_part.get(role, "Body" if "Body" in arm.data.bones else arm.data.bones[0].name)
+        while m.vertex_groups:
+            m.vertex_groups.remove(m.vertex_groups[0])
+        # Ensure a group for every bone (skinning needs them).
+        for b in arm.data.bones:
+            if b.name not in m.vertex_groups:
+                m.vertex_groups.new(name=b.name)
+        n = len(m.data.vertices)
+        weights = {b.name: np.zeros(n, dtype=np.float32) for b in arm.data.bones}
+        weights[bone][:] = 1.0
+        if smooth > 0 and len(part_pts) > 1:
+            mw = m.matrix_world
+            pts = np.asarray([tuple(mw @ v.co) for v in m.data.vertices], dtype=np.float64)
+            for other, opts in part_pts.items():
+                if other == role or other not in bone_for_part:
+                    continue
+                ob = bone_for_part[other]
+                # Distance from each of this part's verts to the other part's cloud (approximate: nearest of a sample).
+                sample = opts if len(opts) <= 400 else opts[np.linspace(0, len(opts) - 1, 400).astype(int)]
+                d = np.sqrt(((pts[:, None, :] - sample[None, :, :]) ** 2).sum(-1).min(axis=1))
+                blend = np.clip(1.0 - d / smooth, 0.0, 1.0)
+                weights[ob] = np.maximum(weights[ob], blend * 0.5)
+                weights[bone] = np.maximum(weights[bone] - blend * 0.5, 0.0)
+        # Normalize and apply.
+        stack = np.stack([weights[b.name] for b in arm.data.bones], axis=1)
+        s = stack.sum(axis=1, keepdims=True)
+        s[s < 1e-8] = 1.0
+        stack = stack / s
+        for bi, b in enumerate(arm.data.bones):
+            vg = m.vertex_groups[b.name]
+            for vi in range(n):
+                w = float(stack[vi, bi])
+                if w > 1e-4:
+                    vg.add([vi], w, "REPLACE")
+        mod = m.modifiers.new("Armature", "ARMATURE")
+        mod.object = arm
+        m.parent = arm
+        m.matrix_parent_inverse = arm.matrix_world.inverted()
+
+    CHAR["arm"] = arm
+    CHAR["bones"] = [b.name for b in arm.data.bones]
+    role_map = {n: r for n, _, _, _, r in placements}
+    CHAR["roles"] = [role_map[n] for n in CHAR["bones"]]
+    CHAR["map"] = {}  # not Mixamo
+    CHAR["scheme"] = f"robot:{kind}"
+    CHAR["template"] = kind
+    lo, hi = mesh_bounds(CHAR["meshes"])
+    CHAR["height"] = float(hi.z - lo.z)
+    return {
+        "op": "template", "kind": kind, "bones": CHAR["bones"], "roles": CHAR["roles"],
+        "height": round(CHAR["height"], 3), "parts": [p["name"] for p in CHAR["parts"]] or [m.name for m in CHAR["meshes"]],
+    }
+
+
+def op_clips(o):
+    """Procedural clips for the current robot template: walk/run (tripod|wave), idle, attack, hit, death, jump."""
+    need_arm("clips")
+    R = need_robot("clips")
+    kind = o.get("kind") or CHAR.get("template")
+    if kind not in R.KINDS:
+        fail(f"clips: need a template first (or pass kind: {', '.join(R.KINDS)})")
+    if not CHAR["roles"] or len(CHAR["roles"]) != len(CHAR["bones"]):
+        # Recover roles from bone names.
+        tree = R.bone_tree(kind, int(o.get("segments", 6)))
+        role_map = {n: r for n, _, r in tree}
+        CHAR["roles"] = [role_map.get(n, "body") for n in CHAR["bones"]]
+    specs = o.get("list")
+    if specs is None:
+        specs = o.get("clips")
+    if specs in (None, True, "*"):
+        specs = R.default_clip_list(kind)
+    if not isinstance(specs, list) or not specs:
+        fail("clips: list is [{ type: walk|run|idle|attack|hit|death|jump, ... }, ...] or omit for the default set")
+    made = []
+    for spec in specs:
+        if isinstance(spec, str):
+            spec = {"type": spec}
+        if not isinstance(spec, dict) or not spec.get("type"):
+            fail("clips: each entry needs type")
+        ctype = str(spec["type"]).lower()
+        if ctype not in R.CLIP_TYPES:
+            fail(f"clips: type is {', '.join(R.CLIP_TYPES)} (got {ctype!r})")
+        gait = str(spec.get("gait") or ("tripod" if kind == "spider" else "wave")).lower()
+        if gait not in R.GAITS:
+            fail(f"clips: gait is {', '.join(R.GAITS)}")
+        attack = str(spec.get("attack") or "stab").lower()
+        got = R.procedural_clip(
+            ctype, kind, CHAR["bones"], CHAR["roles"], FPS,
+            gait=gait, attack=attack, seconds=spec.get("seconds"), name=spec.get("name"),
+        )
+        name = clip_name(got.pop("name"))
+        CLIPS[name] = got
+        made.append({"name": name, "type": ctype, "frames": len(got["rot"])})
+        say("clip", name, ctype, len(got["rot"]))
+    return {"op": "clips", "kind": kind, "clips": made}
 
 
 # ---------------------------------------------------------------- previews
@@ -1426,6 +1882,7 @@ def op_preview(o):
 
 OPS = {"import": op_import, "clean": op_clean, "bake": op_bake, "attach": op_attach, "retarget": op_retarget,
        "pose": op_pose, "concat": op_concat, "copy": op_copy, "rename": op_rename, "remove": op_remove,
+       "split": op_split, "template": op_template, "clips": op_clips,
        "export": op_export, "preview": op_preview, **{k: op_edit for k in EDITS}}
 
 

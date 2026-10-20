@@ -62,8 +62,33 @@ The first op is always `import`. The rest run in order, and any op can come more
 | `concat` | `clips` (two or more), `name`, `blend` (0) | Plays the clips one after another. Each clip starts where the last one ended on the ground. With `blend`, the clips cross-fade over that many frames. |
 | `pose` | `clip`, `bones`, `frame` (1) or `frames`, `mode` (`set` or `add`), `ease` (0), `length`, `as` | Sets key poses from JSON. Details below. |
 | `copy`, `rename`, `remove` | `clip`, `name` / `clips` | Copies, renames or removes clips. |
-| `export` | `format` (`fbx`, `glb` or `blend`), `name` (`character`), `clips` (all), `bones` (FBX: `mixamo`), `title` (the format, unless set) | Writes the file. `title` is the name the library files it under when one job writes several GLBs. Details below. |
+| `split` | `by` (`connected`, `centers` or `both`), `kind`, `parts`, `label`, `angles`, `segments`, `size` | Hard-surface robots: cut the mesh into named parts. `connected` splits loose pieces; `centers` (or a `kind` guess / Claude labels) assigns vertices to the nearest part centre. `label: true` renders four angles and asks Claude for centres that match the template roles, then continues. |
+| `template` | `kind!` (`spider`, `quadarm`, `biped`, `chain`), `parts`, `segments`, `smooth` (0.02 m) | Builds a robot skeleton fitted to the parts and binds each part rigidly to one bone (a short blend only where parts meet). Replaces any previous armature. Spider = 6 legs; quadarm = 4 legs + 2 arms (Yo Bot); biped = simple humanoid; chain = `segments` bones along the long axis. |
+| `clips` | `list` / `clips` (default set), `kind`, `segments` | Procedural takes for the current template: walk / run (gait `tripod` or `wave`), idle sway, attack (`stab` / `swipe` / `slam`), hit, death, jump. Omit `list` for the full starter set. |
+| `export` | `format` (`fbx`, `glb` or `blend`), `name` (`character`), `clips` (all), `bones` (FBX: `mixamo`, or `generic` / `keep` for robots), `title` (the format, unless set) | Writes the file. `title` is the name the library files it under when one job writes several GLBs. Details below. |
 | `preview` | `turntable` (true), `clips` (all), `size` (512), `seconds` (6), `engine` (cycles), `samples` (16), `maxFrames` (300) | Makes a turntable of the rest pose (the camera goes once around) and a still, plus a video of each clip from a three-quarter view. The camera follows a clip that travels. All of these are rendered by `hawkes_blender.py` (blender.render's shot) from a GLB of the character. |
+
+### Hard-surface robots
+
+For creatures that are not humanoid (Spider Bot, Yo Bot, a chained tentacle), skip `mesh.rig` and do this after `mesh.textured`:
+
+```json
+{
+  "ops": [
+    { "op": "import", "file": 0 },
+    { "op": "split", "kind": "quadarm", "label": true },
+    { "op": "template", "kind": "quadarm" },
+    { "op": "clips" },
+    { "op": "export", "format": "fbx", "bones": "generic" },
+    { "op": "export", "format": "glb" },
+    { "op": "preview" }
+  ]
+}
+```
+
+- **`split` + `label: true`:** Blender renders front / right / back / left stills; Claude returns a centre per template role (`body`, `leg_fl`, …); the mesh is cut by nearest centre. Without `label`, pass `parts: [{ "name": "body", "center": [0,0,0.4] }, …]` yourself, or let `kind` guess centres from the vertex cloud.
+- **`template`:** one bone per part (upper + tip for limbs). Export FBX with `bones: "generic"` so Unity uses a Generic avatar (not Humanoid / Mixamo).
+- **`clips`:** parameters on each entry: `type`, `gait` (`tripod` for spiders, `wave` otherwise), `attack`, `seconds`, `name`.
 
 The edit ops (`trim`, `loop`, `inplace`, `speed`, `mirror` and `reverse`) change the clip in place. With `as`, they
 write a new clip and leave the original alone. With `clip: "*"`, they apply to every clip.
@@ -123,7 +148,8 @@ An agent can author or fix a pose without Blender:
 
 - **FBX for Unity:**
   - Bones are renamed to Mixamo names (`mixamorig:Hips`...), so Unity's **Humanoid** avatar maps them on its own.
-    `bones: "keep"` keeps the rig's own names. A warning lists the Humanoid bones the rig doesn't have.
+    `bones: "keep"` or `bones: "generic"` keeps the rig's own names (use this for robot templates). A warning lists the
+    Humanoid bones the Mixamo path doesn't have.
   - Each clip is a named take (an NLA strip). In Unity they show as `Walk`, `Idle`... on the model's Animation tab.
   - Scale: 1 unit = 1 m (*FBX All* scaling, -Z forward, Y up, no leaf bones). Textures are embedded.
   - Unity's Humanoid works best from a T-pose rest. A mesh.rig character rests in its A-pose; use *Enforce T-Pose* in
