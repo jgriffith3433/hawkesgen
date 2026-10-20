@@ -15,6 +15,7 @@ import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { paths } from '../config.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
+import { extractJson } from '../providers/claudecode.ts';
 import { ensureBlender, blenderWorkspace, BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
 
 const ROBOT_KINDS = ['spider', 'quadarm', 'biped', 'chain'] as const;
@@ -228,7 +229,7 @@ The images are four views in order: front (-Y), right (+X), back (+Y), left (-X)
     effort: 'medium',
     maxTokens: 2000,
   }, opts.signal);
-  const parsed = JSON.parse(r.text) as { parts: { name: string; center: number[] }[] };
+  const parsed = JSON.parse(extractJson(r.text)) as { parts: { name: string; center: number[] }[] };
   if (!parsed.parts?.length) throw new GenError('Claude returned no parts for the robot split');
   return { parts: parsed.parts, usage: usageOf(r, `${r.model} robot parts`) };
 }

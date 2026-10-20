@@ -600,6 +600,22 @@ def op_clean(o):
             bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
             bpy.ops.object.modifier_apply(modifier=mod.name)
     after = sum(triangles(x) for x in CHAR["meshes"])
+    # One collapse pass often lands above the budget (loose pieces, triangulation): squeeze again until it fits.
+    for _ in range(4):
+        if not budget or after <= budget:
+            break
+        say("step", f"still {after} triangles, decimating again to {budget}")
+        for x in CHAR["meshes"]:
+            mod = x.modifiers.new("hb_decimate", "DECIMATE")
+            mod.decimate_type = "COLLAPSE"
+            mod.ratio = max(0.01, min(0.99, budget / after * 0.95))
+            mod.use_collapse_triangulate = True
+            select([x], x)
+            bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+        after = sum(triangles(x) for x in CHAR["meshes"])
+    if budget and after > budget:
+        warn(f"clean: {after} triangles is still over the budget of {budget}")
     err = silhouette_error()
     rest_pose(arm, False)
     got = {"op": "clean", "trianglesBefore": before, "triangles": after, "merged": merged,
@@ -1589,7 +1605,7 @@ def op_split(o):
     if CHAR["arm"]:
         warn("split: the mesh already has a skeleton; parts are cut from the posed rest mesh")
         rest_pose(CHAR["arm"])
-    by = o.get("by", "connected")
+    by = o.get("by", "centers" if o.get("parts") else "connected")  # labelled centres split by role, not by connected piece
     if by not in ("connected", "centers", "both"):
         fail(f"split: by is connected, centers or both (got {by!r})")
     kind = o.get("kind")
