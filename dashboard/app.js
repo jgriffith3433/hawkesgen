@@ -72,7 +72,7 @@ function connect() {
     const j = JSON.parse(e.data);
     state.jobs.set(j.id, j);
     state.projects.add(j.project);
-    if (current === 'jobs' || current === 'overview') scheduleRender();
+    if (current === 'jobs' || current === 'overview' || (current === 'playtests' && j.tool === 'playtest.run')) scheduleRender();
     const open = $('#modalBody [data-job]');
     if (open?.dataset.job === j.id && $('#modal').open) showJob(j.id, true);
   });
@@ -203,9 +203,9 @@ async function showAsset(id) {
     <p class="small muted">Use it in another job as <code>asset:${esc(a.id)}</code>.</p>`);
   body.querySelector('[data-act="close"]').onclick = () => $('#modal').close();
   body.querySelector('[data-act="copy"]').onclick = () => navigator.clipboard.writeText(`asset:${a.id}`).then(() => toast('Copied'));
-  body.querySelector('[data-act="star"]').onclick = () => api(`/assets/${a.id}`, { method: 'PATCH', body: JSON.stringify({ starred: !a.starred }) }).then(() => { showAsset(a.id); if (current === 'library') render.library(); }).catch(fail);
-  body.querySelector('[data-act="save"]').onclick = () => api(`/assets/${a.id}`, { method: 'PATCH', body: JSON.stringify({ title: $('#at').value || null, tags: $('#ag').value.split(',').map((s) => s.trim()).filter(Boolean) }) }).then(() => { toast('Saved'); if (current === 'library') render.library(); }).catch(fail);
-  body.querySelector('[data-act="delete"]').onclick = () => confirm('Delete this file from the library for good?') && api(`/assets/${a.id}`, { method: 'DELETE' }).then(() => { $('#modal').close(); render.library(); }).catch(fail);
+  body.querySelector('[data-act="star"]').onclick = () => api(`/assets/${a.id}`, { method: 'PATCH', body: JSON.stringify({ starred: !a.starred }) }).then(() => { showAsset(a.id); if (current === 'library' || current === 'playtests') render[current](); }).catch(fail);
+  body.querySelector('[data-act="save"]').onclick = () => api(`/assets/${a.id}`, { method: 'PATCH', body: JSON.stringify({ title: $('#at').value || null, tags: $('#ag').value.split(',').map((s) => s.trim()).filter(Boolean) }) }).then(() => { toast('Saved'); if (current === 'library' || current === 'playtests') render[current](); }).catch(fail);
+  body.querySelector('[data-act="delete"]').onclick = () => confirm('Delete this file from the library for good?') && api(`/assets/${a.id}`, { method: 'DELETE' }).then(() => { $('#modal').close(); if (current === 'library' || current === 'playtests') render[current](); }).catch(fail);
   body.querySelector('[data-job-link]')?.addEventListener('click', (e) => { e.preventDefault(); showJob(a.job); });
 }
 
@@ -237,6 +237,39 @@ render.library = async () => {
   $('#lnext')?.addEventListener('click', () => set({ offset: f.offset + 60 }));
   for (const m of document.querySelectorAll('#library [data-asset]')) m.onclick = () => showAsset(m.dataset.asset);
   for (const s of document.querySelectorAll('#library [data-star]')) s.onclick = () => api(`/assets/${s.dataset.star}`, { method: 'PATCH', body: JSON.stringify({ starred: s.dataset.on !== '1' }) }).then(() => render.library()).catch(fail);
+};
+
+// ---------------------------------------------------------------- playtests
+render.playtests = async () => {
+  const f = render.playtests.filter ?? { project: '', kind: 'video', q: '', starred: false, offset: 0 };
+  const qs = new URLSearchParams({ playtest: '1', limit: '60', offset: String(f.offset) });
+  if (f.project) qs.set('project', f.project);
+  if (f.kind) qs.set('kind', f.kind);
+  if (f.q) qs.set('q', f.q);
+  if (f.starred) qs.set('starred', '1');
+  const { items, total } = await api(`/assets?${qs}`);
+  for (const a of items) state.projects.add(a.project);
+  const kinds = [['video', 'Playtest videos'], ['image', 'Screenshots'], ['text', 'Reports'], ['', 'All playtest files']];
+  $('#playtests').innerHTML = `
+    <div class="row spread"><h2>Playtests <span class="muted small">${total} files</span></h2><div class="row">
+      <input id="pq" placeholder="Search titles, scenarios, labels" value="${esc(f.q)}">
+      <select id="pp"><option value="">All projects</option>${[...state.projects].sort().map((p) => `<option ${p === f.project ? 'selected' : ''}>${esc(p)}</option>`).join('')}</select>
+      <select id="pk">${kinds.map(([v, label]) => `<option value="${v}" ${v === f.kind ? 'selected' : ''}>${label}</option>`).join('')}</select>
+      <label class="row small"><input type="checkbox" id="ps" ${f.starred ? 'checked' : ''}> starred</label></div></div>
+    ${items.length ? `<div class="lib">${items.map((a) => `<div class="asset"><div class="media" data-asset="${esc(a.id)}">${mediaTag(a)}</div><div class="meta">
+      <div class="row spread"><span class="t">${esc(a.title ?? Object.values(a.labels ?? {}).join(' · ') ?? a.tool) || esc(a.tool)}</span><button class="star ${a.starred ? 'on' : ''}" data-star="${a.id}" data-on="${a.starred}">★</button></div>
+      <span class="muted">${esc(a.project)}${a.recipe?.params?.scenario ? ` · ${esc(a.recipe.params.scenario)}` : ''} · ${esc(ago(a.created))}${a.job ? ` · <a href="#" data-job-link="${esc(a.job)}">${esc(a.job)}</a>` : ''}</span></div></div>`).join('')}</div>` : '<div class="card empty">No playtest recordings here yet.</div>'}
+    <div class="row" style="margin-top:12px">${f.offset ? '<button id="pprev">Newer</button>' : ''}${f.offset + items.length < total ? '<button id="pnext">Older</button>' : ''}</div>`;
+  const set = (patch) => { render.playtests.filter = { ...f, offset: 0, ...patch }; render.playtests().catch(fail); };
+  $('#pq').onchange = (e) => set({ q: e.target.value });
+  $('#pp').onchange = (e) => set({ project: e.target.value });
+  $('#pk').onchange = (e) => set({ kind: e.target.value });
+  $('#ps').onchange = (e) => set({ starred: e.target.checked });
+  $('#pprev')?.addEventListener('click', () => set({ offset: Math.max(0, f.offset - 60) }));
+  $('#pnext')?.addEventListener('click', () => set({ offset: f.offset + 60 }));
+  for (const m of document.querySelectorAll('#playtests [data-asset]')) m.onclick = () => showAsset(m.dataset.asset);
+  for (const s of document.querySelectorAll('#playtests [data-star]')) s.onclick = () => api(`/assets/${s.dataset.star}`, { method: 'PATCH', body: JSON.stringify({ starred: s.dataset.on !== '1' }) }).then(() => render.playtests()).catch(fail);
+  for (const l of document.querySelectorAll('#playtests [data-job-link]')) l.onclick = (e) => { e.preventDefault(); showJob(l.dataset.jobLink); };
 };
 
 /** Remote Desktop for the build server: downloads the .rdp for its current address (letting this browser's IP in), or offers Start. */

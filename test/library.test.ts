@@ -10,7 +10,7 @@ process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-lib-'
 const { db, J } = await import('../src/db.ts');
 const { submit, getJob, queue } = await import('../src/jobs.ts');
 (queue as any).pump = () => {}; // no servers here: jobs stay queued
-const { putAsset } = await import('../src/library.ts');
+const { putAsset, listAssets } = await import('../src/library.ts');
 const L = await import('../src/entities.ts');
 const { getTool } = await import('../src/tools/index.ts');
 const { sha256File } = await import('../src/util.ts');
@@ -129,4 +129,85 @@ test("a project's kinds say how slots are made: a fighter's clip from its start 
   const pose = L.slotJobSpec(owner, { entity: e.id, slot: 'pose/crouch', feedback: 'lower' });
   assert.equal(pose.tool, 'image.edit');
   assert.match((pose.params as any).prompt, /lower$/);
+});
+
+test('library assets exclude playtest.run outputs by default, and ?playtest=1 returns only playtest outputs', async () => {
+  const usableClip = putAsset({
+    data: Buffer.from('mp4 clip'), ext: '.mp4', client: 'test', project: 'doseofdestruction', tool: 'video.i2v',
+    recipe: { tool: 'video.i2v', version: 1, params: { prompt: 'jab clip' }, inputs: {} } as any,
+    title: 'Jab clip',
+  });
+  const playtestVideo = putAsset({
+    data: Buffer.from('playtest mp4'), ext: '.mp4', job: 'j_pt1', client: 'test', project: 'doseofdestruction', tool: 'playtest.run',
+    recipe: { tool: 'playtest.run', version: 3, params: { scenario: 'smoke' }, inputs: {} } as any,
+    title: 'Playtest video (smoke)', meta: { playtest: 'video' },
+  });
+  const playtestShot = putAsset({
+    data: Buffer.from('playtest jpg'), ext: '.jpg', job: 'j_pt1', client: 'test', project: 'doseofdestruction', tool: 'playtest.run',
+    recipe: { tool: 'playtest.run', version: 3, params: { scenario: 'smoke' }, inputs: {} } as any,
+    title: '5s scene — arena', meta: { playtest: 'shot', t: 5, reason: 'scene' },
+  });
+  const playtestReport = putAsset({
+    data: Buffer.from('{}'), ext: '.json', job: 'j_pt1', client: 'test', project: 'doseofdestruction', tool: 'playtest.run',
+    recipe: { tool: 'playtest.run', version: 3, params: { scenario: 'smoke' }, inputs: {} } as any,
+    title: 'Playtest report', meta: { playtest: 'report' },
+  });
+
+  // 1) listAssets excludes playtest outputs by default, even when filtering by kind=video or project
+  const libDefault = listAssets({ project: 'doseofdestruction' });
+  assert.ok(libDefault.items.some((a) => a.id === usableClip.id));
+  assert.ok(!libDefault.items.some((a) => a.tool === 'playtest.run'));
+  const libVideos = listAssets({ project: 'doseofdestruction', kind: 'video' });
+  assert.deepEqual(libVideos.items.map((a) => a.id), [usableClip.id]);
+
+  // 2) listAssets({ playtest: true }) returns only playtest outputs, and supports kind filtering
+  const ptAll = listAssets({ playtest: true });
+  assert.deepEqual(new Set(ptAll.items.map((a) => a.id)), new Set([playtestVideo.id, playtestShot.id, playtestReport.id]));
+  assert.deepEqual(listAssets({ playtest: true, kind: 'video' }).items.map((a) => a.id), [playtestVideo.id]);
+  assert.deepEqual(listAssets({ playtest: true, kind: 'image' }).items.map((a) => a.id), [playtestShot.id]);
+  assert.deepEqual(listAssets({ playtest: true, kind: 'screenshots' }).items.map((a) => a.id), [playtestShot.id]);
+  assert.deepEqual(listAssets({ playtest: true, kind: 'text' }).items.map((a) => a.id), [playtestReport.id]);
+  assert.deepEqual(listAssets({ playtest: true, kind: 'report' }).items.map((a) => a.id), [playtestReport.id]);
+
+  // 3) Explicit tool=playtest.run or job=j_pt1 still returns playtest assets without playtest=true
+  assert.equal(listAssets({ tool: 'playtest.run' }).total, 3);
+  assert.equal(listAssets({ job: 'j_pt1' }).total, 3);
+
+  // 4) GET /v1/assets and hawkesgen_library MCP tool respect default exclusion and ?playtest=1
+  const { handle } = await import('../src/api.ts');
+  const { genMcp } = await import('../src/mcp-tools.ts');
+  const getJson = async (urlPath: string) => {
+    let status = 0;
+    let body = '';
+    const req = {
+      url: urlPath, method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' },
+      [Symbol.asyncIterator]: async function* () {},
+    } as any;
+    const res = {
+      writeHead: (s: number) => { status = s; return res; },
+      setHeader: () => {},
+      end: (d?: string) => { body = d ?? ''; },
+    } as any;
+    await handle(req, res);
+    assert.equal(status, 200, `GET ${urlPath} -> ${status}: ${body}`);
+    return JSON.parse(body);
+  };
+
+  const apiDefault = await getJson('/v1/assets?project=doseofdestruction');
+  assert.ok(apiDefault.items.some((a: any) => a.id === usableClip.id));
+  assert.ok(apiDefault.items.every((a: any) => a.tool !== 'playtest.run'));
+
+  const apiPlaytest = await getJson('/v1/assets?playtest=1');
+  assert.equal(apiPlaytest.total, 3);
+  assert.ok(apiPlaytest.items.every((a: any) => a.tool === 'playtest.run'));
+
+  const apiPlaytestVideos = await getJson('/v1/assets?playtest=1&kind=video');
+  assert.deepEqual(apiPlaytestVideos.items.map((a: any) => a.id), [playtestVideo.id]);
+
+  const mcp = genMcp({ assets: (q: Record<string, string>) => getJson(`/v1/assets?${new URLSearchParams(q)}`) });
+  const mcpLib = mcp.tools.find((t) => t.name === 'hawkesgen_library')!;
+  const mcpDefault: any = await mcpLib.run({ project: 'doseofdestruction' });
+  assert.ok(mcpDefault.items.every((a: any) => a.tool !== 'playtest.run'));
+  const mcpOnlyPt: any = await mcpLib.run({ playtest: true, kind: 'video' });
+  assert.deepEqual(mcpOnlyPt.items.map((a: any) => a.id), [playtestVideo.id]);
 });
