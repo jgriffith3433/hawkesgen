@@ -42,8 +42,8 @@
       }
     },
     "prop": {
-      "tool": "mesh.textured",
-      "description": "A textured GLB prop from a reference image (convert/compress before shipping)."
+      "alias": "shared/prop3d",
+      "description": "A textured GLB prop from a reference image (front view, plain background), made from four views: back, left and right are made and checked first (convert/compress before shipping)."
     },
     "splat": {
       "tool": "splat.build",
@@ -102,23 +102,26 @@
       "description": "A prop for a level: a reference image and the textured GLB made from it.",
       "slots": {
         "reference": {
-          "description": "The prop alone, three-quarter view, evenly lit on a plain background: what the model is made from.",
+          "description": "The prop alone, straight-on front view, evenly lit on a plain background: the front of the four views the model is made from.",
           "make": {
             "tool": "image.generate",
             "params": {
-              "prompt": "A single {look}, three-quarter view, the whole object in frame, evenly lit, plain white background, no other objects. Photographic detail, {style} {feedback}",
+              "prompt": "A single {look}, straight-on front view, the whole object in frame, evenly lit, plain light grey background, no other objects. Photographic detail, {style} {feedback}",
               "width": 1024,
               "height": 1024
             }
           }
         },
         "model": {
-          "description": "The textured GLB in assets/models (convert and compress before shipping).",
+          "description": "The textured GLB in assets/models, made from four views of the reference (back, left and right are made and checked first). Convert and compress before shipping.",
           "make": {
-            "tool": "mesh.textured",
-            "inputs": {
-              "image": "slot:./reference"
-            }
+            "steps": [
+              { "tool": "image.remove-background", "inputs": { "image": "$input:0" }, "save": "cutout" },
+              { "tool": "image.viewsheet", "params": { "form": "prop", "cell": 1024, "retries": 2 }, "inputs": { "image": "$prev:cutout" }, "save": "sheet" },
+              { "tool": "mesh.views3d", "inputs": { "image": "$prev:sheet" }, "save": "model" }
+            ],
+            "inputs": { "files": ["slot:./reference"] },
+            "saves": { "model": "model" }
           }
         }
       }

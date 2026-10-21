@@ -63,7 +63,7 @@ Built and tested (2026-10-15):
   - image.edit, image.generate (with seamless tiling), image.upscale, image.depth
   - image.remove-background, image.segment, image.angles
   - video.upscale, video.interpolate
-  - mesh.from-image, mesh.textured (PBR GLB)
+  - mesh.from-image, mesh.textured (PBR GLB); since 2026-10-21 deprecated for characters: mesh.views3d from a 4-view sheet is the only way (J: one image never made a usable mesh)
   - audio.music, llm.json
   - DoD's real side-view job, DoD's GPU tab, and its sound, voice and Claude calls
 - **Projects:**

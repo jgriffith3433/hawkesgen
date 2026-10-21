@@ -15,8 +15,8 @@
       }
     },
     "prop": {
-      "tool": "mesh.textured",
-      "description": "A textured GLB prop from a concept image (import into Unity)."
+      "alias": "shared/prop3d",
+      "description": "A textured GLB prop from a concept image (front view, plain background), made from four views: back, left and right are made and checked first (import into Unity)."
     }
   },
   "kinds": {

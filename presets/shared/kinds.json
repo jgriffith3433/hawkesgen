@@ -1,7 +1,7 @@
 {
   "_about": "Kinds every project has (docs/library.md): a project's own kinds in presets/<project>.json add to these and replace one of the same name. docs/3d-characters.md has how a 3D character is made, slot by slot. One full recipe is also the preset shared/character3d.",
   "character3d": {
-    "description": "A 3D character for a game: concept → A-pose → cutout → side/back views → textured mesh (best-of-N at 100k faces) → clean+bake → humanoid rig (or robot template) → clips → FBX/GLB and previews. Set data.form to \"robot\" and data.template (spider|quadarm|biped|chain) for hard-surface creatures. data.unityProject names the Unity folder for the Humanoid check. data.triangles is the clean budget (default 25000).",
+    "description": "A 3D character for a game: concept → A-pose → cutout → view sheet (true front, back, left and right of the same character, checked by Claude, never one view) → textured mesh from the sheet (mesh.views3d, best-of-3) → clean+bake → humanoid rig (or robot template) → clips → FBX/GLB and previews. Set data.form to \"robot\" and data.template (spider|quadarm|biped|chain) for hard-surface creatures. data.unityProject names the Unity folder for the Humanoid check. data.triangles is the clean budget (default 25000).",
     "slots": {
       "concept": {
         "description": "A full-body reference to model from (upload one, or generate a turnaround).",
@@ -33,21 +33,30 @@
           "inputs": { "image": "slot:./apose" }
         }
       },
+      "sheet": {
+        "description": "The view sheet: front, back, left and right of the SAME character side by side on flat grey (1024 px cells), each cut out, checked by Claude for one consistent character before any 3D GPU time is spent. The mesh is made from this, never from one picture. data.form robot (or any non-humanoid) keeps every limb separated and visible in the views; data.look helps the check.",
+        "make": {
+          "tool": "image.viewsheet",
+          "params": { "form": "{form}", "look": "{look}", "cell": 1024, "retries": 2 },
+          "inputs": { "image": "slot:./cutout" },
+          "saves": { "sheet": "sheet" }
+        }
+      },
       "angles": {
-        "description": "Side and back (and other) views of the same character from the cutout, for reference and judging the mesh.",
+        "optional": true,
+        "description": "Optional extras: close-up, wide, aerial, low-angle and 45°/90° looks at the same character from the cutout (image.angles has no back view). Not used for the mesh: the sheet is.",
         "make": {
           "tool": "image.angles",
           "inputs": { "image": "slot:./cutout" }
         }
       },
       "mesh": {
-        "description": "Textured mesh at 100k faces (best of 4, judged from 4-angle Blender stills against the concept), then cleaned to the triangle budget and baked. Never ask for few faces at generate time (Yooba lesson).",
+        "description": "Textured mesh from the four-view sheet (mesh.views3d, best of 3, judged from 4-angle Blender stills against the concept), then cleaned to the triangle budget and baked. Never from a single image (one view guesses the back).",
         "make": {
           "steps": [
             {
-              "tool": "mesh.textured",
-              "params": { "faces": 100000 },
-              "inputs": { "image": "slot:./cutout" },
+              "tool": "mesh.views3d",
+              "inputs": { "image": "slot:./sheet" },
               "save": "raw"
             },
             {
@@ -60,11 +69,11 @@
                   { "op": "export", "format": "glb", "title": "mesh" }
                 ]
               },
-              "inputs": { "files": ["$prev"] },
+              "inputs": { "files": ["$step1:mesh"] },
               "save": "mesh"
             }
           ],
-          "candidates": 4,
+          "candidates": 3,
           "pickAt": 1,
           "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, no shards or spikes, texture reads the character, usable as a game mesh.",
           "refs": [0],

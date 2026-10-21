@@ -21,9 +21,10 @@ GPU rules and server notes: `comfyui.md`. Blender ops: `3d-characters.md`. Workf
 | Fill or extend part of an image | `image.paint` | Inpaint and outpaint. |
 | Same character from another angle | `image.angles` | Qwen multi-angle (ComfyUI template `template_qwen_multiangle.app`). |
 | Transparent cutout | `image.remove-background` | Always before 3D. |
-| Four views into one sheet | `image.sheet` | Free, local. front, back, left, right. |
-| 3D from one image, quick | `mesh.from-image` (HY 3D 2.1), `mesh.textured` (TRELLIS.2, PBR) | Back is guessed. |
-| 3D from several views | `mesh.views3d` (Pixal3D multi-view + TRELLIS.2), `mesh.from-views` (HY 3D 2.0 MV) | Best shape and texture. Needs the 4-view sheet. |
+| The back, left and right of a character, checked | `image.viewsheet` | From the cutout of the front view: makes the three views, Claude checks they are the same character, lays the sheet. Always make this before 3D. |
+| Four views you already have into one sheet | `image.sheet` | Free, local. front, back, left, right. |
+| **3D from images (always more than one view)** | `mesh.views3d` (Pixal3D multi-view + TRELLIS.2, PBR) | The only way Gen turns images into 3D. Needs the 4-view sheet. |
+| 3D from one image (deprecated) | `mesh.from-image` (HY 3D 2.1), `mesh.textured` (TRELLIS.2, PBR), `mesh.from-views` (HY 3D 2.0 MV, two views) | One view guesses the back. They refuse a single image unless `allowSingleView: true` (props, blockouts). |
 | Fix, retopo, bake, LOD, budget | `blender.character` | Ops table in `3d-characters.md`. |
 | Smaller files for the web or mobile | `blender.character`: `pack`, `export` with `compress: "draco"`, `textures: "webp"` | Draco needs the engine's decoder (three.js `DRACOLoader`, Unity/Godot plugins). Keep an uncompressed GLB for editing. |
 | Physics shapes | `blender.character`: `collision` | `hulls` for characters and props, `capsule` or `box` for numbers only. Never collide on the render mesh. |
@@ -43,12 +44,12 @@ Flux Kontext, SeedVR2 7B, LTX 2.5, Wan Dancer, Hunyuan Video 1.5, Stable Audio 3
 
 ## Recipes
 
-- **Game character (clean):** preset `shared/character3d-4v`. Concept → A-pose → cutout → back, left, right views → sheet →
+- **Game character (clean):** preset `shared/character3d`. Concept → A-pose → cutout → `image.viewsheet` (back, left, right views, checked, sheet) →
   `mesh.views3d` → Blender report, fix, symmetrize, retopo (~8k), bake, report, LODs → `mesh.rig`. Models are heavy (about 9 GB).
-- **Game character (lighter):** preset `shared/character3d-mv` (front + back, `mesh.textured`, front/back projection).
+- **Robots and creatures:** the same, with `form: robot` on the view sheet so every limb stays apart and visible in each view (`3d-characters.md`).
 - **Animations:** `shared/motions` and the CC0 `motion:` library first; `motion.from-text` for what the library lacks. Retarget, trim, loop
   and in-place with `blender.character` clip ops.
-- **Props and environments:** `image.generate` → `image.remove-background` → `mesh.textured` → Blender `fix`, `retopo`, `lod`, `budget`.
+- **Props and environments:** preset `shared/prop3d`: `image.generate` (front view) → `image.remove-background` → `image.viewsheet` (form prop) → `mesh.views3d` → Blender `fix`, `retopo`, `lod`, `budget`.
 - **Tiling materials:** `image.generate` → `image.tile`, then `image.normals` / `image.albedo` for the maps.
 
 ## Performance budgets (starting points, per object)

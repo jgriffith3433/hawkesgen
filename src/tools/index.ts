@@ -17,6 +17,8 @@ import { meshRigTool } from './rig.ts';
 import { blenderCharacterTool } from './character.ts';
 import { motionFromTextTool } from './motion.ts';
 import { sheetTool } from './sheet.ts';
+import { viewSheetTool } from './viewsheet.ts';
+import { decorateMeshTool, orderTools } from './threed.ts';
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
@@ -25,7 +27,7 @@ const BUILT_IN: Tool[] = [
   llmTextTool, llmJsonTool,
   cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
-  blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool,
+  blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
 ];
 
 export let TOOLS: Tool[] = [];
@@ -36,7 +38,7 @@ export function reloadTools() {
   loadWorkflows();
   const wf = listWorkflows().map(workflowTool);
   const ids = new Set(wf.map((t) => t.id));
-  TOOLS = [...BUILT_IN.filter((t) => !ids.has(t.id)), ...wf];
+  TOOLS = orderTools([...BUILT_IN.filter((t) => !ids.has(t.id)), ...wf].map(decorateMeshTool));
   byId = new Map(TOOLS.map((t) => [t.id, t]));
   return TOOLS;
 }
