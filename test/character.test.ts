@@ -124,19 +124,25 @@ test('character3d is a kind in every project: an animation slot retargets its so
   assert.equal((L.slotJobSpec(owner, { entity: e2.id, slot: 'preview/turntable' }) as any).labels.slots.turntable, 'preview/turntable');
 });
 
-test('character3d mesh is an asset.make chain (100k faces, best-of-N); robot form uses makeRobot; check/humanoid needs unityProject', () => {
+test('character3d mesh is an asset.make chain (from the four-view sheet, best-of-N); robot form uses makeRobot; check/humanoid needs unityProject', () => {
   const owner = { id: 'test', name: 'J', role: 'owner', projects: ['*'] } as any;
   const kind = getProjectPresets('phorigins')!.kinds!.character3d;
-  for (const s of ['concept', 'apose', 'cutout', 'angles', 'mesh', 'rig', 'export/fbx', 'check/humanoid']) {
+  for (const s of ['concept', 'apose', 'cutout', 'sheet', 'mesh', 'rig', 'export/fbx', 'check/humanoid']) {
     assert.ok(kind.slots[s]?.make || kind.slots[s]?.makeRobot, s);
   }
   const e = L.createEntity(owner, { project: 'phorigins', name: 'Hero', kind: 'character3d', data: { look: 'a knight' } });
   const mesh: any = L.slotJobSpec(owner, { entity: e.id, slot: 'mesh' });
   assert.equal(mesh.tool, 'asset.make');
-  assert.equal(mesh.params.candidates, 4);
+  assert.equal(mesh.params.candidates, 3);
   assert.equal(mesh.params.pickAt, 1);
-  assert.equal(mesh.params.steps[0].tool, 'mesh.textured');
-  assert.equal(mesh.params.steps[0].params.faces, 100000);
+  assert.equal(mesh.params.steps[0].tool, 'mesh.views3d');
+  assert.equal(mesh.params.steps[0].inputs.image, 'slot:./sheet', 'the mesh is made from the view sheet, never one picture');
+  assert.equal(mesh.params.steps[0].inputs.image2, undefined);
+  const sheet: any = L.slotJobSpec(owner, { entity: e.id, slot: 'sheet' });
+  assert.equal(sheet.tool, 'image.viewsheet');
+  assert.equal(sheet.params.form, 'humanoid');
+  assert.equal(sheet.params.cell, 1024);
+  assert.equal(sheet.inputs.image, 'slot:./cutout');
   assert.equal(mesh.params.steps[1].tool, 'blender.character');
   assert.deepEqual(mesh.params.refs, [0]);
   assert.deepEqual(mesh.inputs.files, ['slot:./concept']);
@@ -150,6 +156,8 @@ test('character3d mesh is an asset.make chain (100k faces, best-of-N); robot for
   assert.equal(rigRobot.tool, 'blender.character');
   assert.ok(rigRobot.params.ops.some((o: any) => o.op === 'template' && o.kind === 'spider'));
   assert.ok(rigRobot.params.ops.some((o: any) => o.op === 'export' && o.bones === 'generic'));
+  const robotSheet: any = L.slotJobSpec(owner, { entity: robot.id, slot: 'sheet' });
+  assert.equal(robotSheet.params.form, 'robot', 'a robot sheet keeps its limbs apart (subjectOf)');
   const human = L.createEntity(owner, { project: 'phorigins', name: 'Human', kind: 'character3d' });
   const rigHuman: any = L.slotJobSpec(owner, { entity: human.id, slot: 'rig' });
   assert.equal(rigHuman.tool, 'mesh.rig');

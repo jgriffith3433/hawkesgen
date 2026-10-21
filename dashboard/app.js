@@ -621,7 +621,7 @@ function tryTool(t, opts = {}) {
 render.tools = async () => {
   const { tools } = await api('/tools');
   state.tools = tools;
-  const groups = { comfy: 'GPU (ComfyUI on the AWS fleet)', elevenlabs: 'Voice and sound (ElevenLabs)', anthropic: 'Writing and judgment (Claude)', local: 'On this PC' };
+  const groups = { comfy: 'GPU (ComfyUI on the AWS fleet)', pipeline: 'Recipes (chains of tools, sheets, best of N)', elevenlabs: 'Voice and sound (ElevenLabs)', anthropic: 'Writing and judgment (Claude)', local: 'On this PC' };
   $('#tools').innerHTML = `<h2>Tools</h2><p class="muted">Every tool is one API call: <code>POST /v1/jobs {"tool": "…", "project": "…", "params": {…}, "inputs": {…}}</code>. Try one here.</p>
     ${Object.entries(groups).map(([p, label]) => `<div class="card"><h3>${label}</h3><table><tbody>${tools.filter((t) => t.provider === p).map((t) => `<tr><td style="width:28%"><b>${esc(t.title)}</b><div class="small muted">${esc(t.id)} → ${esc(t.output)}</div></td><td class="small">${esc(t.description)}</td><td><button data-try="${t.id}">Try</button></td></tr>`).join('')}</tbody></table></div>`).join('')}`;
   for (const b of document.querySelectorAll('[data-try]')) b.onclick = () => tryTool(tools.find((t) => t.id === b.dataset.try));

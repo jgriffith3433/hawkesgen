@@ -29,7 +29,7 @@ import { GenError } from './util.ts';
 
 export const PRESETS_DIR = path.join(ROOT, 'presets');
 
-export type Preset = { tool?: string; description?: string; prompt?: string; negative?: string; params?: Record<string, unknown>; inputs?: Record<string, unknown> };
+export type Preset = { alias?: string; tool?: string; description?: string; prompt?: string; negative?: string; params?: Record<string, unknown>; inputs?: Record<string, unknown> };
 export type ProjectPresets = { project: string; title?: string; style?: string; negative?: string; notes?: string; presets: Record<string, Preset>; kinds?: Record<string, any> };
 
 /** Kinds every project has (presets/shared/kinds.json: character3d). A project's own kinds add to them and replace one
@@ -39,10 +39,34 @@ export function sharedKinds(): Record<string, any> {
   return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
 }
 
+/**
+ * A preset with "alias": "name" (in this file) or "shared/name" is that preset, under another name: it keeps its own
+ * description and anything else it sets, and takes the rest from the target. So an old name can follow a recipe
+ * (shared/character3d-4v is shared/character3d) without a second copy to keep in step.
+ */
+function resolveAliases(p: ProjectPresets): ProjectPresets {
+  if (!Object.values(p.presets ?? {}).some((x) => x?.alias)) return p;
+  const shared = p.project === 'shared' ? p : readRaw('shared');
+  const presets = Object.fromEntries(Object.entries(p.presets).map(([name, x]) => {
+    if (!x?.alias) return [name, x];
+    const [proj, target] = x.alias.includes('/') ? x.alias.split('/', 2) : [p.project, x.alias];
+    const base = (proj === p.project ? p : proj === 'shared' ? shared : null)?.presets?.[target];
+    if (!base || base.alias) throw new GenError(`Preset ${p.project}/${name} is an alias of ${x.alias}, which is not a preset (an alias cannot point at an alias)`);
+    const { alias: _a, ...own } = x;
+    return [name, { ...base, ...own }];
+  }));
+  return { ...p, presets };
+}
+
+const readRaw = (project: string): ProjectPresets | null => {
+  const f = path.join(PRESETS_DIR, `${project}.json`);
+  return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null;
+};
+
 const withShared = (p: ProjectPresets): ProjectPresets => {
   const shared = sharedKinds();
   delete shared._about;
-  return { ...p, kinds: { ...shared, ...(p.kinds ?? {}) } };
+  return resolveAliases({ ...p, kinds: { ...shared, ...(p.kinds ?? {}) } });
 };
 
 export function listPresets(): ProjectPresets[] {

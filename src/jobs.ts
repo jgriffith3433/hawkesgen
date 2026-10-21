@@ -213,6 +213,7 @@ export function submit(client: Client, spec0: JobSpec): Job {
   }
   const params = validateParams(tool, spec.params ?? {});
   const inputs = resolveInputs(client, tool, spec.inputs ?? {});
+  tool.guard?.({ params, inputs, labels: spec.labels });
   if (spec.reuse) {
     const found = reusable(tool, project, params, inputs, typeof spec.reuse === 'object' ? spec.reuse.exclude ?? [] : []);
     if (found) {

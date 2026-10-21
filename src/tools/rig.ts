@@ -172,7 +172,7 @@ export const meshRigTool: Tool = {
   version: 2,
   title: 'Rig and skin a mesh',
   description:
-    'Rigs and skins a mesh from mesh.textured (GLB, or FBX/OBJ). kind humanoid uses Make-It-Animatable, which builds a Mixamo skeleton ' +
+    'Rigs and skins a mesh from mesh.views3d (GLB, or FBX/OBJ). kind humanoid uses Make-It-Animatable, which builds a Mixamo skeleton ' +
     '(mixamorig: bone names). kind auto (the default) does that for an upright biped with its arms out, and uses SkinTokens for anything else ' +
     'and if Make-It-Animatable fails. keepTextures copies the source textures back onto the rig. Returns a rigged GLB, an FBX, and a video of a ' +
     'standard walk. Optional Mixamo clips are baked on too. The models install into their own venvs on the GPU server the first time (family rig, ' +
@@ -181,7 +181,7 @@ export const meshRigTool: Tool = {
   family: 'rig',
   output: 'mesh',
   inputs: {
-    mesh: { kind: 'file', required: true, description: 'The character: a GLB from mesh.textured (FBX or OBJ too), standing upright.' },
+    mesh: { kind: 'file', required: true, description: 'The character: a GLB from mesh.views3d (FBX or OBJ too), standing upright.' },
     clips: { kind: 'file', multiple: true, max: 24, description: 'Optional extra clips with a Mixamo-named skeleton (FBX or GLB), baked on beside the walk.' },
   },
   params: {

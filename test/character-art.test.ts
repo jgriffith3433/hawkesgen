@@ -8,36 +8,74 @@ const { checkOps } = await import('../src/tools/character.ts');
 
 const files = ['/in/hero.glb', '/in/front.png', '/in/back.png'];
 
-test('shared/character3d-mv: refs point at earlier steps and its Blender ops pass checkOps', async () => {
-  const { getProjectPresets } = await import('../src/presets.ts');
-  const p: any = getProjectPresets('shared')!.presets['character3d-mv'];
-  const steps: any[] = p.params.steps;
-  steps.forEach((s, i) => {
-    for (const v of JSON.stringify(s.inputs ?? {}).match(/\$step(\d+)/g) ?? []) assert.ok(Number(v.slice(5)) <= i, `${s.save}: ${v}`);
-  });
-  const bl = steps.find((s) => s.tool === 'blender.character');
-  assert.equal(bl.inputs.files.length, 3);
-  checkOps(bl.params.ops, ['/a.glb', '/b.png', '/c.png']);
-  assert.ok(p.params.pickAt <= steps.findIndex((s) => s.tool === 'blender.character'));
-});
-
-test('shared/character3d-4v: steps use real tools, refs point at earlier steps, sheet takes front|back|left|right', async () => {
+test('shared/character3d: four views, never one: viewsheet before mesh.views3d, refs point at earlier steps, no single-image mesh tool', async () => {
   const { getProjectPresets } = await import('../src/presets.ts');
   const { reloadTools, getTool } = await import('../src/tools/index.ts');
   reloadTools();
-  const p: any = getProjectPresets('shared')!.presets['character3d-4v'];
+  const p: any = getProjectPresets('shared')!.presets.character3d;
   const steps: any[] = p.params.steps;
   steps.forEach((s, i) => {
     assert.ok(getTool(s.tool), `unknown tool ${s.tool}`);
     for (const v of JSON.stringify(s.inputs ?? {}).match(/\$step(\d+)/g) ?? []) assert.ok(Number(v.slice(5)) <= i, `${s.save}: ${v}`);
   });
-  const sheet = steps.find((s) => s.tool === 'image.sheet');
-  const saves = ['cutout', 'back', 'left', 'right'];
-  assert.deepEqual(sheet.inputs.views.map((v: string) => steps[Number(v.slice(5, v.indexOf(':'))) - 1].save), saves);
+  const tools = steps.map((s) => s.tool);
+  assert.ok(!tools.includes('mesh.textured') && !tools.includes('mesh.from-image'), 'a character is never made from one image');
+  const sheet = tools.indexOf('image.viewsheet');
+  const mesh = tools.indexOf('mesh.views3d');
+  assert.ok(sheet > 0 && mesh > sheet, 'the view sheet comes before the 3D step');
+  assert.ok(tools.indexOf('image.remove-background') < sheet, 'views are cut out');
+  assert.match(steps[mesh].inputs.image, /:sheet$/, 'mesh.views3d reads the sheet');
+  assert.ok(steps[sheet].params.cell >= 1024);
   const bl = steps.find((s) => s.tool === 'blender.character');
   checkOps(bl.params.ops, ['/a.glb']);
   assert.equal(steps[Number(/^\$step(\d+)/.exec(bl.inputs.files[0])![1]) - 1].tool, 'mesh.views3d');
-  assert.match(bl.inputs.files[0], /:mesh$/, 'mesh.views3d also emits preview PNGs: the ref must pick the GLB');
+  assert.match(bl.inputs.files[0], /:mesh$/, 'the ref must pick the GLB, not a preview');
+  assert.equal(p.params.pickAt, mesh + 1);
+});
+
+test('the old character3d-mv and character3d-4v names are the four-view recipe (aliases, one copy)', async () => {
+  const { getProjectPresets } = await import('../src/presets.ts');
+  const all: any = getProjectPresets('shared')!.presets;
+  for (const name of ['character3d-mv', 'character3d-4v']) {
+    assert.deepEqual(all[name].params, all.character3d.params, name);
+    assert.equal(all[name].tool, 'asset.make');
+    assert.equal(all[name].alias, undefined);
+  }
+});
+
+test('every preset and kind recipe that makes a mesh goes through mesh.views3d after a view sheet (or says allowSingleView)', async () => {
+  const { listPresets } = await import('../src/presets.ts');
+  const meshTools = ['mesh.textured', 'mesh.from-image', 'mesh.from-views', 'mesh.views3d'];
+  const chains: [string, any[], any][] = [];
+  for (const pp of listPresets() as any[]) {
+    for (const [name, p] of Object.entries<any>(pp.presets)) {
+      if (meshTools.includes(p.tool)) chains.push([`${pp.project}/${name}`, [{ tool: p.tool, params: p.params }], p]);
+      if (p.params?.steps) chains.push([`${pp.project}/${name}`, p.params.steps, p]);
+    }
+    for (const [kind, k] of Object.entries<any>(pp.kinds ?? {})) {
+      for (const [slot, s] of Object.entries<any>(k.slots ?? {})) {
+        for (const make of [s.make, s.makeRobot].filter(Boolean)) {
+          const steps = make.steps ?? [make];
+          chains.push([`${pp.project} kinds.${kind}.${slot}`, steps, make]);
+        }
+      }
+    }
+  }
+  let found = 0;
+  for (const [where, steps] of chains) {
+    steps.forEach((s: any, i: number) => {
+      if (!meshTools.includes(s.tool)) return;
+      found++;
+      if (s.params?.allowSingleView) return;
+      assert.ok(!['mesh.textured', 'mesh.from-image'].includes(s.tool), `${where}: ${s.tool} makes 3D from one image; use mesh.views3d`);
+      if (s.tool === 'mesh.views3d') {
+        const ref = String(s.inputs?.image ?? '');
+        const viaSheetStep = /^\$(prev|step\d+):sheet$/.test(ref) && steps.some((x: any, j: number) => j < i && x.tool === 'image.viewsheet');
+        assert.ok(viaSheetStep || /^slot:\.\/sheet$/.test(ref), `${where}: mesh.views3d must read a view sheet, got ${ref}`);
+      }
+    });
+  }
+  assert.ok(found >= 5, `found only ${found} mesh steps`);
 });
 
 test('presets never feed a background-removal step\'s mask (its first output) onward: refs must name :cutout', async () => {

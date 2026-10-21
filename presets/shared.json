@@ -5,230 +5,184 @@
     "motions": {
       "tool": "blender.character",
       "description": "Put Quaternius CC0 clips on a rigged character. params.clips is a list of library clip names (Walk_Loop, or ual2/Melee_Hook when the name is in both packs). Search them with hawkesgen_library (tags: locomotion, melee, hit, death, idle). inputs.files[0] is the character (GLB/FBX, asset:<id> or slot:./rig). params.entity is project/slug: each clip is filed on that character as animation/<name>. params.preview true also renders a video per clip. The library is the free Standard editions, not the paid full packs.",
-      "params": { "fps": 30 }
+      "params": {
+        "fps": 30
+      }
     },
     "character3d": {
       "tool": "asset.make",
-      "description": "One recipe for a humanoid 3D character from a concept image (inputs.files[0]): A-pose (Qwen 2511) â†’ cutout â†’ side/back views â†’ mesh.textured best-of-4 at 100k faces (Claude judges 4-angle Blender stills against the concept) â†’ clean+bake â†’ mesh.rig. Saves: apose, cutout, angles, mesh, rig, turntable. For robots, use kind character3d with data.form=robot after the mesh exists. Clips and exports are separate slots (animation/*, shared/motions, export/fbx). Docs: docs/3d-characters.md.",
+      "description": "THE recipe for a 3D character from a concept image (inputs.files[0]), always from four views, never one: A-pose front view -> cutout -> image.viewsheet (true back, left and right views of the same character, flat even light on grey, each cut out; Claude checks all four are the same character and a bad view is made again before any 3D GPU time is spent; the sheet is saved as a library asset) -> mesh.views3d (Pixal3D multi-view + TRELLIS.2, PBR GLB; best of 3) -> Blender: report, fix, symmetrize, retopo to ~8k quads, bake from the raw mesh, report, LODs, budget, web GLB, collision -> mesh.rig. Saves: apose, cutout, sheet, raw, mesh (GLB + LODs), rig. For robots and creatures with their limbs spread (Spider Bot, Yo Bot) set form creature on the image.viewsheet step (the kind character3d does it from data.form). Heavy: five models of about 9 GB (workflows/mesh-views3d). The GPU chain is untested end to end. Docs: docs/3d-characters.md.",
       "params": {
-        "candidates": 4,
+        "candidates": 3,
         "pickAt": 4,
-        "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, no shards or spikes, texture reads the character, usable as a game mesh.",
-        "refs": [0],
+        "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, symmetric, no shards, spikes or holes, clean texture on front, back and sides.",
+        "refs": [
+          0
+        ],
         "steps": [
           {
             "tool": "image.edit",
             "params": {
-              "prompt": "same character, A-pose, arms 45 degrees down, legs apart, front view, plain flat light grey background (no checkerboard, no transparency grid, no shadow). Keep the exact same design, colors and proportions. Full body from head to feet, facing the viewer, nothing else in the picture.",
+              "prompt": "same character, A-pose (or a neutral standing pose for a creature), arms about 45 degrees down, legs apart, front view, plain flat light grey background (no checkerboard, no transparency grid, no shadow), flat even lighting. Keep the exact same design, colors and proportions. Full body from head to feet, facing the viewer, nothing else in the picture.",
               "width": 1024,
               "height": 1024
             },
-            "inputs": { "images": ["$input:0"] },
+            "inputs": {
+              "images": [
+                "$input:0"
+              ]
+            },
             "save": "apose"
           },
           {
             "tool": "image.remove-background",
-            "inputs": { "image": "$prev" },
+            "inputs": {
+              "image": "$prev"
+            },
             "save": "cutout"
           },
           {
-            "tool": "image.angles",
-            "inputs": { "image": "$prev:cutout" },
-            "save": "angles"
+            "tool": "image.viewsheet",
+            "params": {
+              "form": "humanoid",
+              "cell": 1024,
+              "retries": 2
+            },
+            "inputs": {
+              "image": "$prev:cutout"
+            },
+            "save": "sheet"
           },
           {
-            "tool": "mesh.textured",
-            "params": { "faces": 100000 },
-            "inputs": { "image": "$step2:cutout" },
+            "tool": "mesh.views3d",
+            "inputs": {
+              "image": "$prev:sheet"
+            },
             "save": "raw"
           },
           {
             "tool": "blender.character",
             "params": {
               "ops": [
-                { "op": "import", "file": 0, "clips": false },
-                { "op": "clean", "triangles": 25000 },
-                { "op": "bake", "size": 2048 },
-                { "op": "export", "format": "glb", "title": "mesh" }
+                {
+                  "op": "import",
+                  "file": 0,
+                  "clips": false
+                },
+                {
+                  "op": "report"
+                },
+                {
+                  "op": "fix",
+                  "shards": 0.02,
+                  "holes": 24
+                },
+                {
+                  "op": "symmetrize"
+                },
+                {
+                  "op": "retopo",
+                  "faces": 8000
+                },
+                {
+                  "op": "bake",
+                  "size": 2048
+                },
+                {
+                  "op": "report"
+                },
+                {
+                  "op": "lod",
+                  "levels": [
+                    0.5,
+                    0.25,
+                    0.1
+                  ]
+                },
+                {
+                  "op": "budget",
+                  "target": "desktop"
+                },
+                {
+                  "op": "export",
+                  "format": "glb",
+                  "title": "mesh"
+                },
+                {
+                  "op": "export",
+                  "format": "glb",
+                  "name": "character_web",
+                  "title": "web",
+                  "compress": "draco",
+                  "textures": "webp"
+                },
+                {
+                  "op": "collision",
+                  "mode": "hulls",
+                  "parts": 5
+                }
               ]
             },
-            "inputs": { "files": ["$prev"] },
+            "inputs": {
+              "files": [
+                "$step4:mesh"
+              ]
+            },
             "save": "mesh"
           },
           {
             "tool": "mesh.rig",
-            "params": { "height": 1.8, "kind": "humanoid", "keepTextures": true },
-            "inputs": { "mesh": "$prev" },
+            "params": {
+              "height": 1.8,
+              "kind": "humanoid",
+              "keepTextures": true
+            },
+            "inputs": {
+              "mesh": "$prev:mesh"
+            },
             "save": "rig"
           }
         ]
       }
     },
     "character3d-mv": {
-      "tool": "asset.make",
-      "description": "Cleaner humanoid 3D character from a concept image (inputs.files[0]), built to avoid messy generated meshes: A-pose â†’ cutout â†’ a back view made from the same cutout â†’ mesh.textured best-of-4 â†’ Blender: report, fix (floating shards, holes, doubles), symmetrize, retopo to ~8k quads (the raw mesh stays the bake source), bake, then project the front and back pictures onto the mesh so both sides are painted from real views, quality report, LODs â†’ mesh.rig. Saves: apose, cutout, back, raw, mesh (GLB + LODs + color texture), rig. The GPU chain is untested end to end; the Blender ops are tested locally. Docs: docs/3d-characters.md.",
-      "params": {
-        "candidates": 4,
-        "pickAt": 5,
-        "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, symmetric, no shards, spikes or holes, texture reads the character on the front and the back.",
-        "refs": [0],
-        "steps": [
-          {
-            "tool": "image.edit",
-            "params": {
-              "prompt": "same character, A-pose, arms 45 degrees down, legs apart, front view, plain flat light grey background (no checkerboard, no transparency grid, no shadow). Keep the exact same design, colors and proportions. Full body from head to feet, facing the viewer, nothing else in the picture.",
-              "width": 1024,
-              "height": 1024
-            },
-            "inputs": { "images": ["$input:0"] },
-            "save": "apose"
-          },
-          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "cutout" },
-          {
-            "tool": "image.edit",
-            "params": {
-              "prompt": "the same character seen from directly behind, same A-pose, same design, colors and proportions. Full body from head to feet, plain flat light grey background (no checkerboard, no transparency grid, no shadow), nothing else in the picture.",
-              "width": 1024,
-              "height": 1024
-            },
-            "inputs": { "images": ["$step2:cutout"] },
-            "save": "backview"
-          },
-          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "back" },
-          {
-            "tool": "mesh.textured",
-            "params": { "faces": 100000 },
-            "inputs": { "image": "$step2:cutout" },
-            "save": "raw"
-          },
-          {
-            "tool": "blender.character",
-            "params": {
-              "ops": [
-                { "op": "import", "file": 0, "clips": false },
-                { "op": "report" },
-                { "op": "fix", "shards": 0.02, "holes": 24 },
-                { "op": "symmetrize" },
-                { "op": "retopo", "faces": 8000 },
-                { "op": "bake", "size": 2048 },
-                {
-                  "op": "project",
-                  "size": 2048,
-                  "views": [
-                    { "file": 1, "view": "front" },
-                    { "file": 2, "view": "back" }
-                  ]
-                },
-                { "op": "report" },
-                { "op": "lod", "levels": [0.5, 0.25, 0.1] },
-                { "op": "budget", "target": "desktop" },
-                { "op": "export", "format": "glb", "title": "mesh" },
-                { "op": "export", "format": "glb", "name": "character_web", "title": "web", "compress": "draco", "textures": "webp" },
-                { "op": "collision", "mode": "hulls", "parts": 5 }
-              ]
-            },
-            "inputs": { "files": ["$step5", "$step2:cutout", "$step4:cutout"] },
-            "save": "mesh"
-          },
-          {
-            "tool": "mesh.rig",
-            "params": { "height": 1.8, "kind": "humanoid", "keepTextures": true },
-            "inputs": { "mesh": "$prev:mesh" },
-            "save": "rig"
-          }
-        ]
-      }
+      "alias": "character3d",
+      "description": "Old name of shared/character3d: a humanoid from four views (the front+back two-view recipe with a single-image mesh was retired)."
     },
     "character3d-4v": {
+      "alias": "character3d",
+      "description": "Same as shared/character3d (the four-view recipe is now the default)."
+    },
+    "prop3d": {
       "tool": "asset.make",
-      "description": "Humanoid 3D character from a concept image (inputs.files[0]) using all four sides: A-pose â†’ cutout â†’ back, left and right views made from the same cutout â†’ a front|back|left|right sheet â†’ mesh.views3d (Pixal3D multi-view + TRELLIS.2, PBR GLB) â†’ Blender: report, fix, symmetrize, retopo to ~8k quads, bake from the raw mesh, report, LODs â†’ mesh.rig. Every side is seen by the 3D model, so no side is guessed. Saves: apose, cutout, back, left, right, sheet, raw, mesh (GLB + LODs), rig. Heavy: five models of about 9 GB (see workflows/mesh-views3d). The GPU chain is untested end to end. Docs: docs/art-playbook.md.",
+      "description": "A textured GLB prop from a reference image (inputs.files[0], the object seen straight from the front on a plain background), always from four views, never one: cutout -> image.viewsheet (form prop: back, left and right views of the same object, checked for consistency) -> mesh.views3d. Convert/compress the GLB before shipping. A prop where one view is truly enough can use mesh.textured with allowSingleView true.",
       "params": {
-        "candidates": 3,
-        "pickAt": 10,
-        "pick": "Matches the concept from every angle: correct proportions and silhouette, on-model with the reference, symmetric, no shards, spikes or holes, clean texture on front, back and sides.",
-        "refs": [0],
         "steps": [
           {
-            "tool": "image.edit",
-            "params": {
-              "prompt": "same character, A-pose, arms 45 degrees down, legs apart, front view, plain flat light grey background (no checkerboard, no transparency grid, no shadow). Keep the exact same design, colors and proportions. Full body from head to feet, facing the viewer, nothing else in the picture.",
-              "width": 1024,
-              "height": 1024
+            "tool": "image.remove-background",
+            "inputs": {
+              "image": "$input:0"
             },
-            "inputs": { "images": ["$input:0"] },
-            "save": "apose"
+            "save": "cutout"
           },
-          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "cutout" },
           {
-            "tool": "image.edit",
+            "tool": "image.viewsheet",
             "params": {
-              "prompt": "the same character seen from directly behind, same A-pose, same design, colors and proportions, same size and position in the frame. Full body from head to feet, plain flat light grey background (no checkerboard, no transparency grid, no shadow), nothing else in the picture.",
-              "width": 1024,
-              "height": 1024
+              "form": "prop",
+              "cell": 1024,
+              "retries": 2
             },
-            "inputs": { "images": ["$step2:cutout"] },
-            "save": "backview"
-          },
-          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "back" },
-          {
-            "tool": "image.edit",
-            "params": {
-              "prompt": "the same character seen from the left side, a true 90 degree side profile, same A-pose, same design, colors and proportions, same size and position in the frame. Full body from head to feet, plain flat light grey background (no checkerboard, no transparency grid, no shadow), nothing else in the picture.",
-              "width": 1024,
-              "height": 1024
+            "inputs": {
+              "image": "$prev:cutout"
             },
-            "inputs": { "images": ["$step2:cutout"] },
-            "save": "leftview"
-          },
-          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "left" },
-          {
-            "tool": "image.edit",
-            "params": {
-              "prompt": "the same character seen from the right side, a true 90 degree side profile, same A-pose, same design, colors and proportions, same size and position in the frame. Full body from head to feet, plain flat light grey background (no checkerboard, no transparency grid, no shadow), nothing else in the picture.",
-              "width": 1024,
-              "height": 1024
-            },
-            "inputs": { "images": ["$step2:cutout"] },
-            "save": "rightview"
-          },
-          { "tool": "image.remove-background", "inputs": { "image": "$prev" }, "save": "right" },
-          {
-            "tool": "image.sheet",
-            "params": { "cell": 1024 },
-            "inputs": { "views": ["$step2:cutout", "$step4:cutout", "$step6:cutout", "$step8:cutout"] },
             "save": "sheet"
           },
           {
             "tool": "mesh.views3d",
-            "inputs": { "image": "$prev" },
-            "save": "raw"
-          },
-          {
-            "tool": "blender.character",
-            "params": {
-              "ops": [
-                { "op": "import", "file": 0, "clips": false },
-                { "op": "report" },
-                { "op": "fix", "shards": 0.02, "holes": 24 },
-                { "op": "symmetrize" },
-                { "op": "retopo", "faces": 8000 },
-                { "op": "bake", "size": 2048 },
-                { "op": "report" },
-                { "op": "lod", "levels": [0.5, 0.25, 0.1] },
-                { "op": "budget", "target": "desktop" },
-                { "op": "export", "format": "glb", "title": "mesh" },
-                { "op": "export", "format": "glb", "name": "character_web", "title": "web", "compress": "draco", "textures": "webp" },
-                { "op": "collision", "mode": "hulls", "parts": 5 }
-              ]
+            "inputs": {
+              "image": "$prev:sheet"
             },
-            "inputs": { "files": ["$step10:mesh"] },
-            "save": "mesh"
-          },
-          {
-            "tool": "mesh.rig",
-            "params": { "height": 1.8, "kind": "humanoid", "keepTextures": true },
-            "inputs": { "mesh": "$prev:mesh" },
-            "save": "rig"
+            "save": "model"
           }
         ]
       }

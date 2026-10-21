@@ -5,14 +5,50 @@ preset, **`shared/character3d`**, runs the whole humanoid chain as a single `ass
 you remake one piece. Price a batch with `POST /v1/estimate` / `hawkesgen_estimate` before starting servers.
 
 ```
-concept ─image.edit─> apose ─cutout─> cutout ─image.angles─> angles
-                              └─────────────> mesh.textured (best-of-N @ 100k faces, judged from 4-angle stills)
+concept ─image.edit─> apose ─cutout─> cutout ─image.viewsheet─> sheet (front|back|left|right, checked by Claude)
+                                                    └─────────> mesh.views3d (best-of-N, judged from 4-angle stills)
                                       └─blender.character clean+bake─> mesh
                                             ├─mesh.rig─> rig (humanoid)
                                             └─split+template+clips─> rig (robot: data.form=robot)
                                                   └─animation/* / motion/* / shared/motions─> clips
                                                         └─export/fbx, export/glb, check/humanoid
 ```
+
+## Always more than one view
+
+**Gen never makes 3D from one picture.** One view makes the 3D model guess the back and the sides, and the guess is
+the lumpy, lopsided mesh nobody can use. So the way from images to 3D is **`mesh.views3d`** (Pixal3D multi-view +
+TRELLIS.2: front, back, left and right of the same character in one sheet), and it is the first tool in the tool list.
+
+- **`image.viewsheet`** makes the sheet. Give it the cut-out front view (A-pose or a neutral pose, at least 1024 px).
+  It makes the true back, left and right views of the same character (Qwen-Image-Edit 2511 through `image.edit`: flat
+  even light, plain light grey background, each view cut out), then **has Claude compare all four** (same colors, props,
+  proportions and limb count; each view really the direction it should be; the whole body in frame). A bad view is made
+  again (`retries`, 2 by default, new seed each time, the rejected take is never handed back); if it still does not match
+  the job fails with Claude's reason, **before** any 3D GPU time is spent (check costs cents). Outputs: `sheet` (front,
+  back, left, right in 1024 px cells on flat grey, a library asset you can look at), `front`, `back`, `left`, `right`.
+  Pass your own `back`/`left`/`right` (cut out) to use real art for a view. `image.sheet` lays views you already have.
+  `image.angles` is not a substitute: its angles are close-up, wide, aerial, low and 45°/90° left and right, so it has no back.
+- **`mesh.textured`, `mesh.from-image` and `mesh.from-views` are deprecated** ("one view guesses the back; use
+  `mesh.views3d`"). They stay for recipes that already exist. `mesh.textured` and `mesh.from-image` **refuse a call with
+  one image** and the error says how to get the views, unless it passes `allowSingleView: true` (props and blockouts
+  only: a barrel, a crate). `mesh.views3d` refuses a picture that is not a sheet (it must be at least 3 times wider than
+  tall). The refusal runs when the job is submitted, so an agent, a recipe or a person all meet it.
+- **Every recipe goes through the sheet:** the preset `shared/character3d` (also named `character3d-4v` and `character3d-mv`,
+  which are aliases now), the kind `character3d` (slots `sheet` then `mesh`), and the props: preset `shared/prop3d`
+  (`phorigins/prop` and `yoobaland/prop` are aliases of it) and the PH Origins `prop` kind's `model` slot (its reference is
+  a straight front view now).
+
+### Robots and creatures (Spider Bot, Yo Bot)
+
+The back and side views of a robot with spread legs are where one-view meshes fail worst. Set `data.form` to
+`robot` (or `creature`) on the entity, or `form` on `image.viewsheet`: every view prompt then adds *"keep every leg, arm and
+limb fully separated from the body and from the others, spread out so each one is completely visible and none is hidden
+behind the body or another limb; the same number of limbs as the reference, none added, merged or lost"*, and the check
+rejects a view that hides or changes a limb. Give the A-pose step a pose that already shows the limbs apart (legs
+splayed, arms out), and put what the creature is in `data.look` ("a chrome spider robot with six legs and a red eye");
+the checker reads it. If a true back will not come out for a creature (front and back look alike), pass your own `back`
+(a Blender render of the earlier mesh, or art) rather than loosening the check. `form: prop` makes views of an object with no pose.
 
 ## Making a character
 
@@ -33,11 +69,11 @@ concept ─image.edit─> apose ─cutout─> cutout ─image.angles─> angles
      "inputs": { "files": ["asset:<concept>"] } }
    ```
 
-   Or **slot by slot** (each files onto the entity): `apose` → `cutout` → `angles` → `mesh` → `rig` →
+   Or **slot by slot** (each files onto the entity): `apose` → `cutout` → `sheet` → `mesh` → `rig` →
    `animation/walk` (with `data.slots.animation/walk.source`) → `export/fbx` → `check/humanoid`.
 
-4. **Robots / creatures** (Spider Bot, Yo Bot): after `mesh` is current, set `data.form` to `"robot"` and
-   `data.template` to `spider` | `quadarm` | `biped` | `chain`, then remake `rig`. That runs split + template +
+4. **Robots / creatures** (Spider Bot, Yo Bot): set `data.form` to `"robot"` before the `sheet` (limbs stay apart and
+   visible in every view, see above). When `mesh` is current, set `data.template` to `spider` | `quadarm` | `biped` | `chain`, then remake `rig`. That runs split + template +
    procedural clips and writes a Generic FBX (not Humanoid). Skip `check/humanoid`.
 
 5. **Clips:** prefer Quaternius (`source: "motion:ual1/Walk_Loop"` on `animation/walk`, or preset `shared/motions`).
@@ -55,8 +91,8 @@ concept ─image.edit─> apose ─cutout─> cutout ─image.angles─> angles
 |---|---|---|
 | A-pose | `image.edit` (Qwen 2511) | ~$0.05–0.15 |
 | Cutout | `image.remove-background` | a few cents |
-| Angles | `image.angles` | ~$0.10–0.30 |
-| Mesh (×4 candidates @ 100k faces) | `mesh.textured` + 4-angle pick renders | ~$1–3 (never ask for few faces; clean after) |
+| View sheet (back, left, right + cutouts + Claude check) | `image.viewsheet` (3× `image.edit`) | ~$0.15–0.50, plus a few cents of Claude; a retried view adds ~$0.05 |
+| Mesh (×3 candidates) | `mesh.views3d` + 4-angle pick renders | ~$1–3 (five models of about 9 GB on first use; clean after) |
 | Clean + bake | `blender.character` | ~$0.05–0.20 |
 | Humanoid rig | `mesh.rig` | ~$0.20–0.50 (first install on a server is more) |
 | Robot rig | `blender.character` split/template/clips | ~$0.10–0.40 |
@@ -110,9 +146,9 @@ clips with their frame counts, what each op did, and the warnings.
 
 ## The ops
 
-### Cleaner generated characters (preset `shared/character3d-mv`)
+### Cleaner generated characters (preset `shared/character3d`)
 
-Generated meshes are the problem: floating shards, holes, lopsided bodies, 100k noisy triangles and a texture guessed on the back. `shared/character3d-mv` runs: A-pose → cutout → a back view made from the same cutout → `mesh.textured` best-of-4 → Blender `report`, `fix`, `symmetrize`, `retopo` (about 8k quads), `bake`, `project` (front and back pictures painted onto the mesh), `report`, `lod` → `mesh.rig`. Tested: the Blender ops, locally, on a deliberately messy mesh (`test/character-art.test.ts`); the preset's references and ops are validated. Not tested end to end: the GPU steps (the generated back view may not match the front, and `mesh.textured`'s facing direction is assumed to be -Y), and nothing measures yet whether it beats `shared/character3d` on real characters. Compare the two `report` scores and the turntables first.
+Generated meshes are the problem: floating shards, holes, lopsided bodies, 100k noisy triangles and a texture guessed on the back. `shared/character3d` runs: A-pose → cutout → `image.viewsheet` (back, left, right, checked, laid in a sheet) → `mesh.views3d` best-of-3 → Blender `report`, `fix`, `symmetrize`, `retopo` (about 8k quads), `bake` (from the raw mesh), `report`, `lod`, `budget`, a web GLB and `collision` → `mesh.rig`. Tested: the Blender ops, locally, on a deliberately messy mesh (`test/character-art.test.ts`); the preset's references, ops and "never one view" rule are validated (`test/threed.test.ts`). Not tested end to end: the GPU steps and `image.viewsheet` against real Qwen output. Compare the two `report` scores and the turntables on the first real characters.
 
 ## The ops
 
@@ -151,7 +187,7 @@ The first op is always `import`. The rest run in order, and any op can come more
 
 ### Hard-surface robots
 
-For creatures that are not humanoid (Spider Bot, Yo Bot, a chained tentacle), skip `mesh.rig` and do this after `mesh.textured`:
+For creatures that are not humanoid (Spider Bot, Yo Bot, a chained tentacle), make the sheet with `form: robot` first (above), then skip `mesh.rig` and do this after `mesh.views3d`:
 
 ```json
 {
@@ -253,8 +289,9 @@ include the shared kinds. A save drops any shared kind it didn't change.
 | `concept` | `image.generate` (or upload) | name and look: a turnaround / reference |
 | `apose` | `image.edit` (Qwen 2511) | `concept`: "same character, A-pose, arms 45 degrees down, legs apart, front view, plain background" |
 | `cutout` | `image.remove-background` | `apose` |
-| `angles` | `image.angles` | `cutout`: side/back and other views |
-| `mesh` | `asset.make`: `mesh.textured` @ **100k faces**, 4 candidates, Claude picks from **4-angle Blender stills** against the concept (`refs`), then `blender.character` clean (25k tris) + bake | `cutout` (+ concept as ref) |
+| `sheet` | `image.viewsheet`: true back, left and right of the same character, Claude's consistency check (bad views made again), laid out as front\|back\|left\|right on flat grey. `data.form` robot/creature keeps limbs apart | `cutout` (+ `data.look` for the check) |
+| `angles` | `image.angles` (optional) | `cutout`: close-up, wide, aerial, low and 45°/90° looks, for reference only |
+| `mesh` | `asset.make`: `mesh.views3d`, 3 candidates, Claude picks from **4-angle Blender stills** against the concept (`refs`), then `blender.character` clean (25k tris) + bake | `sheet` (+ concept as ref) |
 | `rig` | humanoid: `mesh.rig`; robot (`data.form=robot`): `blender.character` split/template/clips (`data.template`) | `mesh`; walk/turntable → `preview/turntable` |
 | `motion/<clip>` | `motion.from-text` | `rig` + slot `data.prompt`. Prefer Quaternius on `animation/<clip>` when a library move fits. |
 | `animation/<clip>` | `blender.character` (retarget, export, preview) | `rig` + `data.source` (`asset:`, `slot:`, or `motion:ual1/Walk_Loop`) |

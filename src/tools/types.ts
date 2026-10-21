@@ -100,5 +100,7 @@ export type Tool = {
   gpuSeconds?: (params: Record<string, any>) => number;
   /** Set for tools that come from a workflow folder (workflows/). */
   workflow?: { dir: string; source: unknown; models: ModelRef[]; tags: string[] };
+  /** Refuses a call before it is queued (throw a GenError saying what to do instead). Runs at submit, after the params are checked. */
+  guard?(call: { params: Record<string, any>; inputs: Record<string, string | string[]>; labels?: Record<string, unknown> }): void;
   run(ctx: RunContext): Promise<void>;
 };

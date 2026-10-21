@@ -139,7 +139,8 @@ export const assetMakeTool: Tool = {
       const pickJobs = await Promise.all(queued.map((j) => waitStep(i, j)));
       let winner = pickJobs[0];
       if (n > 1) {
-        const outs = pickJobs.map((j) => j.outputs?.[0]).filter(Boolean);
+        // A mesh tool may also emit previews (mesh.views3d): judge the mesh, not the first file.
+        const outs = pickJobs.map((j) => j.outputs?.find((o: any) => o.kind === 'mesh') ?? j.outputs?.[0]).filter(Boolean);
         const assets = outs.map((o) => getAsset(o.asset)).filter(Boolean) as any[];
         // What Claude looks at per candidate: the image, three frames of a video, or four angle stills of a mesh.
         const views: string[][] = [];

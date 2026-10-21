@@ -6,7 +6,7 @@ scripts and asset tooling. Copy this file next to your script.
     job = gen.run(preset="material", params={"prompt": "cracked concrete floor"})
     gen.download(job["outputs"][0]["asset"], "concrete.png")
 
-    job = gen.run("mesh.textured", inputs={"image": r"C:\\path\\to\\prop.png"}, params={"faces": 60000})
+    job = gen.run("mesh.views3d", inputs={"image": r"C:\\path\\to\\four-view-sheet.png"})  # always more than one view
 
 Inputs are local file paths (from this PC), "asset:<id>" or "blob:<sha256>".
 The service must be running (C:\\Projects\\hawkesgen\\auto-start.bat).

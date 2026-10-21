@@ -129,7 +129,7 @@ Moves ease in and out.
 
 ## mesh.rig: rig a generated character
 
-`mesh.rig` takes a mesh from `mesh.textured` (a GLB) and returns a rigged FBX, a rigged GLB, and a video of a
+`mesh.rig` takes a mesh from `mesh.views3d` (a GLB) and returns a rigged FBX, a rigged GLB, and a video of a
 standard walk. Humanoids go through **Make-It-Animatable v2** (Mixamo bone names). Other organic bodies, and a
 humanoid that model fails on when `kind` is `auto`, go through **SkinTokens**. Both install into their own Python
 venvs the first time a server runs the tool (family `rig`, not a ComfyUI node, so the fleet image stays as it is).
@@ -154,19 +154,19 @@ The geometric joint finder in `hawkes_rig.py` (mode `rig`) is what `test/rig.tes
 weights, no fingers, a turntable. The tool's classify mode uses the same shape check (two leg columns, a crotch gap,
 arms out, taller than wide) to decide `auto`.
 
-**Example** (`asset.make` from a picture of the character, then the rig):
+**Example** (`asset.make` from a front|back|left|right sheet of the character, `image.viewsheet` makes one, then the rig):
 
 ```json
 {
   "tool": "asset.make",
   "params": {
     "steps": [
-      { "tool": "mesh.textured", "inputs": { "image": "$input:0" }, "save": "model" },
+      { "tool": "mesh.views3d", "inputs": { "image": "$input:0" }, "save": "model" },
       { "tool": "mesh.rig", "inputs": { "mesh": "$prev" },
         "params": { "kind": "humanoid", "keepTextures": true, "height": 1.2 }, "save": "rigged" }
     ]
   },
-  "inputs": { "files": ["character-front.png"] }
+  "inputs": { "files": ["character-4-view-sheet.png"] }
 }
 ```
 
