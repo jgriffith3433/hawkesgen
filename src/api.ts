@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { paths, loadSettings, saveSettings, FLEET_MAX } from './config.ts';
+import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { authenticate, canProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
 import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workflows/registry.ts';
@@ -17,7 +17,7 @@ import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
 import { submit, getJob, listJobs, cancel, rerun, clearFinished, jobTimings, events, summary, queue, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
-import { motionRecord, motionsForQuery } from './motions.ts';
+import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
 import { usageSummary } from './usage.ts';
@@ -32,7 +32,7 @@ import { Retry } from './providers/comfy/retry.ts';
 import * as eleven from './providers/elevenlabs.ts';
 import * as claude from './providers/anthropic.ts';
 import { configured as xaiConfigured } from './providers/xai.ts';
-import { GenError, sha256File, mimeOf } from './util.ts';
+import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
@@ -230,9 +230,21 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     return void res.end(method === 'HEAD' ? undefined : sdk.body);
   }
 
-  // Dashboard.
+  // Dashboard and customer-facing SaaS web app.
   if (!route.startsWith('/v1/')) {
-    const rel = route === '/' ? 'index.html' : route.slice(1);
+    const publicSaas = env('HAWKESGEN_PUBLIC_SAAS') === '1';
+    let rel: string;
+    if (route === '/home' || route === '/home/' || route === '/public' || route === '/public/') {
+      rel = 'public/index.html';
+    } else if (route === '/app' || route === '/app/') {
+      rel = 'public/app.html';
+    } else if (route === '/admin' || route === '/admin/') {
+      rel = 'index.html';
+    } else if (route === '/') {
+      rel = publicSaas ? 'public/index.html' : 'index.html';
+    } else {
+      rel = route.slice(1);
+    }
     const file = path.join(paths.dashboard, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (file.startsWith(paths.dashboard) && fs.existsSync(file) && fs.statSync(file).isFile()) {
       res.writeHead(200, { 'Content-Type': STATIC[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
@@ -271,6 +283,34 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === '/v1/billing/packs' && method === 'GET') {
       return send(res, 200, { packs: listCreditPacks() });
+    }
+    if (route === '/v1/motions' && method === 'GET') {
+      const queryText = q('q') ?? '';
+      const packFilter = q('pack') ?? '';
+      const tagFilter = q('tag') ?? '';
+      const limit = Math.max(1, Math.min(200, Number(q('limit')) || 120));
+      const offset = Math.max(0, Number(q('offset')) || 0);
+      const searched = searchMotions(queryText, { limit: 200, offset: 0 });
+      const filtered = searched.items.filter((it) => {
+        if (packFilter && it.meta?.pack !== packFilter) return false;
+        if (tagFilter && !it.tags?.includes(tagFilter)) return false;
+        return true;
+      });
+      const clips = allClips().filter((c) => {
+        if (packFilter && c.pack !== packFilter) return false;
+        if (tagFilter && !c.tags.includes(tagFilter)) return false;
+        if (queryText) {
+          const words = queryText.toLowerCase().split(/\s+/).filter(Boolean);
+          const hay = `${c.pack} ${c.packTitle} ${c.name} ${c.tags.join(' ')}`.toLowerCase();
+          if (!words.every((w) => hay.includes(w))) return false;
+        }
+        return true;
+      });
+      return send(res, 200, {
+        items: filtered.slice(offset, offset + limit),
+        clips: clips.slice(offset, offset + limit),
+        total: filtered.length,
+      });
     }
     if (route === '/v1/billing/webhook' && method === 'POST') {
       const rawBody = await readBody(req);
@@ -503,6 +543,40 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
 
     // --------------------------------------------------------------- assets
+    if ((route === '/v1/assets' || route === '/v1/library') && method === 'POST') {
+      const targetProject = client.role === 'user' ? client.projects[0] : (q('project') || 'sandbox');
+      if (!canProject(client, targetProject)) throw new GenError('No access to that project', { status: 403 });
+      const ctype = String(req.headers['content-type'] ?? '').toLowerCase();
+      let buf: Buffer;
+      let filename = String(req.headers['x-filename'] ?? q('filename') ?? '').trim();
+      let title = q('title') ?? '';
+      if (ctype.includes('application/json')) {
+        const b = await readJson(req);
+        filename = String(b.filename ?? filename ?? '').trim();
+        title = String(b.title ?? title ?? filename).trim();
+        const rawData = String(b.data ?? '');
+        if (!rawData) throw new GenError('Send { data } (base64 or data URL) or raw file bytes');
+        const base64Part = rawData.includes(',') ? rawData.slice(rawData.indexOf(',') + 1) : rawData;
+        buf = Buffer.from(base64Part, 'base64');
+      } else {
+        buf = await readBody(req, 2 * 1024 * 1024 * 1024);
+        if (!title) title = filename;
+      }
+      if (!buf.length) throw new GenError('Send the file as the request body');
+      const rawExt = path.extname(filename).toLowerCase().replace(/[^.a-z0-9]/g, '');
+      const ext = rawExt || (ctype && !ctype.includes('json') && !ctype.includes('octet-stream') ? extOf(ctype.split(';')[0].trim()) : '.png');
+      const sha = putBlob(buf, ext);
+      const asset = putAsset({
+        data: buf,
+        ext,
+        client: client.id,
+        project: targetProject,
+        tool: 'file.import',
+        recipe: { tool: 'file.import', version: 1, params: { title: title || null }, inputs: { file: sha } },
+        title: (title || filename || 'Uploaded file').slice(0, 200),
+      });
+      return send(res, 200, { ...asset, asset, blob: `blob:${sha}` });
+    }
     if ((route === '/v1/assets' || route === '/v1/library') && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
       const limit = Number(q('limit')) || 60;
@@ -805,7 +879,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
 
     // -------------------------------------------------------------- presets
-    if (route === '/v1/presets' && method === 'GET') return send(res, 200, { projects: listPresets().filter((p) => canProject(client, p.project)) });
+    if (route === '/v1/presets' && method === 'GET') return send(res, 200, { projects: listPresets().filter((p) => canProject(client, p.project) || p.project === 'shared' || client.role === 'user') });
     m = /^\/v1\/presets\/([\w.-]+)$/.exec(route);
     if (m) {
       if (!canProject(client, m[1])) throw new GenError('No access to that project', { status: 403 });
