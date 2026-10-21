@@ -29,6 +29,7 @@ import time
 
 import bpy
 import mathutils
+from mathutils.bvhtree import BVHTree
 from bpy_extras.object_utils import world_to_camera_view
 
 try:
@@ -454,6 +455,7 @@ def add_character(i, c, start, frames, fps):
     segs = c.get("timeline") or None
     seg_actions, seg_stance = [], []
     action = None
+    raw_stance = None
     if arm:
         if segs:
             cache = {}
@@ -473,6 +475,8 @@ def add_character(i, c, start, frames, fps):
             action = get_action(i, arm, c.get("animation"), c.get("animationFile"), got)
             if action:
                 got["animation"] = action.name
+                if float(c.get("travel", 0) or 0) > 1e-4 and c.get("speed") is None:
+                    raw_stance = stance_speed(arm, action)
                 got["animationFrames"] = round(play(arm, action, start, frames, c.get("loop", True), float(c.get("speed", 1))), 1)
         if not action and arm.animation_data:
             # No animation asked for: the rest pose, not whatever clip the importer left on.
@@ -527,6 +531,21 @@ def add_character(i, c, start, frames, fps):
         # Walking forward with an in-place cycle: `travel` meters per second along its facing.
         travel = float(c.get("travel", 0) or 0)
         if travel:
+            if arm and action and c.get("speed") is None:
+                if raw_stance:
+                    want = travel / (raw_stance * root.scale.x * fps)
+                    spd = min(2.5, max(0.35, want))
+                    got["animationFrames"] = round(play(arm, action, start, frames, c.get("loop", True), spd), 1)
+                    stance_ms = raw_stance * root.scale.x * fps * spd
+                    rep = {"animation": action.name, "from": 0, "to": frames - 1, "ground": round(travel, 3), "playback": round(spd, 3), "footSpeed": round(stance_ms, 3), "slide": round(stance_ms / travel, 3)}
+                    if spd != want:
+                        rep["note"] = f"clamped: the {action.name} stride wants {want:.2f}x"
+                        warn(f"characters[{i}] {rep['note']}")
+                    got["segments"] = [rep]
+                else:
+                    note = f"{action.name} has no measurable stride, played at 1x"
+                    got["segments"] = [{"animation": action.name, "from": 0, "to": frames - 1, "ground": round(travel, 3), "playback": 1.0, "note": note}]
+                    warn(f"characters[{i}] {note}")
             fwd = rot @ mathutils.Vector((0, -1, 0))
             new_keys("LINEAR")
             root.keyframe_insert("location", frame=start)
@@ -537,7 +556,8 @@ def add_character(i, c, start, frames, fps):
             new_keys("BEZIER")
     info["characters"].append(got)
     say("character", json.dumps(got))
-    return {"root": root, "mover": mover, "arm": arm, "objs": objs, "rot": rot, "pos": pos, "height": got["height"], "index": i}
+    body_meshes = [o for o in objs if o.type == "MESH" and not o.hide_render]
+    return {"root": root, "mover": mover, "arm": arm, "objs": objs, "body_meshes": body_meshes, "segs": segs, "spec": c, "attached": [], "rot": rot, "pos": pos, "height": got["height"], "index": i}
 
 
 SHOT_START = [1]
@@ -630,6 +650,130 @@ def grip_point(state, grip):
     return mathutils.Vector(lo[k] + (hi[k] - lo[k]) * float(grip[k]) for k in range(3))
 
 
+def find_hand_fingers(arm, hand_bone_name, slot=None):
+    """Finds {finger: [bone1, bone2, bone3]} for Thumb, Index, Middle, Ring, Pinky on the given hand."""
+    hb = arm.data.bones.get(hand_bone_name) if arm else None
+    if not hb:
+        return {}
+    desc = []
+    stack = list(hb.children)
+    while stack:
+        b = stack.pop(0)
+        desc.append(b)
+        stack.extend(b.children)
+    if not desc:
+        side = "l" if (slot == "l_wrist" or "left" in bone_key(hand_bone_name)) else "r"
+        for b in arm.data.bones:
+            w = bone_words(b.name)
+            if side in w or any(x.startswith("left" if side == "l" else "right") for x in w):
+                desc.append(b)
+    groups = {f: [] for f in ("Thumb", "Index", "Middle", "Ring", "Pinky")}
+    for b in desc:
+        bk = bone_key(b.name)
+        if any(bk.endswith(s) for s in ("4", "04", "end", "tip", "nub")):
+            continue
+        for f, match in (("Thumb", "thumb"), ("Index", "index"), ("Middle", "middle"), ("Ring", "ring"), ("Pinky", "pinky"), ("Pinky", "little")):
+            if match in bk:
+                groups[f].append(b)
+                break
+    out = {}
+    for f, blist in groups.items():
+        if not blist:
+            continue
+
+        def depth(b):
+            d, cur = 0, b.parent
+            while cur:
+                d += 1
+                cur = cur.parent
+            return d
+
+        blist.sort(key=lambda b: (depth(b), b.name))
+        out[f] = [b.name for b in blist[:3]]
+    return out
+
+
+def palm_surface_offset(arm, hand_bone_name, fingers):
+    """Computes the palm-surface offset in the hand bone's local frame (and palm normal in armature space) using
+    the Thumb1 direction relative to the hand bone axis so the prop sits on the palm surface."""
+    hb = arm.data.bones.get(hand_bone_name) if arm else None
+    if not hb:
+        return mathutils.Vector((0, 0, 0)), None
+    h_vec = hb.tail_local - hb.head_local
+    h_len = max(0.05, h_vec.length)
+    h_axis = h_vec.normalized() if h_vec.length > 1e-6 else mathutils.Vector((0, 1, 0))
+    thumb1 = (fingers.get("Thumb") or [None])[0]
+    palm_dir = None
+    if thumb1 and thumb1 in arm.data.bones:
+        tb = arm.data.bones[thumb1]
+        t_vec = tb.tail_local - hb.head_local
+        t_perp = t_vec - h_axis * t_vec.dot(h_axis)
+        idx1 = (fingers.get("Index") or [None])[0]
+        pnk1 = (fingers.get("Pinky") or [None])[0]
+        if idx1 and pnk1 and idx1 in arm.data.bones and pnk1 in arm.data.bones:
+            across_k = arm.data.bones[idx1].head_local - arm.data.bones[pnk1].head_local
+            n_palm = h_axis.cross(across_k)
+            if n_palm.length > 1e-6:
+                n_palm.normalize()
+                if t_perp.length > 1e-6 and n_palm.dot(t_perp) < 0:
+                    n_palm = -n_palm
+                palm_dir = (n_palm * 0.8 + t_perp.normalized() * 0.2).normalized() if t_perp.length > 1e-6 else n_palm
+        if palm_dir is None and t_perp.length > 1e-6:
+            palm_dir = t_perp.normalized()
+    if palm_dir is None:
+        return mathutils.Vector((0, 0, 0)), None
+    local_palm = hb.matrix_local.to_3x3().inverted() @ palm_dir
+    if local_palm.length <= 1e-6:
+        return mathutils.Vector((0, 0, 0)), palm_dir
+    return local_palm.normalized() * min(0.015, 0.18 * h_len), palm_dir
+
+
+def curl_grip_fingers(arm, fingers, palm_dir, ch_idx, att_idx):
+    """Curls finger bones (Index1..3, Middle1..3, Ring1..3, Pinky1..3, Thumb1..2) around the grip."""
+    curled = []
+    targets = []
+    for fname in ("Index", "Middle", "Ring", "Pinky"):
+        for bname in (fingers.get(fname) or [])[:3]:
+            targets.append((bname, math.radians(55)))
+    for bname in (fingers.get("Thumb") or [])[:2]:
+        targets.append((bname, math.radians(38)))
+    if not targets:
+        return curled
+    for bname, angle in targets:
+        if bname not in arm.data.bones or bname not in arm.pose.bones:
+            continue
+        fb = arm.data.bones[bname]
+        fpb = arm.pose.bones[bname]
+        local_axis = mathutils.Vector((1, 0, 0))
+        if palm_dir is not None:
+            by = fb.matrix_local.to_3x3() @ mathutils.Vector((0, 1, 0))
+            c_world = by.cross(palm_dir)
+            if c_world.length > 1e-6:
+                local_axis = (fb.matrix_local.to_3x3().inverted() @ c_world).normalized()
+        q_curl = mathutils.Quaternion(local_axis, angle)
+        fpb.matrix_basis = fpb.matrix_basis @ q_curl.to_matrix().to_4x4()
+        curled.append(bname)
+    if curled and arm.animation_data and arm.animation_data.nla_tracks:
+        ad = arm.animation_data
+        saved_act = ad.action
+        act = bpy.data.actions.new(f"hb_grip_curl_{ch_idx}_{att_idx}")
+        use_action(ad, act)
+        f0 = SHOT_START[0]
+        for bname in curled:
+            fpb = arm.pose.bones[bname]
+            prop_path = "rotation_quaternion" if fpb.rotation_mode == "QUATERNION" else "rotation_euler"
+            fpb.keyframe_insert(prop_path, frame=f0)
+        use_action(ad, saved_act)
+        tr = ad.nla_tracks.new()
+        tr.name = act.name
+        st = tr.strips.new(act.name, int(f0), act)
+        if hasattr(st, "action_slot") and act.slots and st.action_slot is None:
+            st.action_slot = act.slots[0]
+        st.blend_type = "REPLACE"
+        st.extrapolation = "HOLD"
+    return curled
+
+
 def attach_props(ch, attachments):
     """Puts props in a character's hands (or on its head, back...): the prop follows the bone through the whole shot.
     The grip point of the prop sits on the bone; `offset` (meters) and `rotation` (degrees) are in the bone's frame."""
@@ -653,11 +797,15 @@ def attach_props(ch, attachments):
             state["root"].scale = (float(a["size"]) / max(hi - lo),) * 3 if a.get("size") else (float(a["scale"]),) * 3
             bpy.context.view_layer.update()
         G = grip_point(state, a.get("grip") or [0.5, 0.5, 0.5])
+        is_hand = slot in ("r_wrist", "l_wrist") or "hand" in bone_key(bone) or "wrist" in bone_key(bone)
+        fingers = find_hand_fingers(arm, bone, slot) if is_hand else {}
+        palm_off, palm_dir = palm_surface_offset(arm, bone, fingers) if is_hand else (mathutils.Vector((0, 0, 0)), None)
+        curled = curl_grip_fingers(arm, fingers, palm_dir, ch["index"], k) if (is_hand and a.get("gripCurl", True) is not False and fingers) else []
         holder = bone_holder(arm, bone, f"hb_hold_{ch['index']}_{k}", ht)
         orient = bpy.data.objects.new(f"hb_orient_{ch['index']}_{k}", None)
         scene.collection.objects.link(orient)
         orient.parent = holder
-        orient.location = mathutils.Vector((list(a.get("offset") or [0, 0, 0]) + [0, 0, 0])[:3])
+        orient.location = mathutils.Vector((list(a.get("offset") or [0, 0, 0]) + [0, 0, 0])[:3]) + palm_off
         orient.rotation_euler = [math.radians(float(x)) for x in (list(a.get("rotation") or [0, 0, 0]) + [0, 0, 0])[:3]]
         state["root"].parent = orient
         state["root"].matrix_parent_inverse = mathutils.Matrix.Identity(4)
@@ -665,7 +813,13 @@ def attach_props(ch, attachments):
         state["orient"] = orient
         state["holder"] = holder
         ch["objs"] = list(ch["objs"]) + list(state["objs"])
-        info["characters"][ch["index"]].setdefault("attachments", []).append({"prop": a.get("prop"), "bone": bone, "headTail": ht})
+        ch["attached"].append({"state": state, "bone": bone, "slot": slot, "fingers": fingers, "spec": a})
+        att_info = {"prop": a.get("prop"), "bone": bone, "headTail": ht}
+        if palm_off.length > 1e-6:
+            att_info["palmOffset"] = [round(x, 4) for x in palm_off]
+        if curled:
+            att_info["curledFingers"] = curled
+        info["characters"][ch["index"]].setdefault("attachments", []).append(att_info)
         say("attached", json.dumps({"character": ch["index"], "bone": bone, "prop": a.get("prop", a.get("file"))}))
 
 
@@ -1167,6 +1321,264 @@ def add_camera(cs, chars, start, frames, fps):
     return cam
 
 
+def look_target_empty(spec, name, ch, head_level=True):
+    """Creates an Empty in the scene for head/spine gaze (`lookAt`) or weapon aiming (`aimAt`)."""
+    if isinstance(spec, str) and spec.lower() == "camera":
+        t = bpy.data.objects.new(name, None)
+        scene.collection.objects.link(t)
+        if scene.camera:
+            cl = t.constraints.new("COPY_LOCATION")
+            cl.target = scene.camera
+        else:
+            t.location = (0, -4, (ch.get("height") or 1.7) * 0.9)
+        return t
+    if (isinstance(spec, int) and not isinstance(spec, bool)) or (isinstance(spec, dict) and spec.get("character") is not None):
+        ci = spec if isinstance(spec, int) else int(spec["character"])
+        if 0 <= ci < len(CHARS):
+            other = CHARS[ci]
+            o_arm = other.get("arm")
+            if o_arm:
+                o_bones = find_bones(o_arm)
+                bname = (o_bones.get("head") if head_level else None) or hips_bone(o_arm)
+                if bname:
+                    return bone_holder(o_arm, bname, name, 0.5 if bname == o_bones.get("head") else 0.0)
+            t = bpy.data.objects.new(name, None)
+            scene.collection.objects.link(t)
+            carrier = other.get("mover") or other["root"]
+            t.parent = carrier
+            t.location = (0, 0, (other.get("height") or 1.7) * (0.9 if head_level else 0.65))
+            return t
+    pt = list(spec.get("position") if isinstance(spec, dict) else (spec if isinstance(spec, (list, tuple)) else [0, 0, 1]))
+    if len(pt) == 2:
+        pt = [pt[0], pt[1], ch["pos"].z + (ch.get("height") or 1.7) * (0.9 if head_level else 0.75)]
+    else:
+        pt = (pt + [0, 0, 1])[:3]
+    t = bpy.data.objects.new(name, None)
+    scene.collection.objects.link(t)
+    t.location = mathutils.Vector((float(pt[0]), float(pt[1]), float(pt[2])))
+    return t
+
+
+def bone_forward_track_axis(arm, bone_name):
+    """Finds the local non-length axis (X, -X, Z, -Z) of a head/spine bone that faces forward at rest."""
+    bones = find_bones(arm)
+    fwd_local = mathutils.Vector((0, -1, 0))
+    l_sh, r_sh = bones.get("l_shoulder"), bones.get("r_shoulder")
+    if l_sh and r_sh and l_sh in arm.data.bones and r_sh in arm.data.bones:
+        across = arm.data.bones[l_sh].head_local - arm.data.bones[r_sh].head_local
+        f = across.cross(mathutils.Vector((0, 0, 1)))
+        if f.length > 1e-6:
+            fwd_local = f.normalized()
+    b = arm.data.bones.get(bone_name)
+    if not b:
+        return "TRACK_Z"
+    mat3 = b.matrix_local.to_3x3()
+    candidates = (
+        ("TRACK_X", mathutils.Vector((1, 0, 0))),
+        ("TRACK_NEGATIVE_X", mathutils.Vector((-1, 0, 0))),
+        ("TRACK_Z", mathutils.Vector((0, 0, 1))),
+        ("TRACK_NEGATIVE_Z", mathutils.Vector((0, 0, -1))),
+    )
+    return max(candidates, key=lambda item: (mat3 @ item[1]).dot(fwd_local))[0]
+
+
+def setup_gaze_and_aim(chars, start, frames, fps):
+    """Adds DAMPED_TRACK constraints on Head (0.65) and Neck/Spine2 (0.3) for lookAt, and on hand/forearm bones for aimAt."""
+    for ch in chars:
+        arm = ch.get("arm")
+        if not arm:
+            continue
+        c = ch.get("spec") or {}
+        segs = ch.get("segs") or c.get("beats") or []
+        bones = find_bones(arm)
+        pb = arm.pose.bones
+        head_bone = bones.get("head")
+        neck_spine = bones.get("neck") or next((b.name for b in arm.data.bones if bone_key(b.name) in ("spine2", "upperchest", "chest", "spine1", "spine")), None)
+
+        # Collect lookAt targets from c.lookAt or beats/segments
+        look_specs = []
+        if c.get("lookAt") is not None:
+            look_specs.append((c["lookAt"], None))
+        for g in segs:
+            if isinstance(g, dict) and g.get("lookAt") is not None:
+                look_specs.append((g["lookAt"], g))
+        if look_specs and (head_bone or neck_spine):
+            spec_val = look_specs[-1][0]
+            tgt = look_target_empty(spec_val, f"hb_look_{ch['index']}", ch, head_level=True)
+            cons = []
+            if head_bone and head_bone in pb:
+                con_h = pb[head_bone].constraints.new("DAMPED_TRACK")
+                con_h.name = "hb_look_head"
+                con_h.target = tgt
+                con_h.track_axis = bone_forward_track_axis(arm, head_bone)
+                con_h.influence = 0.65
+                cons.append((pb[head_bone], con_h, 0.65))
+            if neck_spine and neck_spine in pb and neck_spine != head_bone:
+                con_s = pb[neck_spine].constraints.new("DAMPED_TRACK")
+                con_s.name = "hb_look_spine"
+                con_s.target = tgt
+                con_s.track_axis = bone_forward_track_axis(arm, neck_spine)
+                con_s.influence = 0.3
+                cons.append((pb[neck_spine], con_s, 0.3))
+            # If lookAt only appears on some timed segments (and not set globally on the character), keyframe influence per segment
+            if c.get("lookAt") is None and ch.get("segs") and any(g.get("lookAt") is None for g in ch["segs"]):
+                for pbone, con, max_inf in cons:
+                    for g in ch["segs"]:
+                        f0 = start + int(round(g["t0"] * fps))
+                        f1 = start + int(round(g["t1"] * fps))
+                        val = max_inf if g.get("lookAt") is not None else 0.0
+                        con.influence = val
+                        pbone.keyframe_insert(f'constraints["{con.name}"].influence', frame=f0)
+                        if f1 > f0:
+                            pbone.keyframe_insert(f'constraints["{con.name}"].influence', frame=f1)
+                    if ch["segs"][-1].get("lookAt") is not None:
+                        con.influence = max_inf
+
+        # Weapon/prop aiming (aimAt on attachment, character, or beat)
+        aim_entries = []
+        for att in ch.get("attached") or []:
+            a_spec = att.get("spec") or {}
+            if a_spec.get("aimAt") is not None:
+                aim_entries.append((att["bone"], a_spec["aimAt"]))
+        char_aim = c.get("aimAt")
+        if char_aim is None:
+            for g in segs:
+                if isinstance(g, dict) and g.get("aimAt") is not None:
+                    char_aim = g["aimAt"]
+        if char_aim is not None and not aim_entries:
+            hold_bone = ch["attached"][0]["bone"] if ch.get("attached") else resolve_bone(arm, "right hand")[0]
+            aim_entries.append((hold_bone, char_aim))
+        for k, (hold_bone, aim_spec) in enumerate(aim_entries):
+            if hold_bone not in pb:
+                continue
+            aim_tgt = look_target_empty(aim_spec, f"hb_aim_{ch['index']}_{k}", ch, head_level=False)
+            pb_hand = pb[hold_bone]
+            if pb_hand.parent and any(x in bone_key(pb_hand.parent.name) for x in ("forearm", "lowerarm", "elbow", "arm")):
+                con_fa = pb_hand.parent.constraints.new("DAMPED_TRACK")
+                con_fa.name = "hb_aim_forearm"
+                con_fa.target = aim_tgt
+                con_fa.track_axis = "TRACK_Y"
+                con_fa.influence = 0.7
+            con_h = pb_hand.constraints.new("DAMPED_TRACK")
+            con_h.name = "hb_aim_hand"
+            con_h.target = aim_tgt
+            con_h.track_axis = "TRACK_Y"
+            con_h.influence = 1.0
+
+
+def declip_attached_props(chars, start, frames):
+    """Checks 3D mesh overlap with BVHTree.FromObject on sampled frames and nudges attached props out of forearm/torso intersections."""
+    sample_frames = sorted({start, start + frames // 2, start + max(0, frames - 1)})
+    for ch in chars:
+        arm = ch.get("arm")
+        if not arm or not ch.get("attached"):
+            continue
+        body_meshes = [o for o in ch.get("body_meshes") or [] if o.type == "MESH" and not o.hide_render]
+        if not body_meshes:
+            continue
+        for att in ch["attached"]:
+            state = att["state"]
+            hand_bone = att["bone"]
+            finger_set = {hand_bone} | {b for blist in (att.get("fingers") or {}).values() for b in blist}
+            prop_meshes = [o for o in state["objs"] if o.type == "MESH" and not o.hide_render]
+            if not prop_meshes:
+                continue
+            # Exclude meshes rigidly parented to the gripping hand or its fingers
+            check_meshes = [o for o in body_meshes if not (o.parent_type == "BONE" and o.parent_bone in finger_set)]
+            if not check_meshes:
+                continue
+            for _step in range(6):
+                push_world = mathutils.Vector((0, 0, 0))
+                hits = 0
+                for sf in sample_frames:
+                    scene.frame_set(sf)
+                    dg = bpy.context.evaluated_depsgraph_get()
+                    pb_h = arm.pose.bones.get(hand_bone)
+                    hand_center = (arm.matrix_world @ ((pb_h.head + pb_h.tail) / 2)) if pb_h else None
+                    hand_rad = (arm.matrix_world.to_3x3() @ (pb_h.tail - pb_h.head)).length * 1.15 if pb_h else 0.12
+                    p_trees = []
+                    for pm in prop_meshes:
+                        try:
+                            p_trees.append((pm, BVHTree.FromObject(pm, dg)))
+                        except Exception:
+                            pass
+                    for bm in check_meshes:
+                        try:
+                            b_tree = BVHTree.FromObject(bm, dg)
+                        except Exception:
+                            continue
+                        ev_b = bm.evaluated_get(dg)
+                        me_b = ev_b.to_mesh()
+                        mw_b = ev_b.matrix_world
+                        for pm, pt in p_trees:
+                            ov = pt.overlap(b_tree)
+                            for _pi, bi in ov:
+                                if bi < len(me_b.polygons):
+                                    fc = mw_b @ me_b.polygons[bi].center
+                                    # Ignore polygons inside the gripping palm/finger sphere on a single-skin mesh
+                                    if hand_center is not None and (fc - hand_center).length <= hand_rad:
+                                        continue
+                                    p_lo, p_hi = bounds([pm])
+                                    p_mid = (p_lo + p_hi) / 2
+                                    diff = p_mid - fc
+                                    if diff.length > 1e-6:
+                                        push_world += diff.normalized()
+                                        hits += 1
+                        ev_b.to_mesh_clear()
+                if not hits or push_world.length <= 1e-6:
+                    break
+                scene.frame_set(start)
+                orient = state.get("orient")
+                if orient:
+                    local_dir = (orient.matrix_world.to_3x3().inverted() @ push_world.normalized()).normalized()
+                    state["root"].location += local_dir * 0.015
+                    bpy.context.view_layer.update()
+    scene.frame_set(start)
+
+
+def jump_offset(ch, t_sec):
+    """Parabolic gravity arc z(t) = v0*t - 0.5*9.81*t^2 when a beat/segment has jumpHeight > 0."""
+    segs = ch.get("segs") or (ch.get("spec") or {}).get("beats") or []
+    t_cur = 0.0
+    for g in segs:
+        if not isinstance(g, dict):
+            continue
+        t0 = float(g.get("t0", g.get("at", t_cur)))
+        t1 = float(g.get("t1", t0 + float(g.get("seconds") or 0)))
+        t_cur = t1
+        jh = float(g.get("jumpHeight") or 0)
+        if jh > 0 and t0 - 1e-6 <= t_sec <= t1 + 1e-6:
+            dt = max(0.0, t_sec - t0)
+            v0 = math.sqrt(2.0 * 9.81 * jh)
+            return max(0.0, v0 * dt - 0.5 * 9.81 * dt * dt)
+    return 0.0
+
+
+def clamp_ground_and_gravity(chars, start, frames, fps):
+    """Clamps grounded characters per-frame so the evaluated mesh lowest point lo.z stays on the floor (z = pos.z)
+    across the shot, while allowing parabolic gravity arcs when a beat has jumpHeight > 0."""
+    if not chars:
+        return
+    new_keys("LINEAR")
+    for f in range(start, start + frames):
+        scene.frame_set(f)
+        t_sec = (f - start) / fps
+        for ch in chars:
+            ms = ch.get("body_meshes") or ch["objs"]
+            if not ms:
+                continue
+            lo, _ = bounds(ms)
+            want_z = ch["pos"].z + jump_offset(ch, t_sec)
+            dz = want_z - lo.z
+            if abs(dz) > 1e-5 or f == start or f == start + frames - 1 or jump_offset(ch, t_sec) > 0:
+                ch["root"].location.z += dz
+            ch["root"].keyframe_insert("location", index=2, frame=f)
+    for ch in chars:
+        set_interp(ch["root"], "location", "LINEAR")
+    new_keys("BEZIER")
+    scene.frame_set(start)
+
+
 def build_shot(shot, start, frames, fps):
     SHOT_START[0] = start
     chars = []
@@ -1195,6 +1607,9 @@ def build_shot(shot, start, frames, fps):
         add_vfx(i, v, start, fps)
     if shot.get("camera") is not None or not scene.camera:
         add_camera(shot.get("camera") or {}, chars, start, frames, fps)
+    setup_gaze_and_aim(chars, start, frames, fps)
+    clamp_ground_and_gravity(chars, start, frames, fps)
+    declip_attached_props(chars, start, frames)
     return chars, char_objs
 
 
@@ -1493,16 +1908,62 @@ def still_frames(spec, start, frames):
 
 def char_state(ch):
     """Where a character stands and which way it faces at the current frame (for the director gate): its mover's spot
-    when it follows beats, else the middle of its body."""
+    when it follows beats, else the middle of its body; facing from the posed shoulder/pelvis bones when rigged."""
     lo, hi = bounds(ch["objs"])
     carrier = ch.get("mover") or ch["root"]
     yaw = math.degrees(carrier.matrix_world.to_euler().z)
+    arm = ch.get("arm")
+    if arm:
+        bones = find_bones(arm)
+        M = arm.matrix_world
+        pb = arm.pose.bones
+        across = mathutils.Vector((0, 0, 0))
+        for lk, rk in (("l_shoulder", "r_shoulder"), ("l_hip", "r_hip")):
+            lb, rb = bones.get(lk), bones.get(rk)
+            if lb and rb and lb in pb and rb in pb:
+                across += (M @ pb[lb].head) - (M @ pb[rb].head)
+                break
+        fwd = across.cross(mathutils.Vector((0, 0, 1)))
+        if fwd.x * fwd.x + fwd.y * fwd.y > 1e-8:
+            yaw = math.degrees(math.atan2(fwd.x, -fwd.y))
     yaw = (yaw + 180) % 360 - 180
     if ch.get("mover"):
         x, y = carrier.matrix_world.translation.x, carrier.matrix_world.translation.y
     else:
         x, y = (lo.x + hi.x) / 2, (lo.y + hi.y) / 2
     return {"index": ch["index"], "x": round(x, 3), "y": round(y, 3), "facing": round(yaw, 1), "height": round(hi.z - lo.z, 3)}
+
+
+def char_overlaps(chars):
+    """Checks 3D mesh overlap between pairs of characters at the current frame using BVHTree.FromObject."""
+    if len(chars) < 2:
+        return []
+    dg = bpy.context.evaluated_depsgraph_get()
+    boxes = []
+    trees = []
+    for ch in chars:
+        ms = [o for o in ch.get("body_meshes") or ch["objs"] if o.type == "MESH" and not o.hide_render]
+        boxes.append(bounds(ms) if ms else None)
+        tlist = []
+        for o in ms:
+            try:
+                tlist.append(BVHTree.FromObject(o, dg))
+            except Exception:
+                pass
+        trees.append(tlist)
+    overlaps = []
+    for a in range(len(chars)):
+        for b in range(a + 1, len(chars)):
+            if not boxes[a] or not boxes[b] or not trees[a] or not trees[b]:
+                continue
+            lo_a, hi_a = boxes[a]
+            lo_b, hi_b = boxes[b]
+            if any(hi_a[k] < lo_b[k] or hi_b[k] < lo_a[k] for k in range(3)):
+                continue
+            faces = sum(len(ta.overlap(tb)) for ta in trees[a] for tb in trees[b])
+            if faces > 0:
+                overlaps.append({"a": chars[a]["index"], "b": chars[b]["index"], "faces": faces})
+    return overlaps
 
 
 # ---------------------------------------------------------------- main
@@ -1609,7 +2070,7 @@ def main():
                 scene.render.filepath = os.path.join(OUT, "stills", f"{k + 1:02d}")
                 bpy.ops.render.render(write_still=True)
             scene.frame_set(f)
-            info["stills"].append({"t": round(fr, 4), "frame": f, "file": f"stills/{k + 1:02d}.png", "characters": [char_state(c) for c in chars]})
+            info["stills"].append({"t": round(fr, 4), "frame": f, "file": f"stills/{k + 1:02d}.png", "characters": [char_state(c) for c in chars], "overlaps": char_overlaps(chars)})
 
     # The data passes: Cycles, emission only, a couple of samples, no bounces, no color management.
     if any(p in passes for p in ("depth", "normal", "mask", "layers")):

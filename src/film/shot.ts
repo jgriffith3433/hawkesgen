@@ -12,7 +12,7 @@
 import { GenError } from '../util.ts';
 
 export type Vec2 = [number, number];
-export type Look = number | number[]; // a character index, or a point [x, y] / [x, y, z]
+export type Look = number | 'camera' | number[]; // a character index, "camera", or a point [x, y] / [x, y, z]
 
 export type Beat = {
   /** Seconds from the start of the shot. Default: right after the previous beat. */
@@ -27,8 +27,12 @@ export type Beat = {
   pace?: number;
   /** Fixed playback speed of the clip. Without it, moves match the clip's stride to the ground speed. */
   speed?: number;
-  /** Turn to face a character (index) or a point once the move (if any) ends. */
+  /** Turn to face a character (index), "camera", or a point once the move (if any) ends, and track it with head/spine. */
   lookAt?: Look;
+  /** Aim a held weapon/flashlight at a character (index), "camera", or a point [x, y, z]. */
+  aimAt?: Look;
+  /** Peak height in meters for a parabolic jump arc (z(t) = v0*t - 0.5*9.81*t^2) during this beat. */
+  jumpHeight?: number;
   /** Face this many degrees (absolute) once the move ends. */
   facing?: number;
   /** Seconds the turn takes (default 0.35). */
@@ -51,6 +55,10 @@ export type Attachment = {
   offset?: number[];
   /** Degrees, in the bone's frame. */
   rotation?: number[];
+  /** Curl finger bones around the grip when attached to a hand (default true). */
+  gripCurl?: boolean;
+  /** Aim the holding hand/forearm bone toward a target (character index, "camera", or [x, y, z]). */
+  aimAt?: Look;
   size?: number;
   scale?: number;
 };
@@ -63,6 +71,8 @@ export type ShotCharacter = {
   position?: number[];
   facing?: number;
   travel?: number;
+  lookAt?: Look;
+  aimAt?: Look;
   beats?: Beat[];
   attachments?: Attachment[];
   [k: string]: unknown;
@@ -104,6 +114,9 @@ export type Segment = {
   faceTo: number;
   turn: number;
   face: Face;
+  lookAt?: Look;
+  aimAt?: Look;
+  jumpHeight?: number;
 };
 
 export type Timeline = { character: number; radius: number; height: number; segments: Segment[] };
@@ -123,7 +136,7 @@ export const unwrap = (a: number, b: number) => {
 };
 
 /** A character's footprint radius on the ground (for keeping them apart). */
-export const radiusOf = (height: number) => Math.max(0.25, 0.17 * height);
+export const radiusOf = (height: number) => Math.max(0.35, 0.24 * height);
 
 /** Ground speed by what the clip is called, for a character 1.75 m tall (scaled with height). */
 export function defaultPace(animation: string | undefined, height: number) {
@@ -177,7 +190,7 @@ export function facingAt(tl: Timeline, t: number): number {
  * Works out which way every segment faces, in order: the way it travels, at its target (where that character
  * stands as the turn ends), a fixed heading, or the way it already faced. Run again after anything moves.
  */
-export function resolveFacing(plan: Plan, startFacing: number[], seconds: number) {
+export function resolveFacing(plan: Plan, startFacing: number[], seconds: number, shot?: Shot) {
   for (const tl of plan.timelines) {
     let h = startFacing[tl.character] ?? 0;
     for (const g of tl.segments) {
@@ -187,7 +200,15 @@ export function resolveFacing(plan: Plan, startFacing: number[], seconds: number
       else if (f.mode === 'fixed') h = unwrap(h, f.deg ?? h);
       else if (f.mode === 'target' && f.look != null) {
         const at = Math.min(seconds, g.t0 + g.turn);
-        const tgt: Vec2 = typeof f.look === 'number' ? positionAt(plan.timelines[f.look], at) : checkPoint(f.look, `characters[${tl.character}] lookAt`);
+        let tgt: Vec2;
+        if (f.look === 'camera') {
+          const cam = cameraAt(shot ?? {}, plan, at, seconds);
+          tgt = [cam.pos[0], cam.pos[1]];
+        } else if (typeof f.look === 'number') {
+          tgt = positionAt(plan.timelines[f.look], at);
+        } else {
+          tgt = checkPoint(f.look, `characters[${tl.character}] lookAt`);
+        }
         const here = positionAt(tl, at);
         if (dist(here, tgt) > 1e-6) h = unwrap(h, facingToward(tgt[0] - here[0], tgt[1] - here[1]));
       }
@@ -216,7 +237,11 @@ export function planShot(shot: Shot, seconds: number): Plan {
     if (!c.beats?.length) {
       const trav = Number(c.travel) || 0;
       const to: Vec2 = trav ? [pos[0] + dirOf(face0)[0] * trav * seconds, pos[1] + dirOf(face0)[1] * trav * seconds] : pos;
-      tl.segments.push({ ...base, t0: 0, t1: seconds, animation: c.animation, animationFile: c.animationFile, from: pos, to, ground: trav, face: { mode: 'hold' } });
+      tl.segments.push({
+        ...base, t0: 0, t1: seconds, animation: c.animation, animationFile: c.animationFile, from: pos, to, ground: trav, face: { mode: 'hold' },
+        ...(c.lookAt != null ? { lookAt: c.lookAt } : {}),
+        ...(c.aimAt != null ? { aimAt: c.aimAt } : {}),
+      });
       return;
     }
     if (!Array.isArray(c.beats)) throw new GenError(`characters[${ci}].beats must be a list`);
@@ -232,7 +257,7 @@ export function planShot(shot: Shot, seconds: number): Plan {
         else if (beat.at > t + 1e-6) {
           // A gap: the previous clip carries on, standing.
           const prev = tl.segments[tl.segments.length - 1];
-          tl.segments.push({ ...prev, t0: t, t1: beat.at, from: pos, to: pos, ground: 0, turn: 0, face: { mode: 'hold' } });
+          tl.segments.push({ ...prev, jumpHeight: undefined, t0: t, t1: beat.at, from: pos, to: pos, ground: 0, turn: 0, face: { mode: 'hold' } });
           t = beat.at;
         }
       }
@@ -255,7 +280,7 @@ export function planShot(shot: Shot, seconds: number): Plan {
       }
       if (dur == null) throw new GenError(`${where}: give seconds (or a move with to)`);
       if (!(dur > 0)) throw new GenError(`${where}: seconds must be above 0`);
-      if (beat.lookAt != null && typeof beat.lookAt === 'number' && (!Number.isInteger(beat.lookAt) || beat.lookAt < 0 || beat.lookAt >= chars.length || beat.lookAt === ci)) {
+      if (beat.lookAt != null && beat.lookAt !== 'camera' && typeof beat.lookAt === 'number' && (!Number.isInteger(beat.lookAt) || beat.lookAt < 0 || beat.lookAt >= chars.length || beat.lookAt === ci)) {
         throw new GenError(`${where}: lookAt ${beat.lookAt} is not another character of the shot`);
       }
       const turn = Math.min(beat.turn ?? 0.35, dur);
@@ -268,9 +293,14 @@ export function planShot(shot: Shot, seconds: number): Plan {
         }
       } else if (beat.lookAt != null) face = { mode: 'target', look: beat.lookAt };
       else if (beat.facing != null) face = { mode: 'fixed', deg: beat.facing };
+      const lookAtVal = beat.lookAt ?? c.lookAt;
+      const aimAtVal = beat.aimAt ?? c.aimAt;
       tl.segments.push({
         ...base, t0: t, t1: t + dur, animation: clip, animationFile: clipFile, loop: beat.loop !== false, from: pos, to, ground,
         speed: beat.speed != null ? Number(beat.speed) : null, turn: face.mode === 'travel' ? Math.min(0.3, dur) : turn, face,
+        ...(lookAtVal != null ? { lookAt: lookAtVal } : {}),
+        ...(aimAtVal != null ? { aimAt: aimAtVal } : {}),
+        ...(beat.jumpHeight != null && beat.jumpHeight > 0 ? { jumpHeight: Number(beat.jumpHeight) } : {}),
       });
       t += dur;
       pos = to;
@@ -278,14 +308,14 @@ export function planShot(shot: Shot, seconds: number): Plan {
     if (t < seconds - 1e-6) {
       // The last clip carries on to the end of the shot, standing.
       const last = tl.segments[tl.segments.length - 1];
-      tl.segments.push({ ...last, t0: t, t1: seconds, from: pos, to: pos, ground: 0, turn: 0, face: { mode: 'hold' } });
+      tl.segments.push({ ...last, jumpHeight: undefined, t0: t, t1: seconds, from: pos, to: pos, ground: 0, turn: 0, face: { mode: 'hold' } });
     } else if (t > seconds + 0.05) {
       plan.notes.push(`characters[${ci}]: its beats run ${r3(t)} s but the shot is ${r3(seconds)} s (the rest is cut off)`);
     }
   });
-  resolveFacing(plan, starts, seconds);
+  resolveFacing(plan, starts, seconds, shot);
   avoidOverlap(plan, seconds);
-  resolveFacing(plan, starts, seconds);
+  resolveFacing(plan, starts, seconds, shot);
   return plan;
 }
 
@@ -315,8 +345,34 @@ export function avoidOverlap(plan: Plan, seconds: number) {
     const movingSeg = (i: number) => tls[i].segments.findIndex((s) => hit.t >= s.t0 && hit.t <= s.t1 && s.ground > 0);
     const mover = movingSeg(hit.b) >= 0 ? hit.b : movingSeg(hit.a) >= 0 ? hit.a : null;
     if (mover == null) {
-      plan.notes.push(`characters ${hit.a} and ${hit.b} stand ${r3(hit.d)} m apart, closer than their size allows (${r3(tls[hit.a].radius + tls[hit.b].radius)} m): move one with position`);
-      return;
+      const PA = positionAt(tls[hit.a], hit.t);
+      const PB = positionAt(tls[hit.b], hit.t);
+      const minClear = tls[hit.a].radius + tls[hit.b].radius;
+      const clear = minClear + 0.05;
+      const dx = PB[0] - PA[0];
+      const dy = PB[1] - PA[1];
+      const ux = hit.d > 1e-6 ? dx / hit.d : 1;
+      const uy = hit.d > 1e-6 ? dy / hit.d : 0;
+      const PNew: Vec2 = [PA[0] + ux * clear, PA[1] + uy * clear];
+      const tlB = tls[hit.b];
+      for (let k = 0; k < tlB.segments.length; k++) {
+        const s = tlB.segments[k];
+        const sameFrom = Math.abs(s.from[0] - PB[0]) < 1e-5 && Math.abs(s.from[1] - PB[1]) < 1e-5;
+        const sameTo = Math.abs(s.to[0] - PB[0]) < 1e-5 && Math.abs(s.to[1] - PB[1]) < 1e-5;
+        if (!sameFrom && k > 0) break;
+        if (sameFrom || k === 0) s.from = PNew;
+        if (sameTo) {
+          s.to = PNew;
+        } else {
+          const d = dist(s.from, s.to);
+          s.ground = s.t1 > s.t0 ? d / (s.t1 - s.t0) : 0;
+          break;
+        }
+      }
+      const msg = `character ${hit.b} pushed to (${r3(PNew[0])}, ${r3(PNew[1])}) to clear character ${hit.a}`;
+      plan.moved.push(msg);
+      plan.notes.push(`characters ${hit.a} and ${hit.b} stand ${r3(hit.d)} m apart, closer than their size allows (${r3(minClear)} m): ${msg}`);
+      continue;
     }
     const other = mover === hit.b ? hit.a : hit.b;
     const tl = tls[mover];

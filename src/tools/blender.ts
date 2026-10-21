@@ -92,7 +92,12 @@ export function resolveShot(shot: unknown, frames: number, fps: number, nFiles: 
   if (errors.length) throw new GenError(`The shot can't be built:\n${errors.map((e) => `- ${e.message}`).join('\n')}`);
   const out: any = JSON.parse(JSON.stringify(shot));
   (out.characters ?? []).forEach((c: any, i: number) => {
-    if (c.beats?.length && plan) c.timeline = plan.timelines[i].segments.map(({ face, ...g }) => g);
+    if (!plan) return;
+    const segs = plan.timelines[i].segments;
+    if (c.beats?.length) c.timeline = segs.map(({ face, ...g }) => g);
+    else if (segs.length && c.position && (segs[0].from[0] !== c.position[0] || segs[0].from[1] !== c.position[1])) {
+      c.position = [segs[0].from[0], segs[0].from[1], ...c.position.slice(2)];
+    }
   });
   return { shot: out, notes: issues.map((i) => i.message) };
 }

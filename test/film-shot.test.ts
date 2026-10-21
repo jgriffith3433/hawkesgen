@@ -2,7 +2,7 @@
 // Pure functions, no Blender and no GPU.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planShot, lintShot, applyFixes, autoFixes, positionAt, facingAt, facingToward, dirOf, firstOverlap, occluders, cameraAt, defaultPace, type Shot } from '../src/film/shot.ts';
+import { planShot, lintShot, applyFixes, autoFixes, positionAt, facingAt, facingToward, dirOf, firstOverlap, occluders, cameraAt, defaultPace, radiusOf, type Shot } from '../src/film/shot.ts';
 
 const near = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} vs ${b}`);
 
@@ -101,9 +101,27 @@ test('anti-overlap: a walk through a standing character swings around it; a walk
   assert.ok(positionAt(p2.timelines[1], 4)[0] < -0.4);
 });
 
-test('anti-overlap: two characters that start inside each other are reported, not moved', () => {
+test('anti-overlap: two standing characters starting too close are pushed apart along their separation vector', () => {
+  near(radiusOf(1.75), 0.42);
+  near(radiusOf(1.0), 0.35);
   const plan = planShot({ characters: [{ file: 0, position: [0, 0] }, { file: 1, position: [0.2, 0] }] }, 2);
+  assert.equal(firstOverlap(plan.timelines, 2), null);
+  assert.ok(plan.moved.some((m) => /pushed to/.test(m)));
   assert.ok(plan.notes.some((n) => /closer than their size allows/.test(n)));
+  assert.ok(positionAt(plan.timelines[1], 0)[0] >= plan.timelines[0].radius + plan.timelines[1].radius);
+});
+
+test('beats: lookAt supports "camera" and jumpHeight is preserved on the jumping segment only', () => {
+  const shot: Shot = {
+    characters: [{ file: 0, position: [0, 0], facing: 90, beats: [{ animation: 'Jump', seconds: 1, lookAt: 'camera', jumpHeight: 0.6 }] }],
+    camera: { target: [0, 0, 1], distance: 4, angle: 0 },
+  };
+  const plan = planShot(shot, 2);
+  const segs = plan.timelines[0].segments;
+  assert.equal(segs[0].lookAt, 'camera');
+  assert.equal(segs[0].jumpHeight, 0.6);
+  assert.equal(segs[1].jumpHeight, undefined, 'the trailing hold segment does not repeat the jump');
+  near(facingAt(plan.timelines[0], 1), 0, 1); // turned from 90° to 0° (toward the camera at y = -4)
 });
 
 test('camera: the planner places the camera the way the Blender script does', () => {
