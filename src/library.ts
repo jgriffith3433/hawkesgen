@@ -70,14 +70,23 @@ export function getAsset(assetId: string): Asset | null {
   return parseRow<Asset>(db.prepare('SELECT * FROM assets WHERE id = ?').get(assetId), JSON_COLS) ?? null;
 }
 
-export function listAssets(q: { project?: string; kind?: string; tool?: string; client?: string; text?: string; starred?: boolean; job?: string; limit?: number; offset?: number; projects?: string[] } = {}) {
+export function listAssets(q: { project?: string; kind?: string; tool?: string; client?: string; text?: string; starred?: boolean; job?: string; playtest?: boolean; limit?: number; offset?: number; projects?: string[] } = {}) {
   const where: string[] = [];
   const args: Record<string, unknown> = {};
   if (q.project) { where.push('project = :project'); args.project = q.project; }
-  if (q.kind) { where.push('kind = :kind'); args.kind = q.kind; }
+  if (q.kind) {
+    if (q.kind === 'shot' || q.kind === 'screenshots') where.push("(kind = 'image' OR json_extract(meta, '$.playtest') IN ('shot', 'diff'))");
+    else if (q.kind === 'report') where.push("(kind = 'text' OR json_extract(meta, '$.playtest') = 'report')");
+    else { where.push('kind = :kind'); args.kind = q.kind; }
+  }
   if (q.tool) { where.push('tool = :tool'); args.tool = q.tool; }
   if (q.client) { where.push('client = :client'); args.client = q.client; }
   if (q.job) { where.push('job = :job'); args.job = q.job; }
+  if (q.playtest) {
+    where.push("(tool = 'playtest.run' OR json_extract(meta, '$.playtest') IS NOT NULL)");
+  } else if (q.tool !== 'playtest.run' && !q.job) {
+    where.push("(tool != 'playtest.run' AND json_extract(meta, '$.playtest') IS NULL)");
+  }
   if (q.starred) where.push('starred = 1');
   if (q.text) { where.push('(title LIKE :text OR labels LIKE :text OR tags LIKE :text OR recipe LIKE :text)'); args.text = `%${q.text}%`; }
   if (q.projects && !q.projects.includes('*')) where.push(`project IN (${q.projects.map((p) => `'${p.replace(/'/g, "''")}'`).join(',')})`);

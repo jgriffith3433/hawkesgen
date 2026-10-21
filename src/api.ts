@@ -410,9 +410,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
       const limit = Number(q('limit')) || 60;
       const offset = Number(q('offset')) || 0;
-      const motions = motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset });
+      const playtest = q('playtest') === '1' || q('playtest') === 'true';
+      const motions = playtest ? { items: [], total: 0 } : motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset });
       if (q('tool') === 'motion.library') return send(res, 200, motions);
-      const assets = listAssets({ project: q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', limit, offset, projects: client.projects });
+      const assets = listAssets({ project: q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest, limit, offset, projects: client.projects });
       if (!motions.total) return send(res, 200, assets);
       return send(res, 200, { items: [...motions.items, ...assets.items].slice(0, limit), total: motions.total + assets.total });
     }
