@@ -46,6 +46,9 @@ test('numbers: a character that stood still while the plan walked it is a failed
   // Feet sliding: the stride was clamped.
   const slide = numericFindings(plan, honest(shot).stills, SECONDS, [{ index: 0, segments: [{ animation: 'Walk', ground: 3, playback: 2.5, slide: 0.5, note: 'clamped: the Walk stride wants 3.10x' }] }]);
   assert.equal(slide.find((f) => f.id.startsWith('stride:'))!.pass, false);
+  // Posed shoulder twist (chestFacing 30° off the carrier yaw) does not fail placed:0.
+  const twisted = honest(shot).stills.map((s) => ({ ...s, characters: s.characters.map((c) => ({ ...c, chestFacing: c.facing + 30 })) }));
+  assert.ok(numericFindings(plan, twisted, SECONDS).every((f) => f.pass));
   // 3D mesh overlap reported by BVHTree in stills[].overlaps fails numericFindings.
   const overlapped = honest(shot).stills.map((s, idx) => (idx === 2 ? { ...s, overlaps: [{ a: 0, b: 1, faces: 14 }] } : { ...s, overlaps: [] }));
   const ovFind = numericFindings(plan, overlapped, SECONDS).find((f) => f.id === 'overlap:0:1')!;
