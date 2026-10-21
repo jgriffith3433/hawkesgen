@@ -15,7 +15,8 @@ import { applyFixes, autoFixes, facingAt, FIX_SCHEMA_FIELDS, lintShot, planShot,
 export const STILL_SHARES = [0, 0.33, 0.66, 1];
 
 export type Placed = { index: number; x: number; y: number; facing: number; height?: number };
-export type StillInfo = { t: number; frame?: number; file?: string; characters: Placed[] };
+export type MeshOverlap = { a: number; b: number; faces?: number } | [number, number];
+export type StillInfo = { t: number; frame?: number; file?: string; characters: Placed[]; overlaps?: MeshOverlap[] };
 export type SlideInfo = { index: number; segments?: { animation: string; ground: number; playback: number; slide?: number; note?: string }[] };
 export type RenderOut = { sheet: string; stills: StillInfo[]; characters?: SlideInfo[]; job?: string };
 
@@ -97,6 +98,29 @@ export function numericFindings(plan: Plan, stills: StillInfo[], seconds: number
         out.push({ id: `stride:${c.index}:${g.animation}`, pass: ok, note: ok ? `${g.animation} played at ${g.playback}x keeps its feet on the ground` : `${g.animation} at ${g.playback}x gives feet ${g.slide}x the ground speed${g.note ? ` (${g.note})` : ''}: the feet will slide`, by: 'numbers' });
       }
     }
+  }
+  const hitPairs = new Map<string, { a: number; b: number; times: string[]; faces: number }>();
+  for (const s of stills) {
+    for (const ov of s.overlaps ?? []) {
+      const a = Array.isArray(ov) ? ov[0] : ov.a;
+      const b = Array.isArray(ov) ? ov[1] : ov.b;
+      const faces = Array.isArray(ov) ? 1 : (ov.faces ?? 1);
+      if (typeof a === 'number' && typeof b === 'number' && faces > 0) {
+        const key = `${Math.min(a, b)}:${Math.max(a, b)}`;
+        const cur = hitPairs.get(key) ?? { a: Math.min(a, b), b: Math.max(a, b), times: [], faces: 0 };
+        cur.times.push(`${(s.t * seconds).toFixed(1)} s`);
+        cur.faces = Math.max(cur.faces, faces);
+        hitPairs.set(key, cur);
+      }
+    }
+  }
+  for (const [key, h] of hitPairs) {
+    out.push({
+      id: `overlap:${key}`,
+      pass: false,
+      note: `characters ${h.a} and ${h.b} 3D meshes overlap (${h.faces} intersecting faces at ${h.times.join(', ')})`,
+      by: 'numbers',
+    });
   }
   return out;
 }
