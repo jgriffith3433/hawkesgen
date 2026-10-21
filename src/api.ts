@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
-import { authenticate, canProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
+import { authenticate, canProject, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
 import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workflows/registry.ts';
 import { objectInfo, refreshCatalog, templates, templateWorkflow, templateThumb, importWorkflow } from './workflows/catalog.ts';
@@ -359,7 +359,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/billing/quote' && method === 'POST') {
       const body = await readJson(req);
       const user = getUserForClient(client);
-      const project = client.role === 'user' ? client.projects[0] : String(body.project || 'sandbox');
+      const project = fixedProject(client) ?? String(body.project || 'sandbox');
       const qResult = quoteJobCredits({ project, tool: body.tool, preset: body.preset, params: body.params ?? {}, count: body.count });
       return send(res, 200, {
         ...qResult,
@@ -438,7 +438,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === '/v1/jobs' && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
-      const projectFilter = client.role === 'user' ? client.projects[0] : q('project');
+      const projectFilter = fixedProject(client) ?? q('project');
       return send(res, 200, { jobs: listJobs({ project: projectFilter, status: q('status'), tool: q('tool'), limit: Number(q('limit')) || 100, projects: client.projects }).map(summary) });
     }
     if (route === '/v1/jobs/timing' && method === 'GET') {
@@ -509,12 +509,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // --------------------------------------------------------------- library: entities, slots, versions
     // src/entities.ts and docs/library.md. A slot name can have slashes (pose/air), so it is the rest of the path.
     if (route === '/v1/entities' && method === 'GET') {
-      const entityProject = client.role === 'user' ? (q('project') ?? client.projects[0]) : q('project');
+      const entityProject = q('project') ?? fixedProject(client) ?? undefined;
       return send(res, 200, lib.listEntities(client, { project: entityProject, kind: q('kind'), text: q('q'), tag: q('tag'), archived: q('archived') === '1', limit: Number(q('limit')) || 100, offset: Number(q('offset')) || 0 }));
     }
     if (route === '/v1/entities' && method === 'POST') {
       const body = await readJson(req);
-      if (client.role === 'user' && !body.project) body.project = client.projects[0];
+      if (!body.project && fixedProject(client)) body.project = fixedProject(client);
       return send(res, 200, lib.createEntity(client, body));
     }
     m = /^\/v1\/versions\/(v_[0-9a-f]+)$/.exec(route);
@@ -561,7 +561,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     // --------------------------------------------------------------- assets
     if ((route === '/v1/assets' || route === '/v1/library') && method === 'POST') {
-      const targetProject = client.role === 'user' ? client.projects[0] : (q('project') || 'sandbox');
+      const targetProject = fixedProject(client) ?? (q('project') || 'sandbox');
       if (!canProject(client, targetProject)) throw new GenError('No access to that project', { status: 403 });
       const ctype = String(req.headers['content-type'] ?? '').toLowerCase();
       let buf: Buffer;
@@ -603,7 +603,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (q('tool') === 'motion.library') {
           return send(res, 200, motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset }));
         }
-        const assets = listAssets({ project: client.projects[0], kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest: false, limit, offset, projects: client.projects });
+        const assets = listAssets({ project: fixedProject(client) ?? q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest: false, limit, offset, projects: client.projects });
         return send(res, 200, assets);
       }
       const motions = playtest ? { items: [], total: 0 } : motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset });

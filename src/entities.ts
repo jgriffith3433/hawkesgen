@@ -17,7 +17,7 @@
 import { db, parseRow, J } from './db.ts';
 import { events } from './bus.ts';
 import { getAsset, type Asset } from './library.ts';
-import { canProject, type Client } from './auth.ts';
+import { canProject, projectScopeSql, type Client } from './auth.ts';
 import { getProjectPresets } from './presets.ts';
 import { id as newId, GenError } from './util.ts';
 
@@ -135,7 +135,8 @@ export function listEntities(client: Client, q: { project?: string; kind?: strin
   if (q.text) { where.push('(name LIKE :text OR slug LIKE :text OR data LIKE :text OR tags LIKE :text)'); args.text = `%${q.text}%`; }
   if (q.tag) { where.push('tags LIKE :tag'); args.tag = `%"${q.tag}"%`; }
   if (!q.archived) where.push('archived = 0');
-  if (!client.projects.includes('*')) where.push(`project IN (${client.projects.map((p) => `'${p.replace(/'/g, "''")}'`).join(',') || "''"})`);
+  const scope = projectScopeSql(client.projects);
+  if (scope) where.push(scope);
   const sql = `FROM entities ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
   const limit = Math.max(1, Math.min(500, q.limit ?? 100));
   const rows = db.prepare(`SELECT * ${sql} ORDER BY project, kind, name LIMIT ${limit} OFFSET ${Math.max(0, q.offset ?? 0)}`).all(args as any).map((r) => parseRow<Entity>(r, ['data', 'tags']));

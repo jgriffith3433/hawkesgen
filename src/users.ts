@@ -90,7 +90,7 @@ export function getUserForClient(c: Client | AuthClient): UserRow | null {
   }
   const byClientOrId = db.prepare('SELECT * FROM users WHERE id = ? OR client_id = ?').get(c.id, c.id) as UserRow | undefined;
   if (byClientOrId) return byClientOrId;
-  if (c.role === 'user' && c.projects.length === 1 && c.projects[0].startsWith('u_')) {
+  if (c.role === 'user' && c.projects.length === 1 && c.projects[0].startsWith('u_') && !c.projects[0].includes('*')) {
     return (db.prepare('SELECT * FROM users WHERE project = ?').get(c.projects[0]) as UserRow | undefined) ?? null;
   }
   return null;

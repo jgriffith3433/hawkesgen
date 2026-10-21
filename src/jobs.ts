@@ -23,7 +23,7 @@ import type { RunContext, Tool, Output } from './tools/types.ts';
 import { putAsset, getAsset, blobPath, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
-import { canProject, type Client } from './auth.ts';
+import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { expandMotionRequest, motionFile } from './motions.ts';
 import { ensureInputs } from './storage.ts';
@@ -58,7 +58,7 @@ export function listJobs(q: { project?: string; status?: string; client?: string
   if (q.status) { where.push(`status IN (${q.status.split(',').map((s) => `'${s.replace(/[^a-z]/g, '')}'`).join(',')})`); }
   if (q.client) { where.push('client = :client'); args.client = q.client; }
   if (q.tool) { where.push('tool = :tool'); args.tool = q.tool; }
-  if (q.projects && !q.projects.includes('*')) where.push(`project IN (${q.projects.map((p) => `'${p.replace(/'/g, "''")}'`).join(',')})`);
+  if (q.projects) { const scope = projectScopeSql(q.projects); if (scope) where.push(scope); }
   const limit = Math.max(1, Math.min(500, q.limit ?? 100));
   return db.prepare(`SELECT * FROM jobs ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created DESC LIMIT ${limit}`).all(args as any).map((r) => parseRow<Job>(r, JSON_COLS));
 }
@@ -82,7 +82,7 @@ export function jobTimings(q: { since: number; project?: string; projects?: stri
   const where = ['created >= :since'];
   const args: Record<string, string | number> = { since: q.since };
   if (q.project) { where.push('project = :project'); args.project = q.project; }
-  if (q.projects && !q.projects.includes('*')) where.push(`project IN (${q.projects.map((p) => `'${p.replace(/'/g, "''")}'`).join(',')})`);
+  if (q.projects) { const scope = projectScopeSql(q.projects); if (scope) where.push(scope); }
   const rows = db.prepare(`SELECT tool, status, created, started, finished FROM jobs WHERE ${where.join(' AND ')}`).all(args) as { tool: string; status: string; created: number; started: number | null; finished: number | null }[];
   const by = new Map<string, { done: number; failed: number; waits: number[]; runs: number[]; queued: number; running: number; waitingNow: number[] }>();
   for (const j of rows) {
@@ -183,9 +183,7 @@ function resolveInputs(client: Client, tool: Tool, raw: Record<string, unknown> 
 }
 
 export function submit(client: Client, spec0: JobSpec): Job {
-  const project0 = client.role === 'user' && client.projects.length && client.projects[0] !== '*'
-    ? client.projects[0]
-    : String(spec0.project ?? '').trim();
+  const project0 = fixedProject(client) ?? String(spec0.project ?? '').trim();
   // A preset (the project's art direction) fills in the tool, params and inputs.
   const applied = applyPreset({ ...spec0, project: project0 }, (id) => getTool(id)?.params ?? null);
   const spec: JobSpec = { ...spec0, tool: applied.tool ?? spec0.tool, params: applied.params, inputs: applied.inputs, labels: applied.preset ? { ...(spec0.labels ?? {}), preset: applied.preset } : spec0.labels };

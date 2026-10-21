@@ -15,6 +15,7 @@ import { db, parseRow, J } from './db.ts';
 import { paths } from './config.ts';
 import { id, sha256, kindOf, mimeOf, extOf, stableStringify, GenError } from './util.ts';
 import { backup } from './storage.ts';
+import { projectScopeSql } from './auth.ts';
 
 export type Recipe = {
   tool: string;
@@ -89,7 +90,7 @@ export function listAssets(q: { project?: string; kind?: string; tool?: string; 
   }
   if (q.starred) where.push('starred = 1');
   if (q.text) { where.push('(title LIKE :text OR labels LIKE :text OR tags LIKE :text OR recipe LIKE :text)'); args.text = `%${q.text}%`; }
-  if (q.projects && !q.projects.includes('*')) where.push(`project IN (${q.projects.map((p) => `'${p.replace(/'/g, "''")}'`).join(',')})`);
+  if (q.projects) { const scope = projectScopeSql(q.projects); if (scope) where.push(scope); }
   const sql = `FROM assets ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
   const limit = Math.max(1, Math.min(500, q.limit ?? 60));
   const items = db.prepare(`SELECT * ${sql} ORDER BY created DESC LIMIT ${limit} OFFSET ${Math.max(0, q.offset ?? 0)}`).all(args as any).map((r) => parseRow<Asset>(r, JSON_COLS));

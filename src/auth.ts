@@ -52,14 +52,38 @@ export function authenticate(req: IncomingMessage): Client | null {
     const row: any = db.prepare('SELECT * FROM clients WHERE key_hash = ?').get(sha256(key));
     if (!row || row.disabled) return null;
     db.prepare('UPDATE clients SET last_used = ? WHERE id = ?').run(Date.now(), row.id);
-    return { id: row.id, name: row.name, role: row.role, projects: JSON.parse(row.projects) };
+    const c: Client = { id: row.id, name: row.name, role: row.role, projects: JSON.parse(row.projects) };
+    // A key can narrow itself to one of its projects for this request (the portal acts for one customer at a time),
+    // so every check below (jobs by id, events, inputs, slot references, files) is that customer's alone.
+    const only = String(req.headers['x-hawkesgen-project'] ?? '').trim();
+    if (only) return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(only) && canProject(c, only) ? { ...c, projects: [only] } : null;
+    return c;
   }
   if (loadSettings().localOpen && isLoopback(req.socket.remoteAddress)) return LOCAL_OWNER;
   return null;
 }
 
+// A key's projects are names, '*' (all), or a prefix pattern like 'u_*': the hawkesgen.com portal holds one key and
+// works in a project per customer (u_<id>), naming it on every call.
+const matches = (p: string, project: string) => p === '*' || p === project || (p.endsWith('*') && project.startsWith(p.slice(0, -1)));
+
 export function canProject(c: Client, project: string) {
-  return c.projects.includes('*') || c.projects.includes(project);
+  return c.projects.some((p) => matches(p, project));
+}
+
+/** The one project a user key always works in, or null when the caller names it (the owner, a pattern key). */
+export function fixedProject(c: Client): string | null {
+  return c.role === 'user' && c.projects.length === 1 && !c.projects[0].includes('*') ? c.projects[0] : null;
+}
+
+/** SQL limiting a `project` column to what these projects allow, or null for everything. */
+export function projectScopeSql(projects: string[]): string | null {
+  if (projects.includes('*')) return null;
+  const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
+  const names = projects.filter((p) => !p.endsWith('*'));
+  const parts = projects.filter((p) => p.endsWith('*')).map((p) => `project LIKE ${q(p.slice(0, -1).replace(/[\\%_]/g, (ch) => `\\${ch}`) + '%')} ESCAPE '\\'`);
+  if (names.length) parts.push(`project IN (${names.map(q).join(',')})`);
+  return parts.length ? `(${parts.join(' OR ')})` : "project IN ('')";
 }
 
 export function requireRole(c: Client, role: 'owner' | 'admin') {
