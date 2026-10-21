@@ -4,6 +4,7 @@
   "title": "Relight an image",
   "description": "Relights an image (Qwen-Image-Edit 2509 with the Relight LoRA): new light direction, color, time of day or mood, keeping the subject. Use it to match a character to a stage's lighting, or make day/night variants.",
   "family": "qwen-edit-2509",
+  "seconds": 15,
   "output": "image",
   "models": [
     {

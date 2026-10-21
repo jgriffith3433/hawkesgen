@@ -39,6 +39,26 @@ const PICK_SCHEMA = {
   },
 };
 
+/**
+ * A step's returned value (not a file) in a param: "$step1.result.shot" is the `shot` field of step 1's result (film.gate hands
+ * the approved shot on this way), "$prev.result" the whole result of the last step. Anything else in params is left as it is.
+ */
+export function resultRef(v: unknown, results: unknown[]): unknown {
+  if (Array.isArray(v)) return v.map((x) => resultRef(x, results));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resultRef(x, results)]));
+  if (typeof v !== 'string') return v;
+  const m = /^\$(?:prev|step(\d+))\.result((?:\.[\w-]+)*)$/.exec(v);
+  if (!m) return v;
+  const i = m[1] ? Number(m[1]) - 1 : results.length - 1;
+  let cur: any = results[i];
+  if (cur === undefined || cur === null) throw new GenError(`${v}: step ${i + 1} returned no value`);
+  for (const key of m[2].split('.').filter(Boolean)) {
+    cur = cur?.[key];
+    if (cur === undefined) throw new GenError(`${v}: step ${i + 1}'s result has no "${key}"`);
+  }
+  return cur;
+}
+
 export const assetMakeTool: Tool = {
   id: 'asset.make',
   version: 3,
@@ -71,7 +91,7 @@ export const assetMakeTool: Tool = {
     }
     const gen = new HawkesGen({ url: `http://127.0.0.1:${process.env.HAWKESGEN_PORT || 8790}`, project: ctx.job.project });
     const inputFiles: string[] = ctx.inputs.files ?? [];
-    const made: { job: string; outputs: any[] }[] = [];
+    const made: { job: string; outputs: any[]; result?: any }[] = [];
     const chain: any[] = [];
 
     const resolve = (v: unknown): unknown => {
@@ -89,6 +109,7 @@ export const assetMakeTool: Tool = {
       }
       return v;
     };
+    const resolveResult = (v: unknown): unknown => resultRef(v, made.map((m) => m.result));
     /** A step's first output, or the one with this title ("$step1:depth" is blender.render's depth video). */
     const outputOf = (i: number, title?: string) => {
       const outs: any[] = made[i]?.outputs ?? [];
@@ -105,7 +126,7 @@ export const assetMakeTool: Tool = {
     const submitStep = async (i: number, s: StepSpec, extra: Record<string, unknown> = {}) => {
       const inputs = Object.fromEntries(Object.entries(s.inputs ?? {}).map(([k, v]) => [k, resolve(v)]));
       const job = await gen.submit(s.tool ?? null, {
-        preset: s.preset, params: { ...(s.params ?? {}), ...extra }, inputs,
+        preset: s.preset, params: resolveResult({ ...(s.params ?? {}), ...extra }) as Record<string, unknown>, inputs,
         labels: { parent: ctx.job.id, step: i + 1 }, key: `${ctx.job.id}:${i}:${JSON.stringify(extra)}`,
         reuse: ctx.params.fresh ? false : { exclude: [...used] },
       });
@@ -130,7 +151,7 @@ export const assetMakeTool: Tool = {
     for (let i = 0; i < steps.length; i++) {
       if (i !== pickAt) {
         const j = await waitStep(i, await submitStep(i, steps[i]));
-        made.push({ job: j.id, outputs: j.outputs });
+        made.push({ job: j.id, outputs: j.outputs, result: j.result });
         chain.push({ step: i + 1, tool: j.tool, job: j.id });
         continue;
       }
@@ -179,7 +200,7 @@ ${layout}`,
           ctx.log(`picked candidate ${best}: ${picked.reason}`);
         }
       }
-      made.push({ job: winner.id, outputs: winner.outputs });
+      made.push({ job: winner.id, outputs: winner.outputs, result: winner.result });
       chain.push({ step: i + 1, tool: winner.tool, job: winner.id, candidates: pickJobs.map((j: any) => j.id), picked });
     }
 

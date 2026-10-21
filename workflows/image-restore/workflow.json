@@ -4,6 +4,7 @@
   "title": "Upscale and restore (SeedVR2)",
   "description": "Upscales and restores an image with SeedVR2 (one-step diffusion): sharper detail and fewer artifacts than image.upscale, for finished art, textures and screenshots. Slower than image.upscale; use that for quick previews.",
   "family": "seedvr2",
+  "seconds": 90,
   "output": "image",
   "models": [
     {

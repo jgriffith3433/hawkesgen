@@ -22,6 +22,9 @@ blender.render  ──>  depth / pose / edges videos + the first frame
 
 Any project can do this through the API, the MCP (`hawkesgen_run`) or an asset manifest (Hawkes Studio).
 
+**The upgraded film pipeline** (beats, props in hands, a gate that looks at the staging first, dialogue close-ups,
+layered effects, character LoRAs, the trailer cut) is in `docs/film-pipeline.md`; this page is the shot format and the tools it builds on.
+
 ## blender.render
 
 It runs on a GPU server like any GPU job. The queue gives it a server, ComfyUI's models are unloaded first
@@ -49,7 +52,8 @@ replaces the camera when the shot names one.
 | `seconds` / `frames` | 5 s | Frames snap down to 8n + 1 (what LTX takes, which is also 4n + 1 for Wan); `snap: false` turns that off. |
 | `fps` | 24 | LTX: 24. Wan: 16. |
 | `width` / `height` | 1280 x 704 | LTX's size. Use 704 x 1280 for vertical. Keep both multiples of 32. |
-| `passes` | beauty, depth, pose, edges | Also `normal` (camera-space normals) and `mask` (the characters white on black). |
+| `passes` | beauty, depth, pose, edges | Also `normal` (camera-space normals), `mask` (the characters white on black) and `layers` (one matte video per character). `[]` with `stills` renders only the stills. |
+| `stills` | | Also (or only) PNG frames of the shot: shares of it, e.g. `[0, 0.33, 0.66, 1]`, or a count. |
 | `engine` | cycles | The beauty pass. `eevee`, or `workbench` for a fast grey preview. The data passes always use Cycles. |
 | `samples` | 32 | Cycles samples for the beauty pass (denoised). |
 | `near` / `far` | measured | The depth range. By default it's measured over the shot, so depth doesn't flicker. |
@@ -65,11 +69,14 @@ replaces the camera when the shot names one.
 | `edges` | Canny-style edges of the beauty pass. |
 | `normal` | Camera-space normals. |
 | `mask` | The characters, white on black. Objects in front of them hide them. |
+| `layer 0`, `layer 1`… | Each character alone, white on black; the others (and the set) hold it out. For layered effects (`video.composite`). |
+| `still 1`… | The frames asked for with `stills`. The result says where each character stood in each. |
 | `first frame` | A PNG of the first beauty frame, to style with `image.edit`. |
 | `shot` | The `.blend`, when `save` is on. |
 
 The result (JSON) has the frame count, fps, size, depth range, the GPU it used, each character's animation and
-height, warnings, and the seconds each pass took.
+height (with its beat segments: the clip, the ground speed, the playback speed and the `slide` ratio, 1 when the feet keep
+pace), where each character stood in each still, warnings, and the seconds each pass took.
 
 ### The shot
 
@@ -83,9 +90,13 @@ height, warnings, and the seconds each pass took.
   "ground": { "size": 60, "color": "#2a2a2a" },
   "background": { "file": 4, "strength": 1, "rotation": 90 },
   "lights": "studio",
-  "camera": { "move": "follow", "target": 0, "angle": 70, "distance": 4.5, "height": 1.5, "lens": 35, "handheld": 0.5 }
+  "camera": { "move": "follow", "target": 0, "angle": 70, "distance": 4.5, "height": 1.5, "lens": 35, "handheld": 0.5 },
+  "speaker": 1
 }
 ```
+
+Beats, props in hands, set materials, effects and depth of field are below; `docs/film-pipeline.md` has the whole
+pipeline (the director gate, the recipes, the trailer).
 
 **Characters** (GLB/GLTF, FBX, OBJ, USD or `.blend`):
 - `animation`: an action in the file, by name. PH Origins' `ch33-hero.glb` has Walk, Run, Idle, SitTalk, Jump and
@@ -99,17 +110,52 @@ height, warnings, and the seconds each pass took.
 - `travel`: meters per second along its facing, for in-place walk cycles.
 - Stray objects in an export that aren't on the rig (a sphere, a probe) are dropped; `keepAll: true` keeps them.
 
+**Beats** (`characters[].beats`): actions in order, each `{ animation | animationFile, seconds, to, pace, speed, lookAt, facing, turn, strafe, loop, at }`.
+- A beat with `to: [x, y]` walks (or runs) there: it takes `distance / pace` (pace in m/s, default by the clip's name: walk
+  1.4, run 4.2, sprint 6.5, creep 0.9, scaled to the character's height) or the `seconds` you give, and the character
+  faces where it goes. A standing beat with `lookAt` (a character index, or a point `[x, y]`) or `facing` (degrees)
+  turns to it over `turn` seconds (0.35). `strafe: true` makes a moving beat face its `lookAt` instead.
+- **Stride matching:** the playback speed of a moving beat's clip is set so the planted foot keeps pace with the
+  ground (the script measures the clip: how fast the stance foot slides back past the hips). `speed` fixes it
+  instead. A clip with no measurable stride plays at 1x, a speed outside 0.35x to 2.5x is clamped and warned. Use in-place
+  clips; the result's `segments[].slide` shows how well the feet keep pace.
+- Beats follow each other; `at` (seconds) leaves a gap, which the previous clip fills standing. The last clip carries on to the end of the shot. Neighbouring clips blend over a few frames.
+- Characters are kept apart: a walk through someone swings around them, a walk into someone stops short. The result's log
+  says what moved. Characters that start closer than their size allows are reported, not moved.
+- No beats: `animation`, `travel`, `facing` as before (and `travel` now moves at a constant speed).
+
+**Attachments** (`characters[].attachments`): `{ prop, bone, grip, offset, rotation, headTail, size }`. A prop goes to a bone and
+follows it for the whole shot. `prop` is an index into the shot's `props` (or `file` imports a model for the purpose).
+`bone` is `right hand` (the default), `left hand`, `head`, `hips`, `spine`, a foot, an elbow..., or the rig's own bone
+name. `grip` is where the prop is held, as shares of its box `[x, y, z]` (the middle by default; a sword's grip is near
+`[0.5, 0.5, 0.15]`); that point sits on the bone (halfway along a hand, at the top of a head: `headTail` overrides).
+`offset` (meters) and `rotation` (degrees) are in the bone's frame: a prop's up axis starts along the bone toward the
+fingertips, so turn it with `rotation` until it sits right (the director gate looks at it). Held props are in the `mask` and `layers`.
+
 **Props:**
 - `file`, `position`, `facing`
 - `size`: scales the largest side to this many meters. Or `scale`.
 
 **Ground:**
 - `true`, or `{ size, color }`, or `false`.
+- `{ size, material: { albedo, normal, roughness, metallic, ao, height, tint, tile, roughnessValue, normalFormat, normalStrength, heightStrength } }`:
+  PBR from files (`texture.maps` makes albedo, normal and roughness: pass them in `files` and name them by index). `tile` is meters per
+  repeat (2). `normalFormat: "directx"` flips the green channel.
 - On by default when there's no `.blend`.
+
+**Walls:** `walls: [{ from: [x, y], to: [x, y], height: 3, material: { albedo, normal, roughness, tile } | color }]`.
 
 **Background:**
 - `{ color }`
 - `{ file, strength, rotation }`: an equirect sky, e.g. from `image.panorama`.
+
+**Effects** (`vfx`): synced to seconds, in the beauty pass only (not in depth, normal or masks).
+- `{ type: "muzzle-flash", attach: { prop: 0, offset: [0, -0.35, 0.04] }, at: [1.0, 1.4], seconds: 0.07, power, color, size }`: a point light and a glowing sphere that flash at each time. `at` can be a number, a list, or `at` + `every` + `count`.
+- `{ type: "flashlight", attach: { character: 1, bone: "right hand" }, target: { character: 0 } | [x, y, z], angle: 30, power, color, from, to, beam: true, length: 8 }`: a spot light aimed at a character or a point, with a faint visible cone; `from`/`to` are when it is on.
+- `{ type: "pulse", position: [x, y, z] | attach, at, seconds, power, color }`: a light that flares (an explosion, lightning).
+- `attach` is `{ prop }` (a prop a character holds: the grip is the origin), `{ character, bone }`, or `position`.
+
+`speaker` (a character index) isn't used by Blender: the director gate checks nothing hides that character's face.
 
 **Lights:** `studio` (key, fill, rim), `sun`, `night` or `none`. Without a `.blend` the default is studio.
 
@@ -117,7 +163,8 @@ height, warnings, and the seconds each pass took.
 
 | Field | What |
 |---|---|
-| `move` | `static`, `push-in`, `pull-out`, `orbit`, `pan`, `truck`, `crane-up`, `crane-down` or `follow` (rides along with the character's hips). |
+| `move` | `static`, `push-in`, `pull-out`, `orbit`, `turntable` (a full turn at a steady rate), `pan`, `truck`, `crane-up`, `crane-down` or `follow` (rides along with the character's hips). |
+| `dof` | `true`, or `{ fstop: 2.8, focus: "target" | meters }`: depth of field, focused on what the camera aims at. |
 | `target` | A character index, or a point `[x, y, z]`. |
 | `angle` | Degrees around the target. 0 is in front of the character. |
 | `distance` / `height` / `lens` | Meters, meters, millimeters. |
@@ -319,7 +366,8 @@ Blender install (1 minute) and the LTX model download (about 40 GB, 15–20 minu
 | `src/tools/compose.ts` | `video.compose`: `planCompose` turns the timeline into one ffmpeg filter graph (trim, fps, scale/pad, xfade or concat; each sound placed with `adelay`, the ducking, then `amix`). `test/compose.test.ts` checks the plan and makes real cuts of synthetic clips. |
 | `src/tools/blender.ts` | The tool, and the script the server runs: Blender, the pose drawing, then ffmpeg to one mp4 per pass. |
 | `src/providers/blender/` | The install (`install.ts`, shared with `bootstrap.sh`), and the per-job workspace on the server (`/var/tmp/hawkes-blender/<job>`). The render runs as a transient systemd unit, so a dropped SSH connection doesn't stop it and cancelling the job does. Hawkes Gen follows its log and counts the time as GPU time. |
-| `test/blender.test.ts` | Runs the whole server script on this PC (Blender 5.0) with a small rigged character it makes itself (`test/fixtures/make_rig.py`). It skips where Blender isn't installed (CI). |
+| `src/film/shot.ts` | The planner: beats to a timeline (`blender.render` hands the resolved `timeline` to the script), anti-overlap, the camera maths, the lint and the director gate's bounded fixes. |
+| `test/blender.test.ts` | Runs the whole server script on this PC (Blender 5.0) with a small rigged character it makes itself (`test/fixtures/make_rig.py`: a Wave and a Walk clip) and a prop (`make_prop.py`); one test builds a film shot (beats, a held prop, PBR set, effects, layers, stills) and reads it back with `check_film.py`. It skips where Blender isn't installed (CI). Where it is, but there is no GPU, point it at software GL (Mesa llvmpipe: `LIBGL_ALWAYS_SOFTWARE=1`, `libEGL.so.1` on the library path) and use `engine: workbench` or `cycles`. |
 
 To try the Blender script on this PC:
 

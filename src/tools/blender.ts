@@ -15,8 +15,10 @@ import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { paths } from '../config.ts';
 import { ensureBlender, blenderWorkspace, BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+import { lintShot, type Shot } from '../film/shot.ts';
 
-export const PASSES = ['beauty', 'depth', 'pose', 'edges', 'normal', 'mask'] as const;
+/** `layers` is each character alone as a matte (layer0.mp4, layer1.mp4...), for layered effects (video.composite). */
+export const PASSES = ['beauty', 'depth', 'pose', 'edges', 'normal', 'mask', 'layers'] as const;
 /** The order outputs come back in (and their titles). */
 const OUTPUT_ORDER = ['beauty', 'depth', 'pose', 'edges', 'normal', 'mask'];
 
@@ -28,7 +30,7 @@ export function shotFrames(p: { frames?: number; seconds?: number; fps?: number;
   return Math.max(1, n);
 }
 
-/** Checks the passes asked for; edges need the beauty pass (they're drawn from it). */
+/** Checks the passes asked for; edges need the beauty pass (they're drawn from it). An empty list is fine when `stills` are asked for. */
 export function shotPasses(list: unknown): string[] {
   const want = Array.isArray(list) ? list.map(String) : ['beauty', 'depth', 'pose', 'edges'];
   const bad = want.filter((p) => !(PASSES as readonly string[]).includes(p));
@@ -66,6 +68,8 @@ export function renderScript(
     'if [ -f out/pose.json ]; then if [ -n "$PY" ]; then "$PY" pose_draw.py out/pose.json out/pose "$START" >/dev/null; else echo "HB warning no Python with Pillow here: no pose video"; fi; fi',
     'echo "HB encoding"',
     ...['beauty', 'depth', 'normal', 'mask', 'pose'].map((p) => `if [ -d out/${p} ]; then ${enc(`out/${p}`, `res/${p}.mp4`)}; fi`),
+    `for d in out/layer[0-9]*; do [ -d "$d" ] || continue; n="\${d#out/layer}"; ${enc('$d', 'res/layer$n.mp4')}; done`,
+    'if [ -d out/stills ]; then mkdir -p res/stills && cp out/stills/*.png res/stills/; fi',
     o.edges ? `if [ -d out/beauty ]; then ${enc('out/beauty', 'res/edges.mp4', 'edgedetect=low=0.1:high=0.3,format=yuv420p')}; fi` : '',
     'if [ -d out/beauty ]; then cp "out/beauty/$(printf %05d "$START").png" res/first.png; fi',
     'if [ -f out/shot.blend ]; then cp out/shot.blend res/shot.blend; fi',
@@ -74,27 +78,48 @@ export function renderScript(
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * The shot the Blender script gets: beats resolved into each character's `timeline` (where it is, which way it faces, which
+ * clip and how fast, per stretch), with characters kept apart. Throws for a shot that can't work (a bad beat, an
+ * attachment to a prop that isn't there); soft problems come back as notes.
+ */
+export function resolveShot(shot: unknown, frames: number, fps: number, nFiles: number): { shot: unknown; notes: string[] } {
+  if (!shot) return { shot: null, notes: [] };
+  const seconds = Math.max(0.1, (frames - 1) / fps);
+  const { issues, plan } = lintShot(shot as Shot, seconds, nFiles);
+  // A face hidden behind someone is the gate's to judge (film.gate); it doesn't stop a render.
+  const errors = issues.filter((i) => i.level === 'error' && i.check !== 'occlusion');
+  if (errors.length) throw new GenError(`The shot can't be built:\n${errors.map((e) => `- ${e.message}`).join('\n')}`);
+  const out: any = JSON.parse(JSON.stringify(shot));
+  (out.characters ?? []).forEach((c: any, i: number) => {
+    if (c.beats?.length && plan) c.timeline = plan.timelines[i].segments.map(({ face, ...g }) => g);
+  });
+  return { shot: out, notes: issues.map((i) => i.message) };
+}
+
 export const blenderRenderTool: Tool = {
   id: 'blender.render',
-  version: 1,
+  version: 2,
   title: 'Render a Blender shot (with control videos)',
   description:
     'Renders a 3D shot in Blender on a GPU server and returns it as videos: the beauty render plus control passes (depth, pose skeletons from the ' +
     'rigs, edges, normals, a character mask) and the first frame as an image. Give a .blend (or a .zip of the project folder) and/or a `shot` ' +
     'that builds the scene from the job\'s files: characters (GLB, FBX, .blend; an animation by name or from a Mixamo FBX), props, ground, sky, ' +
-    'lights and a camera move (push-in, orbit, follow, ...). Then style the first frame with image.edit and repaint the whole shot with ' +
-    'video.control (it follows the motion exactly). docs/blender.md has the shot format.',
+    'lights and a camera move (push-in, orbit, follow, ...). Characters can hold props (attachments to a hand bone), follow a timeline of ' +
+    'beats (walk here, turn to him, draw), and the shot can have PBR floors and walls, muzzle flashes and flashlights, and depth of field. ' +
+    'Then style the first frame with image.edit and repaint the whole shot with video.control (it follows the motion exactly). ' +
+    'docs/blender.md has the shot format and docs/film-pipeline.md the whole film pipeline.',
   provider: 'comfy',
   family: 'blender',
   output: 'video',
   inputs: {
     scene: { kind: 'file', description: 'A .blend, or a .zip of a project folder with its textures (the .blend at the top, or name it with blend).' },
-    files: { kind: 'file', multiple: true, max: 16, description: 'Models, animations and images the shot uses, by index (characters[].file = 0 is the first).' },
+    files: { kind: 'file', multiple: true, max: 24, description: 'Models, animations and images the shot uses, by index (characters[].file = 0 is the first): characters, props, a sky, texture maps.' },
   },
   params: {
     shot: {
       type: 'json',
-      description: 'Builds the scene: { characters: [{ file, animation, animationFile, height, position, facing, travel }], props, ground, background, lights, camera: { move, target, distance, height, angle, lens, amount, handheld } }',
+      description: 'Builds the scene: { characters: [{ file, animation, animationFile, height, position, facing, travel, beats: [{ animation, seconds, to, pace, lookAt }], attachments: [{ prop, bone, grip, offset, rotation }] }], props, ground: { material: { albedo, normal, roughness } }, walls, background: { file }, lights, vfx: [{ type: muzzle-flash|flashlight|pulse }], camera: { move, target, distance, height, angle, lens, amount, handheld, dof }, speaker }',
       example: { characters: [{ file: 0, animation: 'Walk', height: 1.8, travel: 1.3, facing: 90 }], camera: { move: 'follow', angle: 70, distance: 4.5 }, lights: 'studio' },
     },
     camera: { type: 'string', description: 'The camera to render in the .blend (default: the scene camera, or the shot\'s).' },
@@ -104,7 +129,8 @@ export const blenderRenderTool: Tool = {
     fps: { type: 'integer', min: 8, max: 60, default: 24, description: 'Frame rate (LTX: 24 or 25; Wan: 16).' },
     width: { type: 'integer', min: 256, max: 2048, default: 1280, description: 'LTX likes 1280x704 (or 704x1280); keep both multiples of 32.' },
     height: { type: 'integer', min: 256, max: 2048, default: 704 },
-    passes: { type: 'json', default: ['beauty', 'depth', 'pose', 'edges'], description: `Which videos to make: ${PASSES.join(', ')}.` },
+    passes: { type: 'json', default: ['beauty', 'depth', 'pose', 'edges'], description: `Which videos to make: ${PASSES.join(', ')}. layers makes one matte video per character (layer0, layer1...). [] with stills makes only the stills.` },
+    stills: { type: 'json', description: 'Also (or only) return frames of the shot as PNGs: a list of shares of the shot, e.g. [0, 0.33, 0.66, 1], or a count N spread evenly. Titled "still 1"...; the result says where each character stands in each.', example: [0, 0.33, 0.66, 1] },
     engine: { type: 'enum', values: ['cycles', 'eevee', 'workbench'], default: 'cycles', description: 'The beauty pass renderer. Workbench is a fast grey preview.' },
     samples: { type: 'integer', min: 1, max: 4096, default: 32, advanced: true, description: 'Cycles samples for the beauty pass (denoised).' },
     near: { type: 'number', min: 0.001, advanced: true, description: 'Depth range start in meters (default: measured from the shot).' },
@@ -114,7 +140,12 @@ export const blenderRenderTool: Tool = {
     save: { type: 'boolean', default: false, advanced: true, description: 'Also return the built shot as a .blend (to open and adjust in Blender).' },
   },
   models: () => [`blender-${BLENDER_VERSION}`],
-  gpuSeconds: (p) => 45 + shotFrames(p) * shotPasses(p.passes).length * 0.25,
+  gpuSeconds: (p) => {
+    const passes = shotPasses(p.passes);
+    const layers = passes.includes('layers') ? Math.max(1, (p.shot?.characters?.length ?? 2)) - 1 : 0;
+    const stills = typeof p.stills === 'number' ? p.stills : Array.isArray(p.stills) ? p.stills.length : 0;
+    return 45 + shotFrames(p) * (passes.length + layers) * 0.25 + (passes.includes('beauty') ? 0 : stills * 4);
+  },
   async run(ctx) {
     const c = ctx.comfy!;
     const p = ctx.params;
@@ -126,7 +157,10 @@ export const blenderRenderTool: Tool = {
     if (scene && !['.blend', '.zip'].includes(ext)) throw new GenError('scene must be a .blend or a .zip');
     const passes = shotPasses(p.passes);
     const frames = shotFrames(p);
+    if (!passes.length && !p.stills) throw new GenError('Nothing to render: give passes or stills');
     const outDir = ctx.tmp('blender');
+    const { shot, notes } = resolveShot(p.shot, frames, p.fps, (ctx.inputs.files ?? []).length);
+    for (const n of notes) ctx.log(`shot: ${n}`);
 
     await ensureBlender(c.server.id, ctx.step);
     const ws = await blenderWorkspace(c.server.id, ctx.job.id);
@@ -144,9 +178,9 @@ export const blenderRenderTool: Tool = {
       put['pose_draw.py'] = path.join(paths.post, 'pose_draw.py');
       await ws.put(put);
       const spec = {
-        out: `${ws.dir}/out`, files: remoteFiles, shot: p.shot ?? null, camera: p.camera ?? null, start: p.start ?? null,
+        out: `${ws.dir}/out`, files: remoteFiles, shot, camera: p.camera ?? null, start: p.start ?? null,
         frames, fps: p.fps, width: p.width, height: p.height,
-        passes: passes.filter((x) => x !== 'edges'), engine: p.engine, samples: p.samples, near: p.near ?? null, far: p.far ?? null,
+        passes: passes.filter((x) => x !== 'edges'), stills: p.stills ?? null, engine: p.engine, samples: p.samples, near: p.near ?? null, far: p.far ?? null,
         save: !!p.save, device: 'auto',
       };
       await ws.write({ 'spec.json': JSON.stringify(spec, null, 1) });
@@ -162,7 +196,7 @@ export const blenderRenderTool: Tool = {
           const [kind, ...rest] = line.split(' ');
           if (kind === 'frame') ctx.step(`rendering: frame ${rest[0]} of ${rest[1]}`);
           else if (kind === 'pass') ctx.step(`rendering the ${rest[0]} pass`);
-          else if (kind === 'warning' || kind === 'character' || kind === 'shot') ctx.log(`blender ${line}`);
+          else if (kind === 'warning' || kind === 'character' || kind === 'shot' || kind === 'attached' || kind === 'vfx') ctx.log(`blender ${line}`);
           else if (kind === 'encoding') ctx.step('making the videos');
         },
       }));
@@ -177,7 +211,10 @@ export const blenderRenderTool: Tool = {
     const made: Record<string, number> = {};
     const outs: { file: string; title: string; ext: string }[] = [];
     for (const name of OUTPUT_ORDER) if (fs.existsSync(path.join(outDir, `${name}.mp4`))) outs.push({ file: `${name}.mp4`, title: name, ext: '.mp4' });
+    for (const f of fs.readdirSync(outDir).filter((f) => /^layer\d+\.mp4$/.test(f)).sort((a, b) => parseInt(a.slice(5)) - parseInt(b.slice(5)))) outs.push({ file: f, title: `layer ${parseInt(f.slice(5))}`, ext: '.mp4' });
     if (fs.existsSync(path.join(outDir, 'first.png'))) outs.push({ file: 'first.png', title: 'first frame', ext: '.png' });
+    const stillsDir = path.join(outDir, 'stills');
+    if (fs.existsSync(stillsDir)) for (const f of fs.readdirSync(stillsDir).filter((f) => f.endsWith('.png')).sort()) outs.push({ file: `stills/${f}`, title: `still ${parseInt(f)}`, ext: '.png' });
     if (fs.existsSync(path.join(outDir, 'shot.blend'))) outs.push({ file: 'shot.blend', title: 'shot', ext: '.blend' });
     for (const [k, o] of outs.entries()) {
       if (k >= ctx.done) await ctx.emit({ data: fs.readFileSync(path.join(outDir, o.file)), ext: o.ext, title: o.title, meta: { pass: o.title, frames: info.frames, fps: info.fps, width: info.width, height: info.height } });
@@ -186,7 +223,7 @@ export const blenderRenderTool: Tool = {
     ctx.result({
       frames: info.frames, fps: info.fps, width: info.width, height: info.height, start: info.start, camera: info.camera,
       depth: { near: info.near, far: info.far }, device: info.device, characters: info.characters, warnings: info.warnings,
-      seconds: info.seconds, outputs: Object.keys(made),
+      stills: info.stills, notes, seconds: info.seconds, outputs: Object.keys(made),
     });
   },
 };

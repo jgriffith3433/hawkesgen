@@ -3,7 +3,8 @@
     blender -b --factory-startup -P make_rig.py -- out.glb
 
 Mixamo-style bone names behind a different prefix ("rig:"), a box on each limb (parented to its bone) and one
-action, "Wave", that lifts the left arm.
+action, "Wave", that lifts the left arm, and one,
+"Walk", that swings the legs (a stride a test can measure).
 """
 
 import sys
@@ -74,6 +75,22 @@ pb.rotation_mode = "XYZ"
 for f, angle in ((1, 0.0), (12, 1.2), (24, 0.0)):
     pb.rotation_euler = (0, 0, angle)
     pb.keyframe_insert("rotation_euler", frame=f)
-bpy.context.scene.frame_end = 24
+# "Walk" (with --walk): the legs swing against each other over a 24 frame cycle, for the stride-matched film test.
+if "--walk" in sys.argv:
+    arm.animation_data.nla_tracks.new().strips.new("Wave", 1, act)
+    arm.animation_data.action = None
+    walk = bpy.data.actions.new("Walk")
+    arm.animation_data.action = walk
+    if hasattr(arm.animation_data, "action_slot") and walk.slots:
+        arm.animation_data.action_slot = walk.slots[0]
+    for name, sign in (("LeftUpLeg", 1), ("RightUpLeg", -1)):
+        pb = arm.pose.bones[f"rig:{name}"]
+        pb.rotation_mode = "XYZ"
+        for f, angle in ((1, 0.5 * sign), (13, -0.5 * sign), (25, 0.5 * sign)):
+            pb.rotation_euler = (angle, 0, 0)
+            pb.keyframe_insert("rotation_euler", frame=f)
+    bpy.context.scene.frame_end = 25
+else:
+    bpy.context.scene.frame_end = 24
 bpy.ops.export_scene.gltf(filepath=out, export_animations=True, export_format="GLB")
 print("made", out)

@@ -100,6 +100,16 @@ repaint the shot in any look from a styled first frame. `asset.make` can pick ca
 pass on outputs by title (`$step1:depth`), so the chain is one recipe. `docs/blender.md`. Verified on this PC
 (the Blender script and every pass); the GPU servers and the two video models still need a live run.
 
+### Added on 2026-10-21: the film pipeline
+
+J: "Yeah try it out. Make our content creation machine amazing." Blender is the motion-control rig, ComfyUI the cinematographer,
+Claude Vision the gate. `blender.render` v2: beats (a timeline of actions with stride-matched walks, characters kept apart),
+props attached to hand bones, PBR floors and walls, muzzle flashes and flashlights, depth of field, per-character mattes and
+stills. `film.gate`: four eevee frames judged against a strict rubric before any ComfyUI or Cycles spend, adjusted and
+re-checked twice at most. `film.plan`: the cinema pass, dialogue close-up (InfiniteTalk), layered VFX, character LoRA and
+trailer-cut recipes for `asset.make`, priced from the plan. `docs/film-pipeline.md`. Verified offline and in Blender; the GPU
+steps (eevee on a server, relight, restore, the mixed control, InfiniteTalk) need a live run, which needs J's budget.
+
 ### Added on 2026-10-18: player analytics (decision m_e4959acc8abd)
 
 J: "Let's use our own home grown solution that posts to our hawkesgen.com studio ... make sure to capture the build
