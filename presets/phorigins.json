@@ -45,6 +45,14 @@
       "tool": "mesh.textured",
       "description": "A textured GLB prop from a reference image (convert/compress before shipping)."
     },
+    "splat": {
+      "tool": "splat.build",
+      "description": "A 3D Gaussian Splat (.splat, 32-byte Babylon format) and preview PNG for Level 7 (The Train) or environment sets.",
+      "params": {
+        "presetScene": "subway-car-full",
+        "maxSplats": 180000
+      }
+    },
     "bark": {
       "tool": "llm.json",
       "description": "Pierce's inner-voice barks for a room, written to the story's tone.",
@@ -112,6 +120,41 @@
               "image": "slot:./reference"
             }
           }
+        }
+      }
+    },
+    "splat": {
+      "description": "A 3D Gaussian Splat (.splat) environment or backdrop (e.g. Level 7 The Train): a reference image, the 32-byte .splat cloud, and its rendered preview.",
+      "slots": {
+        "reference": {
+          "description": "Wide reference view of the environment to lift or guide the 3D Gaussian splat.",
+          "make": {
+            "tool": "image.generate",
+            "params": {
+              "prompt": "Wide cinematic architectural shot of {look}: {brief}. {style} {feedback}",
+              "width": 1536,
+              "height": 1024
+            }
+          },
+          "optional": true
+        },
+        "splat": {
+          "description": "The 32-byte .splat binary (for Babylon.js GaussianSplattingMesh) and its preview PNG.",
+          "make": {
+            "tool": "splat.build",
+            "params": {
+              "presetScene": "subway-car-full",
+              "maxSplats": 180000
+            },
+            "saves": {
+              "splat": "splat",
+              "preview": "preview"
+            }
+          }
+        },
+        "preview": {
+          "description": "Rendered 2D preview PNG of the 3D Gaussian splat cloud (filled automatically when splat is built).",
+          "optional": true
         }
       }
     }
