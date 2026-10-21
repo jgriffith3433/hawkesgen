@@ -27,7 +27,7 @@ const MIME: Record<string, string> = {
   '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska',
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.flac': 'audio/flac',
   '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json', '.obj': 'model/obj', '.fbx': 'model/vnd.fbx',
-  '.bvh': 'application/x-bvh', '.blend': 'application/x-blender',
+  '.splat': 'application/x-gaussian-splat', '.bvh': 'application/x-bvh', '.blend': 'application/x-blender',
   '.json': 'application/json', '.txt': 'text/plain', '.md': 'text/markdown',
 };
 export const mimeOf = (file: string) => MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
@@ -38,7 +38,7 @@ export function kindOf(mime: string): string {
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('video/')) return 'video';
   if (mime.startsWith('audio/')) return 'audio';
-  if (mime.startsWith('model/')) return 'mesh';
+  if (mime.startsWith('model/') || mime === 'application/x-gaussian-splat') return 'mesh';
   if (mime.startsWith('text/') || mime === 'application/json') return 'text';
   return 'file';
 }

@@ -296,7 +296,11 @@ export function clearFinished(project?: string) {
 
 // ------------------------------------------------------------------- queue
 
-const PYTHON = [path.join(ROOT, '.venv', 'Scripts', 'python.exe'), path.join(ROOT, '.venv', 'bin', 'python')].find((p) => fs.existsSync(p)) ?? (process.platform === 'win32' ? 'python' : 'python3');
+const PYTHON = [
+  path.join(ROOT, '.venv', 'Scripts', 'python.exe'),
+  path.join(ROOT, '.venv', 'bin', 'python'),
+  path.join(paths.projects, 'hawkesgen', '.venv', 'bin', 'python'),
+].find((p) => fs.existsSync(p)) ?? (process.platform === 'win32' ? 'python' : 'python3');
 
 class Queue {
   /** Server id -> job id running on it. */

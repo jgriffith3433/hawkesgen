@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
-import { run } from '../util.ts';
+import { run, GenError } from '../util.ts';
 
 export const cutoutTool: Tool = {
   id: 'image.cutout',
@@ -142,5 +142,102 @@ export const importTool: Tool = {
     const ext = path.extname(ctx.inputs.file).toLowerCase() || undefined;
     const meta = ctx.params.meta && typeof ctx.params.meta === 'object' ? ctx.params.meta : undefined;
     await ctx.emit({ data: fs.readFileSync(ctx.inputs.file), ext, title: ctx.params.title ? String(ctx.params.title).slice(0, 200) : undefined, meta });
+  },
+};
+
+export const splatBuildTool: Tool = {
+  id: 'splat.build',
+  version: 1,
+  title: 'Build 3D Gaussian Splat (.splat)',
+  description:
+    'Builds a 3D Gaussian Splat (.splat, 32 bytes per splat for Babylon.js GaussianSplattingMesh) and a rendered 2D preview PNG ' +
+    'from an input image (+ optional depth map) or a procedural/parametric scene recipe (subway-tunnel, subway-station, or subway-car-full ' +
+    'matching PH Origins Level 7 coordinates). Runs locally on the CPU.',
+  provider: 'local',
+  output: 'mesh',
+  inputs: {
+    image: { kind: 'image', required: false, description: 'Reference image or panorama to lift into 3D Gaussian splats.' },
+    depth: { kind: 'image', required: false, description: 'Optional grayscale depth map (bright = near or far depending on scene).' },
+  },
+  params: {
+    presetScene: {
+      type: 'enum',
+      values: ['auto', 'subway-tunnel', 'subway-station', 'subway-car-full'],
+      default: 'auto',
+      description: 'Parametric scene layout (matching PH Origins Level 7 coordinates) or auto (image lift when image is given, else subway-car-full).',
+    },
+    maxSplats: {
+      type: 'integer',
+      min: 64,
+      max: 500000,
+      default: 180000,
+      description: 'Maximum splat count (180,000 default for mobile-safe 60fps; up to 500,000 for desktop).',
+    },
+    density: {
+      type: 'number',
+      min: 0.1,
+      max: 4.0,
+      default: 1.0,
+      description: 'Sampling density multiplier before capping to maxSplats.',
+    },
+    splatScale: {
+      type: 'number',
+      min: 0.1,
+      max: 5.0,
+      default: 1.0,
+      description: 'Scale multiplier for individual 3D Gaussians.',
+    },
+    bounds: {
+      type: 'string',
+      default: '0,18,0,2.8,-2.6,6.5',
+      description: 'World-space bounding box xMin,xMax,yMin,yMax,zMin,zMax in meters.',
+      advanced: true,
+    },
+    mode: {
+      type: 'enum',
+      values: ['auto', 'relief', 'panorama'],
+      default: 'auto',
+      description: 'How an input image is projected into 3D space.',
+      advanced: true,
+    },
+    seed: {
+      type: 'integer',
+      min: 0,
+      max: 2147483647,
+      default: 42,
+      advanced: true,
+    },
+  },
+  async run(ctx) {
+    const p = ctx.params;
+    if (p.presetScene === 'auto' && !ctx.inputs.image) {
+      // Allow default procedural build when neither image nor explicit presetScene is set, or if presetScene is given
+    }
+    const outSplat = ctx.tmp('scene.splat');
+    const outPreview = ctx.tmp('preview.png');
+    const seed = ctx.seed(0);
+    ctx.step(`building Gaussian splat (${p.presetScene}, max ${p.maxSplats} splats)`);
+    const args = [
+      '--out-splat', outSplat,
+      '--out-preview', outPreview,
+      '--preset-scene', String(p.presetScene ?? 'auto'),
+      '--max-splats', String(p.maxSplats ?? 180000),
+      '--density', String(p.density ?? 1.0),
+      '--splat-scale', String(p.splatScale ?? 1.0),
+      '--bounds', String(p.bounds ?? '0,18,0,2.8,-2.6,6.5'),
+      '--mode', String(p.mode ?? 'auto'),
+      '--seed', String(seed),
+    ];
+    if (ctx.inputs.image) args.push('--image', String(ctx.inputs.image));
+    if (ctx.inputs.depth) args.push('--depth', String(ctx.inputs.depth));
+    const stdout = await ctx.python('splat.py', args);
+    const info = JSON.parse(stdout.trim().split('\n').pop() || '{}');
+    const splatBuf = fs.readFileSync(outSplat);
+    if (splatBuf.length === 0 || splatBuf.length % 32 !== 0) {
+      throw new GenError(`splat.build produced invalid .splat buffer (${splatBuf.length} bytes, must be a positive multiple of 32)`);
+    }
+    await ctx.emit({ data: splatBuf, ext: '.splat', seed, title: 'splat', meta: info });
+    await ctx.emit({ data: fs.readFileSync(outPreview), ext: '.png', seed, title: 'preview', meta: info });
+    ctx.result(info);
   },
 };

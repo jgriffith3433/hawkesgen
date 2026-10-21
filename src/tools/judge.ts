@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
-import { getAsset } from '../library.ts';
+import { getAsset, listAssets } from '../library.ts';
 import { ensureLocal } from '../storage.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 import { videoFrames } from './pipeline.ts';
@@ -74,7 +74,11 @@ export const libraryJudgeTool: Tool = {
       if (!a || !(await ensureLocal(a))) throw new GenError(`v${v.n}'s file is missing`);
       if (a.kind === 'image') views.push([a.path]);
       else if (a.kind === 'video') views.push(await videoFrames(a.path, ctx.tmp(`v${k}`), ctx.signal));
-      else throw new GenError(`library.judge needs images or videos (v${v.n} is ${a.kind})`);
+      else {
+        const sib = a.job ? listAssets({ job: a.job, kind: 'image', limit: 4 }).items[0] : null;
+        if (sib && (await ensureLocal(sib))) views.push([sib.path]);
+        else throw new GenError(`library.judge needs images or videos (v${v.n} is ${a.kind})`);
+      }
     }
     const per = views[0].length;
     if (!views.every((x) => x.length === per)) throw new GenError('the candidates mix images and videos');
