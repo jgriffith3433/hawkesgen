@@ -2,13 +2,114 @@
 // and Stripe Checkout + Webhook verification.
 
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { db } from './db.ts';
-import { env } from './config.ts';
+import { env, DATA_DIR } from './config.ts';
 import { estimate } from './estimate.ts';
 import { getTool } from './tools/index.ts';
 import { applyPreset } from './presets.ts';
 import { getUserById, type UserRow } from './users.ts';
 import { id, GenError } from './util.ts';
+
+const STRIPE_CONFIG_FILE = path.join(DATA_DIR, 'stripe.json');
+
+type StripeConfigFile = {
+  secretKey?: string;
+  publishableKey?: string;
+  webhookSecret?: string;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_PUBLISHABLE_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+};
+
+export type StripeStatus = {
+  configured: boolean;
+  hasSecretKey: boolean;
+  hasPublishableKey: boolean;
+  hasWebhookSecret: boolean;
+  publishableKey: string | null;
+  mode: 'live' | 'test' | null;
+};
+
+function readStripeConfigFile(): StripeConfigFile {
+  try {
+    if (!fs.existsSync(STRIPE_CONFIG_FILE)) return {};
+    const parsed = JSON.parse(fs.readFileSync(STRIPE_CONFIG_FILE, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function loadStripeKeys() {
+  const file = readStripeConfigFile();
+  const secretKey = (file.secretKey ?? file.STRIPE_SECRET_KEY ?? '').trim() || env('STRIPE_SECRET_KEY') || undefined;
+  const publishableKey = (file.publishableKey ?? file.STRIPE_PUBLISHABLE_KEY ?? '').trim() || env('STRIPE_PUBLISHABLE_KEY') || undefined;
+  const webhookSecret = (file.webhookSecret ?? file.STRIPE_WEBHOOK_SECRET ?? '').trim() || env('STRIPE_WEBHOOK_SECRET') || undefined;
+  return { secretKey, publishableKey, webhookSecret };
+}
+
+export function getStripeStatus(): StripeStatus {
+  const { secretKey, publishableKey, webhookSecret } = loadStripeKeys();
+  let mode: 'live' | 'test' | null = null;
+  if (secretKey?.includes('_live_') || publishableKey?.includes('_live_')) {
+    mode = 'live';
+  } else if (secretKey?.includes('_test_') || publishableKey?.includes('_test_')) {
+    mode = 'test';
+  }
+  return {
+    configured: Boolean(secretKey),
+    hasSecretKey: Boolean(secretKey),
+    hasPublishableKey: Boolean(publishableKey),
+    hasWebhookSecret: Boolean(webhookSecret),
+    publishableKey: publishableKey || null,
+    mode,
+  };
+}
+
+export function saveStripeConfig(input: {
+  secretKey?: unknown;
+  publishableKey?: unknown;
+  webhookSecret?: unknown;
+  STRIPE_SECRET_KEY?: unknown;
+  STRIPE_PUBLISHABLE_KEY?: unknown;
+  STRIPE_WEBHOOK_SECRET?: unknown;
+} = {}): StripeStatus {
+  const cur = readStripeConfigFile();
+  const next: { secretKey?: string; publishableKey?: string; webhookSecret?: string } = {
+    secretKey: (cur.secretKey ?? cur.STRIPE_SECRET_KEY ?? '').trim() || undefined,
+    publishableKey: (cur.publishableKey ?? cur.STRIPE_PUBLISHABLE_KEY ?? '').trim() || undefined,
+    webhookSecret: (cur.webhookSecret ?? cur.STRIPE_WEBHOOK_SECRET ?? '').trim() || undefined,
+  };
+
+  const rawSecret = input.secretKey !== undefined ? input.secretKey : input.STRIPE_SECRET_KEY;
+  if (rawSecret !== undefined) {
+    const v = typeof rawSecret === 'string' ? rawSecret.trim() : '';
+    next.secretKey = v || undefined;
+  }
+
+  const rawPub = input.publishableKey !== undefined ? input.publishableKey : input.STRIPE_PUBLISHABLE_KEY;
+  if (rawPub !== undefined) {
+    const v = typeof rawPub === 'string' ? rawPub.trim() : '';
+    next.publishableKey = v || undefined;
+  }
+
+  const rawWh = input.webhookSecret !== undefined ? input.webhookSecret : input.STRIPE_WEBHOOK_SECRET;
+  if (rawWh !== undefined) {
+    const v = typeof rawWh === 'string' ? rawWh.trim() : '';
+    next.webhookSecret = v || undefined;
+  }
+
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(STRIPE_CONFIG_FILE, JSON.stringify(next, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(STRIPE_CONFIG_FILE, 0o600);
+  } catch {
+    // ignore on filesystems that do not support chmod
+  }
+  return getStripeStatus();
+}
 
 export type CreditLedgerKind = 'signup_bonus' | 'stripe_purchase' | 'job_reserve' | 'job_refund' | 'admin_grant';
 
@@ -326,7 +427,7 @@ export async function createStripeCheckoutSession(
     throw new GenError(`Unknown credit pack "${packId}". Choose one of: ${CREDIT_PACKS.map((p) => p.id).join(', ')}`);
   }
 
-  const secretKey = env('STRIPE_SECRET_KEY');
+  const { secretKey } = loadStripeKeys();
   if (!secretKey) {
     throw new GenError('Stripe is not configured yet (STRIPE_SECRET_KEY is not set on this server).', { status: 503 });
   }
@@ -375,7 +476,7 @@ export async function createStripeCheckoutSession(
 }
 
 export function verifyStripeSignature(rawBody: Buffer | string, signatureHeader: string, webhookSecret?: string, toleranceSec = 300) {
-  const secret = webhookSecret ?? env('STRIPE_WEBHOOK_SECRET');
+  const secret = webhookSecret ?? loadStripeKeys().webhookSecret;
   if (!secret) {
     throw new GenError('Stripe webhook is not configured yet (STRIPE_WEBHOOK_SECRET is not set).', { status: 503 });
   }

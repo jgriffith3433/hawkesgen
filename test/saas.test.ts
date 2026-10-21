@@ -482,3 +482,78 @@ test('GET /v1/portfolio returns the Built With Hawkes Gen production showcase', 
     assert.ok(Array.isArray(item.pipelines) && item.pipelines.length > 0);
   }
 });
+
+test('runtime Stripe config (GET/POST /v1/billing/config and GET /v1/billing/packs) and X-Hawkes-Public-Saas: 1 header', async () => {
+  const signup = await reqJson('/v1/users/signup', {
+    body: { email: 'nonowner@example.com', password: 'password123' },
+  });
+  const userAuth = { Authorization: `Bearer ${signup.body.apiKey}` };
+
+  // 1. Non-owner cannot read or write /v1/billing/config
+  assert.equal((await reqJson('/v1/billing/config', { headers: userAuth })).status, 403);
+  assert.equal((await reqJson('/v1/billing/config', { method: 'POST', headers: userAuth, body: { publishableKey: 'pk_test_123' } })).status, 403);
+
+  // 2. Owner can read and save runtime Stripe config in .data/stripe.json
+  const initialCfg = await reqJson('/v1/billing/config');
+  assert.equal(initialCfg.status, 200);
+  assert.equal(initialCfg.body.configured, false);
+  assert.equal(initialCfg.body.publishableKey, null);
+  assert.equal(initialCfg.body.mode, null);
+
+  const savedCfg = await reqJson('/v1/billing/config', {
+    method: 'POST',
+    body: {
+      secretKey: 'sk_live_runtime_test_999',
+      publishableKey: 'pk_live_runtime_pub_999',
+      webhookSecret: 'whsec_runtime_hook_999',
+    },
+  });
+  assert.equal(savedCfg.status, 200);
+  assert.equal(savedCfg.body.configured, true);
+  assert.equal(savedCfg.body.hasSecretKey, true);
+  assert.equal(savedCfg.body.hasPublishableKey, true);
+  assert.equal(savedCfg.body.hasWebhookSecret, true);
+  assert.equal(savedCfg.body.publishableKey, 'pk_live_runtime_pub_999');
+  assert.equal(savedCfg.body.mode, 'live');
+  assert.equal('secretKey' in savedCfg.body, false);
+  assert.equal('webhookSecret' in savedCfg.body, false);
+
+  // 3. GET /v1/billing/packs includes stripe.publishableKey, configured, and mode
+  const packsRes = await reqJson('/v1/billing/packs');
+  assert.equal(packsRes.status, 200);
+  assert.deepEqual(packsRes.body.stripe, {
+    configured: true,
+    publishableKey: 'pk_live_runtime_pub_999',
+    mode: 'live',
+  });
+
+  // Clean up runtime Stripe config so other tests see clean state
+  await reqJson('/v1/billing/config', {
+    method: 'POST',
+    body: { secretKey: '', publishableKey: '', webhookSecret: '' },
+  });
+
+  // 4. X-Hawkes-Public-Saas: 1 serves dashboard/public/index.html at / and requires auth on /v1/me
+  const adminRoot = await reqJson('/');
+  assert.equal(adminRoot.status, 200);
+  assert.equal(typeof adminRoot.body, 'string');
+  assert.ok(!adminRoot.body.includes('One Prompt Pipeline for Games, Film'));
+
+  const publicRoot = await reqJson('/', { headers: { 'X-Hawkes-Public-Saas': '1' } });
+  assert.equal(publicRoot.status, 200);
+  assert.equal(typeof publicRoot.body, 'string');
+  assert.ok(publicRoot.body.includes('One Prompt Pipeline for Games, Film'));
+
+  const localMe = await reqJson('/v1/me');
+  assert.equal(localMe.status, 200);
+  assert.equal(localMe.body.role, 'owner');
+
+  const publicAnonMe = await reqJson('/v1/me', { headers: { 'X-Hawkes-Public-Saas': '1' } });
+  assert.equal(publicAnonMe.status, 401);
+
+  const publicAuthMe = await reqJson('/v1/me', {
+    headers: { 'X-Hawkes-Public-Saas': '1', ...userAuth },
+  });
+  assert.equal(publicAuthMe.status, 200);
+  assert.equal(publicAuthMe.body.role, 'user');
+});
