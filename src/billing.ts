@@ -1,0 +1,457 @@
+// Credit pricing, tool quoting, atomic credit reservation/refunds, credit ledger,
+// and Stripe Checkout + Webhook verification.
+
+import crypto from 'node:crypto';
+import { db } from './db.ts';
+import { env } from './config.ts';
+import { estimate } from './estimate.ts';
+import { getTool } from './tools/index.ts';
+import { applyPreset } from './presets.ts';
+import { getUserById, type UserRow } from './users.ts';
+import { id, GenError } from './util.ts';
+
+export type CreditLedgerKind = 'signup_bonus' | 'stripe_purchase' | 'job_reserve' | 'job_refund' | 'admin_grant';
+
+export type CreditLedgerEntry = {
+  id: string;
+  user_id: string;
+  delta: number;
+  balance_after: number;
+  kind: CreditLedgerKind;
+  detail: string | null;
+  job_id: string | null;
+  stripe_session_id: string | null;
+  created: number;
+};
+
+export type CreditPack = {
+  id: 'starter_10' | 'creator_25' | 'studio_100';
+  name: string;
+  label: string;
+  priceCents: number;
+  priceUsd: number;
+  credits: number;
+  bonusPercent: number;
+};
+
+export const CREDIT_PACKS: CreditPack[] = [
+  {
+    id: 'starter_10',
+    name: 'Starter Pack',
+    label: 'Starter Pack — 1,000 Credits',
+    priceCents: 1000,
+    priceUsd: 10,
+    credits: 1000,
+    bonusPercent: 0,
+  },
+  {
+    id: 'creator_25',
+    name: 'Creator Pack',
+    label: 'Creator Pack — 2,750 Credits · 10% Bonus',
+    priceCents: 2500,
+    priceUsd: 25,
+    credits: 2750,
+    bonusPercent: 10,
+  },
+  {
+    id: 'studio_100',
+    name: 'Studio Pack',
+    label: 'Studio Pack — 12,000 Credits · 20% Bonus',
+    priceCents: 10000,
+    priceUsd: 100,
+    credits: 12000,
+    bonusPercent: 20,
+  },
+];
+
+export const COMMERCIAL_MARGIN = 3;
+
+export const INTERNAL_ONLY_TOOLS = new Set([
+  'unity.build',
+  'unity.test',
+  'playtest.run',
+  'playtest.review',
+]);
+
+export function isInternalOnlyTool(toolId: string): boolean {
+  return INTERNAL_ONLY_TOOLS.has(toolId);
+}
+
+export function listCreditPacks(): CreditPack[] {
+  return CREDIT_PACKS;
+}
+
+export function getCreditPack(packId: string): CreditPack | null {
+  return CREDIT_PACKS.find((p) => p.id === packId) ?? null;
+}
+
+/**
+ * Sensible minimum floor in credits (1 credit = $0.01) for a single execution of a tool.
+ */
+export function toolFloorCredits(toolId: string): number {
+  if (toolId === 'texture.maps' || toolId === 'image.normals' || toolId === 'image.albedo' || toolId === 'image.depth' || toolId === 'image.segment') {
+    return 5;
+  }
+  if (toolId === 'image.cutout' || toolId === 'image.remove-background' || toolId === 'image.frame' || toolId === 'image.tile' || toolId === 'image.sheet' || toolId === 'video.fit' || toolId === 'media.probe' || toolId === 'file.import') {
+    return 2;
+  }
+  if (toolId === 'image.viewsheet' || toolId === 'image.character') {
+    return 15;
+  }
+  if (toolId.startsWith('image.')) {
+    return 5;
+  }
+  if (toolId === 'audio.music') {
+    return 20;
+  }
+  if (toolId.startsWith('audio.')) {
+    return 8;
+  }
+  if (toolId === 'mesh.rig' || toolId === 'motion.from-text' || toolId === 'blender.character' || toolId === 'blender.render') {
+    return 20;
+  }
+  if (toolId === 'mesh.from-image' || toolId === 'mesh.textured' || toolId === 'mesh.views3d' || toolId === 'mesh.from-views' || toolId === 'splat.build') {
+    return 50;
+  }
+  if (toolId.startsWith('video.')) {
+    return 40;
+  }
+  if (toolId === 'lora.train') {
+    return 150;
+  }
+  if (toolId === 'llm.text' || toolId === 'llm.json' || toolId === 'library.judge' || toolId === 'film.plan' || toolId === 'film.gate') {
+    return 3;
+  }
+  return 5;
+}
+
+export function quoteJobCredits(
+  toolOrSpec: string | { project?: string; tool?: string; preset?: string; params?: Record<string, any>; count?: number },
+  paramsArg: Record<string, any> = {},
+  projectArg = 'sandbox',
+) {
+  const spec = typeof toolOrSpec === 'string'
+    ? { project: projectArg, tool: toolOrSpec, params: paramsArg }
+    : { project: toolOrSpec.project ?? projectArg, tool: toolOrSpec.tool, preset: toolOrSpec.preset, params: toolOrSpec.params ?? paramsArg, count: toolOrSpec.count };
+
+  const applied = applyPreset(
+    { project: spec.project, tool: spec.tool, preset: spec.preset, params: spec.params ?? {} },
+    (tid) => getTool(tid)?.params ?? null,
+  );
+  const resolvedToolId = applied.tool ?? spec.tool ?? '';
+  const tool = getTool(resolvedToolId);
+  if (!tool) throw new GenError(`Unknown tool: ${resolvedToolId || spec.preset}`, { status: 404 });
+  const params = applied.params ?? {};
+  const itemCount = Math.max(1, Math.round(Number(spec.count ?? params.count ?? 1)));
+
+  const est = estimate({
+    project: spec.project,
+    items: [{ tool: tool.id, params, count: 1 }],
+  });
+
+  // Compute work-based USD from the estimate's lines (GPU work seconds at the fleet hourly rate + API cost).
+  const gpuPricePerHour = est.gpu.pricePerHour || 1.86;
+  const breakdown = est.lines.map((line) => {
+    const stepToolId = line.tool === 'llm (pick)' ? 'llm.json' : line.tool;
+    const rawStepUsd = (line.gpuSeconds / 3600) * gpuPricePerHour + line.apiCost;
+    const marginedCredits = Math.ceil(rawStepUsd * COMMERCIAL_MARGIN * 100);
+    const floor = toolFloorCredits(stepToolId) * Math.max(1, Math.round(line.count));
+    const stepCredits = Math.max(floor, marginedCredits);
+    return {
+      label: line.label,
+      tool: line.tool,
+      count: line.count,
+      gpuSeconds: line.gpuSeconds,
+      apiCost: line.apiCost,
+      rawUsd: Math.round(rawStepUsd * 10000) / 10000,
+      floorCredits: floor,
+      credits: stepCredits,
+      basis: line.basis,
+    };
+  });
+
+  const totalRawUsd = breakdown.reduce((sum, b) => sum + b.rawUsd, 0);
+  const sumStepCredits = breakdown.reduce((sum, b) => sum + b.credits, 0);
+  const topFloor = tool.id === 'asset.make'
+    ? breakdown.reduce((sum, b) => sum + b.floorCredits, 0)
+    : toolFloorCredits(tool.id) * itemCount;
+  const credits = Math.max(1, topFloor, sumStepCredits, Math.ceil(totalRawUsd * COMMERCIAL_MARGIN * 100));
+  const usdEquivalent = Math.round(credits) / 100;
+
+  return {
+    tool: tool.id,
+    credits,
+    usdEquivalent,
+    margin: COMMERCIAL_MARGIN,
+    rawCostUsd: Math.round(totalRawUsd * 10000) / 10000,
+    breakdown,
+  };
+}
+
+export function reserveJobCredits(userId: string, jobId: string, credits: number, detail: string): CreditLedgerEntry {
+  const amount = Math.max(0, Math.round(credits));
+  const now = Date.now();
+  const txId = id('tx', 6);
+  db.exec('BEGIN');
+  try {
+    const user = getUserById(userId);
+    if (!user) throw new GenError('User account not found', { status: 404 });
+    if (user.credits < amount) {
+      throw new GenError(
+        `Insufficient credits (need ${amount}, have ${user.credits}). Buy credits to run this generation.`,
+        { status: 402 },
+      );
+    }
+    const nextBalance = user.credits - amount;
+    db.prepare('UPDATE users SET credits = ? WHERE id = ?').run(nextBalance, user.id);
+    db.prepare(
+      `INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, detail, job_id, stripe_session_id, created)
+       VALUES (?, ?, ?, ?, 'job_reserve', ?, ?, NULL, ?)`,
+    ).run(txId, user.id, -amount, nextBalance, detail, jobId, now);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  return db.prepare('SELECT * FROM credit_ledger WHERE id = ?').get(txId) as CreditLedgerEntry;
+}
+
+/**
+ * Idempotently refunds reserved credits for a job when it transitions to `failed` or `cancelled`.
+ */
+export function refundJobCredits(jobId: string, reason = 'Job failed or cancelled'): CreditLedgerEntry | null {
+  if (!jobId) return null;
+  db.exec('BEGIN');
+  try {
+    const reserve = db.prepare(
+      "SELECT * FROM credit_ledger WHERE job_id = ? AND kind = 'job_reserve' LIMIT 1",
+    ).get(jobId) as CreditLedgerEntry | undefined;
+    if (!reserve) {
+      db.exec('COMMIT');
+      return null;
+    }
+    const existingRefund = db.prepare(
+      "SELECT * FROM credit_ledger WHERE job_id = ? AND kind = 'job_refund' LIMIT 1",
+    ).get(jobId) as CreditLedgerEntry | undefined;
+    if (existingRefund) {
+      db.exec('COMMIT');
+      return existingRefund;
+    }
+    const refundAmount = Math.abs(reserve.delta);
+    const user = getUserById(reserve.user_id);
+    if (!user) {
+      db.exec('COMMIT');
+      return null;
+    }
+    const nextBalance = user.credits + refundAmount;
+    const txId = id('tx', 6);
+    const now = Date.now();
+    db.prepare('UPDATE users SET credits = ? WHERE id = ?').run(nextBalance, user.id);
+    db.prepare(
+      `INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, detail, job_id, stripe_session_id, created)
+       VALUES (?, ?, ?, ?, 'job_refund', ?, ?, NULL, ?)`,
+    ).run(txId, user.id, refundAmount, nextBalance, `${reason} (${jobId})`, jobId, now);
+    db.exec('COMMIT');
+    return db.prepare('SELECT * FROM credit_ledger WHERE id = ?').get(txId) as CreditLedgerEntry;
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+export function grantCredits(
+  userId: string,
+  credits: number,
+  opts: { kind?: CreditLedgerKind; detail?: string; stripeSessionId?: string | null; stripeCustomerId?: string | null } = {},
+) {
+  const amount = Math.round(Number(credits));
+  if (!Number.isFinite(amount) || amount <= 0) throw new GenError('Credits must be a positive integer');
+  const kind: CreditLedgerKind = opts.kind ?? 'admin_grant';
+  const stripeSessionId = opts.stripeSessionId ?? null;
+
+  db.exec('BEGIN');
+  try {
+    if (stripeSessionId) {
+      const dup = db.prepare('SELECT * FROM credit_ledger WHERE stripe_session_id = ?').get(stripeSessionId) as CreditLedgerEntry | undefined;
+      if (dup) {
+        const curUser = getUserById(dup.user_id);
+        db.exec('COMMIT');
+        return { duplicate: true, entry: dup, balance: curUser?.credits ?? dup.balance_after };
+      }
+    }
+    const user = getUserById(userId);
+    if (!user) throw new GenError(`User ${userId} not found`, { status: 404 });
+    const nextBalance = user.credits + amount;
+    if (opts.stripeCustomerId) {
+      db.prepare('UPDATE users SET credits = ?, stripe_customer_id = ? WHERE id = ?').run(nextBalance, opts.stripeCustomerId, user.id);
+    } else {
+      db.prepare('UPDATE users SET credits = ? WHERE id = ?').run(nextBalance, user.id);
+    }
+    const txId = id('tx', 6);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, detail, job_id, stripe_session_id, created)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+    ).run(txId, user.id, amount, nextBalance, kind, opts.detail ?? `${kind}: +${amount} credits`, stripeSessionId, now);
+    db.exec('COMMIT');
+    const entry = db.prepare('SELECT * FROM credit_ledger WHERE id = ?').get(txId) as CreditLedgerEntry;
+    return { duplicate: false, entry, balance: nextBalance };
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+export function getUserLedger(userId: string, limit = 100) {
+  const user = getUserById(userId);
+  if (!user) throw new GenError('User not found', { status: 404 });
+  const lim = Math.max(1, Math.min(500, Number(limit) || 100));
+  const entries = db.prepare(
+    'SELECT * FROM credit_ledger WHERE user_id = ? ORDER BY created DESC, rowid DESC LIMIT ?',
+  ).all(userId, lim) as CreditLedgerEntry[];
+  return {
+    credits: user.credits,
+    entries,
+  };
+}
+
+export async function createStripeCheckoutSession(
+  user: UserRow,
+  body: { packId?: unknown; successUrl?: unknown; cancelUrl?: unknown },
+  defaultOrigin = 'https://gen.hawkesgen.com',
+) {
+  const packId = String(body.packId ?? '').trim();
+  const pack = getCreditPack(packId);
+  if (!pack) {
+    throw new GenError(`Unknown credit pack "${packId}". Choose one of: ${CREDIT_PACKS.map((p) => p.id).join(', ')}`);
+  }
+
+  const secretKey = env('STRIPE_SECRET_KEY');
+  if (!secretKey) {
+    throw new GenError('Stripe is not configured yet (STRIPE_SECRET_KEY is not set on this server).', { status: 503 });
+  }
+
+  const successUrl = typeof body.successUrl === 'string' && /^https?:\/\//.test(body.successUrl)
+    ? body.successUrl
+    : `${defaultOrigin}/?billing=success&session_id={CHECKOUT_SESSION_ID}`;
+  const cancelUrl = typeof body.cancelUrl === 'string' && /^https?:\/\//.test(body.cancelUrl)
+    ? body.cancelUrl
+    : `${defaultOrigin}/?billing=cancelled`;
+
+  const form = new URLSearchParams();
+  form.set('mode', 'payment');
+  form.set('client_reference_id', user.id);
+  form.set('customer_email', user.email);
+  form.set('success_url', successUrl);
+  form.set('cancel_url', cancelUrl);
+  form.set('metadata[user_id]', user.id);
+  form.set('metadata[pack_id]', pack.id);
+  form.set('metadata[credits]', String(pack.credits));
+  form.set('line_items[0][quantity]', '1');
+  form.set('line_items[0][price_data][currency]', 'usd');
+  form.set('line_items[0][price_data][unit_amount]', String(pack.priceCents));
+  form.set('line_items[0][price_data][product_data][name]', pack.label);
+  form.set('line_items[0][price_data][product_data][description]', `${pack.credits.toLocaleString('en-US')} Hawkes Gen generation credits`);
+
+  const apiBase = (env('STRIPE_API_BASE') ?? 'https://api.stripe.com').replace(/\/+$/, '');
+  const res = await fetch(`${apiBase}/v1/checkout/sessions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: form.toString(),
+  });
+
+  const data: any = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new GenError(data?.error?.message ?? `Stripe checkout error (HTTP ${res.status})`, { status: 502 });
+  }
+  return {
+    url: data.url as string,
+    sessionId: data.id as string,
+    pack,
+  };
+}
+
+export function verifyStripeSignature(rawBody: Buffer | string, signatureHeader: string, webhookSecret?: string, toleranceSec = 300) {
+  const secret = webhookSecret ?? env('STRIPE_WEBHOOK_SECRET');
+  if (!secret) {
+    throw new GenError('Stripe webhook is not configured yet (STRIPE_WEBHOOK_SECRET is not set).', { status: 503 });
+  }
+  if (!signatureHeader) {
+    throw new GenError('Missing Stripe-Signature header', { status: 400 });
+  }
+
+  let timestamp = 0;
+  const signatures: string[] = [];
+  for (const part of signatureHeader.split(',')) {
+    const [k, v] = part.trim().split('=', 2);
+    if (k === 't') timestamp = Number(v);
+    else if (k === 'v1' && v) signatures.push(v);
+  }
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || !signatures.length) {
+    throw new GenError('Malformed Stripe-Signature header', { status: 400 });
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - timestamp) > toleranceSec) {
+    throw new GenError('Stripe webhook timestamp outside tolerance window', { status: 400 });
+  }
+
+  const payload = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
+  const signedPayload = `${timestamp}.${payload}`;
+  const expectedHex = crypto.createHmac('sha256', secret).update(signedPayload, 'utf8').digest('hex');
+  const expectedBuf = Buffer.from(expectedHex, 'hex');
+
+  const matched = signatures.some((sig) => {
+    if (!/^[0-9a-f]+$/i.test(sig) || sig.length !== expectedHex.length) return false;
+    const sigBuf = Buffer.from(sig, 'hex');
+    return sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf);
+  });
+
+  if (!matched) {
+    throw new GenError('Invalid Stripe webhook signature', { status: 400 });
+  }
+}
+
+export function handleStripeWebhook(rawBody: Buffer | string, signatureHeader: string) {
+  verifyStripeSignature(rawBody, signatureHeader);
+  let event: any;
+  try {
+    event = JSON.parse(typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8'));
+  } catch {
+    throw new GenError('Webhook body is not valid JSON', { status: 400 });
+  }
+
+  if (event?.type === 'checkout.session.completed') {
+    const session = event.data?.object ?? {};
+    if (session.payment_status === 'paid') {
+      const userId = String(session.metadata?.user_id ?? session.client_reference_id ?? '').trim();
+      const credits = Math.round(Number(session.metadata?.credits ?? 0));
+      const packId = String(session.metadata?.pack_id ?? '').trim();
+      const sessionId = String(session.id ?? '').trim();
+      if (!userId || !sessionId || credits <= 0) {
+        throw new GenError('Stripe checkout session missing metadata (user_id, credits, or id)', { status: 400 });
+      }
+      const pack = getCreditPack(packId);
+      const detail = pack ? `Purchased ${pack.label}` : `Stripe credit purchase (+${credits} credits)`;
+      const res = grantCredits(userId, credits, {
+        kind: 'stripe_purchase',
+        detail,
+        stripeSessionId: sessionId,
+        stripeCustomerId: typeof session.customer === 'string' ? session.customer : null,
+      });
+      return {
+        ok: true,
+        type: event.type,
+        duplicate: res.duplicate,
+        creditsAdded: res.duplicate ? 0 : credits,
+        balance: res.balance,
+      };
+    }
+  }
+
+  return { ok: true, type: event?.type ?? 'unknown', ignored: true };
+}
