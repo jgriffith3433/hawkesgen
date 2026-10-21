@@ -32,6 +32,8 @@ import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable,
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
+import { getUserForClient } from './users.ts';
+import { quoteJobCredits, reserveJobCredits, refundJobCredits, isInternalOnlyTool } from './billing.ts';
 
 import { events } from './bus.ts';
 
@@ -181,7 +183,9 @@ function resolveInputs(client: Client, tool: Tool, raw: Record<string, unknown> 
 }
 
 export function submit(client: Client, spec0: JobSpec): Job {
-  const project0 = String(spec0.project ?? '').trim();
+  const project0 = client.role === 'user' && client.projects.length && client.projects[0] !== '*'
+    ? client.projects[0]
+    : String(spec0.project ?? '').trim();
   // A preset (the project's art direction) fills in the tool, params and inputs.
   const applied = applyPreset({ ...spec0, project: project0 }, (id) => getTool(id)?.params ?? null);
   const spec: JobSpec = { ...spec0, tool: applied.tool ?? spec0.tool, params: applied.params, inputs: applied.inputs, labels: applied.preset ? { ...(spec0.labels ?? {}), preset: applied.preset } : spec0.labels };
@@ -202,6 +206,18 @@ export function submit(client: Client, spec0: JobSpec): Job {
   }
   const tool = getTool(spec.tool ?? '');
   if (!tool) throw new GenError(`Unknown tool: ${spec.tool}`, { status: 404 });
+  if (client.role === 'user') {
+    if (isInternalOnlyTool(tool.id)) {
+      throw new GenError(`Tool ${tool.id} is internal-only and not available for user accounts`, { status: 403 });
+    }
+    if (tool.id === 'asset.make' && Array.isArray((spec.params as any)?.steps)) {
+      for (const st of (spec.params as any).steps) {
+        if (st && typeof st.tool === 'string' && isInternalOnlyTool(st.tool)) {
+          throw new GenError(`Tool ${st.tool} is internal-only and not available for user accounts`, { status: 403 });
+        }
+      }
+    }
+  }
   const project = project0;
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(project)) throw new GenError('project is required (letters, numbers, . _ -)');
   if (!canProject(client, project)) throw new GenError(`No access to project ${project}`, { status: 403 });
@@ -255,6 +271,14 @@ function createJob(client: Client, tool: Tool, s: { project: string; params: Rec
     labels: spec.labels ?? {}, priority: Math.max(-10, Math.min(10, Math.round(Number(spec.priority) || 0))), status: 'queued', detail: 'queued',
     log: [], outputs: [], result: null, error: null, server: null, family, gpu_seconds: 0, cost: 0, graphs: [], resumed: 0, created: Date.now(), started: null, finished: null,
   };
+  if (client.role === 'user') {
+    const user = getUserForClient(client);
+    if (user) {
+      const quote = quoteJobCredits({ project, tool: tool.id, params });
+      reserveJobCredits(user.id, job.id, quote.credits, `Reserved ${quote.credits} credits for ${tool.id} (${job.id})`);
+      job.labels = { ...job.labels, reservedCredits: quote.credits };
+    }
+  }
   db.prepare(`INSERT INTO jobs (id, key, client, project, tool, params, inputs, labels, priority, status, detail, log, outputs, result, error, server, family, gpu_seconds, cost, graphs, resumed, created)
               VALUES (:id, :key, :client, :project, :tool, :params, :inputs, :labels, :priority, :status, :detail, :log, :outputs, :result, :error, :server, :family, :gpu_seconds, :cost, :graphs, :resumed, :created)`).run({
     id: job.id, key: job.key, client: job.client, project: job.project, tool: job.tool, params: J(params), inputs: J(inputs), labels: J(job.labels),
@@ -272,9 +296,27 @@ export function cancel(jobId: string) {
   if (j.status === 'queued') {
     Object.assign(j, { status: 'cancelled', detail: 'cancelled before it started', finished: Date.now() });
     save(j, ['status', 'detail', 'finished']);
+    refundJobCredits(j.id, 'Job cancelled before starting');
   } else if (j.status === 'running') {
-    queue.aborts.get(j.id)?.abort();
+    const ab = queue.aborts.get(j.id);
+    if (ab) {
+      ab.abort();
+    } else {
+      Object.assign(j, { status: 'cancelled', detail: 'cancelled', finished: Date.now() });
+      save(j, ['status', 'detail', 'finished']);
+      refundJobCredits(j.id, 'Job cancelled');
+    }
   }
+  return getJob(jobId);
+}
+
+export function failJob(jobId: string, errorMessage = 'Job failed') {
+  const j = getJob(jobId);
+  if (!j) throw new GenError('No such job', { status: 404 });
+  Object.assign(j, { status: 'failed', error: errorMessage, detail: errorMessage, finished: Date.now() });
+  j.log.push(`error: ${errorMessage}`);
+  save(j, ['status', 'error', 'detail', 'finished', 'log']);
+  refundJobCredits(j.id, `Job failed: ${errorMessage}`);
   return getJob(jobId);
 }
 
@@ -582,6 +624,7 @@ class Queue {
       const cancelled = abort.signal.aborted || e.message === 'Cancelled';
       Object.assign(job, { status: cancelled ? 'cancelled' : 'failed', finished: Date.now(), error: cancelled ? null : e.message, detail: cancelled ? 'cancelled' : e.message });
       job.log.push(`error: ${e.message}`);
+      refundJobCredits(job.id, cancelled ? 'Job cancelled' : `Job failed: ${e.message}`);
     } finally {
       if (ep && job.gpu_seconds) {
         const cost = (job.gpu_seconds / 3600) * ep.price;

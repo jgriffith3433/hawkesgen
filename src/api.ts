@@ -37,6 +37,27 @@ import { db } from './db.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { handleAnalytics } from './analytics/routes.ts';
+import {
+  authenticateRequest,
+  signupUser,
+  loginUser,
+  deleteSession,
+  getSessionToken,
+  setSessionCookie,
+  clearSessionCookie,
+  getUserForClient,
+  getUserProfile,
+  rotateUserApiKey,
+} from './users.ts';
+import {
+  listCreditPacks,
+  quoteJobCredits,
+  createStripeCheckoutSession,
+  handleStripeWebhook,
+  getUserLedger,
+  isInternalOnlyTool,
+} from './billing.ts';
+import { getPortfolio } from './portfolio.ts';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'package.json'), 'utf8')).version;
 
@@ -244,19 +265,88 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       });
     }
 
-    const client = authenticate(req);
-    if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...)' });
+    // --------------------------------------------------- public SaaS routes
+    if (route === '/v1/portfolio' && method === 'GET') {
+      return send(res, 200, getPortfolio());
+    }
+    if (route === '/v1/billing/packs' && method === 'GET') {
+      return send(res, 200, { packs: listCreditPacks() });
+    }
+    if (route === '/v1/billing/webhook' && method === 'POST') {
+      const rawBody = await readBody(req);
+      const sig = String(req.headers['stripe-signature'] ?? '');
+      return send(res, 200, handleStripeWebhook(rawBody, sig));
+    }
+    if (route === '/v1/users/signup' && method === 'POST') {
+      const body = await readJson(req);
+      const result = signupUser(body);
+      setSessionCookie(res, req, result.sessionToken);
+      return send(res, 200, { user: result.user, apiKey: result.apiKey });
+    }
+    if (route === '/v1/users/login' && method === 'POST') {
+      const body = await readJson(req);
+      const result = loginUser(body);
+      setSessionCookie(res, req, result.sessionToken);
+      return send(res, 200, { user: result.user });
+    }
+    if (route === '/v1/users/logout' && method === 'POST') {
+      deleteSession(getSessionToken(req));
+      clearSessionCookie(res, req);
+      return send(res, 200, { ok: true });
+    }
+
+    const client = authenticateRequest(req);
+    if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
 
     if (route === '/v1/me') return send(res, 200, client);
+
+    // --------------------------------------------------- user & billing routes
+    if (route === '/v1/users/me' && method === 'GET') {
+      return send(res, 200, getUserProfile(client));
+    }
+    if (route === '/v1/users/api-key' && method === 'POST') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User account required', { status: 403 });
+      return send(res, 200, rotateUserApiKey(user.id));
+    }
+    if (route === '/v1/billing/quote' && method === 'POST') {
+      const body = await readJson(req);
+      const user = getUserForClient(client);
+      const project = client.role === 'user' ? client.projects[0] : String(body.project || 'sandbox');
+      const qResult = quoteJobCredits({ project, tool: body.tool, preset: body.preset, params: body.params ?? {}, count: body.count });
+      return send(res, 200, {
+        ...qResult,
+        userCredits: user ? user.credits : null,
+        canAfford: user ? user.credits >= qResult.credits : true,
+      });
+    }
+    if (route === '/v1/billing/checkout' && method === 'POST') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in with a user account to buy credits', { status: 403 });
+      const body = await readJson(req);
+      const checkout = await createStripeCheckoutSession(user, body, origin || 'https://gen.hawkesgen.com');
+      return send(res, 200, checkout);
+    }
+    if (route === '/v1/billing/ledger' && method === 'GET') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User account required', { status: 403 });
+      return send(res, 200, getUserLedger(user.id, Number(q('limit')) || 100));
+    }
 
     // ------------------------------------------------------------ analytics
     // Reading what players did (src/analytics/routes.ts, docs/analytics.md).
     if (handleAnalytics(client, route, method, q, res, send, url.search)) return;
 
     // ---------------------------------------------------------------- tools
-    if (route === '/v1/tools' && method === 'GET') return send(res, 200, { tools: TOOLS.map(describeTool) });
+    if (route === '/v1/tools' && method === 'GET') {
+      const list = client.role === 'user' ? TOOLS.filter((t) => !isInternalOnlyTool(t.id)) : TOOLS;
+      return send(res, 200, { tools: list.map(describeTool) });
+    }
     let m = /^\/v1\/tools\/([\w.-]+)$/.exec(route);
     if (m && method === 'GET') {
+      if (client.role === 'user' && isInternalOnlyTool(m[1])) {
+        throw new GenError(`Tool ${m[1]} is internal-only and not available for user accounts`, { status: 403 });
+      }
       const t = getTool(m[1]);
       if (!t) throw new GenError(`Unknown tool: ${m[1]}`, { status: 404 });
       return send(res, 200, describeTool(t));
@@ -291,7 +381,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === '/v1/jobs' && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
-      return send(res, 200, { jobs: listJobs({ project: q('project'), status: q('status'), tool: q('tool'), limit: Number(q('limit')) || 100, projects: client.projects }).map(summary) });
+      const projectFilter = client.role === 'user' ? client.projects[0] : q('project');
+      return send(res, 200, { jobs: listJobs({ project: projectFilter, status: q('status'), tool: q('tool'), limit: Number(q('limit')) || 100, projects: client.projects }).map(summary) });
     }
     if (route === '/v1/jobs/timing' && method === 'GET') {
       const since = q('since') ? Number(q('since')) : Date.now() - (Number(q('days')) || 7) * 24 * 3600 * 1000;
@@ -361,13 +452,19 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // --------------------------------------------------------------- library: entities, slots, versions
     // src/entities.ts and docs/library.md. A slot name can have slashes (pose/air), so it is the rest of the path.
     if (route === '/v1/entities' && method === 'GET') {
-      return send(res, 200, lib.listEntities(client, { project: q('project'), kind: q('kind'), text: q('q'), tag: q('tag'), archived: q('archived') === '1', limit: Number(q('limit')) || 100, offset: Number(q('offset')) || 0 }));
+      const entityProject = client.role === 'user' ? (q('project') ?? client.projects[0]) : q('project');
+      return send(res, 200, lib.listEntities(client, { project: entityProject, kind: q('kind'), text: q('q'), tag: q('tag'), archived: q('archived') === '1', limit: Number(q('limit')) || 100, offset: Number(q('offset')) || 0 }));
     }
-    if (route === '/v1/entities' && method === 'POST') return send(res, 200, lib.createEntity(client, await readJson(req)));
+    if (route === '/v1/entities' && method === 'POST') {
+      const body = await readJson(req);
+      if (client.role === 'user' && !body.project) body.project = client.projects[0];
+      return send(res, 200, lib.createEntity(client, body));
+    }
     m = /^\/v1\/versions\/(v_[0-9a-f]+)$/.exec(route);
     if (m && method === 'PATCH') return send(res, 200, lib.updateVersion(client, m[1], await readJson(req)));
     m = /^\/v1\/entities\/([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9-]*)(?:\/slots\/(.+?))?(?:\/(versions|make|revise))?$/i.exec(route);
     if (m) {
+      if (client.role === 'user' && !canProject(client, m[1])) throw new GenError(`No access to project ${m[1]}`, { status: 403 });
       const entityId = `${m[1]}/${m[2]}`;
       const slot = m[3] ? decodeURIComponent(m[3]) : null;
       const action = m[4] ?? null;
@@ -406,11 +503,18 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
 
     // --------------------------------------------------------------- assets
-    if (route === '/v1/assets' && method === 'GET') {
+    if ((route === '/v1/assets' || route === '/v1/library') && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
       const limit = Number(q('limit')) || 60;
       const offset = Number(q('offset')) || 0;
       const playtest = q('playtest') === '1' || q('playtest') === 'true';
+      if (client.role === 'user') {
+        if (q('tool') === 'motion.library') {
+          return send(res, 200, motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset }));
+        }
+        const assets = listAssets({ project: client.projects[0], kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest: false, limit, offset, projects: client.projects });
+        return send(res, 200, assets);
+      }
       const motions = playtest ? { items: [], total: 0 } : motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset });
       if (q('tool') === 'motion.library') return send(res, 200, motions);
       const assets = listAssets({ project: q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest, limit, offset, projects: client.projects });
@@ -418,18 +522,23 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, { items: [...motions.items, ...assets.items].slice(0, limit), total: motions.total + assets.total });
     }
     if (route.startsWith('/v1/assets/motion:') && method === 'GET') return send(res, 200, motionRecord(decodeURIComponent(route.slice('/v1/assets/'.length))));
-    m = /^\/v1\/(assets|files)\/(a_[0-9a-f]+)$/.exec(route);
+    m = /^\/v1\/(assets|files)\/(a_[0-9a-f]+)(?:\/(file))?$/.exec(route);
     if (m) {
       const a = getAsset(m[2]);
-      if (!a || !canProject(client, a.project)) throw new GenError('No such asset', { status: 404 });
-      if (m[1] === 'files' && method === 'GET') {
+      const isFileRoute = m[1] === 'files' || m[3] === 'file';
+      const allowed = a && (canProject(client, a.project) || a.project === 'public');
+      if (!a || !allowed) throw new GenError('No such asset', { status: 404 });
+      if (isFileRoute && method === 'GET') {
         // Not on this disk (a new server): from S3, the first time it's asked for.
         if (!fs.existsSync(a.path) && !(await storage.ensureLocal(a))) throw new GenError(`${a.id}'s file is missing here and not in the library's S3 bucket`, { status: 404 });
         const name = `${a.project}-${a.tool}-${a.id}${path.extname(a.path)}`;
         return serveFile(req, res, a.path, a.mime, q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {});
       }
       if (method === 'GET') return send(res, 200, a);
-      if (method === 'PATCH') return send(res, 200, updateAsset(a.id, await readJson(req)));
+      if (method === 'PATCH') {
+        if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
+        return send(res, 200, updateAsset(a.id, await readJson(req)));
+      }
       if (method === 'DELETE') {
         requireRole(client, 'admin');
         return send(res, 200, { deleted: deleteAsset(a.id) });

@@ -126,6 +126,42 @@ const MIGRATIONS: string[] = [
    CREATE UNIQUE INDEX versions_n ON versions (entity, slot, n);
    CREATE INDEX versions_asset ON versions (asset);
    CREATE INDEX versions_status ON versions (entity, slot, status);`,
+  // Multi-tenant SaaS users, session tokens, and credit ledger (src/users.ts, src/billing.ts).
+  `CREATE TABLE users (
+     id TEXT PRIMARY KEY,
+     email TEXT UNIQUE NOT NULL,
+     name TEXT,
+     password_hash TEXT NOT NULL,
+     project TEXT UNIQUE NOT NULL,
+     client_id TEXT,
+     credits INTEGER NOT NULL DEFAULT 0,
+     stripe_customer_id TEXT,
+     created INTEGER NOT NULL,
+     last_login INTEGER
+   );
+   CREATE INDEX users_client ON users (client_id);
+
+   CREATE TABLE user_sessions (
+     token_hash TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     created INTEGER NOT NULL,
+     expires INTEGER NOT NULL
+   );
+   CREATE INDEX user_sessions_user ON user_sessions (user_id);
+
+   CREATE TABLE credit_ledger (
+     id TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     delta INTEGER NOT NULL,
+     balance_after INTEGER NOT NULL,
+     kind TEXT NOT NULL,
+     detail TEXT,
+     job_id TEXT,
+     stripe_session_id TEXT UNIQUE,
+     created INTEGER NOT NULL
+   );
+   CREATE INDEX credit_ledger_user ON credit_ledger (user_id, created DESC);
+   CREATE INDEX credit_ledger_job ON credit_ledger (job_id);`,
 ];
 
 db.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');

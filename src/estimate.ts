@@ -88,7 +88,14 @@ function resolve(project: string, it: EstimateItem): { tool: Tool; params: Recor
   return { tool, params };
 }
 
-export function estimate(project: string, items: EstimateItem[], opts: { servers?: number; running?: number } = {}) {
+export function estimate(
+  projectOrSpec: string | { project?: string; items: EstimateItem[]; servers?: number; running?: number },
+  itemsArg?: EstimateItem[],
+  optsArg: { servers?: number; running?: number } = {},
+) {
+  const project = typeof projectOrSpec === 'string' ? projectOrSpec : (projectOrSpec.project ?? 'sandbox');
+  const items = typeof projectOrSpec === 'string' ? (itemsArg ?? []) : projectOrSpec.items;
+  const opts = typeof projectOrSpec === 'string' ? optsArg : { servers: projectOrSpec.servers, running: projectOrSpec.running };
   if (!Array.isArray(items) || !items.length) throw new GenError('items: give a list of { tool | preset, params, count }');
   const lines: Line[] = [];
   for (const [i, it] of items.entries()) {
