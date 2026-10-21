@@ -214,8 +214,14 @@ export function getSessionToken(req: IncomingMessage): string | null {
   return cookies[SESSION_COOKIE] || null;
 }
 
-function isSecureRequest(req: IncomingMessage): boolean {
+export function isPublicSaas(req?: IncomingMessage): boolean {
   if (env('HAWKESGEN_PUBLIC_SAAS') === '1') return true;
+  if (req?.headers['x-hawkes-public-saas'] === '1') return true;
+  return false;
+}
+
+function isSecureRequest(req: IncomingMessage): boolean {
+  if (isPublicSaas(req)) return true;
   if (String(req.headers['x-forwarded-proto'] ?? '').toLowerCase() === 'https') return true;
   if ((req.socket as any)?.encrypted) return true;
   return false;
@@ -234,7 +240,7 @@ export function clearSessionCookie(res: ServerResponse, req: IncomingMessage) {
 
 /**
  * Authenticates a request via `hg_session` cookie first, then falls back to `authenticate(req)` (API key or local owner).
- * When `HAWKESGEN_PUBLIC_SAAS === '1'`, anonymous requests without a session cookie or API key return `null`.
+ * When `isPublicSaas(req)` is true, anonymous requests without a session cookie or API key return `null`.
  */
 export function authenticateRequest(req: IncomingMessage): AuthClient | null {
   const sessionToken = getSessionToken(req);
@@ -265,7 +271,7 @@ export function authenticateRequest(req: IncomingMessage): AuthClient | null {
     (authHeader.startsWith('Bearer ') && authHeader.slice(7).trim().length > 0) ||
     String(req.headers['x-hawkesgen-key'] ?? '').trim().length > 0;
 
-  if (env('HAWKESGEN_PUBLIC_SAAS') === '1' && !hasApiKey) {
+  if (isPublicSaas(req) && !hasApiKey) {
     return null;
   }
 

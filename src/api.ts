@@ -39,6 +39,7 @@ import { handleCollect } from './analytics/collect.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import {
   authenticateRequest,
+  isPublicSaas,
   signupUser,
   loginUser,
   deleteSession,
@@ -56,6 +57,8 @@ import {
   handleStripeWebhook,
   getUserLedger,
   isInternalOnlyTool,
+  getStripeStatus,
+  saveStripeConfig,
 } from './billing.ts';
 import { getPortfolio } from './portfolio.ts';
 
@@ -232,7 +235,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
   // Dashboard and customer-facing SaaS web app.
   if (!route.startsWith('/v1/')) {
-    const publicSaas = env('HAWKESGEN_PUBLIC_SAAS') === '1';
+    const publicSaas = isPublicSaas(req);
     let rel: string;
     if (route === '/home' || route === '/home/' || route === '/public' || route === '/public/') {
       rel = 'public/index.html';
@@ -282,7 +285,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, getPortfolio());
     }
     if (route === '/v1/billing/packs' && method === 'GET') {
-      return send(res, 200, { packs: listCreditPacks() });
+      const st = getStripeStatus();
+      return send(res, 200, {
+        packs: listCreditPacks(),
+        stripe: { configured: st.configured, publishableKey: st.publishableKey, mode: st.mode },
+      });
     }
     if (route === '/v1/motions' && method === 'GET') {
       const queryText = q('q') ?? '';
@@ -371,6 +378,16 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const user = getUserForClient(client);
       if (!user) throw new GenError('User account required', { status: 403 });
       return send(res, 200, getUserLedger(user.id, Number(q('limit')) || 100));
+    }
+    if (route === '/v1/billing/config' && method === 'GET') {
+      requireRole(client, 'owner');
+      return send(res, 200, getStripeStatus());
+    }
+    if (route === '/v1/billing/config' && method === 'POST') {
+      requireRole(client, 'owner');
+      const body = await readJson(req);
+      saveStripeConfig(body);
+      return send(res, 200, getStripeStatus());
     }
 
     // ------------------------------------------------------------ analytics
