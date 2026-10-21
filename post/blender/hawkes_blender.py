@@ -92,6 +92,7 @@ def color(hex_, default=(0.5, 0.5, 0.5)):
 def import_file(path):
     """Imports a model file; returns the new objects."""
     before = set(bpy.data.objects)
+    before_acts = set(bpy.data.actions)
     ext = os.path.splitext(path)[1].lower()
     if ext in (".glb", ".gltf"):
         bpy.ops.import_scene.gltf(filepath=path)
@@ -110,7 +111,9 @@ def import_file(path):
     else:
         fail(f"can't import {os.path.basename(path)} (glb, gltf, fbx, obj, usd or blend)")
     new = [o for o in bpy.data.objects if o not in before]
+    new_acts = [a.name for a in bpy.data.actions if a not in before_acts]
     for o in new:
+        o["hb_actions"] = new_acts
         if o.name not in scene.collection.all_objects:
             try:
                 scene.collection.objects.link(o)
@@ -256,16 +259,24 @@ def set_interp(owner, path, kind):
                 kp.interpolation = kind
 
 
-def get_action(i, arm, want, anim_file, got):
+def get_action(i, arm, want, anim_file, got, char_actions=None):
     """The action a character plays: one of the file's by name, or another file's retargeted onto this rig."""
     if anim_file is not None:
         extra = import_file(file_arg(anim_file, f"characters[{i}].animationFile"))
+        extra_acts = [bpy.data.actions[n] for o in extra for n in (o.get("hb_actions") or ()) if n in bpy.data.actions]
         src = None
         for o in extra:
             if o.type == "ARMATURE" and o.animation_data and o.animation_data.action:
                 src = o.animation_data.action
         if want:
-            src = bpy.data.actions.get(want) or src
+            src = (
+                next((a for a in extra_acts if a.name == want), None)
+                or next((a for a in extra_acts if a.name.split(".")[0] == want), None)
+                or bpy.data.actions.get(want)
+                or src
+            )
+        elif not src and extra_acts:
+            src = extra_acts[0]
         for o in extra:
             bpy.data.objects.remove(o, do_unlink=True)
         if not src:
@@ -276,10 +287,23 @@ def get_action(i, arm, want, anim_file, got):
             fail(f"characters[{i}]: the animation's bones don't match the character's rig")
         return action
     if want:
-        action = bpy.data.actions.get(want)
+        cands = list(char_actions or [])
+        action = (
+            next((a for a in cands if a.name == want), None)
+            or next((a for a in cands if a.name.split(".")[0] == want), None)
+            or bpy.data.actions.get(want)
+            or next((a for a in bpy.data.actions if a.name.split(".")[0] == want), None)
+        )
         if not action:
             names = sorted(a.name for a in bpy.data.actions)
             fail(f"characters[{i}]: no animation {want!r}; this file has {names}")
+        bone_names = {b.name for b in arm.data.bones} if arm and arm.data else set()
+        fcs = [fc for fc in fcurves_of(action) if fc.data_path.startswith('pose.bones["')]
+        if bone_names and fcs and any(fc.data_path[len('pose.bones["'):fc.data_path.index('"]')] not in bone_names for fc in fcs):
+            retargeted, hit, miss = retarget(action, arm)
+            if hit:
+                got["retargeted"] = {"bones": hit, "missing": miss}
+                return retargeted
         return action
     return None
 
@@ -457,13 +481,30 @@ def add_character(i, c, start, frames, fps):
     action = None
     raw_stance = None
     if arm:
+        char_actions = []
+        seen_acts = set()
+        for o in objs:
+            for n in o.get("hb_actions") or ():
+                a = bpy.data.actions.get(n)
+                if a and a not in seen_acts:
+                    char_actions.append(a)
+                    seen_acts.add(a)
+        if arm.animation_data:
+            if arm.animation_data.action and arm.animation_data.action not in seen_acts:
+                char_actions.append(arm.animation_data.action)
+                seen_acts.add(arm.animation_data.action)
+            for tr in arm.animation_data.nla_tracks:
+                for st in tr.strips:
+                    if st.action and st.action not in seen_acts:
+                        char_actions.append(st.action)
+                        seen_acts.add(st.action)
         if segs:
             cache = {}
             moving = {(g.get("animation"), g.get("animationFile")) for g in segs if g.get("ground", 0) > 1e-4 and g.get("speed") is None}
             for g in segs:
                 key = (g.get("animation"), g.get("animationFile"))
                 if key not in cache:
-                    a = get_action(i, arm, g.get("animation"), g.get("animationFile"), got)
+                    a = get_action(i, arm, g.get("animation"), g.get("animationFile"), got, char_actions)
                     cache[key] = (a, stance_speed(arm, a) if (a and key in moving) else None)
                 seg_actions.append(cache[key][0])
                 seg_stance.append(cache[key][1])
@@ -472,7 +513,7 @@ def add_character(i, c, start, frames, fps):
                 got["animation"] = action.name
                 play(arm, action, start, frames, True, 1.0)
         else:
-            action = get_action(i, arm, c.get("animation"), c.get("animationFile"), got)
+            action = get_action(i, arm, c.get("animation"), c.get("animationFile"), got, char_actions)
             if action:
                 got["animation"] = action.name
                 if float(c.get("travel", 0) or 0) > 1e-4 and c.get("speed") is None:
@@ -1330,27 +1371,35 @@ def look_target_empty(spec, name, ch, head_level=True):
             cl = t.constraints.new("COPY_LOCATION")
             cl.target = scene.camera
         else:
-            t.location = (0, -4, (ch.get("height") or 1.7) * 0.9)
+            t.location = (0, -4, (ch.get("height") or 1.7) * (0.78 if head_level else 0.65))
         return t
     if (isinstance(spec, int) and not isinstance(spec, bool)) or (isinstance(spec, dict) and spec.get("character") is not None):
         ci = spec if isinstance(spec, int) else int(spec["character"])
         if 0 <= ci < len(CHARS):
             other = CHARS[ci]
             o_arm = other.get("arm")
-            if o_arm:
-                o_bones = find_bones(o_arm)
-                bname = (o_bones.get("head") if head_level else None) or hips_bone(o_arm)
+            if o_arm and not head_level:
+                bname = hips_bone(o_arm)
                 if bname:
-                    return bone_holder(o_arm, bname, name, 0.5 if bname == o_bones.get("head") else 0.0)
+                    return bone_holder(o_arm, bname, name, 0.0)
             t = bpy.data.objects.new(name, None)
             scene.collection.objects.link(t)
-            carrier = other.get("mover") or other["root"]
-            t.parent = carrier
-            t.location = (0, 0, (other.get("height") or 1.7) * (0.9 if head_level else 0.65))
+            z = (other.get("height") or 1.7) * (0.78 if head_level else 0.65)
+            if other.get("mover"):
+                t.parent = other["mover"]
+                t.location = (0, 0, z)
+            elif o_arm and hips_bone(o_arm):
+                t.location = (other["pos"].x, other["pos"].y, other["pos"].z + z)
+                cl = t.constraints.new("COPY_LOCATION")
+                cl.target, cl.subtarget = o_arm, hips_bone(o_arm)
+                cl.use_z = False
+            else:
+                t.parent = other["root"]
+                t.location = (0, 0, z)
             return t
     pt = list(spec.get("position") if isinstance(spec, dict) else (spec if isinstance(spec, (list, tuple)) else [0, 0, 1]))
     if len(pt) == 2:
-        pt = [pt[0], pt[1], ch["pos"].z + (ch.get("height") or 1.7) * (0.9 if head_level else 0.75)]
+        pt = [pt[0], pt[1], ch["pos"].z + (ch.get("height") or 1.7) * (0.78 if head_level else 0.75)]
     else:
         pt = (pt + [0, 0, 1])[:3]
     t = bpy.data.objects.new(name, None)
@@ -1383,7 +1432,7 @@ def bone_forward_track_axis(arm, bone_name):
 
 
 def setup_gaze_and_aim(chars, start, frames, fps):
-    """Adds DAMPED_TRACK constraints on Head (0.65) and Neck/Spine2 (0.3) for lookAt, and on hand/forearm bones for aimAt."""
+    """Adds DAMPED_TRACK constraints on Head (0.25) and Neck/Spine2 (0.15) for lookAt, and on hand/forearm bones for aimAt."""
     for ch in chars:
         arm = ch.get("arm")
         if not arm:
@@ -1402,7 +1451,7 @@ def setup_gaze_and_aim(chars, start, frames, fps):
         for g in segs:
             if isinstance(g, dict) and g.get("lookAt") is not None:
                 look_specs.append((g["lookAt"], g))
-        if look_specs and (head_bone or neck_spine):
+        if look_specs and (head_bone or neck_spine) and c.get("gazeTrack", True) is not False:
             spec_val = look_specs[-1][0]
             tgt = look_target_empty(spec_val, f"hb_look_{ch['index']}", ch, head_level=True)
             cons = []
@@ -1411,15 +1460,15 @@ def setup_gaze_and_aim(chars, start, frames, fps):
                 con_h.name = "hb_look_head"
                 con_h.target = tgt
                 con_h.track_axis = bone_forward_track_axis(arm, head_bone)
-                con_h.influence = 0.65
-                cons.append((pb[head_bone], con_h, 0.65))
+                con_h.influence = 0.25
+                cons.append((pb[head_bone], con_h, 0.25))
             if neck_spine and neck_spine in pb and neck_spine != head_bone:
                 con_s = pb[neck_spine].constraints.new("DAMPED_TRACK")
                 con_s.name = "hb_look_spine"
                 con_s.target = tgt
                 con_s.track_axis = bone_forward_track_axis(arm, neck_spine)
-                con_s.influence = 0.3
-                cons.append((pb[neck_spine], con_s, 0.3))
+                con_s.influence = 0.15
+                cons.append((pb[neck_spine], con_s, 0.15))
             # If lookAt only appears on some timed segments (and not set globally on the character), keyframe influence per segment
             if c.get("lookAt") is None and ch.get("segs") and any(g.get("lookAt") is None for g in ch["segs"]):
                 for pbone, con, max_inf in cons:
@@ -1428,9 +1477,12 @@ def setup_gaze_and_aim(chars, start, frames, fps):
                         f1 = start + int(round(g["t1"] * fps))
                         val = max_inf if g.get("lookAt") is not None else 0.0
                         con.influence = val
-                        pbone.keyframe_insert(f'constraints["{con.name}"].influence', frame=f0)
-                        if f1 > f0:
-                            pbone.keyframe_insert(f'constraints["{con.name}"].influence', frame=f1)
+                        try:
+                            arm.keyframe_insert(f'pose.bones["{pbone.name}"].constraints["{con.name}"].influence', frame=f0)
+                            if f1 > f0:
+                                arm.keyframe_insert(f'pose.bones["{pbone.name}"].constraints["{con.name}"].influence', frame=f1)
+                        except Exception:
+                            pass
                     if ch["segs"][-1].get("lookAt") is not None:
                         con.influence = max_inf
 
@@ -1908,10 +1960,11 @@ def still_frames(spec, start, frames):
 
 def char_state(ch):
     """Where a character stands and which way it faces at the current frame (for the director gate): its mover's spot
-    when it follows beats, else the middle of its body; facing from the posed shoulder/pelvis bones when rigged."""
+    and heading when it follows beats, else the middle of its body; posed shoulder/pelvis facing in chestFacing."""
     lo, hi = bounds(ch["objs"])
     carrier = ch.get("mover") or ch["root"]
-    yaw = math.degrees(carrier.matrix_world.to_euler().z)
+    yaw = (math.degrees(carrier.matrix_world.to_euler().z) + 180) % 360 - 180
+    chest_yaw = None
     arm = ch.get("arm")
     if arm:
         bones = find_bones(arm)
@@ -1925,13 +1978,15 @@ def char_state(ch):
                 break
         fwd = across.cross(mathutils.Vector((0, 0, 1)))
         if fwd.x * fwd.x + fwd.y * fwd.y > 1e-8:
-            yaw = math.degrees(math.atan2(fwd.x, -fwd.y))
-    yaw = (yaw + 180) % 360 - 180
+            chest_yaw = (math.degrees(math.atan2(fwd.x, -fwd.y)) + 180) % 360 - 180
     if ch.get("mover"):
         x, y = carrier.matrix_world.translation.x, carrier.matrix_world.translation.y
     else:
         x, y = (lo.x + hi.x) / 2, (lo.y + hi.y) / 2
-    return {"index": ch["index"], "x": round(x, 3), "y": round(y, 3), "facing": round(yaw, 1), "height": round(hi.z - lo.z, 3)}
+    out = {"index": ch["index"], "x": round(x, 3), "y": round(y, 3), "facing": round(yaw, 1), "height": round(hi.z - lo.z, 3)}
+    if chest_yaw is not None:
+        out["chestFacing"] = round(chest_yaw, 1)
+    return out
 
 
 def char_overlaps(chars):

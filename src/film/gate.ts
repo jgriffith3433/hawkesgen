@@ -14,7 +14,7 @@ import { applyFixes, autoFixes, facingAt, FIX_SCHEMA_FIELDS, lintShot, planShot,
 
 export const STILL_SHARES = [0, 0.33, 0.66, 1];
 
-export type Placed = { index: number; x: number; y: number; facing: number; height?: number };
+export type Placed = { index: number; x: number; y: number; facing: number; chestFacing?: number; height?: number };
 export type MeshOverlap = { a: number; b: number; faces?: number } | [number, number];
 export type StillInfo = { t: number; frame?: number; file?: string; characters: Placed[]; overlaps?: MeshOverlap[] };
 export type SlideInfo = { index: number; segments?: { animation: string; ground: number; playback: number; slide?: number; note?: string }[] };
