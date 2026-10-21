@@ -38,6 +38,10 @@ fail() {
 }
 
 status installing "setting up from the image (__IMAGE__)"
+htpasswd -bc /etc/nginx/gen.htpasswd gen '__TOKEN__' || fail "htpasswd"
+chmod 640 /etc/nginx/gen.htpasswd
+chown root:www-data /etc/nginx/gen.htpasswd
+systemctl restart nginx || fail "nginx"
 touch "$STATE/last_busy"
 systemctl stop comfyui 2>/dev/null
 
@@ -67,13 +71,9 @@ for rel in "${!CORE[@]}"; do
     rm -f "$COMFY/models/$rel"
   fi
 done
-htpasswd -bc /etc/nginx/gen.htpasswd gen '__TOKEN__' || fail "htpasswd"
-chmod 640 /etc/nginx/gen.htpasswd
-chown root:www-data /etc/nginx/gen.htpasswd
 sed -i -E 's/^IDLE_MINUTES=.*/IDLE_MINUTES=__IDLE_MINUTES__/' /usr/local/bin/gen-idle.sh
 systemctl daemon-reload
 systemctl enable --now gen-idle.timer
-systemctl restart nginx || fail "nginx"
 systemctl enable comfyui
 systemctl restart comfyui || fail "start ComfyUI"
 

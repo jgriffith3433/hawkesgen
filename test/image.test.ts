@@ -71,7 +71,7 @@ test('first boot from the image sets the password and idle time, starts ComfyUI 
   const script = zlib.gunzipSync(Buffer.from(imageUserData('TOK', 45, 'ami-0123'), 'base64')).toString();
   const r = s.run(script);
   assert.equal(r.code, 0, r.out + s.read('var/log/gen-bootstrap.log'));
-  assert.match(r.calls, /htpasswd -bc .*\/etc\/nginx\/gen.htpasswd gen TOK/);
+  assert.match(r.calls, /htpasswd -bc .*\/etc\/nginx\/gen\.htpasswd gen TOK[\s\S]*systemctl restart nginx[\s\S]*systemctl stop comfyui/);
   assert.match(r.calls, /systemctl restart comfyui/);
   assert.match(r.calls, /systemctl enable --now gen-idle.timer/);
   assert.match(r.calls, /systemd-run --unit gen-warm/);
