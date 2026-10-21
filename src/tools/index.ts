@@ -13,6 +13,8 @@ import { libraryJudgeTool } from './judge.ts';
 import { loraTrainTool, imageCharacterTool } from './lora.ts';
 import { blenderRenderTool } from './blender.ts';
 import { composeTool } from './compose.ts';
+import { filmGateTool, filmPlanTool } from './film.ts';
+import { videoMatteTool, videoCompositeTool, videoControlMixTool } from './film-video.ts';
 import { meshRigTool } from './rig.ts';
 import { blenderCharacterTool } from './character.ts';
 import { motionFromTextTool } from './motion.ts';
@@ -28,6 +30,7 @@ const BUILT_IN: Tool[] = [
   cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
   blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
+  filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
 ];
 
 export let TOOLS: Tool[] = [];

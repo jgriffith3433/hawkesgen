@@ -102,6 +102,14 @@ export function estimate(project: string, items: EstimateItem[], opts: { servers
       const pickAt = Math.min(steps.length, Math.max(1, Number(params.pickAt) || 1)) - 1;
       steps.forEach((s, k) => {
         const r = resolve(project, s);
+        if (r.tool.id === 'film.gate') {
+          // The gate is four eevee frames per look, and about half the shots need a second look.
+          const render = getTool('blender.render')!;
+          const p = r.params;
+          const frames = Math.round((Number(p.seconds) || 5) * (Number(p.fps) || 24)) + 1;
+          lines.push(lineFor(render, { passes: [], stills: 4, engine: 'eevee', frames, width: 640, height: 352 }, count * (1 + 0.5 * Math.min(2, Number(p.maxTries ?? 2))), `${label} · step ${k + 1} (gate)`));
+          return;
+        }
         lines.push(lineFor(r.tool, r.params, count * (k === pickAt ? n : 1), `${label} · step ${k + 1}`));
       });
       const pick = ['cursor', 'copilot'].includes(loadSettings().brain) || loadSettings().claude.backend === 'max-plan' ? 0 : PICK_COST;

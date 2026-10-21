@@ -49,6 +49,8 @@ Flux Kontext, SeedVR2 7B, LTX 2.5, Wan Dancer, Hunyuan Video 1.5, Stable Audio 3
 - **Robots and creatures:** the same, with `form: robot` on the view sheet so every limb stays apart and visible in each view (`3d-characters.md`).
 - **Animations:** `shared/motions` and the CC0 `motion:` library first; `motion.from-text` for what the library lacks. Retarget, trim, loop
   and in-place with `blender.character` clip ops.
+- **Film shots and trailers (Blender as the rig):** `film.plan` (recipes `cinema`, `dialogue`, `vfx`, `lora`, `trailer`), with `film.gate` before any
+  GPU spend. Shots, gate rubric, cost: `docs/film-pipeline.md`.
 - **Props and environments:** preset `shared/prop3d`: `image.generate` (front view) → `image.remove-background` → `image.viewsheet` (form prop) → `mesh.views3d` → Blender `fix`, `retopo`, `lod`, `budget`.
 - **Tiling materials:** `image.generate` → `image.tile`, then `image.normals` / `image.albedo` for the maps.
 
