@@ -241,3 +241,85 @@ export const splatBuildTool: Tool = {
     ctx.result(info);
   },
 };
+
+/** The grid a sprite sheet uses: as square as it can be, unless the columns are given. */
+export function spriteGrid(count: number, columns = 0) {
+  const cols = Math.max(1, Math.min(count, columns || Math.ceil(Math.sqrt(count))));
+  return { cols, rows: Math.ceil(count / cols) };
+}
+
+/** `count` indexes spread evenly over `total` frames, first and last included. */
+export function pickFrames(total: number, count: number) {
+  if (total <= count) return Array.from({ length: total }, (_, i) => i);
+  return Array.from({ length: count }, (_, i) => Math.round((i * (total - 1)) / (count - 1 || 1)));
+}
+
+export const spriteSheetTool: Tool = {
+  id: 'sprite.sheet',
+  version: 1,
+  title: 'Sprite sheet',
+  description: 'An animation (a clip from video.i2v, or frames) as a game-ready sprite sheet, with ffmpeg (free): evenly spaced frames, a flat background keyed out to transparency (animate on a flat color, e.g. image.frame on 00ff00, then key 00ff00), one PNG atlas, the frame rectangles as JSON (Unity, Godot, Phaser, TexturePacker hash) and an animated GIF preview.',
+  provider: 'local',
+  output: 'image',
+  inputs: {
+    video: { kind: 'video', description: 'The animation. Or give frames instead.' },
+    frames: { kind: 'image', multiple: true, max: 64, description: 'The frames, in order (instead of a video).' },
+  },
+  params: {
+    count: { type: 'integer', min: 2, max: 64, default: 8, description: 'How many frames the sheet has (spread evenly over the clip).' },
+    columns: { type: 'integer', min: 0, max: 64, default: 0, description: 'Frames per row; 0 picks a square-ish grid.' },
+    cell: { type: 'integer', min: 32, max: 1024, default: 256, description: 'Width of one frame in pixels (height keeps the aspect).' },
+    key: { type: 'string', default: '', description: 'Background color to make transparent (hex, e.g. 00ff00); empty keeps the background.' },
+    similarity: { type: 'number', min: 0.01, max: 0.5, default: 0.14, description: 'How close to the key color a pixel must be to go transparent.', advanced: true },
+    blend: { type: 'number', min: 0, max: 0.5, default: 0.06, description: 'Soft edge around the keyed area.', advanced: true },
+    fps: { type: 'integer', min: 1, max: 60, default: 12, description: 'Playback rate written to the JSON and the preview.' },
+    name: { type: 'string', default: 'frame', description: 'Frame names in the JSON (frame_00, frame_01, ...).', advanced: true },
+  },
+  async run(ctx) {
+    const p = ctx.params;
+    const frames = Array.isArray(ctx.inputs.frames) ? ctx.inputs.frames : ctx.inputs.frames ? [ctx.inputs.frames] : [];
+    if (!ctx.inputs.video && !frames.length) throw new GenError('Give a video or frames');
+    const key = String(p.key ?? '').replace(/^#/, '').trim();
+    if (key && !/^[0-9a-f]{6}$/i.test(key)) throw new GenError('key is a hex color like 00ff00');
+    const vf = [key ? `chromakey=0x${key}:${p.similarity}:${p.blend}` : '', `scale=${p.cell}:-2:flags=lanczos`, 'format=rgba'].filter(Boolean).join(',');
+
+    // Every frame, keyed and scaled, then the chosen ones renumbered in order.
+    const all = ctx.tmp('all');
+    const sel = ctx.tmp('sel');
+    fs.mkdirSync(all, { recursive: true });
+    fs.mkdirSync(sel, { recursive: true });
+    ctx.step('reading frames');
+    if (ctx.inputs.video) {
+      await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', ctx.inputs.video, '-vf', vf, '-vsync', '0', path.join(all, '%05d.png')]);
+    } else {
+      for (const [i, f] of frames.entries()) await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', f, '-vf', vf, '-frames:v', '1', path.join(all, `${String(i + 1).padStart(5, '0')}.png`)]);
+    }
+    const files = fs.readdirSync(all).filter((f) => f.endsWith('.png')).sort();
+    if (!files.length) throw new GenError('No frames in the input');
+    const picked = pickFrames(files.length, Number(p.count));
+    picked.forEach((idx, i) => fs.copyFileSync(path.join(all, files[idx]), path.join(sel, `${String(i + 1).padStart(5, '0')}.png`)));
+
+    const { cols, rows } = spriteGrid(picked.length, Number(p.columns));
+    const probe = JSON.parse(await run('ffprobe', ['-v', 'error', '-show_entries', 'stream=width,height', '-of', 'json', path.join(sel, '00001.png')]));
+    const w = Number(probe.streams?.[0]?.width) || Number(p.cell);
+    const h = Number(probe.streams?.[0]?.height) || Number(p.cell);
+
+    ctx.step(`laying out ${picked.length} frames (${cols}x${rows})`);
+    const atlas = ctx.tmp('sheet.png');
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-framerate', '1', '-i', path.join(sel, '%05d.png'), '-vf', `format=rgba,tile=${cols}x${rows}:color=0x00000000`, '-frames:v', '1', atlas]);
+    const gif = ctx.tmp('preview.gif');
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-framerate', String(p.fps), '-i', path.join(sel, '%05d.png'), '-vf', 'split[a][b];[a]palettegen=reserve_transparent=1[p];[b][p]paletteuse=alpha_threshold=128', '-loop', '0', gif]);
+
+    const name = String(p.name || 'frame').replace(/[^\w-]/g, '') || 'frame';
+    const rects = picked.map((_, i) => ({ name: `${name}_${String(i).padStart(2, '0')}`, x: (i % cols) * w, y: Math.floor(i / cols) * h, w, h }));
+    const sheet = {
+      frames: Object.fromEntries(rects.map((r) => [r.name, { frame: { x: r.x, y: r.y, w: r.w, h: r.h }, rotated: false, trimmed: false, sourceSize: { w: r.w, h: r.h } }])),
+      animations: { [name]: rects.map((r) => r.name) },
+      meta: { app: 'Hawkes Gen sprite.sheet', image: 'sheet.png', size: { w: cols * w, h: rows * h }, format: 'RGBA8888', scale: '1', fps: Number(p.fps), columns: cols, rows, frameWidth: w, frameHeight: h, count: picked.length },
+    };
+    await ctx.emit({ data: fs.readFileSync(atlas), ext: '.png', title: 'sprite sheet', meta: sheet.meta });
+    await ctx.emit({ data: Buffer.from(JSON.stringify(sheet, null, 2)), ext: '.json', title: 'sprite sheet frames' });
+    await ctx.emit({ data: fs.readFileSync(gif), ext: '.gif', title: 'preview' });
+    ctx.result(sheet.meta);
+  },
+};

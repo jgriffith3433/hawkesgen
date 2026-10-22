@@ -2,7 +2,7 @@
 
 import type { Tool } from './types.ts';
 import { imageEditTool, imagePaintTool, videoI2vTool, videoAnimateTool, comfyGraphTool } from './comfy.ts';
-import { cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool } from './local.ts';
+import { cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool } from './local.ts';
 import { voiceTool, sfxTool, voiceDesignTool, voiceSaveTool, llmTextTool, llmJsonTool } from './api.ts';
 import { loadWorkflows, listWorkflows } from '../workflows/registry.ts';
 import { workflowTool } from '../workflows/tool.ts';
@@ -27,7 +27,7 @@ const BUILT_IN: Tool[] = [
   imageEditTool, imagePaintTool, videoI2vTool, videoAnimateTool, comfyGraphTool,
   voiceTool, sfxTool, voiceDesignTool, voiceSaveTool,
   llmTextTool, llmJsonTool,
-  cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool,
+  cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
   blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
