@@ -11,6 +11,7 @@
 // instead of failing the job (2026-10-19: half of Yooba Land's mesh.textured jobs failed on "/upload/image: 502").
 
 import type { Endpoint } from './fleet.ts';
+import { env } from '../../config.ts';
 
 /** What nginx answers while ComfyUI is down or starting behind it. */
 const STARTING = new Set([502, 503, 504]);
@@ -169,7 +170,9 @@ export class Comfy {
     const queued = await this.json('/prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: graph, client_id: 'hawkesgen' }),
+      // ComfyUI's partner nodes (Seedance, Kling, Veo... templates named api_*) bill a Comfy.org account: its key rides
+      // along with every prompt when .env has one (other nodes ignore it). Never logged.
+      body: JSON.stringify({ prompt: graph, client_id: 'hawkesgen', ...(env('COMFY_ORG_API_KEY') ? { extra_data: { api_key_comfy_org: env('COMFY_ORG_API_KEY') } } : {}) }),
     });
     if (queued.node_errors && Object.keys(queued.node_errors).length) {
       throw new Error(`ComfyUI rejected the workflow: ${JSON.stringify(queued.node_errors).slice(0, 800)}`);
