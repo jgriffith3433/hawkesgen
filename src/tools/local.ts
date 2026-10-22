@@ -242,21 +242,45 @@ export const splatBuildTool: Tool = {
   },
 };
 
-/** The grid a sprite sheet uses: as square as it can be, unless the columns are given. */
+/** The grid a sprite sheet uses: the given columns, else the squarest one with the fewest empty cells (8 -> 4x2). */
 export function spriteGrid(count: number, columns = 0) {
-  const cols = Math.max(1, Math.min(count, columns || Math.ceil(Math.sqrt(count))));
-  return { cols, rows: Math.ceil(count / cols) };
+  if (columns) {
+    const cols = Math.max(1, Math.min(count, columns));
+    return { cols, rows: Math.ceil(count / cols) };
+  }
+  // From the squarest grid outward; the first with the fewest empty cells wins, and nothing past twice as wide as tall.
+  let best: { cols: number; rows: number } | null = null;
+  for (let cols = Math.ceil(Math.sqrt(count)); cols <= count; cols++) {
+    const rows = Math.ceil(count / cols);
+    if (best && cols > 2 * rows && best.cols * best.rows - count <= 1) break;
+    if (!best || rows * cols - count < best.rows * best.cols - count) best = { cols, rows };
+  }
+  return best ?? { cols: 1, rows: 1 };
 }
 
-/** `count` indexes spread evenly over `total` frames, first and last included. */
-export function pickFrames(total: number, count: number) {
+/** The ffmpeg filters that key a flat background out: RGB distance (grey armor isn't "a bit green", as it is to
+ *  chromakey), then the color's spill pulled off the edges (green or blue screens). */
+export function keyFilter(key: string, similarity: number, blend: number) {
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(key.slice(i, i + 2), 16));
+  const spill = g > r + 64 && g > b + 64 ? 'green' : b > r + 64 && b > g + 64 ? 'blue' : '';
+  return [`colorkey=0x${key}:${similarity}:${blend}`, spill ? `despill=type=${spill}:mix=0.6:expand=0.1:alpha=0` : ''].filter(Boolean).join(',');
+}
+
+/** `count` indexes spread evenly over `total` frames, first and last included. A loop ends where it began, so its last
+ *  frame repeats the first: it is left out and the frames spread over one cycle. */
+export function pickFrames(total: number, count: number, loop = false) {
+  if (loop && total > 2) {
+    const cycle = total - 1;
+    if (cycle <= count) return Array.from({ length: cycle }, (_, i) => i);
+    return Array.from({ length: count }, (_, i) => Math.round((i * cycle) / count));
+  }
   if (total <= count) return Array.from({ length: total }, (_, i) => i);
   return Array.from({ length: count }, (_, i) => Math.round((i * (total - 1)) / (count - 1 || 1)));
 }
 
 export const spriteSheetTool: Tool = {
   id: 'sprite.sheet',
-  version: 1,
+  version: 2,
   title: 'Sprite sheet',
   description: 'An animation (a clip from video.i2v, or frames) as a game-ready sprite sheet, with ffmpeg (free): evenly spaced frames, a flat background keyed out to transparency (animate on a flat color, e.g. image.frame on 00ff00, then key 00ff00), one PNG atlas, the frame rectangles as JSON (Unity, Godot, Phaser, TexturePacker hash) and an animated GIF preview.',
   provider: 'local',
@@ -270,8 +294,9 @@ export const spriteSheetTool: Tool = {
     columns: { type: 'integer', min: 0, max: 64, default: 0, description: 'Frames per row; 0 picks a square-ish grid.' },
     cell: { type: 'integer', min: 32, max: 1024, default: 256, description: 'Width of one frame in pixels (height keeps the aspect).' },
     key: { type: 'string', default: '', description: 'Background color to make transparent (hex, e.g. 00ff00); empty keeps the background.' },
-    similarity: { type: 'number', min: 0.01, max: 0.5, default: 0.14, description: 'How close to the key color a pixel must be to go transparent.', advanced: true },
-    blend: { type: 'number', min: 0, max: 0.5, default: 0.06, description: 'Soft edge around the keyed area.', advanced: true },
+    similarity: { type: 'number', min: 0.01, max: 0.6, default: 0.3, description: 'How close to the key color a pixel must be to go transparent.', advanced: true },
+    blend: { type: 'number', min: 0, max: 0.5, default: 0.1, description: 'Soft edge around the keyed area.', advanced: true },
+    loop: { type: 'boolean', default: false, description: 'The clip loops (ends on its first frame): leave the repeat out so the cycle plays smoothly.' },
     fps: { type: 'integer', min: 1, max: 60, default: 12, description: 'Playback rate written to the JSON and the preview.' },
     name: { type: 'string', default: 'frame', description: 'Frame names in the JSON (frame_00, frame_01, ...).', advanced: true },
   },
@@ -281,7 +306,7 @@ export const spriteSheetTool: Tool = {
     if (!ctx.inputs.video && !frames.length) throw new GenError('Give a video or frames');
     const key = String(p.key ?? '').replace(/^#/, '').trim();
     if (key && !/^[0-9a-f]{6}$/i.test(key)) throw new GenError('key is a hex color like 00ff00');
-    const vf = [key ? `chromakey=0x${key}:${p.similarity}:${p.blend}` : '', `scale=${p.cell}:-2:flags=lanczos`, 'format=rgba'].filter(Boolean).join(',');
+    const vf = [key ? keyFilter(key, Number(p.similarity), Number(p.blend)) : '', `scale=${p.cell}:-2:flags=lanczos`, 'format=rgba'].filter(Boolean).join(',');
 
     // Every frame, keyed and scaled, then the chosen ones renumbered in order.
     const all = ctx.tmp('all');
@@ -296,7 +321,7 @@ export const spriteSheetTool: Tool = {
     }
     const files = fs.readdirSync(all).filter((f) => f.endsWith('.png')).sort();
     if (!files.length) throw new GenError('No frames in the input');
-    const picked = pickFrames(files.length, Number(p.count));
+    const picked = pickFrames(files.length, Number(p.count), Boolean(p.loop) && Boolean(ctx.inputs.video));
     picked.forEach((idx, i) => fs.copyFileSync(path.join(all, files[idx]), path.join(sel, `${String(i + 1).padStart(5, '0')}.png`)));
 
     const { cols, rows } = spriteGrid(picked.length, Number(p.columns));

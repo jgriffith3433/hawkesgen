@@ -9,14 +9,22 @@ import { spawnSync } from 'node:child_process';
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-sprite-'));
 const { getTool } = await import('../src/tools/index.ts');
 const { validateParams } = await import('../src/tools/validate.ts');
-const { spriteGrid, pickFrames } = await import('../src/tools/local.ts');
+const { spriteGrid, pickFrames, keyFilter } = await import('../src/tools/local.ts');
 
 test('grid and frame picking', () => {
-  assert.deepEqual(spriteGrid(8), { cols: 3, rows: 3 });
+  assert.deepEqual(spriteGrid(8), { cols: 4, rows: 2 });
+  assert.deepEqual(spriteGrid(9), { cols: 3, rows: 3 });
+  assert.deepEqual(spriteGrid(12), { cols: 4, rows: 3 });
+  assert.deepEqual(spriteGrid(7), { cols: 4, rows: 2 });
   assert.deepEqual(spriteGrid(8, 4), { cols: 4, rows: 2 });
   assert.deepEqual(spriteGrid(3, 10), { cols: 3, rows: 1 });
   assert.deepEqual(pickFrames(33, 8), [0, 5, 9, 14, 18, 23, 27, 32]);
   assert.deepEqual(pickFrames(4, 8), [0, 1, 2, 3]);
+  // A 33-frame loop: 8 frames over the 32-frame cycle, and never the repeated last one.
+  assert.deepEqual(pickFrames(33, 8, true), [0, 4, 8, 12, 16, 20, 24, 28]);
+  assert.match(keyFilter('00ff00', 0.3, 0.1), /^colorkey=0x00ff00:0.3:0.1,despill=type=green/);
+  assert.match(keyFilter('0000ff', 0.3, 0.1), /despill=type=blue/);
+  assert.equal(keyFilter('ff00ff', 0.3, 0.1), 'colorkey=0xff00ff:0.3:0.1');
 });
 
 test('a green-screen clip becomes a transparent sheet, its JSON and a preview', async (t) => {
