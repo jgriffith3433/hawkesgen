@@ -2,7 +2,7 @@
 // trailer cut keeps trailer pace. Offline: nothing renders and nothing is generated.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cinemaPass, dialogueCloseup, vfxLayers, characterLora, trailerCut, shotFileRefs, renderFiles, lineSeconds, talkFrames, type Recipe } from '../src/film/recipes.ts';
+import { cinemaPass, dialogueCloseup, vfxLayers, characterLora, trailerCut, shotFileRefs, renderFiles, lineSeconds, talkFrames, TALK_OVERLAP, type Recipe } from '../src/film/recipes.ts';
 import { resultRef } from '../src/tools/pipeline.ts';
 import { getTool } from '../src/tools/index.ts';
 import { validateParams } from '../src/tools/validate.ts';
@@ -109,8 +109,13 @@ test('dialogue close-up: a Blender frame of the speaker, a portrait, a voice lin
   // Two passes of `frames`: the clip covers the line.
   const talk = r.steps[3].params as any;
   const secs = lineSeconds(line);
-  assert.ok((2 * talk.frames) / talk.fps >= secs && (talk.frames - 1) % 4 === 0, JSON.stringify(talk));
-  assert.equal(talkFrames(3, 25), 41);
+  assert.ok((2 * talk.frames - TALK_OVERLAP) / talk.fps >= secs && (talk.frames - 1) % 4 === 0, JSON.stringify(talk));
+  // The joined clip (the second pass's repeated frames dropped) covers the line, for every length.
+  assert.equal(talkFrames(3, 25), 45);
+  for (const sec of [1, 2.2, 3, 4.7, 6.1, 9.5]) {
+    const f = talkFrames(sec, 25);
+    assert.ok(2 * f - TALK_OVERLAP >= sec * 25 && (f - 1) % 4 === 0, `${sec} s: ${f}`);
+  }
   assert.ok(lineSeconds('Run.') >= 1.5 && lineSeconds('word '.repeat(200)) <= 12);
   assert.throws(() => dialogueCloseup({ shot, speaker: 5, line, voice: 'v', look: 'x' }), /not a character/);
   assert.throws(() => dialogueCloseup({ shot, speaker: 0, line: ' ', voice: 'v', look: 'x' }), /Give the line/);

@@ -109,7 +109,7 @@
         0
       ],
       "images.image1": [
-        "324:310",
+        "330",
         0
       ]
     },
@@ -617,6 +617,23 @@
     },
     "_meta": {
       "title": "Conditioning Zero Out"
+    }
+  },
+  "330": {
+    "class_type": "ImageFromBatch",
+    "inputs": {
+      "image": [
+        "324:310",
+        0
+      ],
+      "batch_index": [
+        "324:311",
+        4
+      ],
+      "length": 4096
+    },
+    "_meta": {
+      "title": "Drop the frames the second window repeats"
     }
   }
 }

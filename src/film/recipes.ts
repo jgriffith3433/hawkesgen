@@ -28,8 +28,10 @@ export type Recipe = {
 };
 
 const $input = (i: number) => `$input:${i}`;
-/** video.talk makes two passes of `frames` each (a clip of 2 x frames / fps whatever the audio length), and a pass is 4n + 1 frames. */
-export const talkFrames = (seconds: number, fps: number) => Math.max(33, Math.ceil((seconds * fps / 2 - 1) / 4) * 4 + 1);
+/** The frames video.talk's second pass repeats from the first (its motion frames); v3 drops them when joining. */
+export const TALK_OVERLAP = 9;
+/** video.talk makes two passes of `frames` each, joined without the overlap (a clip of 2 x frames - 9 frames whatever the audio length); a pass is 4n + 1 frames. */
+export const talkFrames = (seconds: number, fps: number) => Math.max(33, Math.ceil(((seconds * fps + TALK_OVERLAP) / 2 - 1) / 4) * 4 + 1);
 
 /** Every file index a shot points at (characters, animations, props, sky, texture maps), so the render gets exactly those. */
 export function shotFileRefs(shot: Shot): number[] {
@@ -224,7 +226,7 @@ export function dialogueCloseup(o: DialogueOptions): Recipe {
     pick: 'The speaker\'s face on-model with the references, sharp eyes, a relaxed mouth that can start talking (not mid-word, not smiling wide), lighting consistent with the scene, nothing covering the face.',
     refs: refs.length ? refs : undefined,
     files: [...files.map((_, i) => `file ${i}: the shot's own files`), ...refs.map((r) => `file ${r}: a character reference sheet`)],
-    notes: [`video.talk makes two passes of ${talkFrames(seconds, fps)} frames (${(2 * talkFrames(seconds, fps) / fps).toFixed(1)} s at ${fps} fps) for a ${seconds} s line${o.seconds ? '' : ' (guessed from the words: pass seconds with the real length of the voice line)'}; the face is still after the voice ends, so trim the clip in the cut. One speaker per clip.`],
+    notes: [`video.talk makes two passes of ${talkFrames(seconds, fps)} frames (${((2 * talkFrames(seconds, fps) - TALK_OVERLAP) / fps).toFixed(1)} s at ${fps} fps) for a ${seconds} s line${o.seconds ? '' : ' (guessed from the words: pass seconds with the real length of the voice line)'}; the face is still after the voice ends, so trim the clip in the cut. One speaker per clip.`],
   };
 }
 
