@@ -16,7 +16,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: sudo apt-get install -y --no-install-recommends ffmpeg
+      # ffmpeg for the compose tests: a static build from GitHub's own releases (Ubuntu's mirror got slow enough on
+      # 2026-10-22 to time the job out twice while apt downloaded it).
+      - run: |
+          curl -sSfL --retry 3 https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz | tar -xJ -C /tmp
+          echo /tmp/ffmpeg-master-latest-linux64-gpl/bin >> "$GITHUB_PATH"
       - run: npm ci --no-audit --no-fund
       - run: npm run typecheck
       # Offline: tests that need the ComfyUI template cache (.data/comfy-cache) or .venv skip themselves.

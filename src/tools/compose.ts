@@ -28,6 +28,14 @@ export type ClipSpec = {
   volume?: number;
   /** Its sound is dialogue: ducked tracks dip under it. */
   dialogue?: boolean;
+  /** Play faster (2 = twice as fast) or slower (0.5), picture and sound: 0.25 to 4. */
+  speed?: number;
+  /**
+   * Punch in or push in on part of the frame: `to` is the zoom at the clip's end (1 = the whole frame, 2 = half of it),
+   * `from` at its start (default the same as `to`: a static punch-in); `x`, `y` (0 to 1) where the zoomed frame sits
+   * (0.5, 0.5 = the centre; 0.5, 0.2 = near the top, a face in a medium shot).
+   */
+  zoom?: { from?: number; to?: number; x?: number; y?: number };
 };
 
 export type TrackSpec = {
@@ -82,7 +90,7 @@ export type Caption = { start: number; end: number; text: string };
 
 export type Plan = {
   /** One entry per ffmpeg input, in order: the file and whether it loops. */
-  inputs: { kind: 'clip' | 'audio'; index: number; loop: boolean }[];
+  inputs: { kind: 'clip' | 'audio'; index: number; loop: boolean; seek?: number }[];
   filter: string;
   duration: number;
   frames: number;
@@ -90,6 +98,29 @@ export type Plan = {
   captions: Caption[];
   notes: string[];
 };
+
+/** A clip's zoom as a zoompan after the fit (one output frame per input frame, so timing is untouched); '' for none. */
+export function zoomOf(z: ClipSpec['zoom'], frames: number, o: ComposeOptions): string {
+  if (!z) return '';
+  const clampZ = (v: unknown, d: number) => Math.min(4, Math.max(1, num(v, d)));
+  const to = clampZ(z.to, 1);
+  const from = clampZ(z.from, to);
+  if (from === 1 && to === 1) return '';
+  const x = Math.min(1, Math.max(0, num(z.x, 0.5)));
+  const y = Math.min(1, Math.max(0, num(z.y, 0.5)));
+  const zoom = from === to ? f3(to) : `${f3(from)}+${f3(to - from)}*min(on/${Math.max(1, frames - 1)},1)`;
+  return `,zoompan=z='${zoom}':x='(iw-iw/zoom)*${f3(x)}':y='(ih-ih/zoom)*${f3(y)}':d=1:s=${o.width}x${o.height}:fps=${o.fps}`;
+}
+
+/** atempo steps for a speed (each step 0.5 to 2). */
+function tempoOf(speed: number): string[] {
+  const out: string[] = [];
+  let left = speed;
+  while (left > 2) { out.push('atempo=2'); left /= 2; }
+  while (left < 0.5) { out.push('atempo=0.5'); left /= 0.5; }
+  if (Math.abs(left - 1) > 1e-3) out.push(`atempo=${f3(left)}`);
+  return out;
+}
 
 export function planCompose(tl: Timeline, clips: Probe[], audio: Probe[], o: ComposeOptions): Plan {
   const F = o.fps;
@@ -107,13 +138,14 @@ export function planCompose(tl: Timeline, clips: Probe[], audio: Probe[], o: Com
     if (!p.video) throw new Error(`timeline.clips[${i}]: clip ${src} has no video stream`);
     const tin = Math.max(0, num(c.in, 0));
     const tout = Math.min(p.duration, num(c.out, p.duration));
-    const n = Math.round((tout - tin) * F);
+    const speed = Math.min(4, Math.max(0.25, num(c.speed, 1)));
+    const n = Math.round(((tout - tin) / speed) * F);
     if (n < 2) throw new Error(`timeline.clips[${i}]: in ${f3(tin)} and out ${f3(tout)} leave nothing (clip ${src} is ${f3(p.duration)} s)`);
     let transition: string | null = c.transition ?? (c.crossfade ? 'crossfade' : 'cut');
     if (transition === 'cut') transition = null;
     if (transition && !TRANSITIONS[transition]) throw new Error(`timeline.clips[${i}]: transition is cut or ${Object.keys(TRANSITIONS).join(', ')}`);
     const xs = transition ? num(c.crossfade ?? c.seconds, 0.5) : 0;
-    return { i, src, p, tin, tout, n, transition, x: Math.round(xs * F), spec: c };
+    return { i, src, p, tin, tout, n, speed, transition, x: Math.round(xs * F), spec: c };
   });
   segs[segs.length - 1].x = 0;
   segs[segs.length - 1].transition = null;
@@ -138,8 +170,11 @@ export function planCompose(tl: Timeline, clips: Probe[], audio: Probe[], o: Com
     : `scale=${o.width}:${o.height}:force_original_aspect_ratio=decrease,pad=${o.width}:${o.height}:(ow-iw)/2:(oh-ih)/2:color=${o.color}`;
   const clipInput: number[] = [];
   segs.forEach((s, k) => {
-    clipInput[k] = inputs.push({ kind: 'clip', index: s.src, loop: false }) - 1;
-    filters.push(`[${clipInput[k]}:v]trim=start=${f3(s.tin)}:end=${f3(s.tout)},setpts=PTS-STARTPTS,fps=${F},${fit},setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=1,trim=end_frame=${s.n},setpts=PTS-STARTPTS,settb=1/${F}[v${k}]`);
+    // Each clip seeks to its in point (-ss on the input): 30 shots cut from one long render don't decode it 30 times
+    // from the start. The trims are then from 0.
+    clipInput[k] = inputs.push({ kind: 'clip', index: s.src, loop: false, ...(s.tin > 0 ? { seek: s.tin } : {}) }) - 1;
+    const pts = s.speed === 1 ? 'setpts=PTS-STARTPTS' : `setpts=(PTS-STARTPTS)/${f3(s.speed)}`;
+    filters.push(`[${clipInput[k]}:v]trim=start=0:end=${f3(s.tout - s.tin)},${pts},fps=${F},${fit}${zoomOf(s.spec.zoom, s.n, o)},setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=1,trim=end_frame=${s.n},setpts=PTS-STARTPTS,settb=1/${F}[v${k}]`);
   });
   let acc = 'v0';
   for (let k = 1; k < segs.length; k++) {
@@ -169,7 +204,7 @@ export function planCompose(tl: Timeline, clips: Probe[], audio: Probe[], o: Com
     const d = s.n / F;
     const xin = k ? segs[k - 1].x / F : 0;
     const xout = s.x / F;
-    const chain = [`atrim=start=${f3(s.tin)}:end=${f3(s.tin + d)}`, 'asetpts=PTS-STARTPTS', fmt, `apad=whole_dur=${f3(d)}`, `atrim=end=${f3(d)}`];
+    const chain = [`atrim=start=0:end=${f3(d * s.speed)}`, 'asetpts=PTS-STARTPTS', ...tempoOf(s.speed), fmt, `apad=whole_dur=${f3(d)}`, `atrim=end=${f3(d)}`];
     if (xin) chain.push(`afade=t=in:d=${f3(xin)}`);
     if (xout) chain.push(`afade=t=out:st=${f3(d - xout)}:d=${f3(xout)}`);
     if (s.spec.volume !== undefined) chain.push(`volume=${f3(num(s.spec.volume, 1))}`);
@@ -312,7 +347,7 @@ export async function probeMedia(file: string, signal?: AbortSignal): Promise<Pr
 
 export const composeTool: Tool = {
   id: 'video.compose',
-  version: 1,
+  version: 2,
   title: 'Compose a cut',
   description: 'Puts shots together into a finished video with ffmpeg on this machine (free): edit order, trims, cuts or crossfades, each clip\'s own sound, music and voice tracks (ducked under dialogue), captions (a .vtt, or burned in), fades. Mixed sizes and frame rates are normalized. Returns a web H.264 mp4, the .vtt and a poster PNG. The timeline format is in docs/blender.md.',
   provider: 'local',
@@ -324,7 +359,7 @@ export const composeTool: Tool = {
   params: {
     timeline: {
       type: 'json',
-      description: 'clips: [{ clip, in, out, transition (cut | crossfade | dissolve | fadeblack | wipeleft...: into the next), seconds, sound, volume, dialogue }]; audio: [{ audio, start, clip, in, seconds, volume, fadeIn, fadeOut, loop, duck (true | sidechain), duckTo, dialogue }]; captions: [{ text, start, end, clip } or { text, track }]; sound; fadeIn; fadeOut.',
+      description: 'clips: [{ clip, in, out, transition (cut | crossfade | dissolve | fadeblack | wipeleft...: into the next), seconds, sound, volume, dialogue, speed (0.25-4), zoom ({ from, to: 1-4, x, y: 0-1 where it sits }: a punch-in or push-in) }]; audio: [{ audio, start, clip, in, seconds, volume, fadeIn, fadeOut, loop, duck (true | sidechain), duckTo, dialogue }]; captions: [{ text, start, end, clip } or { text, track }]; sound; fadeIn; fadeOut.',
       example: { clips: [{ clip: 0, transition: 'crossfade', seconds: 0.5 }, { clip: 1, out: 4 }], audio: [{ audio: 0, volume: 0.3, loop: true, fadeOut: 2, duck: true }, { audio: 1, clip: 1, start: 0.5, dialogue: true }], captions: [{ clip: 1, start: 0.5, end: 3, text: 'Who is there?' }], fadeIn: 0.5, fadeOut: 1 },
     },
     width: { type: 'integer', min: 64, max: 3840, default: 1280 },
@@ -362,6 +397,7 @@ export const composeTool: Tool = {
     const args = ['-hide_banner', '-loglevel', 'error', '-y'];
     for (const i of plan.inputs) {
       if (i.loop) args.push('-stream_loop', '-1');
+      if (i.seek) args.push('-ss', f3(i.seek));
       args.push('-i', i.kind === 'clip' ? clipFiles[i.index] : audioFiles[i.index]);
     }
     const video = p.codec === 'h265' ? ['-c:v', 'libx265', '-tag:v', 'hvc1'] : ['-c:v', 'libx264', '-profile:v', 'high'];

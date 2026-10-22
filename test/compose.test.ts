@@ -162,3 +162,38 @@ test('video.compose: looped music ducks under a voice line; burned captions; sid
   assert.ok(Math.abs(burned.result.duration - 4) < 0.1);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('video.compose: speed plays a clip faster with its sound; zoom punches in on part of the frame', { skip: !haveFfmpeg && 'no ffmpeg' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-'));
+  // Left half red, right half blue, with a tone: 4 s.
+  const split = path.join(dir, 'split.mp4');
+  ff(['-f', 'lavfi', '-i', 'color=c=red:s=320x240:r=25:d=4', '-f', 'lavfi', '-i', 'color=c=blue:s=160x240:r=25:d=4', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
+    '-filter_complex', '[0:v][1:v]overlay=160:0[v]', '-map', '[v]', '-map', '2:a', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', split]);
+  const { result, files } = await compose(dir, {
+    width: 320, height: 240, fps: 25,
+    timeline: { clips: [{ clip: 0, speed: 2 }, { clip: 0, out: 2, zoom: { to: 2, x: 1, y: 0.5 } }, { clip: 0, out: 2, zoom: { from: 1, to: 2, x: 0, y: 0.5 } }] },
+  }, { clips: [split, split, split] });
+  // 4 s at 2x = 2 s, then two 2 s clips.
+  assert.ok(Math.abs(result.duration - 6) < 0.1, `duration ${result.duration}`);
+  assert.ok(loudness(files.cut, 0.5, 1) > -30, 'the sped-up clip keeps its sound');
+  // The 2x punch-in on the right half: the centre is blue (unzoomed, the centre is the red/blue edge).
+  const [r3, , b3] = [...spawnSync('ffmpeg', ['-v', 'error', '-ss', '3', '-i', files.cut, '-frames:v', '1', '-vf', 'crop=8:8:156:116,scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1 << 20 }).stdout];
+  assert.ok(b3 > 200 && r3 < 60, `punch-in centre ${[r3, b3]}`);
+  // The push-in on the left half ends red in the centre.
+  const [r5, , b5] = [...spawnSync('ffmpeg', ['-v', 'error', '-ss', '5.9', '-i', files.cut, '-frames:v', '1', '-vf', 'crop=8:8:156:116,scale=1:1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { maxBuffer: 1 << 20 }).stdout];
+  assert.ok(r5 > 200 && b5 < 60, `push-in end centre ${[r5, b5]}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('video.compose: a clip cut from the middle of a long file starts at its in point (the input seeks there)', { skip: !haveFfmpeg && 'no ffmpeg' }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compose-'));
+  const long = path.join(dir, 'long.mp4');
+  ff(['-f', 'lavfi', '-i', 'color=c=red:s=160x120:r=25:d=2', '-f', 'lavfi', '-i', 'color=c=blue:s=160x120:r=25:d=2', '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[v]', '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', long]);
+  const { result, files } = await compose(dir, { width: 160, height: 120, fps: 25, timeline: { clips: [{ clip: 0, in: 2.5, out: 3.5 }, { clip: 0, in: 0.2, out: 1.2 }] } }, { clips: [long] });
+  assert.ok(Math.abs(result.duration - 2) < 0.1, `duration ${result.duration}`);
+  const [r0, , b0] = pixel(files.cut, 0.1);
+  assert.ok(b0 > 200 && r0 < 60, `first clip is the blue part ${[r0, b0]}`);
+  const [r1, , b1] = pixel(files.cut, 1.5);
+  assert.ok(r1 > 200 && b1 < 60, `second clip is the red part ${[r1, b1]}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
