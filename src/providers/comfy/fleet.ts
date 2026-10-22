@@ -59,7 +59,9 @@ export const DEFAULT_TYPE = 'g6e.xlarge';
 export const REGIONS = (env('HAWKES_REGIONS') ?? 'us-east-1,us-east-2,us-west-2,eu-north-1,eu-central-1,ap-northeast-1').split(',').map((r) => r.trim()).filter(Boolean);
 const PRICE_FACTOR: Record<string, number> = { 'eu-north-1': 1.1, 'eu-central-1': 1.25, 'ap-northeast-1': 1.3 };
 export const priceIn = (type: string, region?: string) => (TYPES[type]?.price ?? TYPES[DEFAULT_TYPE].price) * (PRICE_FACTOR[region ?? ''] ?? 1);
-export const DISK_GB = 250;
+// 400 GB (J, 2026-10-22): the image carries the video pipeline's models too (H3 scenes, InfiniteTalk, LTX-2.3, Z-Image:
+// about 270 GB with the OS and ComfyUI), with room left for workflow models that download on first use.
+export const DISK_GB = 400;
 export const DISK_PER_MONTH = DISK_GB * 0.08 + (300 - 125) * 0.04;
 export const PORT = 8189;
 const QUOTA = { ServiceCode: 'ec2', QuotaCode: 'L-DB2E81BA' }; // Running On-Demand G and VT instances (vCPUs)

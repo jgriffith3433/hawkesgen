@@ -91,7 +91,7 @@ test('first boot cleans an image made as is: leftovers, non-core models and a wr
   const [a, b] = loadManifest().models;
   s.put(`opt/comfy/models/${a.dir}/${a.file}`, 'good');
   s.put(`opt/comfy/models/${b.dir}/${b.file}`, 'go'); // truncated by a restart
-  s.put('opt/comfy/models/diffusion_models/z_image_turbo_bf16.safetensors', 'partial');
+  s.put('opt/comfy/models/diffusion_models/hunyuan3d-dit-v2-1_fp16.safetensors', 'partial');
   s.put('opt/comfy/models/vae/x.safetensors.aria2', 'ctl');
   s.put('opt/comfy/models/checkpoints/put_checkpoints_here', '');
   s.put('opt/comfy.partial/models/big', 'x');
@@ -99,7 +99,7 @@ test('first boot cleans an image made as is: leftovers, non-core models and a wr
   const r = s.run(zlib.gunzipSync(Buffer.from(imageUserData('TOK', 20, 'ami-1', sizes), 'base64')).toString());
   assert.equal(r.code, 0, r.out + s.read('var/log/gen-bootstrap.log'));
   assert.ok(s.has(`opt/comfy/models/${a.dir}/${a.file}`));
-  for (const gone of [`opt/comfy/models/${b.dir}/${b.file}`, 'opt/comfy/models/diffusion_models/z_image_turbo_bf16.safetensors', 'opt/comfy/models/vae/x.safetensors.aria2', 'opt/comfy.partial']) {
+  for (const gone of [`opt/comfy/models/${b.dir}/${b.file}`, 'opt/comfy/models/diffusion_models/hunyuan3d-dit-v2-1_fp16.safetensors', 'opt/comfy/models/vae/x.safetensors.aria2', 'opt/comfy.partial']) {
     assert.ok(!s.has(gone), `${gone} should be gone`);
   }
   assert.ok(s.has('opt/comfy/models/checkpoints/put_checkpoints_here'));
@@ -138,7 +138,7 @@ function prepBox() {
   s.put('opt/comfy/models/checkpoints/put_checkpoints_here', '');
   s.put('opt/comfy/models/diffusion_models/core.safetensors', 'good');
   s.put('opt/comfy/models/vae/short.safetensors', 'go'); // truncated (a restart cut it)
-  s.put('opt/comfy/models/diffusion_models/z_image_turbo_bf16.safetensors', 'not core');
+  s.put('opt/comfy/models/diffusion_models/hunyuan3d-dit-v2-1_fp16.safetensors', 'not core');
   s.put('opt/comfy/models/loras/hawkes/char.safetensors', 'trained');
   s.put('opt/comfy/models/vae/half.safetensors.aria2', 'ctl');
   s.put('opt/comfy/output/out.png', 'x');
@@ -168,7 +168,7 @@ test('image prep keeps only verified core models, fixes a truncated one and stri
   assert.equal(s.read('opt/comfy/models/vae/short.safetensors'), 'good');
   assert.ok(s.has('opt/comfy/models/diffusion_models/core.safetensors'));
   assert.ok(s.has('opt/comfy/models/checkpoints/put_checkpoints_here'));
-  for (const gone of ['opt/comfy.partial', 'opt/comfy/models/diffusion_models/z_image_turbo_bf16.safetensors', 'opt/comfy/models/loras/hawkes/char.safetensors',
+  for (const gone of ['opt/comfy.partial', 'opt/comfy/models/diffusion_models/hunyuan3d-dit-v2-1_fp16.safetensors', 'opt/comfy/models/loras/hawkes/char.safetensors',
     'opt/comfy/models/vae/half.safetensors.aria2', 'opt/comfy/output/out.png', 'etc/nginx/gen.htpasswd', 'etc/ssh/ssh_host_ed25519_key',
     'home/ubuntu/.ssh/authorized_keys', 'var/lib/gen/status.json', 'var/lib/gen/last_busy', 'var/log/gen-bootstrap.log']) {
     assert.ok(!s.has(gone), `${gone} should be gone`);
