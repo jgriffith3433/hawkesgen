@@ -260,9 +260,53 @@ function reusable(tool: Tool, project: string, params: Record<string, any>, inpu
   return null;
 }
 
+/**
+ * Priority boosts (POST /v1/jobs/boost): every job carrying a label (e.g. Studio's `studioChange: c_...`, a video J is
+ * waiting on) runs at this priority until the boost ends: the queued ones now, the ones submitted later as they come.
+ * Studio boosts a video's work while J waits for its next version (J, 2026-10-22: GPU priority for videos waiting on me).
+ */
+db.exec(`CREATE TABLE IF NOT EXISTS priority_boosts (label TEXT NOT NULL, value TEXT NOT NULL, priority INTEGER NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (label, value))`);
+const LABEL = /^[A-Za-z][\w.-]{0,40}$/;
+
+/** The highest live boost among a job's labels (0 when none). */
+export function boostFor(labels: Record<string, unknown> | undefined): number {
+  if (!labels) return 0;
+  let best = 0;
+  const now = Date.now();
+  for (const [k, v] of Object.entries(labels)) {
+    if (!LABEL.test(k) || (typeof v !== 'string' && typeof v !== 'number')) continue;
+    const r = db.prepare('SELECT priority FROM priority_boosts WHERE label = ? AND value = ? AND until > ?').get(k, String(v), now) as { priority: number } | undefined;
+    if (r && r.priority > best) best = r.priority;
+  }
+  return best;
+}
+
+/**
+ * Sets (priority > 0, for `minutes`) or ends (priority 0) a boost on a label, and re-prioritizes the queued jobs that
+ * carry it. Returns how many queued jobs changed.
+ */
+export function boostLabel(label: string, value: string, priority: number, minutes = 120): { label: string; value: string; priority: number; until: number | null; queued: number } {
+  if (!LABEL.test(label)) throw new GenError('label is a label name, e.g. studioChange');
+  const v = String(value ?? '').trim();
+  if (!v) throw new GenError('value is the label value to boost');
+  const p = Math.max(0, Math.min(10, Math.round(Number(priority) || 0)));
+  const until = Date.now() + Math.max(1, Math.min(24 * 60, Number(minutes) || 120)) * 60_000;
+  if (p > 0) db.prepare('INSERT INTO priority_boosts (label, value, priority, until) VALUES (?, ?, ?, ?) ON CONFLICT(label, value) DO UPDATE SET priority = excluded.priority, until = excluded.until').run(label, v, p, until);
+  else db.prepare('DELETE FROM priority_boosts WHERE label = ? AND value = ?').run(label, v);
+  db.prepare('DELETE FROM priority_boosts WHERE until <= ?').run(Date.now());
+  const queued = db.prepare(`SELECT id, labels, priority FROM jobs WHERE status = 'queued' AND json_extract(labels, ?) = ?`).all(`$."${label}"`, v) as { id: string; labels: string; priority: number }[];
+  for (const q of queued) {
+    const next = Math.max(p, boostFor(JSON.parse(q.labels || '{}')));
+    if (next !== q.priority) db.prepare('UPDATE jobs SET priority = ? WHERE id = ?').run(next, q.id);
+  }
+  queue.pump();
+  return { label, value: v, priority: p, until: p > 0 ? until : null, queued: queued.length };
+}
+
 function createJob(client: Client, tool: Tool, s: { project: string; params: Record<string, any>; inputs: Record<string, any>; labels?: Record<string, unknown>; key?: string; priority?: number }): Job {
   const { project, params, inputs } = s;
-  const spec = s;
+  // No priority asked for: a boost on one of its labels sets it (boostLabel).
+  const spec = { ...s, priority: s.priority ?? boostFor(s.labels) };
   const family = tool.provider === 'comfy' ? (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null : null;
   const job: Job = {
     id: newId('j', 6), key: spec.key ? String(spec.key) : null, client: client.id, project, tool: tool.id, params, inputs,
@@ -318,14 +362,28 @@ export function failJob(jobId: string, errorMessage = 'Job failed') {
   return getJob(jobId);
 }
 
-/** Queues a job again with the same tool, params and inputs: a new seed unless sameSeed. */
-export function rerun(client: Client, jobId: string, { sameSeed = false } = {}) {
+/**
+ * Queues a job again with the same tool, params and inputs: a new seed unless sameSeed. params: values to change (a
+ * retake with a note in the prompt); inputs: inputs to swap (asset:/blob: refs, e.g. an upscale of the new take);
+ * labels: more labels; priority: else the original's (or a boost on its labels).
+ */
+export function rerun(client: Client, jobId: string, { sameSeed = false, params: over, inputs: swap, labels, priority }: { sameSeed?: boolean; params?: Record<string, unknown>; inputs?: Record<string, unknown>; labels?: Record<string, unknown>; priority?: number } = {}) {
   const j = getJob(jobId);
   if (!j) throw new GenError('No such job', { status: 404 });
-  const params = { ...j.params };
+  const tool = getTool(j.tool);
+  if (!tool) throw new GenError(`${j.tool} is no longer a tool`);
+  let params: Record<string, any> = { ...j.params, ...(over ?? {}) };
   if (!sameSeed) delete params.seed;
   else params.seed = j.outputs[0]?.seed ?? params.seed;
-  return createJob(client, getTool(j.tool)!, { project: j.project, params, inputs: j.inputs, labels: j.labels, priority: j.priority });
+  if (over && Object.keys(over).length) params = validateParams(tool, params);
+  const inputs: Record<string, any> = { ...j.inputs };
+  for (const [k, v] of Object.entries(swap ?? {})) {
+    const spec = tool.inputs[k];
+    if (!spec) throw new GenError(`${tool.id} has no input "${k}"`);
+    inputs[k] = spec.multiple ? (Array.isArray(v) ? v : [v]).map((x) => resolveInput(client, x)) : resolveInput(client, v);
+  }
+  const lab = { ...j.labels, ...(labels ?? {}), rerunOf: j.id };
+  return createJob(client, tool, { project: j.project, params, inputs, labels: lab, priority: priority ?? Math.max(j.priority, boostFor(lab)) });
 }
 
 export function clearFinished(project?: string) {
@@ -464,7 +522,9 @@ class Queue {
     // A server keeps its models loaded between jobs: give each free server the oldest job of the family it already has.
     for (const ep of [...free]) {
       const fam = this.families.get(ep.id);
-      const next = gpu.find((j) => !taken.has(j.id) && j.family === fam);
+      // ...but never ahead of a job with a higher priority (a boosted video J is waiting on): that one goes first.
+      const top = gpu.find((j) => !taken.has(j.id))?.priority ?? 0;
+      const next = gpu.find((j) => !taken.has(j.id) && j.family === fam && j.priority >= top);
       if (!next) continue;
       taken.add(next.id);
       free = free.filter((x) => x !== ep);

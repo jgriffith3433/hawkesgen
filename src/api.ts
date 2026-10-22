@@ -15,7 +15,7 @@ import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
-import { submit, getJob, listJobs, cancel, rerun, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec } from './jobs.ts';
+import { submit, getJob, listJobs, cancel, rerun, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
@@ -461,13 +461,23 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         waiting: visible('queued').map((j) => ({ job: j.id, project: j.project, created: j.created, detail: j.detail ?? null, url: j.params?.url ?? null, scenario: j.params?.scenario ?? null, peers: Number(j.params?.peers) || 1, device: j.params?.mobile ? 'phone' : 'desktop' })),
       });
     }
+    if (route === '/v1/jobs/boost' && method === 'POST') {
+      requireRole(client, 'admin');
+      const b = await readJson(req);
+      return send(res, 200, boostLabel(String(b.label ?? ''), String(b.value ?? ''), Number(b.priority ?? 0), Number(b.minutes ?? 120)));
+    }
     m = /^\/v1\/jobs\/(j_[0-9a-f]+)(?:\/(cancel|rerun|live|live\.mjpeg|frame|shots(?:\/\d+)?|graphs\/[\w.-]+))?$/.exec(route);
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
       if (!m[2] && method === 'GET') return send(res, 200, { ...j, queue: queuePosition(j) });
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
-      if (m[2] === 'rerun' && method === 'POST') return send(res, 200, rerun(client, j.id, { sameSeed: (await readJson(req)).sameSeed === true }));
+      if (m[2] === 'rerun' && method === 'POST') {
+        const b = await readJson(req);
+        // Changing priority is the scheduler's business: admins and up (Studio), like boosts.
+        if (b.priority !== undefined) requireRole(client, 'admin');
+        return send(res, 200, rerun(client, j.id, { sameSeed: b.sameSeed === true, params: b.params, inputs: b.inputs, labels: b.labels, priority: b.priority === undefined ? undefined : Number(b.priority) }));
+      }
       // A playtest's live state (every step, the players, problems, the timeline); null after the run (the job has the result).
       if (m[2] === 'live' && method === 'GET') return send(res, 200, { job: j.id, status: j.status, detail: j.detail ?? null, live: liveSnapshot(j.id, { full: true }) });
       // A player's newest frame once (frame), or a live MJPEG stream (live.mjpeg: multipart/x-mixed-replace, for an <img>).

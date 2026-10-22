@@ -16,6 +16,19 @@ export const INSTRUCTIONS = "Hawkes Gen: shared generative AI for the Hawkes Bio
  * remote: the caller is on another machine (the HTTP endpoint): outputs come back as URLs (filesUrl/v1/files/<asset>),
  * and local paths in inputs, save_to and workflow_file mean paths on the server.
  */
+/**
+ * Labels every job from this MCP server carries (HAWKESGEN_LABELS, a JSON object): Studio gives its agents
+ * `{ "studioChange": "c_..." }`, so it can boost a video's jobs while J waits for it (POST /v1/jobs/boost).
+ */
+function envLabels(): Record<string, string> {
+  try {
+    const v = JSON.parse(process.env.HAWKESGEN_LABELS ?? '{}');
+    return v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).filter(([, x]) => typeof x === 'string').map(([k, x]) => [k, String(x)])) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: boolean; filesUrl?: string } = {}): McpServer {
   function summarizeJob(j: any) {
     return {
@@ -74,7 +87,7 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
       }, ['project']),
       run: async (a) => {
         if (remote) for (const v of Object.values<any>(a.inputs ?? {}).flat()) if (typeof v !== 'string' || !/^(asset|blob):/.test(v)) throw new Error('Over the remote MCP endpoint, inputs must be asset:<id> or blob:<sha> (upload files with POST /v1/blobs first).');
-        const job = await gen.submit(a.tool, { project: a.project, params: a.params ?? {}, inputs: a.inputs ?? {}, labels: a.labels, preset: a.preset, reuse: a.reuse !== false });
+        const job = await gen.submit(a.tool, { project: a.project, params: a.params ?? {}, inputs: a.inputs ?? {}, labels: { ...envLabels(), ...(a.labels ?? {}) }, preset: a.preset, reuse: a.reuse !== false });
         if (a.wait === false) return summarizeJob(job);
         // No GPU server running: the job waits in the queue until J starts one. Say so now instead of blocking.
         const first = job.status === 'queued' ? await new Promise((r) => setTimeout(r, 2000)).then(() => gen.job(job.id)) : job;
