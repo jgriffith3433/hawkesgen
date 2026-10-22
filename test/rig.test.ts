@@ -36,7 +36,7 @@ test('rigScript and turntableSpec: the rig, then the orbit render of the first c
   assert.equal(tool!.params.keepTextures.default, true);
 });
 
-const blender = [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
+const blender = process.env.HAWKES_NO_BLENDER ? undefined : [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
   .find((p) => p && fs.existsSync(p));
 const bash = process.platform === 'win32' ? ['C:/Program Files/Git/bin/bash.exe'].find((p) => fs.existsSync(p)) : '/bin/bash';
 const python = [path.join('.venv', 'Scripts', 'python.exe'), path.join('.venv', 'bin', 'python')].find((p) => fs.existsSync(p))

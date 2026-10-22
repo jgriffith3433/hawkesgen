@@ -172,7 +172,8 @@ test('character3d mesh is an asset.make chain (from the four-view sheet, best-of
   assert.deepEqual(check.inputs.fbx, 'slot:./export/fbx');
 });
 
-const blender = [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
+// HAWKES_NO_BLENDER: skip like CI does (hawkesstudio/deploy/local-deploy.mjs checks a commit with it).
+const blender = process.env.HAWKES_NO_BLENDER ? undefined : [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
   .find((p) => p && fs.existsSync(p));
 const bash = process.platform === 'win32' ? ['C:/Program Files/Git/bin/bash.exe'].find((p) => fs.existsSync(p)) : '/bin/bash';
 const python = [path.join('.venv', 'Scripts', 'python.exe'), path.join('.venv', 'bin', 'python')].find((p) => fs.existsSync(p))

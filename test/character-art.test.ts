@@ -114,7 +114,7 @@ test('checkOps: repair, retopo, project and lod ops are validated', () => {
   assert.throws(() => checkOps([{ op: 'import', file: 0 }, { op: 'fix', bogus: 1 }], files));
 });
 
-const blender = [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
+const blender = process.env.HAWKES_NO_BLENDER ? undefined : [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
   .find((p) => p && fs.existsSync(p));
 const python = ['python', 'python3'].find((p) => spawnSync(p, ['--version']).status === 0);
 const skip = !blender ? 'no Blender here' : false;

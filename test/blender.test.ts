@@ -35,7 +35,8 @@ test('renderScript: a zip is unpacked and its .blend found; edges come from the 
   assert.doesNotMatch(named, /edgedetect/);
 });
 
-const blender = [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
+// HAWKES_NO_BLENDER: skip like CI does (hawkesstudio/deploy/local-deploy.mjs checks a commit with it).
+const blender = process.env.HAWKES_NO_BLENDER ? undefined : [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
   .find((p) => p && fs.existsSync(p));
 const bash = process.platform === 'win32' ? ['C:/Program Files/Git/bin/bash.exe'].find((p) => fs.existsSync(p)) : '/bin/bash';
 const python = [path.join('.venv', 'Scripts', 'python.exe'), path.join('.venv', 'bin', 'python')].find((p) => fs.existsSync(p));

@@ -144,7 +144,7 @@ test('motion.from-text is a built-in tool; character3d motion/* uses it on the r
   assert.equal(spec.labels.slots.preview, 'preview/swing');
 });
 
-const blender = [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
+const blender = process.env.HAWKES_NO_BLENDER ? undefined : [process.env.BLENDER, 'C:/Program Files/Blender Foundation/Blender 5.0/blender.exe', '/opt/blender/blender', '/usr/bin/blender']
   .find((p) => p && fs.existsSync(p));
 
 test('smplh_to_bvh selftest: a zero pose and a bent elbow write a SMPL-named BVH', {
