@@ -1,0 +1,95 @@
+{
+  "id": "video.kling",
+  "version": 1,
+  "title": "Character video from references (Kling O3, paid)",
+  "description": "Kling O3 (kling-v3-omni) reference-to-video (a ComfyUI partner node, billed to the Comfy.org account: COMFY_ORG_API_KEY): 3-15 s with native audio (Kling voices the characters itself), from a reference image (a sheet with the characters and the set works).",
+  "family": "api-kling",
+  "output": "video",
+  "models": [],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "The reference sheet (characters, set)",
+      "targets": [
+        [
+          "17",
+          "image"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "The scene, shot by shot",
+      "targets": [
+        [
+          "21",
+          "prompt"
+        ]
+      ]
+    },
+    "seconds": {
+      "type": "integer",
+      "min": 3,
+      "max": 15,
+      "default": 12,
+      "description": "Length",
+      "targets": [
+        [
+          "21",
+          "duration"
+        ]
+      ]
+    },
+    "resolution": {
+      "type": "enum",
+      "values": [
+        "720p",
+        "1080p"
+      ],
+      "default": "720p",
+      "targets": [
+        [
+          "21",
+          "resolution"
+        ]
+      ]
+    },
+    "aspect": {
+      "type": "enum",
+      "values": [
+        "16:9",
+        "9:16",
+        "1:1"
+      ],
+      "default": "16:9",
+      "targets": [
+        [
+          "21",
+          "aspect_ratio"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 2147483647,
+      "targets": [
+        [
+          "21",
+          "seed"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "20"
+  ],
+  "source": {
+    "upload": true
+  },
+  "seconds": 600
+}

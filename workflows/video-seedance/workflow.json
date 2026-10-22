@@ -1,0 +1,130 @@
+{
+  "id": "video.seedance",
+  "version": 1,
+  "title": "Scene from references (Seedance 2.5, paid)",
+  "description": "Seedance 2.5 reference-to-video (a ComfyUI partner node, billed to the Comfy.org account: COMFY_ORG_API_KEY): a multi-shot scene up to 30 s with native audio, from two characters, a set and the voice track. In the prompt, refer to them as image 1, image 2, image 3 and audio 1, give each a job, and label the shots.",
+  "family": "api-seedance",
+  "output": "video",
+  "models": [],
+  "inputs": {
+    "image": {
+      "kind": "image",
+      "required": true,
+      "description": "Character 1: image 1",
+      "targets": [
+        [
+          "12",
+          "image"
+        ]
+      ]
+    },
+    "image2": {
+      "kind": "image",
+      "required": true,
+      "description": "Character 2: image 2",
+      "targets": [
+        [
+          "30",
+          "image"
+        ]
+      ]
+    },
+    "set": {
+      "kind": "image",
+      "required": true,
+      "description": "The set: image 3",
+      "targets": [
+        [
+          "31",
+          "image"
+        ]
+      ]
+    },
+    "audio": {
+      "kind": "audio",
+      "required": true,
+      "description": "The voice track: audio 1",
+      "targets": [
+        [
+          "32",
+          "audio"
+        ]
+      ]
+    }
+  },
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "The scene, shot by shot",
+      "targets": [
+        [
+          "24",
+          "model.prompt"
+        ]
+      ]
+    },
+    "seconds": {
+      "type": "integer",
+      "min": 4,
+      "max": 30,
+      "default": 12,
+      "description": "Length",
+      "targets": [
+        [
+          "24",
+          "model.duration"
+        ]
+      ]
+    },
+    "resolution": {
+      "type": "enum",
+      "values": [
+        "480p",
+        "720p",
+        "1080p"
+      ],
+      "default": "720p",
+      "targets": [
+        [
+          "24",
+          "model.resolution"
+        ]
+      ]
+    },
+    "ratio": {
+      "type": "enum",
+      "values": [
+        "16:9",
+        "9:16",
+        "1:1",
+        "adaptive"
+      ],
+      "default": "16:9",
+      "targets": [
+        [
+          "24",
+          "model.ratio"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 2147483647,
+      "targets": [
+        [
+          "24",
+          "seed"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "16"
+  ],
+  "source": {
+    "upload": true
+  },
+  "seconds": 600
+}
