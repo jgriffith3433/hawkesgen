@@ -1,0 +1,237 @@
+{
+ "id": "video.keyframes",
+ "version": 1,
+ "title": "Scene through keyframes (MiniMax H3)",
+ "description": "MiniMax H3 with up to three frames pinned to exact moments (the beats that must land: the reveal, the hit, the last look) plus the character's reference, with native sound, 5-15 s. Make the keyframes first (image.edit from the kit and the set, the same style), then write the prompt in the template's structure: subject_definitions (<Subject 1> is the character in its reference picture), summary, then [Shot 1], [Shot 2]... naming where each <Picture n> lands. Pictures: frame1, frame2, frame3 then reference, in that order. Use it when a story beat must land at a time; video.scene when the performance should find its own timing.",
+ "family": "minimax-h3",
+ "output": "video",
+ "models": [
+  {
+   "file": "minimax_h3_video_vae_int8_convrot.safetensors",
+   "dir": "vae",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors"
+  },
+  {
+   "file": "minimax_h3_audio_vae_fp32.safetensors",
+   "dir": "vae",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors"
+  },
+  {
+   "file": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+   "dir": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+  },
+  {
+   "file": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+   "dir": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+  },
+  {
+   "file": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
+  }
+ ],
+ "inputs": {
+  "frame1": {
+   "kind": "image",
+   "required": true,
+   "description": "The first keyframe (often the opening frame), shown at at1",
+   "targets": [
+    [
+     "157",
+     "image"
+    ]
+   ]
+  },
+  "frame2": {
+   "kind": "image",
+   "required": false,
+   "description": "The second keyframe, shown at at2",
+   "targets": [
+    [
+     "159",
+     "image"
+    ]
+   ],
+   "bypass": [
+    [
+     "162",
+     "positive"
+    ]
+   ]
+  },
+  "frame3": {
+   "kind": "image",
+   "required": false,
+   "description": "The third keyframe, shown at at3",
+   "targets": [
+    [
+     "167",
+     "image"
+    ]
+   ],
+   "bypass": [
+    [
+     "169",
+     "positive"
+    ]
+   ]
+  },
+  "reference": {
+   "kind": "image",
+   "required": true,
+   "description": "The character's reference (identity across the shots): <Subject 1>",
+   "targets": [
+    [
+     "164",
+     "image"
+    ]
+   ]
+  }
+ },
+ "params": {
+  "prompt": {
+   "type": "text",
+   "required": true,
+   "description": "subject_definitions, summary, then [Shot n] descriptions naming where each <Picture n> lands (the template's structure)",
+   "targets": [
+    [
+     "138",
+     "value"
+    ]
+   ],
+   "example": "subject_definitions:\n<Subject 1> is the woman in <Picture 1>, featuring pale skin, bright red lipstick, wearing a white textured swim cap covered in raised bumps and a blue sleeveless collared shirt with white polka dots.\n<Picture 1> is the first frame of [Shot 1], showing <Subject 1> holding a green apple with a leaf over her right eye against a solid blue background.\n<Picture 2> is the keyframe of [Shot 2], showing the woman wearing a smooth teal green swim cap and a red swimsuit top, resting her chin on a red ball stacked on a soccer ball, while holding a red tennis racket that casts a grid shadow across her face.\n<Picture 3> is the keyframe of [Shot 3], showing the woman in a black geometric textured swim cap and a sleek black swimsuit leaning over a vivid blue table towards a yellow apple with a matchstick stuck in it on a red plate, with a mirror reflecting the arrangement against an ocean background.\n<Picture 4> is the first frame of [Shot 4], showing a blurry, ethereal white humanoid head and neck in profile against a soft blue-gray gradient background.\n\nsummary:\n[keyframe completion + reference generation] The target video is a dynamic fashion photography collection featuring <Subject 1> in various surreal, highly stylized vignettes. It begins with <Picture 1> as <Subject 1> dynamically poses with a green apple against a solid blue background. The video then progresses through rapid stylistic cuts: first matching <Picture 2> where she balances her chin on stacked balls while a racket casts a shifting grid shadow on her face, and then matching <Picture 3> where she leans over a table towards a yellow apple with a matchstick, set against a rippling ocean backdrop. The video concludes by cutting to the abstract, blurry white humanoid profile from <Picture 4>, which slightly vibrates before freezing to end the sequence.\n\nretention_analysis:\n<Subject 1> (appears in [Shot 1], [Shot 2], [Shot 3]): partially_preserved - <Subject 1>'s facial identity, pale skin, and distinct red lipstick are maintained across the first three shots, but her swim cap and clothing are explicitly changed in [Shot 2] and [Shot 3] to match the distinct fashion styles of those keyframes.\n<Picture 1> ([Shot 1] first frame): fully_preserved - the video starts exactly from <Picture 1>'s framing, subject state, and solid blue background.\n<Picture 2> ([Shot 2] keyframe): fully_preserved - the specific surreal arrangement of the red ball, soccer ball, tennis racket, and the resulting grid shadow on the face is accurately recreated in [Shot 2].\n<Picture 3> ([Shot 3] keyframe): fully_preserved - the precise composition of the black-clad model, the yellow apple with a matchstick on a red plate, the mirror reflection, and the outdoor ocean background is accurately established in [Shot 3].\n<Picture 4> ([Shot 4] first frame): fully_preserved - the blurry, abstract white humanoid profile is directly used as the static ending composition of [Shot 4].\n\ndetailed_description:\nThe target video is a dynamic fashion photography film collection presented in a highly stylized, cinematic live-action medium. The visuals are characterized by bold, contrasting primary colors, crisp lighting, and surreal, editorial compositions.\n\n[Shot 1] The shot begins from <Picture 1>. <Subject 1> is positioned centrally against a vibrant, solid blue background. She wears a striking white textured swim cap covered in small raised bumps, complementing her blue sleeveless collared shirt adorned with white polka dots. Her pale skin and bright red lipstick stand out vividly. She holds a bright green apple with a single, crisp green leaf directly over her right eye, gripping it lightly with her slender fingers. To fulfill the dynamic fashion intent, the camera pushes in sharply. As the framing tightens, <Subject 1> slowly lowers the green apple away from her face, revealing her intense, unblinking gaze. The crisp studio lighting highlights the textures of her cap and the smooth surface of the apple, establishing a high-fashion, editorial atmosphere.\n\n[Shot 2] At 00:01.500, the shot cuts to the next fashion vignette, whose keyframe corresponds to <Picture 2>. <Subject 1> is now seen in profile against a two-toned background of solid blue above and a vibrant red surface below. She wears a smooth teal green swim cap and a red swimsuit top. Her pose is sculptural: she rests her chin gracefully atop a small red ball, which is precariously stacked on a classic black-and-white soccer ball. In her hand, she holds a bright red tennis racket vertically near her face. The strong directional sunlight casts a distinct, sharp grid shadow from the racket's strings across her closed eyes and pale skin. The camera executes a smooth, continuous arc shot around her. This movement causes the harsh grid shadow to dynamically glide and warp across her facial contours, while she subtly tilts her head, maintaining her perfectly still, mannequin-like pose amidst the camera motion.\n\n[Shot 3] At 00:03.000, the shot cuts to an outdoor surreal composition, whose keyframe corresponds to <Picture 3>. The setting features a bright blue ocean and a clear sky in the background. <Subject 1>, now wearing a black textured swim cap featuring geometric triangular patterns and a sleek black swimsuit, leans dramatically forward over a vivid blue table. In front of her, a glossy red plate holds a perfectly smooth yellow apple, which has a single unlit matchstick pierced upright into its top. A round vanity mirror on a silver stand sits just behind the plate, perfectly reflecting the back of the apple, the matchstick, and a sliver of the ocean. The camera tracks slowly to the right as <Subject 1> continues to lean closer to the apple, her lips slightly parted. The natural sunlight creates sharp, defined shadows on the blue table, while the ocean waves in the background gently ripple and shift, adding environmental dynamism to the editorial shot.\n\n[Shot 4] At 00:05.000, the shot cuts to the concluding sequence, anchored by <Picture 4>. The scene shifts abruptly to a highly abstract, ethereal presentation. A heavily blurred, glowing white humanoid head and neck in profile are silhouetted against a soft blue-gray gradient background. The figure appears ghost-like, devoid of distinct facial features. The camera holds a static frame as the white silhouette exhibits a subtle, vibrating motion, its edges smearing gently into the blue background. After this brief, haunting movement, the figure completely freezes in place, providing a stark, arresting final image that concludes the dynamic fashion showcase.\n\noverall_soundscape:\nThe video features a stylized, rhythmic soundscape with subtle, crisp Foley effects like fabric swishes, ocean ripples, and gentle air movements synchronized to the camera motions, enhancing the high-end editorial aesthetic.\n\nnon_diegetic_music:\nA punchy, dynamic electronic beat with a fast tempo, ticking hi-hats, and heavy bass serves as the driving soundtrack, matching the high-energy, rapid-fire cuts of the fashion vignettes."
+  },
+  "seconds": {
+   "type": "number",
+   "default": 5,
+   "description": "Length in seconds (5-15)",
+   "targets": [
+    [
+     "132",
+     "value"
+    ]
+   ]
+  },
+  "at1": {
+   "type": "number",
+   "default": 1.5,
+   "description": "When frame1 lands (seconds)",
+   "targets": [
+    [
+     "154",
+     "value"
+    ]
+   ]
+  },
+  "at2": {
+   "type": "number",
+   "default": 3,
+   "description": "When frame2 lands (seconds)",
+   "targets": [
+    [
+     "160",
+     "value"
+    ]
+   ]
+  },
+  "at3": {
+   "type": "number",
+   "default": 5,
+   "description": "When frame3 lands (seconds)",
+   "targets": [
+    [
+     "168",
+     "value"
+    ]
+   ]
+  },
+  "aspect": {
+   "type": "enum",
+   "values": [
+    "16:9 (Widescreen)",
+    "9:16 (Portrait)",
+    "1:1 (Square)"
+   ],
+   "default": "16:9 (Widescreen)",
+   "description": "Frame shape",
+   "targets": [
+    [
+     "115",
+     "aspect_ratio"
+    ]
+   ]
+  },
+  "megapixels": {
+   "type": "number",
+   "min": 0.2,
+   "max": 1,
+   "default": 0.4,
+   "advanced": true,
+   "description": "Frame size (0.4 = about 848x480)",
+   "targets": [
+    [
+     "115",
+     "megapixels"
+    ]
+   ]
+  },
+  "enable_lightning_lora": {
+   "type": "boolean",
+   "default": false,
+   "description": "Fast draft (4 steps): for a rough draft",
+   "targets": [
+    [
+     "146",
+     "value"
+    ]
+   ]
+  },
+  "steps": {
+   "type": "integer",
+   "default": 20,
+   "description": "Steps without the fast draft",
+   "targets": [
+    [
+     "143",
+     "value"
+    ]
+   ],
+   "advanced": true
+  },
+  "fps": {
+   "type": "number",
+   "min": 1,
+   "max": 60,
+   "default": 24,
+   "targets": [
+    [
+     "130",
+     "fps"
+    ]
+   ],
+   "advanced": true
+  },
+  "seed": {
+   "type": "integer",
+   "min": 0,
+   "max": 281474976710656,
+   "description": "Seed for the first output; the next ones count up. Random when empty.",
+   "targets": [
+    [
+     "129",
+     "noise_seed"
+    ]
+   ]
+  }
+ },
+ "outputs": [
+  "92"
+ ],
+ "source": {
+  "template": "video_minimax_h3_multiframe_reference",
+  "size": 44452911514
+ },
+ "seconds": 900
+}

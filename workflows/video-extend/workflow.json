@@ -1,0 +1,171 @@
+{
+ "id": "video.extend",
+ "version": 1,
+ "title": "Carry a shot on (MiniMax H3)",
+ "description": "MiniMax H3 image-to-video with native sound: a shot that starts exactly on the given frame (the last frame of the previous clip, or a keyframe) and goes on as the prompt says, 5-15 s. For a moment longer than one generation, or a cut that must continue the action seamlessly. Describe the motion, the shots and the sound; keep the style words the same as the clip it continues.",
+ "family": "minimax-h3",
+ "output": "video",
+ "models": [
+  {
+   "file": "minimax_h3_video_vae_int8_convrot.safetensors",
+   "dir": "vae",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors"
+  },
+  {
+   "file": "minimax_h3_audio_vae_fp32.safetensors",
+   "dir": "vae",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors"
+  },
+  {
+   "file": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+   "dir": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+  },
+  {
+   "file": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+   "dir": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+  },
+  {
+   "file": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+  }
+ ],
+ "inputs": {
+  "image": {
+   "kind": "image",
+   "required": true,
+   "description": "The frame it starts on (the previous clip's last frame)",
+   "targets": [
+    [
+     "114",
+     "image"
+    ]
+   ]
+  }
+ },
+ "params": {
+  "prompt": {
+   "type": "text",
+   "required": true,
+   "description": "What happens next: motion, shots, sound, in the same style words as before",
+   "targets": [
+    [
+     "105:104",
+     "prompt"
+    ]
+   ],
+   "example": ""
+  },
+  "seconds": {
+   "type": "number",
+   "default": 5,
+   "description": "Length in seconds (5-15)",
+   "targets": [
+    [
+     "105:111",
+     "value"
+    ]
+   ]
+  },
+  "aspect": {
+   "type": "enum",
+   "values": [
+    "16:9 (Widescreen)",
+    "9:16 (Portrait)",
+    "1:1 (Square)"
+   ],
+   "default": "16:9 (Widescreen)",
+   "description": "Frame shape (match the clip it continues)",
+   "targets": [
+    [
+     "115",
+     "aspect_ratio"
+    ]
+   ]
+  },
+  "megapixels": {
+   "type": "number",
+   "min": 0.2,
+   "max": 1,
+   "default": 0.4,
+   "advanced": true,
+   "description": "Frame size",
+   "targets": [
+    [
+     "115",
+     "megapixels"
+    ]
+   ]
+  },
+  "enable_lightning_lora": {
+   "type": "boolean",
+   "default": false,
+   "description": "Fast draft (8 steps)",
+   "targets": [
+    [
+     "105:126",
+     "value"
+    ]
+   ]
+  },
+  "steps": {
+   "type": "integer",
+   "default": 20,
+   "targets": [
+    [
+     "105:124",
+     "value"
+    ]
+   ],
+   "advanced": true,
+   "description": "Steps without the fast draft"
+  },
+  "lightning_steps": {
+   "type": "integer",
+   "default": 8,
+   "targets": [
+    [
+     "105:125",
+     "value"
+    ]
+   ],
+   "advanced": true,
+   "description": "Steps with the fast draft"
+  },
+  "fps": {
+   "type": "number",
+   "min": 1,
+   "max": 60,
+   "default": 24,
+   "targets": [
+    [
+     "105:91",
+     "fps"
+    ]
+   ],
+   "advanced": true
+  },
+  "seed": {
+   "type": "integer",
+   "min": 0,
+   "max": 281474976710656,
+   "description": "Seed for the first output; the next ones count up. Random when empty.",
+   "targets": [
+    [
+     "105:15",
+     "noise_seed"
+    ]
+   ]
+  }
+ },
+ "outputs": [
+  "92"
+ ],
+ "source": {
+  "template": "video_minimax_h3_i2v_continuation",
+  "size": 44452911514
+ },
+ "seconds": 600
+}

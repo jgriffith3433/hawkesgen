@@ -88,7 +88,7 @@ export type Tool = {
   version: number;
   title: string;
   description: string;
-  provider: 'comfy' | 'elevenlabs' | 'anthropic' | 'local' | 'builder' | 'playtest' | 'pipeline';
+  provider: 'comfy' | 'elevenlabs' | 'anthropic' | 'gemini' | 'local' | 'builder' | 'playtest' | 'pipeline';
   /** For ComfyUI tools: the set of models it loads (servers swap between families). */
   family?: string | ((params: Record<string, any>) => string);
   output: 'image' | 'video' | 'audio' | 'text' | 'json' | 'mesh' | 'file';

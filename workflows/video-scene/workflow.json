@@ -1,215 +1,249 @@
 {
-  "id": "video.scene",
-  "version": 1,
-  "title": "Scene from references (MiniMax H3)",
-  "description": "MiniMax H3 reference-to-video (open weights, on the fleet): a multi-shot scene, 5-15 s, with native stereo audio, from two character references, a set reference and the scene's voice track (both characters' lines, timed, as one audio file). The prompt names each reference's job (<Picture 1> is Exit Punk, <Picture 3> is the set, use <Audio 1> exactly as it is) and labels the shots (CUT 1:, CUT 2:...); the scene keeps one space, light and look across cuts. seconds should match the voice track.",
-  "family": "minimax-h3",
-  "output": "video",
-  "models": [
-    {
-      "file": "minimax_h3_video_vae_int8_convrot.safetensors",
-      "dir": "vae",
-      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors"
-    },
-    {
-      "file": "minimax_h3_audio_vae_fp32.safetensors",
-      "dir": "vae",
-      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors"
-    },
-    {
-      "file": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
-      "dir": "diffusion_models",
-      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-    },
-    {
-      "file": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
-      "dir": "text_encoders",
-      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
-    },
-    {
-      "file": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
-      "dir": "loras",
-      "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
-    }
-  ],
-  "inputs": {
-    "image": {
-      "kind": "image",
-      "required": true,
-      "description": "Character 1 (its reference sheet or portrait): <Picture 1>",
-      "targets": [
-        [
-          "137",
-          "image"
-        ]
-      ]
-    },
-    "image2": {
-      "kind": "image",
-      "required": true,
-      "description": "Character 2: <Picture 2>",
-      "targets": [
-        [
-          "139",
-          "image"
-        ]
-      ]
-    },
-    "set": {
-      "kind": "image",
-      "required": true,
-      "description": "The set or location: <Picture 3>",
-      "targets": [
-        [
-          "150",
-          "image"
-        ]
-      ]
-    },
-    "audio": {
-      "kind": "audio",
-      "required": true,
-      "description": "The scene's voice track (every line, timed, one file, 2-15 s): <Audio 1>",
-      "targets": [
-        [
-          "151",
-          "audio"
-        ]
-      ]
-    }
+ "id": "video.scene",
+ "version": 2,
+ "title": "Scene from references (MiniMax H3)",
+ "description": "MiniMax H3 reference-to-video (open weights, on the fleet): a whole multi-shot scene, 5-15 s, with native stereo sound, every character on-model in one room and one light. Two ways to drive it. TRACK: give the finished voice track as audio and say \"use <Audio 1> exactly as it is\": the lips follow your timing (music videos, voice-overs, a table read you locked). PERFORM: give each speaker's voice sample as audio, audio2, audio3 (a clean 3-10 s clip of that character) and write the lines in the prompt (\"<Subject 1> speaks in the voice of <Audio 1>: ...\"): the model acts the dialogue itself, with its own timing, breaths, overlaps and reactions, which is what makes it feel alive. Pictures: image is <Picture 1>, image2 <Picture 2>, set <Picture 3>, image3 <Picture 4>. Label shots CUT 1:, CUT 2:... Optional inputs must be given in order (audio before audio2 before audio3).",
+ "family": "minimax-h3",
+ "output": "video",
+ "models": [
+  {
+   "file": "minimax_h3_video_vae_int8_convrot.safetensors",
+   "dir": "vae",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors"
   },
-  "params": {
-    "prompt": {
-      "type": "text",
-      "required": true,
-      "description": "The scene, shot by shot: style, which picture is who, \"use <Audio 1> exactly as it is\", then CUT 1:, CUT 2:... with framing, camera, action and who speaks.",
-      "targets": [
-        [
-          "138",
-          "value"
-        ]
-      ],
-      "example": "Bold comic-book ink style, heavy linework, red and blue-black palette, night city. Use <Picture 2> and <Picture 1> as reference frames and <Audio 1> exactly as it is.\nCUT 1: top-down view of the little boy superhero on the rooftop — red cape fluttering in the wind, hands planted on his hips, freckles and a cocky grin as he looks straight up into the camera. The camera slowly descends toward him as he delivers his line — as he speaks, comic-book graphic overlay text word by word in sync with his voice: \"GET READY TO\" - \"MEET\" — \"YOUR\" — \"MAKER\" — huge jagged comic lettering, white with heavy black outlines and red drop shadows, tilted at scrappy angles, until the three words hang stacked in the air above him between his face and the lens.\nTRANSITION: a violent WHIP PAN off the rooftop that SMEARS the floating words away with it, motion-streaked —\nCUT 2: low hero angle on the colossal black mech-kaiju towering over the skyline as it rears back and unleashes a GIANT terrifying ROAR — jaws wide with fangs, red eyes and chest-core flaring blinding bright, blue lightning arcing off its head, the roar's shockwave rippling dust and rattling windows down the buildings, comic-style speed-lines and ink splatter bursting from the impact of the sound. It leans INTO the camera as the roar peaks. Hold on the roar."
-    },
-    "seconds": {
-      "type": "number",
-      "default": 5,
-      "description": "Length in seconds (5-15; match the voice track)",
-      "targets": [
-        [
-          "132",
-          "value"
-        ]
-      ]
-    },
-    "fps": {
-      "type": "number",
-      "min": 1,
-      "max": 60,
-      "default": 24,
-      "targets": [
-        [
-          "130",
-          "fps"
-        ]
-      ]
-    },
-    "seed": {
-      "type": "integer",
-      "min": 0,
-      "max": 281474976710656,
-      "description": "Seed for the first output; the next ones count up. Random when empty.",
-      "targets": [
-        [
-          "129",
-          "noise_seed"
-        ]
-      ]
-    },
-    "full": {
-      "type": "integer",
-      "default": 20,
-      "description": "Full",
-      "targets": [
-        [
-          "143",
-          "value"
-        ]
-      ]
-    },
-    "lightning_lora": {
-      "type": "integer",
-      "default": 4,
-      "description": "Lightning LoRA",
-      "targets": [
-        [
-          "144",
-          "value"
-        ]
-      ]
-    },
-    "enable_lightning_lora": {
-      "type": "boolean",
-      "default": false,
-      "description": "Enable Lightning LoRA",
-      "targets": [
-        [
-          "146",
-          "value"
-        ]
-      ]
-    },
-    "aspect": {
-      "type": "enum",
-      "values": [
-        "16:9 (Widescreen)",
-        "9:16 (Portrait)"
-      ],
-      "default": "16:9 (Widescreen)",
-      "description": "Frame shape",
-      "targets": [
-        [
-          "115",
-          "aspect_ratio"
-        ]
-      ]
-    },
-    "megapixels": {
-      "type": "number",
-      "min": 0.2,
-      "max": 1,
-      "default": 0.4,
-      "advanced": true,
-      "description": "Frame size (0.4 = about 848x480)",
-      "targets": [
-        [
-          "115",
-          "megapixels"
-        ]
-      ]
-    },
-    "ref_image_size": {
-      "type": "enum",
-      "values": [
-        "match",
-        "max"
-      ],
-      "default": "match",
-      "advanced": true,
-      "description": "max keeps identity best but is several times slower",
-      "targets": [
-        [
-          "136",
-          "ref_image_size"
-        ]
-      ]
-    }
+  {
+   "file": "minimax_h3_audio_vae_fp32.safetensors",
+   "dir": "vae",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors"
   },
-  "outputs": [
-    "92"
-  ],
-  "seconds": 900,
-  "source": {
-    "template": "video_minimax_h3_r2v"
+  {
+   "file": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+   "dir": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
+  },
+  {
+   "file": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+   "dir": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+  },
+  {
+   "file": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
   }
+ ],
+ "inputs": {
+  "image": {
+   "kind": "image",
+   "required": true,
+   "description": "Character 1 (its reference sheet or portrait): <Picture 1>",
+   "targets": [
+    [
+     "137",
+     "image"
+    ]
+   ]
+  },
+  "image2": {
+   "kind": "image",
+   "required": true,
+   "description": "Character 2: <Picture 2>",
+   "targets": [
+    [
+     "139",
+     "image"
+    ]
+   ]
+  },
+  "set": {
+   "kind": "image",
+   "required": true,
+   "description": "The set or location: <Picture 3>",
+   "targets": [
+    [
+     "150",
+     "image"
+    ]
+   ]
+  },
+  "audio": {
+   "kind": "audio",
+   "required": false,
+   "description": "TRACK: the scene's voice track (every line, timed, 2-15 s). PERFORM: the first speaker's voice sample. <Audio 1>",
+   "targets": [
+    [
+     "151",
+     "audio"
+    ]
+   ]
+  },
+  "audio2": {
+   "kind": "audio",
+   "required": false,
+   "description": "PERFORM: the second speaker's voice sample: <Audio 2>",
+   "targets": [
+    [
+     "152",
+     "audio"
+    ]
+   ]
+  },
+  "audio3": {
+   "kind": "audio",
+   "required": false,
+   "description": "PERFORM: the third speaker's voice sample: <Audio 3>",
+   "targets": [
+    [
+     "153",
+     "audio"
+    ]
+   ]
+  },
+  "image3": {
+   "kind": "image",
+   "required": false,
+   "description": "A third character: <Picture 4>",
+   "targets": [
+    [
+     "154",
+     "image"
+    ]
+   ]
+  }
+ },
+ "params": {
+  "prompt": {
+   "type": "text",
+   "required": true,
+   "description": "The scene: style first; who each picture and voice is; then the shots, CUT 1:, CUT 2:... with framing, camera, action, expression, and the lines in quotes with who says them. TRACK mode adds \"use <Audio 1> exactly as it is\".",
+   "targets": [
+    [
+     "138",
+     "value"
+    ]
+   ],
+   "example": "Bold comic-book ink style, heavy linework, red and blue-black palette, night city. Use <Picture 2> and <Picture 1> as reference frames and <Audio 1> exactly as it is.\nCUT 1: top-down view of the little boy superhero on the rooftop — red cape fluttering in the wind, hands planted on his hips, freckles and a cocky grin as he looks straight up into the camera. The camera slowly descends toward him as he delivers his line — as he speaks, comic-book graphic overlay text word by word in sync with his voice: \"GET READY TO\" - \"MEET\" — \"YOUR\" — \"MAKER\" — huge jagged comic lettering, white with heavy black outlines and red drop shadows, tilted at scrappy angles, until the three words hang stacked in the air above him between his face and the lens.\nTRANSITION: a violent WHIP PAN off the rooftop that SMEARS the floating words away with it, motion-streaked —\nCUT 2: low hero angle on the colossal black mech-kaiju towering over the skyline as it rears back and unleashes a GIANT terrifying ROAR — jaws wide with fangs, red eyes and chest-core flaring blinding bright, blue lightning arcing off its head, the roar's shockwave rippling dust and rattling windows down the buildings, comic-style speed-lines and ink splatter bursting from the impact of the sound. It leans INTO the camera as the roar peaks. Hold on the roar."
+  },
+  "seconds": {
+   "type": "number",
+   "default": 5,
+   "description": "Length in seconds (5-15; match the voice track)",
+   "targets": [
+    [
+     "132",
+     "value"
+    ]
+   ]
+  },
+  "fps": {
+   "type": "number",
+   "min": 1,
+   "max": 60,
+   "default": 24,
+   "targets": [
+    [
+     "130",
+     "fps"
+    ]
+   ]
+  },
+  "seed": {
+   "type": "integer",
+   "min": 0,
+   "max": 281474976710656,
+   "description": "Seed for the first output; the next ones count up. Random when empty.",
+   "targets": [
+    [
+     "129",
+     "noise_seed"
+    ]
+   ]
+  },
+  "full": {
+   "type": "integer",
+   "default": 20,
+   "description": "Full",
+   "targets": [
+    [
+     "143",
+     "value"
+    ]
+   ]
+  },
+  "lightning_lora": {
+   "type": "integer",
+   "default": 4,
+   "description": "Lightning LoRA",
+   "targets": [
+    [
+     "144",
+     "value"
+    ]
+   ]
+  },
+  "enable_lightning_lora": {
+   "type": "boolean",
+   "default": false,
+   "description": "Enable Lightning LoRA",
+   "targets": [
+    [
+     "146",
+     "value"
+    ]
+   ]
+  },
+  "aspect": {
+   "type": "enum",
+   "values": [
+    "16:9 (Widescreen)",
+    "9:16 (Portrait)",
+    "1:1 (Square)"
+   ],
+   "default": "16:9 (Widescreen)",
+   "description": "Frame shape",
+   "targets": [
+    [
+     "115",
+     "aspect_ratio"
+    ]
+   ]
+  },
+  "megapixels": {
+   "type": "number",
+   "min": 0.2,
+   "max": 1,
+   "default": 0.4,
+   "advanced": true,
+   "description": "Frame size (0.4 = about 848x480)",
+   "targets": [
+    [
+     "115",
+     "megapixels"
+    ]
+   ]
+  },
+  "ref_image_size": {
+   "type": "enum",
+   "values": [
+    "match",
+    "max"
+   ],
+   "default": "match",
+   "advanced": true,
+   "description": "max keeps identity best but is several times slower",
+   "targets": [
+    [
+     "136",
+     "ref_image_size"
+    ]
+   ]
+  }
+ },
+ "outputs": [
+  "92"
+ ],
+ "seconds": 900,
+ "source": {
+  "template": "video_minimax_h3_r2v"
+ }
 }

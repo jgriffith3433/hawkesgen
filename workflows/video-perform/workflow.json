@@ -1,0 +1,171 @@
+{
+ "id": "video.perform",
+ "version": 1,
+ "title": "A character performs, in their own voice (LTX-2.3 ID-LoRA)",
+ "description": "LTX-2.3 with the ID-LoRA: the character from the image speaks and moves in one pass, in the voice of the audio sample (it clones the voice from 3-10 s of the character speaking), lips, face, body and sound made together. Write the prompt as [VISUAL]: the shot, the action, the expression; [SPEECH]: the exact words; [SOUNDS]: the tone, room and effects. For a character talking to camera or a close-up performance; video.scene for two people in one room.",
+ "family": "ltx-2.3",
+ "output": "video",
+ "models": [
+  {
+   "file": "ltx-2.3-22b-dev-fp8.safetensors",
+   "dir": "checkpoints",
+   "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-dev-fp8.safetensors"
+  },
+  {
+   "file": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+   "dir": "latent_upscale_models",
+   "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+  },
+  {
+   "file": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2.3/resolve/main/split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors"
+  },
+  {
+   "file": "gemma_3_12B_it_fp4_mixed.safetensors",
+   "dir": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors"
+  },
+  {
+   "file": "ltx-2.3-id-lora-talkvid-3k.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2.3/resolve/main/split_files/loras/ltx-2.3-id-lora-talkvid-3k.safetensors"
+  }
+ ],
+ "inputs": {
+  "image": {
+   "kind": "image",
+   "required": true,
+   "description": "The character (the first frame: framing, look, light)",
+   "targets": [
+    [
+     "269",
+     "image"
+    ]
+   ]
+  },
+  "audio": {
+   "kind": "audio",
+   "required": true,
+   "description": "A clean sample of the character's voice (3-10 s, no music): the voice it speaks in",
+   "targets": [
+    [
+     "276",
+     "audio"
+    ]
+   ]
+  }
+ },
+ "params": {
+  "prompt": {
+   "type": "text",
+   "required": true,
+   "description": "The shot as [VISUAL]: / [SPEECH]: / [SOUNDS]:",
+   "targets": [
+    [
+     "340:319",
+     "value"
+    ]
+   ],
+   "example": "[VISUAL]: Opens with a medium shot, camera slowly pushes in toward the character. A man with short dark hair and round glasses, wearing a retro orange floral shirt, looks directly at the camera, his mouth opens and closes naturally as he speaks, tilts his head playfully.\n[SPEECH]: Hey, what do you think of this vibe? Feels like we’re back in the 90s.\n[SOUNDS]: Playful and upbeat tone, moderate volume, close to the microphone. "
+  },
+  "negative": {
+   "type": "text",
+   "default": "pc game, console game, video game, cartoon, childish, ugly",
+   "advanced": true,
+   "description": "What to avoid",
+   "targets": [
+    [
+     "340:314",
+     "text"
+    ]
+   ]
+  },
+  "width": {
+   "type": "integer",
+   "default": 1280,
+   "description": "Width (1280 wide, 720 for a vertical short)",
+   "targets": [
+    [
+     "340:330",
+     "value"
+    ]
+   ]
+  },
+  "height": {
+   "type": "integer",
+   "default": 720,
+   "description": "Height (720 wide, 1280 for a vertical short)",
+   "targets": [
+    [
+     "340:324",
+     "value"
+    ]
+   ]
+  },
+  "seconds": {
+   "type": "number",
+   "default": 10,
+   "description": "Length in seconds",
+   "targets": [
+    [
+     "340:331",
+     "value"
+    ]
+   ]
+  },
+  "fps": {
+   "type": "integer",
+   "default": 25,
+   "description": "Frame Rate",
+   "targets": [
+    [
+     "340:323",
+     "value"
+    ]
+   ],
+   "advanced": true
+  },
+  "cfg": {
+   "type": "number",
+   "min": 0,
+   "max": 30,
+   "default": 1,
+   "advanced": true,
+   "targets": [
+    [
+     "340:290",
+     "cfg"
+    ],
+    [
+     "340:315",
+     "cfg"
+    ]
+   ]
+  },
+  "seed": {
+   "type": "integer",
+   "min": 0,
+   "max": 281474976710656,
+   "description": "Seed for the first output; the next ones count up. Random when empty.",
+   "targets": [
+    [
+     "340:285",
+     "noise_seed"
+    ],
+    [
+     "340:286",
+     "noise_seed"
+    ]
+   ]
+  }
+ },
+ "outputs": [
+  "341"
+ ],
+ "source": {
+  "template": "video_ltx2_3_id_lora",
+  "size": 43486543872
+ },
+ "seconds": 600
+}

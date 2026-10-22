@@ -3,9 +3,10 @@
 
 import type { Tool } from './types.ts';
 import { loadSettings } from '../config.ts';
-import { speak, soundEffect, designVoice, saveDesignedVoice } from '../providers/elevenlabs.ts';
+import fs from 'node:fs';
+import { speak, soundEffect, designVoice, saveDesignedVoice, dialogue, voiceChange, isolateVoice } from '../providers/elevenlabs.ts';
 import { ask, DEFAULT_MODEL, MODELS, usageOf } from '../providers/anthropic.ts';
-import { GenError } from '../util.ts';
+import { GenError, run } from '../util.ts';
 
 export const voiceTool: Tool = {
   id: 'audio.voice',
@@ -30,6 +31,130 @@ export const voiceTool: Tool = {
       const data = await speak({ text: p.text, voice: p.voice, model: p.model, format: p.format, settings: p.settings }, ctx.signal);
       ctx.usage({ provider: 'elevenlabs', unit: 'characters', amount: p.text.length, cost: (p.text.length / 1000) * loadSettings().rates.elevenlabsPer1kChars, detail: p.model });
       await ctx.emit({ data, ext: p.format.startsWith('mp3') ? '.mp3' : p.format.startsWith('pcm') ? '.pcm' : '.bin' });
+    }
+  },
+};
+
+/** The script's lines with their voices: [{ who, text }] with a cast { who: voiceId }, or [{ voice, text }]. */
+export function dialogueLines(lines: unknown, cast: unknown): { who: string; text: string; voice: string }[] {
+  if (!Array.isArray(lines) || !lines.length) throw new GenError('lines is a list of { who, text } (with cast) or { voice, text }');
+  const c = (cast && typeof cast === 'object' ? cast : {}) as Record<string, string>;
+  const byName = new Map(Object.entries(c).map(([k, v]) => [k.trim().toLowerCase(), String(v)]));
+  return lines.map((l: any, i) => {
+    const text = String(l?.text ?? '').trim();
+    if (!text) throw new GenError(`line ${i + 1} has no text`);
+    const who = String(l?.who ?? l?.speaker ?? '').trim();
+    const voice = String(l?.voice ?? byName.get(who.toLowerCase()) ?? '').trim();
+    if (!voice) throw new GenError(`line ${i + 1}${who ? ` (${who})` : ''} has no voice: give it a voice id, or put ${who || 'its speaker'} in cast`);
+    return { who: who || voice, text, voice };
+  });
+}
+
+const seconds = async (file: string, signal?: AbortSignal) => Number((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { signal })).trim()) || 0;
+
+/**
+ * The table read: a whole scene's dialogue voiced in one take (ElevenLabs Text to Dialogue, eleven_v3), so the
+ * characters answer each other with real timing (a beat before a hard line, a quick comeback, a laugh over a word)
+ * instead of lines read one at a time and joined with gaps. Its track and each line's start and end drive the edit, the
+ * rough draft and the lip sync. Delivery tags work in the text: [sighs], [whispers], [laughs], [interrupting].
+ */
+export const dialogueTool: Tool = {
+  id: 'audio.dialogue',
+  version: 1,
+  title: "Table read: a scene's dialogue in one take",
+  description: 'ElevenLabs Text to Dialogue (eleven_v3): every line of a scene voiced together, the speakers taking turns and reacting like people. lines: [{ who, text }] with cast { who: voiceId } (or [{ voice, text }]); delivery tags like [sighs] [whispers] [interrupting] in the text. Outputs the dialogue track, each line as its own clip (stems), and when each line starts and ends. Keep a scene under about 2,000 characters.',
+  provider: 'elevenlabs',
+  output: 'audio',
+  inputs: {},
+  params: {
+    lines: { type: 'json', required: true, description: '[{ "who": "Exit Punk", "text": "[out of breath] I\'m eleven seconds late." }, ...] in order', example: [{ who: 'The Mechanic', text: "You're late." }, { who: 'Exit Punk', text: "[out of breath] I'm eleven seconds late." }] },
+    cast: { type: 'json', description: '{ "Exit Punk": "<voice id>", ... } (the product\'s voice file)', example: { 'The Mechanic': 'voice-id', 'Exit Punk': 'voice-id' } },
+    stems: { type: 'boolean', default: true, description: 'Also each line as its own clip (for lip sync per shot)' },
+    model: { type: 'string', default: 'eleven_v3', advanced: true },
+    format: { type: 'string', default: 'mp3_44100_128', advanced: true },
+    count: { type: 'integer', min: 1, max: 3, default: 1, description: 'Takes (each a different read)' },
+  },
+  async run(ctx) {
+    const p = ctx.params;
+    const lines = dialogueLines(p.lines, p.cast);
+    const takes: any[] = [];
+    for (let i = 0; i < p.count; i++) {
+      ctx.step(`take ${i + 1} of ${p.count}`);
+      const r = await dialogue({ lines: lines.map((l) => ({ text: l.text, voice: l.voice })), model: p.model, format: p.format }, ctx.signal);
+      ctx.usage({ provider: 'elevenlabs', unit: 'characters', amount: r.chars, cost: (r.chars / 1000) * loadSettings().rates.elevenlabsPer1kChars, detail: `${p.model} dialogue` });
+      const file = ctx.tmp(`dialogue-${i}.mp3`);
+      fs.writeFileSync(file, r.audio);
+      const segments = lines.map((l, k) => {
+        const seg = r.segments.filter((s) => s.line === k);
+        return { line: k, who: l.who, text: l.text, start: seg.length ? Math.min(...seg.map((s) => s.start)) : null, end: seg.length ? Math.max(...seg.map((s) => s.end)) : null };
+      });
+      const length = await seconds(file, ctx.signal);
+      await ctx.emit({ data: r.audio, ext: '.mp3', title: i ? `dialogue (take ${i + 1})` : 'dialogue', meta: { seconds: length, segments } });
+      if (p.stems) {
+        for (const s of segments) {
+          if (s.start === null || s.end === null) continue;
+          const out = ctx.tmp(`line-${i}-${s.line}.mp3`);
+          // A little air either side, so a cut on the line doesn't clip a breath.
+          await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-ss', String(Math.max(0, s.start - 0.08)), '-to', String(s.end + 0.12), '-i', file, '-c:a', 'libmp3lame', '-q:a', '2', out], { signal: ctx.signal });
+          await ctx.emit({ data: fs.readFileSync(out), ext: '.mp3', title: `line ${s.line + 1}: ${s.who}${i ? ` (take ${i + 1})` : ''}`, meta: { line: s.line, who: s.who, text: s.text, start: s.start, end: s.end } });
+        }
+      }
+      takes.push({ seconds: length, segments });
+    }
+    ctx.result({ takes, seconds: takes[0]?.seconds, segments: takes[0]?.segments });
+  },
+};
+
+/**
+ * The voice changer: a performance's delivery (timing, breaths, emotion) in a cast character's voice. For an acted take
+ * (J on a phone through video.replace, a scene a model voiced itself) whose acting is right but whose voice isn't ours:
+ * the syllables don't move, so the lips stay on them. A video comes back with the new voice as its sound.
+ */
+export const voiceChangeTool: Tool = {
+  id: 'audio.voice-change',
+  version: 1,
+  title: 'Voice changer: the same performance in a cast voice',
+  description: "ElevenLabs Speech to Speech: the delivery of a recording, word for word and beat for beat, in another voice (a cast character's voice id). Give audio, or a video (its sound is changed and put back). isolate first takes the voice off music and effects. For one speaker at a time: cut a two-person scene into each speaker's lines first.",
+  provider: 'elevenlabs',
+  output: 'audio',
+  inputs: {
+    audio: { kind: 'audio', description: 'The performance (one speaker)' },
+    video: { kind: 'video', description: 'Or a video: its sound is changed and the video comes back with it' },
+  },
+  params: {
+    voice: { type: 'string', required: true, description: 'The cast voice (ElevenLabs voice id)' },
+    isolate: { type: 'boolean', default: true, description: 'Take the voice off music, room and effects first' },
+    model: { type: 'string', default: 'eleven_multilingual_sts_v2', advanced: true },
+    settings: { type: 'json', advanced: true, description: 'voice_settings (stability, similarity_boost, style)' },
+  },
+  async run(ctx) {
+    const p = ctx.params;
+    const video = ctx.inputs.video as string | undefined;
+    const audioIn = ctx.inputs.audio as string | undefined;
+    if (!video && !audioIn) throw new GenError('Give audio or a video');
+    const source = audioIn ?? ctx.tmp('performance.mp3');
+    if (video) {
+      ctx.step('taking the sound off the video');
+      await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', video, '-vn', '-ac', '1', '-ar', '44100', '-c:a', 'libmp3lame', '-q:a', '2', source], { signal: ctx.signal });
+    }
+    let audio: Buffer = fs.readFileSync(source);
+    if (p.isolate) {
+      ctx.step('isolating the voice');
+      audio = await isolateVoice({ audio, name: 'performance.mp3' }, ctx.signal);
+    }
+    ctx.step('changing the voice');
+    const voiced = await voiceChange({ audio, voice: p.voice, model: p.model, settings: p.settings, removeNoise: !p.isolate }, ctx.signal);
+    const length = await seconds(source, ctx.signal);
+    // Speech to speech bills like speech by the minute of audio; isolation too: counted here as characters' worth.
+    ctx.usage({ provider: 'elevenlabs', unit: 'seconds', amount: length, cost: (length / 60) * (p.isolate ? 2 : 1) * loadSettings().rates.elevenlabsPer1kChars, detail: `${p.model} speech to speech` });
+    await ctx.emit({ data: voiced, ext: '.mp3', title: 'voice' });
+    if (video) {
+      ctx.step('putting the voice back on the video');
+      const v = ctx.tmp('voice.mp3');
+      const out = ctx.tmp('performance.mp4');
+      fs.writeFileSync(v, voiced);
+      await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', video, '-i', v, '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-af', 'apad', '-shortest', '-movflags', '+faststart', out], { signal: ctx.signal });
+      await ctx.emit({ data: fs.readFileSync(out), ext: '.mp4', title: 'video' });
     }
   },
 };

@@ -17,12 +17,27 @@ function key() {
   return k;
 }
 
-function call(url: string, { method = 'GET', body }: { method?: string; body?: unknown } = {}): Promise<Res> {
+/** A file and fields for a multipart/form-data request (speech-to-speech, audio isolation). */
+export type Form = { fields?: Record<string, string>; file: { field: string; name: string; type: string; data: Buffer } };
+function multipart(form: Form) {
+  const boundary = `----hawkesgen${Date.now().toString(16)}`;
+  const parts: Buffer[] = [];
+  for (const [k, v] of Object.entries(form.fields ?? {})) parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${form.file.field}"; filename="${form.file.name}"\r\nContent-Type: ${form.file.type}\r\n\r\n`), form.file.data, Buffer.from(`\r\n--${boundary}--\r\n`));
+  return { type: `multipart/form-data; boundary=${boundary}`, data: Buffer.concat(parts) };
+}
+
+function call(url: string, { method = 'GET', body, form }: { method?: string; body?: unknown; form?: Form } = {}): Promise<Res> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = { 'xi-api-key': key() };
+    const mp = form ? multipart(form) : null;
     if (body) {
       headers['Content-Type'] = 'application/json';
       headers.Accept = 'application/octet-stream';
+    }
+    if (mp) {
+      headers['Content-Type'] = mp.type;
+      headers['Content-Length'] = String(mp.data.length);
     }
     const req = https.request(url, { method, headers, family: 4, timeout: 120000 }, (res) => {
       const chunks: Buffer[] = [];
@@ -32,6 +47,7 @@ function call(url: string, { method = 'GET', body }: { method?: string; body?: u
     req.on('timeout', () => req.destroy(new Error('ElevenLabs timed out')));
     req.on('error', reject);
     if (body) req.write(JSON.stringify(body));
+    if (mp) req.write(mp.data);
     req.end();
   });
 }
@@ -55,7 +71,7 @@ function failure(r: Res) {
   return new GenError(`ElevenLabs ${r.status}: ${r.buffer.toString('utf8').slice(0, 300)}`, { status: kind === 'throttled' ? 429 : 502, kind });
 }
 
-async function callRetry(url: string, opts: { method?: string; body?: unknown }, signal?: AbortSignal) {
+async function callRetry(url: string, opts: { method?: string; body?: unknown; form?: Form }, signal?: AbortSignal) {
   for (let tries = 1; ; tries++) {
     if (signal?.aborted) throw new Error('Cancelled');
     let r: Res;
@@ -78,6 +94,52 @@ export async function speak({ text, voice, model = 'eleven_v4', format = 'mp3_44
     method: 'POST',
     body: { text, model_id: model, ...(settings ? { voice_settings: settings } : {}) },
   }, signal);
+  if (!ok(r)) throw failure(r);
+  return r.buffer;
+}
+
+/**
+ * Text to Dialogue (eleven_v3): a whole conversation voiced in one generation, so the speakers take turns, react and
+ * interrupt like people instead of lines read one by one. lines: [{ text, voice }] in order (at most 10 voices; keep
+ * the text under about 2,000 characters). Returns the audio and when each line starts and ends.
+ */
+export async function dialogue({ lines, model = 'eleven_v3', format = 'mp3_44100_128', seed, settings }: { lines: { text: string; voice: string }[]; model?: string; format?: string; seed?: number; settings?: Record<string, unknown> }, signal?: AbortSignal) {
+  if (!lines.length) throw new GenError('lines is empty');
+  for (const l of lines) if (!/^[A-Za-z0-9]{8,40}$/.test(l.voice)) throw new GenError(`"${l.voice}" is not an ElevenLabs voice id`);
+  const chars = lines.reduce((n, l) => n + l.text.length, 0);
+  if (chars > 3000) throw new GenError(`${chars} characters is too long for one dialogue (keep it under about 2,000): split the scene`);
+  const r = await callRetry(`https://api.elevenlabs.io/v1/text-to-dialogue/with-timestamps?output_format=${encodeURIComponent(format)}`, {
+    method: 'POST',
+    body: { inputs: lines.map((l) => ({ text: l.text, voice_id: l.voice })), model_id: model, ...(seed !== undefined ? { seed } : {}), ...(settings ? { settings } : {}) },
+  }, signal);
+  if (r.status < 200 || r.status >= 300) throw failure(r);
+  const json = JSON.parse(r.buffer.toString('utf8'));
+  const audio = Buffer.from(json.audio_base64 ?? json.audio_base_64 ?? '', 'base64');
+  if (!audio.length) throw new GenError('ElevenLabs returned no dialogue audio');
+  const segments = (json.voice_segments ?? []).map((s: any) => ({
+    line: Number(s.dialogue_input_index ?? s.input_index ?? 0), voice: String(s.voice_id ?? ''),
+    start: Number(s.start_time_seconds ?? 0), end: Number(s.end_time_seconds ?? 0),
+  }));
+  return { audio, segments, chars };
+}
+
+/**
+ * Speech to Speech (voice changer): the same performance, timing and emotion in another voice. For putting a cast
+ * character's voice on a delivery that was acted (J on a phone, a model that voiced the scene itself) without moving a
+ * syllable, so lips stay on it.
+ */
+export async function voiceChange({ audio, name = 'performance.mp3', type = 'audio/mpeg', voice, model = 'eleven_multilingual_sts_v2', format = 'mp3_44100_128', removeNoise = true, settings }: { audio: Buffer; name?: string; type?: string; voice: string; model?: string; format?: string; removeNoise?: boolean; settings?: Record<string, unknown> }, signal?: AbortSignal) {
+  if (!/^[A-Za-z0-9]{8,40}$/.test(voice)) throw new GenError('voice must be an ElevenLabs voice id');
+  const fields: Record<string, string> = { model_id: model, remove_background_noise: String(removeNoise) };
+  if (settings) fields.voice_settings = JSON.stringify(settings);
+  const r = await callRetry(`https://api.elevenlabs.io/v1/speech-to-speech/${voice}?output_format=${encodeURIComponent(format)}`, { method: 'POST', form: { fields, file: { field: 'audio', name, type, data: audio } } }, signal);
+  if (!ok(r)) throw failure(r);
+  return r.buffer;
+}
+
+/** Audio isolation: the voices from a recording, without the room, music or effects under them. */
+export async function isolateVoice({ audio, name = 'mix.mp3', type = 'audio/mpeg' }: { audio: Buffer; name?: string; type?: string }, signal?: AbortSignal) {
+  const r = await callRetry('https://api.elevenlabs.io/v1/audio-isolation', { method: 'POST', form: { file: { field: 'audio', name, type, data: audio } } }, signal);
   if (!ok(r)) throw failure(r);
   return r.buffer;
 }

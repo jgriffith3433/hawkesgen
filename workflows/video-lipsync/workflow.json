@@ -1,0 +1,183 @@
+{
+ "id": "video.lipsync",
+ "version": 1,
+ "title": "Lip sync to a line, with motion (LTX-2.3)",
+ "description": "LTX-2.3 image+audio to video: the character from the image says exactly the given audio (a line from the table read, a song), lips on the words, with natural head, face and body motion and the camera the prompt describes. For when the delivery is locked and must not change; video.perform when the model may act the line itself.",
+ "family": "ltx-2.3",
+ "output": "video",
+ "models": [
+  {
+   "file": "ltx-2.3-22b-dev-fp8.safetensors",
+   "dir": "checkpoints",
+   "url": "https://huggingface.co/Lightricks/LTX-2.3-fp8/resolve/main/ltx-2.3-22b-dev-fp8.safetensors"
+  },
+  {
+   "file": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+   "dir": "latent_upscale_models",
+   "url": "https://huggingface.co/Lightricks/LTX-2.3/resolve/main/ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+  },
+  {
+   "file": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2.3/resolve/main/split_files/loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors"
+  },
+  {
+   "file": "gemma_3_12B_it_fp4_mixed.safetensors",
+   "dir": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/text_encoders/gemma_3_12B_it_fp4_mixed.safetensors"
+  },
+  {
+   "file": "gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Comfy-Org/ltx-2/resolve/main/split_files/loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors"
+  }
+ ],
+ "inputs": {
+  "image": {
+   "kind": "image",
+   "required": true,
+   "description": "The character (the first frame: framing, look, light)",
+   "targets": [
+    [
+     "269",
+     "image"
+    ]
+   ]
+  },
+  "audio": {
+   "kind": "audio",
+   "required": true,
+   "description": "The line to say, exactly as it should be heard (its length sets the clip's)",
+   "targets": [
+    [
+     "276",
+     "audio"
+    ]
+   ]
+  }
+ },
+ "params": {
+  "prompt": {
+   "type": "text",
+   "required": true,
+   "description": "The shot: who, what they do while they speak, the camera",
+   "targets": [
+    [
+     "340:319",
+     "value"
+    ]
+   ],
+   "example": "The fuzzy cactus creature is talking to the viewer as it grips the steering wheel with one hand, the other hand gestures naturally as it speaks. The car is moving, revealing the sunlit coastal background, static camera fixed on character, smooth side-tracking shot matching the car speed\n\nscene: Sunlit coastal road trip, clear coastal background\ncharacter: Fuzzy cactus creature with big square sunglasses and a Hawaiian shirt\naction: One hand grips the steering wheel, the other gestures naturally while talking to the camera\ncamera: Fixed on character, smooth side-tracking shot matching car speed"
+  },
+  "negative": {
+   "type": "text",
+   "default": "pc game, console game, video game, cartoon, childish, ugly",
+   "advanced": true,
+   "description": "What to avoid",
+   "targets": [
+    [
+     "340:314",
+     "text"
+    ]
+   ]
+  },
+  "width": {
+   "type": "integer",
+   "default": 1280,
+   "description": "Width (1280 wide, 720 for a vertical short)",
+   "targets": [
+    [
+     "340:330",
+     "value"
+    ]
+   ]
+  },
+  "height": {
+   "type": "integer",
+   "default": 720,
+   "description": "Height (720 wide, 1280 for a vertical short)",
+   "targets": [
+    [
+     "340:324",
+     "value"
+    ]
+   ]
+  },
+  "seconds": {
+   "type": "number",
+   "default": 9,
+   "description": "Length in seconds (match the audio)",
+   "targets": [
+    [
+     "340:331",
+     "value"
+    ]
+   ]
+  },
+  "fps": {
+   "type": "integer",
+   "default": 24,
+   "description": "Frame Rate",
+   "targets": [
+    [
+     "340:323",
+     "value"
+    ]
+   ],
+   "advanced": true
+  },
+  "cfg": {
+   "type": "number",
+   "min": 0,
+   "max": 30,
+   "default": 1,
+   "advanced": true,
+   "targets": [
+    [
+     "340:290",
+     "cfg"
+    ],
+    [
+     "340:315",
+     "cfg"
+    ]
+   ]
+  },
+  "seed": {
+   "type": "integer",
+   "min": 0,
+   "max": 281474976710656,
+   "description": "Seed for the first output; the next ones count up. Random when empty.",
+   "targets": [
+    [
+     "340:285",
+     "noise_seed"
+    ],
+    [
+     "340:286",
+     "noise_seed"
+    ]
+   ]
+  },
+  "enable_prompt_enhance": {
+   "type": "boolean",
+   "default": true,
+   "description": "Let the text encoder expand the prompt",
+   "targets": [
+    [
+     "340:349",
+     "value"
+    ]
+   ],
+   "advanced": true
+  }
+ },
+ "outputs": [
+  "341"
+ ],
+ "source": {
+  "template": "video_ltx2_3_ia2v",
+  "size": 42949672960
+ },
+ "seconds": 600
+}

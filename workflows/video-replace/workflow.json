@@ -1,0 +1,235 @@
+{
+ "id": "video.replace",
+ "version": 1,
+ "title": "Our character in a real performance (SCAIL-2)",
+ "description": "SCAIL-2 character replacement: the character from the image takes over the person in the driving video, with all of its movement, timing, glances and hesitations (J acting a scene on a phone, a stunt reference, gameplay footage). replacement_mode keeps the driving video's background and camera; off, the prompt sets a new one. Make it, then put the cast voice on the performance with audio.voice-change, so lips and timing stay. Two segments (about 10 s); longer: split the driving video.",
+ "family": "wan21-scail",
+ "output": "video",
+ "models": [
+  {
+   "file": "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
+  },
+  {
+   "file": "Wan2_1_VAE_bf16.safetensors",
+   "dir": "vae",
+   "url": "https://huggingface.co/Kijai/WanVideo_comfy/resolve/main/Wan2_1_VAE_bf16.safetensors"
+  },
+  {
+   "file": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+   "dir": "text_encoders",
+   "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+  },
+  {
+   "file": "clip_vision_h.safetensors",
+   "dir": "clip_vision",
+   "url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/clip_vision/clip_vision_h.safetensors"
+  },
+  {
+   "file": "wan2.1_14B_SCAIL_2_int8_convrot.safetensors",
+   "dir": "diffusion_models",
+   "url": "https://huggingface.co/Comfy-Org/SCAIL-2/resolve/main/diffusion_models/wan2.1_14B_SCAIL_2_int8_convrot.safetensors"
+  },
+  {
+   "file": "sam3.1_multiplex_fp16.safetensors",
+   "dir": "checkpoints",
+   "url": "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors"
+  },
+  {
+   "file": "wan2.1_SCAIL_2_DPO_lora_bf16.safetensors",
+   "dir": "loras",
+   "url": "https://huggingface.co/Comfy-Org/SCAIL-2/resolve/main/loras/wan2.1_SCAIL_2_DPO_lora_bf16.safetensors"
+  }
+ ],
+ "inputs": {
+  "image": {
+   "kind": "image",
+   "required": true,
+   "description": "The character (full body, plain background works best)",
+   "targets": [
+    [
+     "30",
+     "image"
+    ]
+   ]
+  },
+  "video": {
+   "kind": "video",
+   "required": true,
+   "description": "The driving performance (one person, full body in frame)",
+   "targets": [
+    [
+     "155",
+     "file"
+    ]
+   ]
+  }
+ },
+ "params": {
+  "prompt": {
+   "type": "text",
+   "required": true,
+   "description": "The character and the scene (and the new background when replacement_mode is off)",
+   "targets": [
+    [
+     "213:3",
+     "text"
+    ],
+    [
+     "213:191",
+     "text"
+    ],
+    [
+     "213:212",
+     "text"
+    ],
+    [
+     "262:242",
+     "text"
+    ],
+    [
+     "262:258",
+     "text"
+    ],
+    [
+     "262:261",
+     "text"
+    ]
+   ],
+   "example": "A young East Asian woman with dark hair neatly pulled back, wearing a white sleeveless ribbed mock-neck top, is standing in a lush apple orchard. She holds a large glossy red apple with both hands, using a white paper handkerchief to wipe and clean the apple before smelling and eating it with her eyes closed and a blissful expression. Ripe red and yellow apples hang from leafy branches in the foreground, with rows of green apple trees softly blurred in the background under natural daylight."
+  },
+  "replacement_mode": {
+   "type": "boolean",
+   "default": true,
+   "targets": [
+    [
+     "213:203",
+     "value"
+    ],
+    [
+     "262:247",
+     "value"
+    ]
+   ],
+   "description": "Keep the driving video's background and camera"
+  },
+  "negative": {
+   "type": "text",
+   "default": "",
+   "advanced": true,
+   "targets": [
+    [
+     "213:4",
+     "text"
+    ],
+    [
+     "262:257",
+     "text"
+    ]
+   ]
+  },
+  "width": {
+   "type": "integer",
+   "default": 896,
+   "description": "Width",
+   "targets": [
+    [
+     "213:178",
+     "value"
+    ],
+    [
+     "262:236",
+     "value"
+    ]
+   ]
+  },
+  "height": {
+   "type": "integer",
+   "default": 512,
+   "description": "Height",
+   "targets": [
+    [
+     "213:179",
+     "value"
+    ],
+    [
+     "262:237",
+     "value"
+    ]
+   ]
+  },
+  "enable_distill_lora": {
+   "type": "boolean",
+   "default": true,
+   "description": "Fast (6 steps); off for the full 40",
+   "targets": [
+    [
+     "213:172",
+     "value"
+    ],
+    [
+     "262:255",
+     "value"
+    ]
+   ]
+  },
+  "steps": {
+   "type": "integer",
+   "default": 40,
+   "description": "Steps",
+   "advanced": true,
+   "targets": [
+    [
+     "213:165",
+     "value"
+    ],
+    [
+     "262:230",
+     "value"
+    ]
+   ]
+  },
+  "cfg": {
+   "type": "number",
+   "default": 5,
+   "description": "CFG",
+   "advanced": true,
+   "targets": [
+    [
+     "213:166",
+     "value"
+    ],
+    [
+     "262:231",
+     "value"
+    ]
+   ]
+  },
+  "seed": {
+   "type": "integer",
+   "min": 0,
+   "max": 281474976710656,
+   "description": "Seed for the first output; the next ones count up. Random when empty.",
+   "targets": [
+    [
+     "213:19",
+     "noise_seed"
+    ],
+    [
+     "262:227",
+     "noise_seed"
+    ]
+   ]
+  }
+ },
+ "outputs": [
+  "202",
+  "271"
+ ],
+ "source": {
+  "template": "video_wan21_scail2_character_replacement_int8",
+  "size": 28668906701
+ },
+ "seconds": 900
+}

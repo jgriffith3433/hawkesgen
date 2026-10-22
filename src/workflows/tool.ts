@@ -8,6 +8,32 @@ import path from 'node:path';
 import type { Tool, ParamSpec } from '../tools/types.ts';
 import type { Workflow } from './registry.ts';
 
+/**
+ * Takes an optional input that wasn't given out of a graph: its bypassed nodes hand their `field` input on to whatever
+ * used their first output, then its load nodes and the bypassed ones are removed, and links to anything removed are
+ * dropped (an optional slot like ref_audios.ref_audio_1 simply goes). Nodes left feeding only removed ones stay; ComfyUI
+ * runs what the outputs need.
+ */
+export function pruneMissing(graph: Record<string, any>, spec: { targets: [string, string][]; bypass?: [string, string][] }) {
+  const gone = new Set(spec.targets.map(([node]) => node));
+  for (const [node, field] of spec.bypass ?? []) {
+    const pass = graph[node]?.inputs?.[field];
+    if (pass === undefined) continue;
+    for (const n of Object.values(graph)) {
+      for (const [k, v] of Object.entries(n.inputs ?? {})) {
+        if (Array.isArray(v) && v.length === 2 && v[0] === node && v[1] === 0) n.inputs[k] = pass;
+      }
+    }
+    gone.add(node);
+  }
+  for (const id of gone) delete graph[id];
+  for (const n of Object.values(graph)) {
+    for (const [k, v] of Object.entries(n.inputs ?? {})) {
+      if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && gone.has(v[0])) delete n.inputs[k];
+    }
+  }
+}
+
 export function workflowTool(wf: Workflow): Tool {
   const m = wf.manifest;
   const params: Record<string, ParamSpec> = {};
@@ -23,7 +49,7 @@ export function workflowTool(wf: Workflow): Tool {
   if (!m.params.seed) params.seed = { type: 'integer', min: 0, max: 2 ** 48, description: 'Not used by this workflow (it has no seed).', advanced: true };
   const inputs: Tool['inputs'] = {};
   for (const [name, i] of Object.entries(m.inputs)) {
-    const { targets: _t, ...spec } = i;
+    const { targets: _t, bypass: _b, ...spec } = i;
     inputs[name] = spec;
   }
 
@@ -46,7 +72,10 @@ export function workflowTool(wf: Workflow): Tool {
       const graph = structuredClone(wf.graph);
       for (const [name, spec] of Object.entries(m.inputs)) {
         const files = ctx.inputs[name];
-        if (!files) continue;
+        if (!files) {
+          if (!spec.required && spec.targets.length) pruneMissing(graph, spec);
+          continue;
+        }
         const list = Array.isArray(files) ? files : [files];
         ctx.step(`uploading ${name}`);
         const uploaded: string[] = [];

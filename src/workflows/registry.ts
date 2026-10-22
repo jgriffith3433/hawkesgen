@@ -27,7 +27,12 @@ export const WORKFLOWS_DIR = path.join(ROOT, 'workflows');
 
 type Target = [string, string];
 export type WfParam = ParamSpec & { targets: Target[] };
-export type WfInput = InputSpec & { targets: Target[] };
+/**
+ * bypass: when this optional input isn't given, these nodes ([node, field]) are skipped: whatever used their first output
+ * gets what came into their `field` instead (a guide frame in a chain of guides). Without it, a missing optional input's
+ * load nodes are removed and every link to them dropped (an optional reference slot). See pruneMissing (tool.ts).
+ */
+export type WfInput = InputSpec & { targets: Target[]; bypass?: Target[] };
 export type Manifest = {
   id: string;
   version: number;

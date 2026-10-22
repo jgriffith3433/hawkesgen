@@ -263,6 +263,18 @@
    "ref_audios.ref_audio_0": [
     "151",
     0
+   ],
+   "ref_audios.ref_audio_1": [
+    "152",
+    0
+   ],
+   "ref_audios.ref_audio_2": [
+    "153",
+    0
+   ],
+   "ref_images.ref_image_3": [
+    "154",
+    0
    ]
   },
   "_meta": {
@@ -393,6 +405,33 @@
   },
   "_meta": {
    "title": "Voice track"
+  }
+ },
+ "152": {
+  "class_type": "LoadAudio",
+  "inputs": {
+   "audio": "voice2.mp3"
+  },
+  "_meta": {
+   "title": "Voice 2"
+  }
+ },
+ "153": {
+  "class_type": "LoadAudio",
+  "inputs": {
+   "audio": "voice3.mp3"
+  },
+  "_meta": {
+   "title": "Voice 3"
+  }
+ },
+ "154": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "character3.png"
+  },
+  "_meta": {
+   "title": "Character 3"
   }
  }
 }
