@@ -727,3 +727,19 @@ export const queue = new Queue();
 
 /** Downloads models a family needs onto a server (exposed for the fleet sync action). */
 export const syncModels = syncServer;
+
+/** A queued job's place in line: how many jobs are ahead of it in its lane (the GPU, or its provider), running or
+ *  waiting. Counts only, so a customer learns nothing about anyone else's work. */
+export function queuePosition(j: Job): { ahead: number; lane: string } | null {
+  if (j.status !== 'queued') return null;
+  const tool = getTool(j.tool);
+  if (!tool) return null;
+  const lane = tool.provider === 'comfy' ? 'gpu' : tool.provider;
+  const rows = db.prepare("SELECT tool, status, created FROM jobs WHERE status IN ('queued', 'running') AND id != ?").all(j.id) as { tool: string; status: string; created: number }[];
+  const ahead = rows.filter((r) => {
+    const t = getTool(r.tool);
+    if (!t || (t.provider === 'comfy' ? 'gpu' : t.provider) !== lane) return false;
+    return r.status === 'running' || r.created < j.created;
+  }).length;
+  return { ahead, lane };
+}

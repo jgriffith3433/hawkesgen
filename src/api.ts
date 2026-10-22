@@ -15,7 +15,7 @@ import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
-import { submit, getJob, listJobs, cancel, rerun, clearFinished, jobTimings, events, summary, queue, type JobSpec } from './jobs.ts';
+import { submit, getJob, listJobs, cancel, rerun, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
@@ -465,7 +465,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
-      if (!m[2] && method === 'GET') return send(res, 200, j);
+      if (!m[2] && method === 'GET') return send(res, 200, { ...j, queue: queuePosition(j) });
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
       if (m[2] === 'rerun' && method === 'POST') return send(res, 200, rerun(client, j.id, { sameSeed: (await readJson(req)).sameSeed === true }));
       // A playtest's live state (every step, the players, problems, the timeline); null after the run (the job has the result).

@@ -82,3 +82,13 @@ test("assets: a customer's files are theirs alone", async () => {
   for (const id of [bobs.id, theirs.id]) assert.ok([403, 404].includes((await call(`/v1/assets/${id}`, portal.key, { as: 'usr_alice' })).status));
   assert.equal((await call(`/v1/assets/${mine.id}`, portal.key, { as: 'usr_alice' })).status, 200);
 });
+
+test("a queued job's place in line counts the jobs ahead in its lane, never what they are", async () => {
+  const first = await call('/v1/jobs', portal.key, { as: 'usr_queue', body: image('first') });
+  const second = await call('/v1/jobs', portal.key, { as: 'usr_queue', body: image('second') });
+  const a = await call(`/v1/jobs/${first.body.jobs[0].id}`, portal.key, { as: 'usr_queue' });
+  const b = await call(`/v1/jobs/${second.body.jobs[0].id}`, portal.key, { as: 'usr_queue' });
+  assert.equal(b.body.queue.lane, 'gpu');
+  assert.equal(b.body.queue.ahead, a.body.queue.ahead + 1);
+  assert.deepEqual(Object.keys(b.body.queue).sort(), ['ahead', 'lane']);
+});
