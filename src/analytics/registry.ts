@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { paths } from '../config.ts';
 
 export type Env = 'live' | 'beta' | 'preview' | 'local';
-export type Product = { id: string; name: string; origins: string[]; beta?: string; levels?: string[]; customEvents: number };
+export type Product = { id: string; name: string; origins: string[]; beta?: string; levels?: string[]; funnel?: string[]; customEvents: number };
 
 export const BETA_DOMAIN = 'hawkesgen.com';
 
@@ -27,6 +27,7 @@ export function products(file = paths.analyticsProducts): Map<string, Product> {
       origins: (Array.isArray(p.origins) ? p.origins : []).map((o: string) => String(o).replace(/\/+$/, '').toLowerCase()),
       beta: typeof p.beta === 'string' ? p.beta.toLowerCase() : undefined,
       levels: Array.isArray(p.levels) ? p.levels.map(String) : undefined,
+      funnel: Array.isArray(p.funnel) ? p.funnel.map(String) : undefined,
       customEvents: Math.max(0, Math.min(500, Number(p.customEvents ?? 50) || 0)),
     });
   }

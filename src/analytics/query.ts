@@ -349,8 +349,11 @@ function funnelFields(list: Step[]) {
   return fieldsOf(...keys.filter((k) => k !== 'level' && k !== 'screen'), ...(keys.includes('screen') ? ['name'] : []));
 }
 
-/** The product's progression: its registry levels, else the levels players started (most played first), else progress steps. */
+/** The product's progression: its registry funnel (a site's own steps), else its registry levels, else the levels
+ *  players started (most played first), else progress steps. */
 export function defaultSteps(product: string, f: Filters): Step[] {
+  const own = products().get(product)?.funnel;
+  if (own?.length) return parseSteps(own);
   const reg = products().get(product)?.levels;
   const w = sessionWhere(product, f);
   const ready = adb.prepare(`SELECT 1 FROM sessions s WHERE ${w.sql} AND s.ready = 1 AND s.ended >= ? AND s.started < ? LIMIT 1`).get(...w.args, f.from, f.to);

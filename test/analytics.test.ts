@@ -415,3 +415,7 @@ test('the query API over HTTP: overview, a section, export as CSV, unknown produ
   const all = await (await fetch(`${base}/v1/analytics/phorigins?from=2026-09-01&to=2026-10-18`)).json();
   for (const k of ['traffic', 'sessions', 'retention', 'funnel', 'dropoff', 'levels', 'deaths', 'features', 'feedback', 'errors', 'perf']) assert.ok(k in all, k);
 });
+
+test("a site's registry funnel is its default funnel (Hawkes Gen: visit to purchase)", () => {
+  assert.deepEqual(Q.defaultSteps('hawkesgen', F()).map((s: any) => s.name), ['page_view', 'signup_open', 'signup', 'job_start', 'checkout_start', 'purchase']);
+});

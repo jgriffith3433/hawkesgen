@@ -1,5 +1,5 @@
 {
-  "$comment": "Products that may send analytics to POST /v1/analytics/collect (docs/analytics.md). origins: the live site's origins (env live). beta: the <beta>.hawkesgen.com subdomain (env beta; pages under /c/<change>/ are env preview). http://localhost and 127.0.0.1 on any port are allowed for every product (env local). levels: the progression in order, for the default funnel (optional; otherwise levels are ordered by how players reach them). customEvents: how many distinct custom event names the product may use (default 50).",
+  "$comment": "Products that may send analytics to POST /v1/analytics/collect (docs/analytics.md). origins: the live site's origins (env live). beta: the <beta>.hawkesgen.com subdomain (env beta; pages under /c/<change>/ are env preview). http://localhost and 127.0.0.1 on any port are allowed for every product (env local). levels: the progression in order, for the default funnel (optional; otherwise levels are ordered by how players reach them). funnel: a site's own default funnel steps (funnel syntax, e.g. signup or level_start:level=1), used before levels. customEvents: how many distinct custom event names the product may use (default 50).",
   "products": {
     "doseofdestruction": { "name": "Dose Of Destruction", "origins": ["https://doseofdestruction.com", "https://www.doseofdestruction.com"], "beta": "dod" },
     "phorigins": { "name": "PH Origins", "origins": ["https://phorigins.com", "https://www.phorigins.com"], "beta": "phorigins" },
@@ -9,6 +9,6 @@
     "icanbe": { "name": "I Can Be", "origins": ["https://icanbe.ai", "https://www.icanbe.ai"], "beta": "icanbe" },
     "imaginelivetv": { "name": "Imagine Live TV", "origins": ["https://imaginelivetv.com", "https://www.imaginelivetv.com"], "beta": "imaginelivetv" },
     "hawkesbiomedical": { "name": "Hawkes Biomedical", "origins": ["https://hawkesbiomedical.com", "https://www.hawkesbiomedical.com"], "beta": "corporate" },
-    "hawkesgen": { "name": "Hawkes Gen (hawkesgen.com)", "origins": ["https://hawkesgen.com", "https://www.hawkesgen.com"] }
+    "hawkesgen": { "name": "Hawkes Gen (hawkesgen.com)", "origins": ["https://hawkesgen.com", "https://www.hawkesgen.com"], "funnel": ["page_view", "signup_open", "signup", "job_start", "checkout_start", "purchase"] }
   }
 }
