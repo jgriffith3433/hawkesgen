@@ -290,7 +290,8 @@ export const spriteSheetTool: Tool = {
     frames: { kind: 'image', multiple: true, max: 64, description: 'The frames, in order (instead of a video).' },
   },
   params: {
-    count: { type: 'integer', min: 2, max: 64, default: 8, description: 'How many frames the sheet has (spread evenly over the clip).' },
+    // Not `count`: that means "how many takes" everywhere else, and is what pricing multiplies by.
+    frames: { type: 'integer', min: 2, max: 64, default: 8, description: 'How many frames the sheet has (spread evenly over the clip).' },
     columns: { type: 'integer', min: 0, max: 64, default: 0, description: 'Frames per row; 0 picks a square-ish grid.' },
     cell: { type: 'integer', min: 32, max: 1024, default: 256, description: 'Width of one frame in pixels (height keeps the aspect).' },
     key: { type: 'string', default: '', description: 'Background color to make transparent (hex, e.g. 00ff00); empty keeps the background.' },
@@ -321,7 +322,7 @@ export const spriteSheetTool: Tool = {
     }
     const files = fs.readdirSync(all).filter((f) => f.endsWith('.png')).sort();
     if (!files.length) throw new GenError('No frames in the input');
-    const picked = pickFrames(files.length, Number(p.count), Boolean(p.loop) && Boolean(ctx.inputs.video));
+    const picked = pickFrames(files.length, Number(p.frames), Boolean(p.loop) && Boolean(ctx.inputs.video));
     picked.forEach((idx, i) => fs.copyFileSync(path.join(all, files[idx]), path.join(sel, `${String(i + 1).padStart(5, '0')}.png`)));
 
     const { cols, rows } = spriteGrid(picked.length, Number(p.columns));

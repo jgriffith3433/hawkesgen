@@ -40,7 +40,7 @@ test('a green-screen clip becomes a transparent sheet, its JSON and a preview', 
   const tool = getTool('sprite.sheet')!;
   await tool.run({
     job: { id: 'j_test', client: 'test', project: 'test', tool: 'sprite.sheet', labels: {} },
-    params: validateParams(tool, { count: 6, columns: 3, cell: 64, key: '00ff00' }),
+    params: validateParams(tool, { frames: 6, columns: 3, cell: 64, key: '00ff00' }),
     inputs: { video: clip },
     done: 0,
     outputs: [],
