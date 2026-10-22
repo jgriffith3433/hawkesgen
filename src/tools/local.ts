@@ -349,3 +349,28 @@ export const spriteSheetTool: Tool = {
     ctx.result(sheet.meta);
   },
 };
+
+export const transformTool: Tool = {
+  id: 'image.transform',
+  version: 1,
+  title: 'Transform an image',
+  description: 'Everyday fixes for game art, free and fast (Pillow on this machine), as steps applied in order: resize (contain, cover, stretch; pixel: true for nearest-neighbour), scale, crop, trim to the visible pixels, pad, square, pot (power-of-two sides), flip, rotate, pixelate (pixel art: size, palette colors, upscale), colors (palette), outline (sprite outline), tint, grayscale. Out as PNG, WebP or JPEG.',
+  provider: 'local',
+  output: 'image',
+  inputs: { image: { kind: 'image', required: true } },
+  params: {
+    ops: { type: 'json', required: true, description: 'The steps, e.g. [{"op":"trim","pad":4},{"op":"pixelate","size":64,"colors":16},{"op":"outline","width":1}].', example: [{ op: 'trim' }, { op: 'resize', width: 128, height: 128 }] },
+    format: { type: 'enum', values: ['png', 'webp', 'jpg'], default: 'png' },
+    quality: { type: 'integer', min: 1, max: 100, default: 90, advanced: true, description: 'WebP and JPEG quality.' },
+  },
+  async run(ctx) {
+    const ops = Array.isArray(ctx.params.ops) ? ctx.params.ops : [];
+    if (!ops.length || ops.length > 20) throw new GenError('ops: 1 to 20 steps');
+    const fmt = String(ctx.params.format);
+    const out = ctx.tmp(`transformed.${fmt}`);
+    ctx.step(ops.map((o: any) => o?.op).join(', '));
+    const info = JSON.parse((await ctx.python('transform.py', [ctx.inputs.image, out, JSON.stringify(ops), fmt, String(ctx.params.quality)])).trim().split('\n').pop() || '{}');
+    await ctx.emit({ data: fs.readFileSync(out), ext: `.${fmt}`, meta: info });
+    ctx.result(info);
+  },
+};

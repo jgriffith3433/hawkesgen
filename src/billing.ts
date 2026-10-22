@@ -193,7 +193,7 @@ export function toolFloorCredits(toolId: string): number {
   if (toolId === 'texture.maps' || toolId === 'image.normals' || toolId === 'image.albedo' || toolId === 'image.depth' || toolId === 'image.segment') {
     return 5;
   }
-  if (toolId === 'image.cutout' || toolId === 'image.remove-background' || toolId === 'image.frame' || toolId === 'image.tile' || toolId === 'image.sheet' || toolId === 'sprite.sheet' || toolId === 'video.fit' || toolId === 'media.probe' || toolId === 'file.import') {
+  if (toolId === 'image.cutout' || toolId === 'image.remove-background' || toolId === 'image.frame' || toolId === 'image.tile' || toolId === 'image.sheet' || toolId === 'sprite.sheet' || toolId === 'image.transform' || toolId === 'video.fit' || toolId === 'media.probe' || toolId === 'file.import') {
     return 2;
   }
   if (toolId === 'image.viewsheet' || toolId === 'image.character') {
