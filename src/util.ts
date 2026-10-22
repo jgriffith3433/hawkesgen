@@ -1,7 +1,22 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+
+let ffmpegMajor: number | null = null;
+/**
+ * ffmpeg's arguments for a filter graph read from a file. -filter_complex_script is what ffmpeg 6 (Ubuntu 24.04, the
+ * servers) has; ffmpeg 7.1 added -/filter_complex <file> and newer builds dropped the old option (CI on a master
+ * build, 2026-10-22). Asks the installed ffmpeg its version once.
+ */
+export function filterScriptArgs(file: string): string[] {
+  if (ffmpegMajor === null) {
+    const v = /ffmpeg version n?(\d+)\.(\d+)/.exec(String(spawnSync('ffmpeg', ['-hide_banner', '-version'], { encoding: 'utf8' }).stdout ?? ''));
+    // A build named by date or commit (master): new enough.
+    ffmpegMajor = v ? Number(v[1]) * 100 + Number(v[2]) : 9999;
+  }
+  return ffmpegMajor >= 701 ? ['-/filter_complex', file] : ['-filter_complex_script', file];
+}
 
 export const id = (prefix: string, bytes = 8) => `${prefix}_${crypto.randomBytes(bytes).toString('hex')}`;
 

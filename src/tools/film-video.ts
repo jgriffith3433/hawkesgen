@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
-import { GenError, run } from '../util.ts';
+import { GenError, run, filterScriptArgs } from '../util.ts';
 import { probeMedia } from './compose.ts';
 
 const f3 = (n: number) => String(Math.round(n * 1000) / 1000);
@@ -117,7 +117,7 @@ const list = (v: unknown) => (Array.isArray(v) ? v : v ? [v] : []) as string[];
 async function encode(ctx: any, args: string[], filter: string, out: string, audioFrom?: string) {
   const dir = path.dirname(out);
   fs.writeFileSync(path.join(dir, 'graph.filter'), filter);
-  const full = ['-hide_banner', '-loglevel', 'error', '-y', ...args, '-filter_complex_script', 'graph.filter', '-map', '[out]'];
+  const full = ['-hide_banner', '-loglevel', 'error', '-y', ...args, ...filterScriptArgs('graph.filter'), '-map', '[out]'];
   if (audioFrom) full.push('-map', `${audioFrom}:a?`, '-c:a', 'aac', '-b:a', '192k');
   full.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '14', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-shortest', path.basename(out));
   ctx.log(`ffmpeg ${full.join(' ')}\n${filter}`);

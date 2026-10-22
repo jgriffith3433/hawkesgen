@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
-import { run } from '../util.ts';
+import { run, filterScriptArgs } from '../util.ts';
 
 export type Probe = { duration: number; video: boolean; audio: boolean; width?: number; height?: number; fps?: number };
 
@@ -401,7 +401,7 @@ export const composeTool: Tool = {
       args.push('-i', i.kind === 'clip' ? clipFiles[i.index] : audioFiles[i.index]);
     }
     const video = p.codec === 'h265' ? ['-c:v', 'libx265', '-tag:v', 'hvc1'] : ['-c:v', 'libx264', '-profile:v', 'high'];
-    args.push('-filter_complex_script', 'compose.filter', '-map', '[vout]', '-map', '[aout]',
+    args.push(...filterScriptArgs('compose.filter'), '-map', '[vout]', '-map', '[aout]',
       ...video, '-preset', 'medium', '-crf', String(p.crf), '-pix_fmt', 'yuv420p', '-r', String(fps),
       '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-movflags', '+faststart', '-t', f3(plan.duration), 'cut.mp4');
     ctx.step(`composing ${plan.clips.length} clip(s), ${f3(plan.duration)} s`);
