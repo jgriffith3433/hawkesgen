@@ -45,3 +45,12 @@ test('an optional input left out leaves the graph: its load node goes, a guide i
   pruneMissing(g2, kf.manifest.inputs.frame3 as any);
   assert.deepEqual(g2['126'].inputs.conditioning, ['147', 0], 'the guider now reads the only guide left');
 });
+
+test("the critic's answer is kept in bounds: scores 1-10, notes inside the video, known asks, a best take in range", async () => {
+  const { settle } = await import('../src/tools/review-video.ts');
+  const s = settle({ pass: true, score: 12, summary: 'ok', scores: { story: 0, pacing: 7 }, notes: [{ at: 2, to: 5, ask: 'lipsync', note: 'mouth late' }, { at: 125, ask: 'cut', note: 'past the end' }, { at: 80, to: 99, ask: 'nope', note: 'runs over' }], best: 7 }, 3, 8, 90.8);
+  assert.equal(s.score, 10);
+  assert.equal(s.scores.story, 1);
+  assert.deepEqual(s.notes.map((n: any) => [n.at, n.to, n.ask]), [[2, 5, 'lipsync'], [80, 90.8, 'redo']]);
+  assert.equal(s.best, 0);
+});

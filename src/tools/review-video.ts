@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import type { Tool } from './types.ts';
 import { askJson, mediaPart, costOf, REVIEW_MODEL } from '../providers/gemini.ts';
-import { GenError } from '../util.ts';
+import { GenError, run } from '../util.ts';
 
 /** What a note can ask for: Studio's timeline asks (videos.ts NOTE_ACTIONS), so a note lands on the timeline as one. */
 export const ASKS = ['shorter', 'longer', 'redo', 'lipsync', 'closer', 'wider', 'angle', 'reaction', 'camera', 'expression', 'voice', 'look', 'action', 'sound', 'caption', 'cut', 'script'];
@@ -95,17 +95,20 @@ export const videoReviewTool: Tool = {
     ctx.step('watching');
     const r = await askJson({ parts, schema: REVIEW_SCHEMA, model: p.model }, ctx.signal);
     ctx.usage({ provider: 'gemini', unit: 'tokens', amount: Number(r.usage.totalTokenCount ?? 0), cost: costOf(r.model, r.usage), detail: r.model });
-    ctx.result({ ...settle(r.value, files.length, p.notes), model: r.model, bytes: files.reduce((n, f) => n + fs.statSync(f).size, 0) });
+    const seconds = Number((await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', files[0]], { signal: ctx.signal }).catch(() => '')).trim()) || undefined;
+    ctx.result({ ...settle(r.value, files.length, p.notes, seconds), seconds, model: r.model, bytes: files.reduce((n, f) => n + fs.statSync(f).size, 0) });
   },
 };
 
 /** The answer kept in bounds: scores 1-10, notes capped and ordered as given, asks from the list, best in range. */
-export function settle(v: any, takes: number, maxNotes: number) {
+export function settle(v: any, takes: number, maxNotes: number, seconds?: number) {
   const clamp = (x: unknown) => Math.max(1, Math.min(10, Number(x) || 1));
-  const notes = (Array.isArray(v?.notes) ? v.notes : []).slice(0, maxNotes).map((n: any) => ({
-    at: Math.max(0, Number(n?.at) || 0), to: n?.to === null || n?.to === undefined || !Number.isFinite(Number(n.to)) ? null : Number(n.to),
+  // A time past the end is a guess: drop the note when it starts past the end, trim it when it runs past.
+  const end = seconds && seconds > 0 ? seconds : Infinity;
+  const notes = (Array.isArray(v?.notes) ? v.notes : []).map((n: any) => ({
+    at: Math.max(0, Number(n?.at) || 0), to: n?.to === null || n?.to === undefined || !Number.isFinite(Number(n.to)) ? null : Math.min(end, Number(n.to)),
     ask: ASKS.includes(n?.ask) ? n.ask : 'redo', note: String(n?.note ?? '').slice(0, 800),
-  })).filter((n: any) => n.note);
+  })).filter((n: any) => n.note && n.at < end).slice(0, maxNotes);
   const best = takes > 1 && Number.isInteger(v?.best) && v.best >= 0 && v.best < takes ? v.best : takes > 1 ? 0 : null;
   return {
     pass: Boolean(v?.pass) && clamp(v?.score) >= 8, score: clamp(v?.score), summary: String(v?.summary ?? '').slice(0, 1200),
