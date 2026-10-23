@@ -74,7 +74,7 @@ export type Settings = {
     maxDiskGb: number;
   };
   /** Jobs at once for the API providers and local tools. */
-  concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number };
+  concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
    * (billed per token), "bedrock" uses AWS Bedrock (billed per token to AWS). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
    * (inside every job: reviews, judges, captions) and how long one may take. */
@@ -98,7 +98,9 @@ export type Settings = {
 
 export const SETTINGS_DEFAULTS: Settings = {
   fleet: { servers: 4, auto: true, autoLaunch: false, idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
-  concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2 },
+  // pipeline: chains (asset.make, film) only wait on their steps; many at once keep a deep queue of each GPU model family,
+  // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
+  concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200 },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
   brain: 'claude',
   model: '',
@@ -125,6 +127,7 @@ function clean(s: Settings): Settings {
       anthropic: n(s.concurrency?.anthropic, 1, 16, SETTINGS_DEFAULTS.concurrency.anthropic),
       gemini: n(s.concurrency?.gemini, 1, 16, SETTINGS_DEFAULTS.concurrency.gemini),
       local: n(s.concurrency?.local, 1, 8, SETTINGS_DEFAULTS.concurrency.local),
+      pipeline: n(s.concurrency?.pipeline, 1, 1000, SETTINGS_DEFAULTS.concurrency.pipeline),
     },
     claude: {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',

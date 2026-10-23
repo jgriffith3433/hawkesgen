@@ -401,6 +401,21 @@ const PYTHON = [
   path.join(paths.projects, 'hawkesgen', '.venv', 'bin', 'python'),
 ].find((p) => fs.existsSync(p)) ?? (process.platform === 'win32' ? 'python' : 'python3');
 
+/**
+ * The job a GPU server that has to switch models takes (a load costs minutes): among the waiting jobs at the top
+ * priority (`open` is in queue order: priority, then age), one of the family with the most work waiting, the oldest
+ * job's family on a tie. One load then serves as many jobs as it can, instead of a lone job of another family that
+ * sends the server back again (a batch of asset.make chains alternates five families).
+ */
+export function switchTo<T extends { family: string | null; priority?: number | null }>(open: T[]): T | null {
+  if (!open.length) return null;
+  const top = open[0].priority ?? 0;
+  const first = open.filter((j) => (j.priority ?? 0) >= top);
+  const waitingOf = new Map<string, number>();
+  for (const j of first) waitingOf.set(j.family ?? '', (waitingOf.get(j.family ?? '') ?? 0) + 1);
+  return first.reduce((best, j) => ((waitingOf.get(j.family ?? '') ?? 0) > (waitingOf.get(best.family ?? '') ?? 0) ? j : best));
+}
+
 class Queue {
   /** Server id -> job id running on it. */
   busy = new Map<string, string>();
@@ -488,7 +503,7 @@ class Queue {
       const lane = this.lanes.get(key) ?? new Set();
       this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
-      const limit = nested ? Infinity : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? 6 : settings.concurrency[provider];
+      const limit = nested ? Infinity : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
       // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
       const weight = provider === 'playtest' ? tabsOf(j) : 1;
       const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;
@@ -535,8 +550,11 @@ class Queue {
       free = free.filter((x) => x !== ep);
       void this.runOn(next, ep);
     }
+    // A server that has to switch models (a load costs minutes) switches to the family with the most work waiting at the
+    // top priority, the oldest job's family on a tie: one load then serves as many jobs as it can, instead of a lone job
+    // of another family that sends it back again (a batch of asset.make chains alternates five families).
     for (const ep of free) {
-      const next = gpu.find((j) => !taken.has(j.id));
+      const next = switchTo(gpu.filter((j) => !taken.has(j.id)));
       if (!next) break;
       taken.add(next.id);
       void this.runOn(next, ep);
