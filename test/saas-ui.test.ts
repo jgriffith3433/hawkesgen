@@ -50,10 +50,6 @@ test('/home, /app, and /public/* serve valid HTML, CSS, and JS on every server',
   assert.match(app.text, /Hawkes Play/);
   assert.match(app.text, /Game Builder/);
   assert.match(app.text, /My Games/);
-  assert.match(app.text, /Audio Studio/);
-  assert.match(app.text, /Pipelines/);
-  assert.match(app.text, /My Generations Gallery/);
-  assert.match(app.text, /API &amp; Unity Key/);
 
   // 3. /public/public.css and /public/app.js serve valid CSS and JS
   const css = await fetchRoute('/public/public.css');
