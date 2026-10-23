@@ -6,7 +6,7 @@
 // fallbacks ("default" routing) turned on.
 //
 // Since 2026-10-18 (J: "Switch to max plan") calls go to Claude Code on J's Max plan by default (claudecode.ts);
-// settings.claude.backend "api" brings back the API key path below.
+// settings.claude.backend "api" brings back the API key path below, "bedrock" uses AWS Bedrock.
 
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
@@ -14,6 +14,7 @@ import { env, loadSettings } from '../config.ts';
 import * as maxPlan from './claudecode.ts';
 import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
+import * as bedrock from './bedrock.ts';
 import { GenError, mimeOf } from '../util.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
@@ -44,13 +45,20 @@ function anthropic() {
 
 export const backend = () => loadSettings().claude.backend;
 
-/** The API path needs its key; the Max plan path needs only the CLI. Cursor needs CURSOR_API_KEY. */
-export const configured = () => { const b = loadSettings().brain; return b === 'cursor' ? cursor.configured() : b === 'copilot' ? copilot.configured() : backend() === 'api' ? Boolean(env('ANTHROPIC_API_KEY')) : true; };
+/** The API path needs its key; the Max plan path needs only the CLI. Cursor needs CURSOR_API_KEY. Bedrock needs AWS creds. */
+export const configured = () => {
+  const b = loadSettings().brain;
+  return b === 'cursor' ? cursor.configured()
+    : b === 'copilot' ? copilot.configured()
+    : backend() === 'api' ? Boolean(env('ANTHROPIC_API_KEY'))
+    : backend() === 'bedrock' ? bedrock.configured()
+    : true;
+};
 
-type Billing = 'max-plan' | 'api' | 'xai' | 'cursor' | 'copilot';
-/** A call's usage record: "max-plan", "cursor" or "copilot" at $0, "xai" for a direct xAI call, or "anthropic" billed per token. */
+type Billing = 'max-plan' | 'api' | 'bedrock' | 'xai' | 'cursor' | 'copilot';
+/** A call's usage record: "max-plan", "cursor" or "copilot" at $0, "xai" for a direct xAI call, "bedrock" for AWS Bedrock, or "anthropic" billed per token. */
 export function usageOf(r: { model: string; usage: any; cost: number; billing: Billing }, detail: string = r.model) {
-  const provider = r.billing === 'max-plan' ? 'max-plan' : r.billing === 'cursor' ? 'cursor' : r.billing === 'copilot' ? 'copilot' : r.billing === 'xai' ? 'xai' : 'anthropic';
+  const provider = r.billing === 'max-plan' ? 'max-plan' : r.billing === 'cursor' ? 'cursor' : r.billing === 'copilot' ? 'copilot' : r.billing === 'xai' ? 'xai' : r.billing === 'bedrock' ? 'bedrock' : 'anthropic';
   return { provider, unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail };
 }
 
@@ -58,14 +66,19 @@ const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif
 
 type AskParams = { prompt: string; system?: string; images?: string[]; model?: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown> };
 
-/** One request: text (and images) in, text or schema-valid JSON out. Grok when settings.brain is grok; otherwise settings.claude.backend. */
+/** One request: text (and images) in, text or schema-valid JSON out. Routes by settings.brain and settings.claude.backend. */
 export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: Billing }> {
   const brain = loadSettings().brain;
   if (brain === 'cursor' || brain === 'copilot') {
     const r = await (brain === 'cursor' ? cursor : copilot).ask({ ...p, model: loadSettings().model || p.model }, signal);
     return p.schema ? { ...r, text: maxPlan.answerText({ result: r.text }, p.schema) } : r;
   }
-  if (backend() === 'api') {
+  const back = backend();
+  if (back === 'bedrock') {
+    const r = await bedrock.ask(p, signal);
+    return p.schema ? { ...r, text: bedrock.extractJson(r.text) } : r;
+  }
+  if (back === 'api') {
     const r = await askApi(p, signal);
     return p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r;
   }

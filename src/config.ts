@@ -76,9 +76,9 @@ export type Settings = {
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
-   * (billed per token). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
+   * (billed per token), "bedrock" uses AWS Bedrock (billed per token to AWS). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
    * (inside every job: reviews, judges, captions) and how long one may take. */
-  claude: { backend: 'max-plan' | 'api'; concurrency: number; timeoutMinutes: number };
+  claude: { backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number };
   /**
    * Which harness answers writing, review and JSON calls, and (via Studio) the coding agents.
    * "claude" is Claude Code (the Max plan or the API key above). "cursor" is Cursor's agent on the Cursor plan.
@@ -127,7 +127,7 @@ function clean(s: Settings): Settings {
       local: n(s.concurrency?.local, 1, 8, SETTINGS_DEFAULTS.concurrency.local),
     },
     claude: {
-      backend: s.claude?.backend === 'api' ? 'api' : 'max-plan',
+      backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
       timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
     },
