@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hawkes Play — Build Web Games with AI</title>
+  <meta name="description" content="Build 3D web games collaboratively with AI. Real-time preview, AI code assistant, asset generation, and instant publishing.">
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/public/public.css">
+  <script src="/sdk/analytics@1.js" data-project="hawkesgen" defer></script>
+  <style>
+    :root {
+      --primary: #667eea;
+      --primary-dark: #5568d3;
+      --secondary: #764ba2;
+      --bg: #f7fafc;
+      --text: #1a202c;
+      --text-secondary: #718096;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: var(--text); background: var(--bg); }
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+
+    /* Nav */
+    .nav {
+      background: white;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 16px 0;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 24px;
+      font-weight: 700;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .logo img { width: 36px; height: 36px; }
+    .nav-links {
+      display: flex;
+      gap: 32px;
+      align-items: center;
+    }
+    .nav-links a {
+      text-decoration: none;
+      color: var(--text-secondary);
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--primary); }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+      transition: all 0.2s;
+      font-size: 15px;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: white;
+    }
+    .btn-primary:hover { background: var(--primary-dark); transform: translateY(-2px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); }
+    .btn-ghost {
+      background: transparent;
+      color: var(--primary);
+      border: 2px solid var(--primary);
+    }
+    .btn-ghost:hover { background: var(--primary); color: white; }
+
+    /* Hero */
+    .hero {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+      color: white;
+      padding: 80px 0 120px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 100px;
+      background: var(--bg);
+      border-radius: 50% 50% 0 0 / 100% 100% 0 0;
+    }
+    .hero-content { position: relative; z-index: 1; }
+    .hero-badge {
+      display: inline-block;
+      background: rgba(255, 255, 255, 0.2);
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 24px;
+    }
+    .hero h1 {
+      font-size: 56px;
+      margin: 0 0 24px;
+      line-height: 1.2;
+      font-weight: 800;
+    }
+    .hero p {
+      font-size: 20px;
+      margin: 0 0 40px;
+      opacity: 0.95;
+      max-width: 700px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .hero-ctas {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      align-items: center;
+    }
+    .btn-large {
+      padding: 16px 32px;
+      font-size: 18px;
+    }
+
+    /* Features */
+    .features {
+      padding: 80px 0;
+      background: white;
+    }
+    .section-header {
+      text-align: center;
+      margin-bottom: 60px;
+    }
+    .section-header h2 {
+      font-size: 42px;
+      margin: 0 0 16px;
+      color: var(--text);
+    }
+    .section-header p {
+      font-size: 18px;
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 40px;
+    }
+    .feature-card {
+      text-align: center;
+    }
+    .feature-icon {
+      font-size: 48px;
+      margin-bottom: 20px;
+    }
+    .feature-card h3 {
+      font-size: 24px;
+      margin: 0 0 12px;
+      color: var(--text);
+    }
+    .feature-card p {
+      font-size: 16px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin: 0;
+    }
+
+    /* How It Works */
+    .how-it-works {
+      padding: 80px 0;
+      background: var(--bg);
+    }
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 32px;
+      margin-top: 60px;
+    }
+    .step {
+      background: white;
+      padding: 32px;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      position: relative;
+    }
+    .step-number {
+      position: absolute;
+      top: -20px;
+      left: 32px;
+      width: 40px;
+      height: 40px;
+      background: var(--primary);
+      color: white;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 18px;
+    }
+    .step h4 {
+      margin: 20px 0 12px;
+      font-size: 20px;
+      color: var(--text);
+    }
+    .step p {
+      margin: 0;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    /* Pricing */
+    .pricing {
+      padding: 80px 0;
+      background: white;
+    }
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 32px;
+      margin-top: 60px;
+    }
+    .pricing-card {
+      background: white;
+      border: 2px solid #e2e8f0;
+      border-radius: 16px;
+      padding: 40px 32px;
+      text-align: center;
+      transition: all 0.3s;
+    }
+    .pricing-card:hover {
+      border-color: var(--primary);
+      transform: translateY(-8px);
+      box-shadow: 0 12px 32px rgba(102, 126, 234, 0.15);
+    }
+    .pricing-card.featured {
+      border-color: var(--primary);
+      border-width: 3px;
+      position: relative;
+    }
+    .pricing-badge {
+      position: absolute;
+      top: -16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--primary);
+      color: white;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .pricing-card h3 {
+      font-size: 28px;
+      margin: 0 0 8px;
+      color: var(--text);
+    }
+    .pricing-price {
+      font-size: 48px;
+      font-weight: 800;
+      color: var(--primary);
+      margin: 16px 0;
+    }
+    .pricing-price span {
+      font-size: 18px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+    .pricing-features {
+      list-style: none;
+      padding: 0;
+      margin: 24px 0;
+      text-align: left;
+    }
+    .pricing-features li {
+      padding: 12px 0;
+      border-bottom: 1px solid #f0f0f0;
+      color: var(--text-secondary);
+    }
+    .pricing-features li:last-child { border-bottom: none; }
+    .pricing-features strong { color: var(--text); }
+
+    /* CTA */
+    .cta {
+      padding: 100px 0;
+      background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+      color: white;
+      text-align: center;
+    }
+    .cta h2 {
+      font-size: 48px;
+      margin: 0 0 24px;
+    }
+    .cta p {
+      font-size: 20px;
+      margin: 0 0 40px;
+      opacity: 0.95;
+    }
+
+    /* Footer */
+    .footer {
+      background: #1a202c;
+      color: #a0aec0;
+      padding: 40px 0;
+      text-align: center;
+    }
+    .footer p { margin: 0; }
+    .footer a { color: var(--primary); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a href="/" class="logo">
+        <img src="/favicon.svg" alt="Hawkes Play">
+        <span>Hawkes Play</span>
+      </a>
+      <div style="display: flex; align-items: center; gap: 32px;">
+        <div class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#how-it-works">How It Works</a>
+          <a href="#pricing">Pricing</a>
+        </div>
+        <a href="/app" class="btn btn-primary">Start Building</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container hero-content">
+      <div class="hero-badge">🎮 Build 3D Web Games with AI</div>
+      <h1>Create Games<br>Together with AI</h1>
+      <p>Build 3D web games collaboratively with AI assistance. Real-time preview, intelligent code suggestions, and instant publishing.</p>
+      <div class="hero-ctas">
+        <a href="/app" class="btn btn-primary btn-large">Start Building Free</a>
+        <a href="#how-it-works" class="btn btn-ghost btn-large">See How It Works</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features" id="features">
+    <div class="container">
+      <div class="section-header">
+        <h2>Everything You Need</h2>
+        <p>A complete game development platform designed for collaborative creation</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">⚡</div>
+          <h3>Instant Preview</h3>
+          <p>See your game come to life as you code. Changes reflect instantly in the live preview window.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🤖</div>
+          <h3>AI Assistant</h3>
+          <p>Get code suggestions, generate game assets, and learn game development with intelligent AI help.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">👥</div>
+          <h3>Collaborate</h3>
+          <p>Invite up to 4 friends to build together. Real-time editing, shared files, instant updates.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🎨</div>
+          <h3>Generate Assets</h3>
+          <p>Create textures, 3D models, sounds, and music with AI. Professional quality in seconds.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">🚀</div>
+          <h3>One-Click Publish</h3>
+          <p>Get your own subdomain and publish instantly. Share with friends, embed anywhere.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feature-icon">📱</div>
+          <h3>Works Everywhere</h3>
+          <p>Your games run in any modern browser. Desktop, mobile, tablet—no installs needed.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section class="how-it-works" id="how-it-works">
+    <div class="container">
+      <div class="section-header">
+        <h2>How It Works</h2>
+        <p>From idea to published game in minutes</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-number">1</div>
+          <h4>Choose a Template</h4>
+          <p>Start with a ready-made template: FPS, platformer, physics sandbox, or blank canvas.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">2</div>
+          <h4>Build with AI</h4>
+          <p>Write code or ask the AI to build features. Generate textures, models, and sounds on demand.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">3</div>
+          <h4>Invite Friends</h4>
+          <p>Share your game project. Everyone edits together in real-time with live preview.</p>
+        </div>
+        <div class="step">
+          <div class="step-number">4</div>
+          <h4>Publish & Share</h4>
+          <p>Get your own URL and publish instantly. Share with the world or keep it private.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing -->
+  <section class="pricing" id="pricing">
+    <div class="container">
+      <div class="section-header">
+        <h2>Simple Pricing</h2>
+        <p>Choose the plan that fits your needs. Monthly credits for AI asset generation included.</p>
+      </div>
+      <div class="pricing-grid">
+        <div class="pricing-card">
+          <h3>Free</h3>
+          <div class="pricing-price">$0<span>/mo</span></div>
+          <ul class="pricing-features">
+            <li><strong>50 free credits</strong> on signup</li>
+            <li><strong>1 game</strong> project</li>
+            <li><strong>2 collaborators</strong></li>
+            <li>All templates</li>
+            <li>AI code assistant</li>
+            <li>Live preview</li>
+            <li>Community support</li>
+          </ul>
+          <a href="/app" class="btn btn-ghost" style="width: 100%; margin-top: 24px;">Get Started</a>
+        </div>
+
+        <div class="pricing-card featured">
+          <div class="pricing-badge">Most Popular</div>
+          <h3>Creator</h3>
+          <div class="pricing-price">$19<span>/mo</span></div>
+          <ul class="pricing-features">
+            <li><strong>500 credits/month</strong></li>
+            <li><strong>5 games</strong></li>
+            <li><strong>4 collaborators</strong> per game</li>
+            <li>AI asset generation</li>
+            <li>Custom subdomain</li>
+            <li>Priority support</li>
+            <li>Commercial use</li>
+          </ul>
+          <a href="/app" class="btn btn-primary" style="width: 100%; margin-top: 24px;">Start Creating</a>
+        </div>
+
+        <div class="pricing-card">
+          <h3>Studio</h3>
+          <div class="pricing-price">$49<span>/mo</span></div>
+          <ul class="pricing-features">
+            <li><strong>1500 credits/month</strong></li>
+            <li><strong>Unlimited games</strong></li>
+            <li><strong>Unlimited collaborators</strong></li>
+            <li>Priority GPU access</li>
+            <li>Advanced AI tools</li>
+            <li>Custom domain</li>
+            <li>Priority support</li>
+          </ul>
+          <a href="/app" class="btn btn-ghost" style="width: 100%; margin-top: 24px;">Go Pro</a>
+        </div>
+      </div>
+      <p style="text-align: center; margin-top: 40px; color: var(--text-secondary);">
+        All plans include the Hawkes Play runtime, code editor, and live preview. Credits are used for AI asset generation only.
+      </p>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta">
+    <div class="container">
+      <h2>Ready to Build?</h2>
+      <p>Join creators building the next generation of web games</p>
+      <a href="/app" class="btn btn-primary btn-large">Start Building Free</a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Hawkes Play. Built with <a href="https://www.babylonjs.com/">Babylon.js</a> and AI.</p>
+    </div>
+  </footer>
+</body>
+</html>

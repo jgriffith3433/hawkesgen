@@ -28,6 +28,10 @@ import * as builder from './providers/builder/builder.ts';
 import { requesterIp } from './providers/builder/rdp.ts';
 import * as playtester from './providers/playtester/playtester.ts';
 import * as machines from './machines.ts';
+import * as games from './games.ts';
+import * as billing from './billing.ts';
+import { listTemplates, getTemplate } from './templates.ts';
+import * as assistant from './assistant.ts';
 import { Retry } from './providers/comfy/retry.ts';
 import * as eleven from './providers/elevenlabs.ts';
 import * as claude from './providers/anthropic.ts';
@@ -238,13 +242,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     const publicSaas = isPublicSaas(req);
     let rel: string;
     if (route === '/home' || route === '/home/' || route === '/public' || route === '/public/') {
-      rel = 'public/index.html';
+      rel = 'public/landing.html';
     } else if (route === '/app' || route === '/app/') {
-      rel = 'public/app.html';
+      rel = 'public/game-editor.html';
+    } else if (route === '/play' || route === '/play/') {
+      rel = 'public/player.html';
     } else if (route === '/admin' || route === '/admin/') {
       rel = 'index.html';
     } else if (route === '/') {
-      rel = publicSaas ? 'public/index.html' : 'index.html';
+      rel = publicSaas ? 'public/landing.html' : 'index.html';
     } else {
       rel = route.slice(1);
     }
@@ -390,16 +396,261 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, getStripeStatus());
     }
 
+    // ---------------------------------------------------------- subscriptions
+    if (route === '/v1/subscriptions/plans' && method === 'GET') {
+      return send(res, 200, { plans: billing.listSubscriptionPlans() });
+    }
+    if (route === '/v1/subscriptions/plans' && method === 'POST') {
+      requireRole(client, 'owner');
+      const body = await readJson(req);
+      const plan = billing.createSubscriptionPlan(body);
+      return send(res, 200, plan);
+    }
+    if (route === '/v1/subscriptions/me' && method === 'GET') {
+      if (client.role !== 'user') throw new GenError('Subscriptions are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const sub = billing.getUserSubscription(user.id);
+      return send(res, 200, sub ? { subscription: sub } : { subscription: null });
+    }
+
+    // --------------------------------------------------------------- games
+    if (route === '/v1/games' && method === 'POST') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const body = await readJson(req);
+      if (!body.name || !body.slug) throw new GenError('name and slug are required');
+      const game = games.createGame(user.id, body);
+      return send(res, 200, game);
+    }
+    if (route === '/v1/games' && method === 'GET') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const result = games.listUserGames(user.id, { limit: Number(q('limit')) || 50, offset: Number(q('offset')) || 0 });
+      return send(res, 200, result);
+    }
+    let m = /^\/v1\/games\/(game_[0-9a-z]+)$/.exec(route);
+    if (m && method === 'GET') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.canAccessGame(game.id, user.id)) throw new GenError('No access to this game', { status: 403 });
+      return send(res, 200, game);
+    }
+    if (m && method === 'PATCH') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.isGameOwner(game.id, user.id)) throw new GenError('Only the game owner can update settings', { status: 403 });
+      const body = await readJson(req);
+      const updated = games.updateGame(game.id, body);
+      return send(res, 200, updated);
+    }
+    if (m && method === 'DELETE') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.isGameOwner(game.id, user.id)) throw new GenError('Only the game owner can delete the game', { status: 403 });
+      games.deleteGame(game.id);
+      return send(res, 200, { deleted: true });
+    }
+    m = /^\/v1\/games\/(game_[0-9a-z]+)\/members$/.exec(route);
+    if (m && method === 'GET') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.canAccessGame(game.id, user.id)) throw new GenError('No access to this game', { status: 403 });
+      const members = games.listGameMembers(game.id);
+      return send(res, 200, { members });
+    }
+    if (m && method === 'POST') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.isGameOwner(game.id, user.id)) throw new GenError('Only the game owner can invite members', { status: 403 });
+      const body = await readJson(req);
+      if (!body.userId || !body.role) throw new GenError('userId and role are required');
+      const member = games.addGameMember(game.id, body.userId, body.role, user.id);
+      return send(res, 200, member);
+    }
+    m = /^\/v1\/games\/(game_[0-9a-z]+)\/members\/(u_[0-9a-z]+)$/.exec(route);
+    if (m && method === 'DELETE') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.isGameOwner(game.id, user.id) && m[2] !== user.id) {
+        throw new GenError('Only the game owner or the member themselves can remove a member', { status: 403 });
+      }
+      games.removeGameMember(game.id, m[2]);
+      return send(res, 200, { removed: true });
+    }
+    m = /^\/v1\/games\/(game_[0-9a-z]+)\/files$/.exec(route);
+    if (m && method === 'GET') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.canAccessGame(game.id, user.id)) throw new GenError('No access to this game', { status: 403 });
+      const files = games.listGameFiles(game.id);
+      return send(res, 200, { files });
+    }
+    if (m && method === 'POST') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.canEditGame(game.id, user.id)) throw new GenError('No edit access to this game', { status: 403 });
+      const body = await readJson(req);
+      if (!body.path || typeof body.content !== 'string') throw new GenError('path and content are required');
+      const file = games.saveGameFile(game.id, body.path, body.content, user.id);
+      return send(res, 200, file);
+    }
+    m = /^\/v1\/games\/(game_[0-9a-z]+)\/files\/(.+)$/.exec(route);
+    if (m && method === 'GET') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.canAccessGame(game.id, user.id)) throw new GenError('No access to this game', { status: 403 });
+      const filePath = decodeURIComponent(m[2]);
+      const file = games.getGameFile(game.id, filePath);
+      if (!file) throw new GenError('File not found', { status: 404 });
+      return send(res, 200, file);
+    }
+    if (m && method === 'DELETE') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.canEditGame(game.id, user.id)) throw new GenError('No edit access to this game', { status: 403 });
+      const filePath = decodeURIComponent(m[2]);
+      games.deleteGameFile(game.id, filePath);
+      return send(res, 200, { deleted: true });
+    }
+    m = /^\/v1\/games\/(game_[0-9a-z]+)\/releases$/.exec(route);
+    if (m && method === 'GET') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.canAccessGame(game.id, user.id)) throw new GenError('No access to this game', { status: 403 });
+      const result = games.listGameReleases(game.id, { limit: Number(q('limit')) || 20, offset: Number(q('offset')) || 0 });
+      return send(res, 200, result);
+    }
+    if (m && method === 'POST') {
+      if (client.role !== 'user') throw new GenError('Games are for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const game = games.getGame(m[1]);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!games.isGameOwner(game.id, user.id)) throw new GenError('Only the game owner can create releases', { status: 403 });
+      const body = await readJson(req);
+      if (!body.version) throw new GenError('version is required');
+      const release = games.createGameRelease(game.id, body.version, body.notes || '', user.id);
+      return send(res, 200, release);
+    }
+
+    // ---------------------------------------------------------- play routes
+    // Load a published game by subdomain or a release
+    m = /^\/v1\/play\/([a-z0-9-]+)$/.exec(route);
+    if (m && method === 'GET') {
+      const subdomain = m[1];
+      const game = games.getGameBySubdomain(subdomain);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      if (!game.published) throw new GenError('Game is not published', { status: 403 });
+      const files = games.listGameFiles(game.id);
+      return send(res, 200, { ...game, files });
+    }
+    m = /^\/v1\/releases\/(release_[0-9a-z]+)$/.exec(route);
+    if (m && method === 'GET') {
+      const release = games.getGameRelease(m[1]);
+      if (!release) throw new GenError('Release not found', { status: 404 });
+      const game = games.getGame(release.gameId);
+      if (!game) throw new GenError('Game not found', { status: 404 });
+      // Convert files object to array format expected by player
+      const filesArray = Object.entries(release.files).map(([path, content]) => ({
+        path,
+        content,
+        gameId: release.gameId,
+      }));
+      return send(res, 200, { ...game, files: filesArray });
+    }
+
     // ------------------------------------------------------------ analytics
     // Reading what players did (src/analytics/routes.ts, docs/analytics.md).
     if (handleAnalytics(client, route, method, q, res, send, url.search)) return;
+
+    // ----------------------------------------------------------- templates
+    if (route === '/v1/templates' && method === 'GET') {
+      return send(res, 200, { templates: listTemplates() });
+    }
+    m = /^\/v1\/templates\/([\w-]+)$/.exec(route);
+    if (m && method === 'GET') {
+      const template = getTemplate(m[1]);
+      if (!template) throw new GenError('Template not found', { status: 404 });
+      return send(res, 200, template);
+    }
+
+    // ------------------------------------------------------------ assistant
+    if (route === '/v1/assistant/chat' && method === 'POST') {
+      if (client.role !== 'user') throw new GenError('Assistant is for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const body = await readJson(req);
+      if (!body.message) throw new GenError('message is required');
+      const response = await assistant.processMessage(
+        user.id,
+        body.gameContext || {},
+        body.history || [],
+        body.message
+      );
+      return send(res, 200, response);
+    }
+    if (route === '/v1/assistant/generate' && method === 'POST') {
+      if (client.role !== 'user') throw new GenError('Assistant is for user accounts only', { status: 403 });
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('User session required', { status: 401 });
+      const body = await readJson(req);
+      if (!body.type || !body.prompt) throw new GenError('type and prompt are required');
+      const result = await assistant.generateAsset(client, user.id, body.type, body.prompt, body.params || {});
+      return send(res, 200, result);
+    }
+    if (route === '/v1/assistant/code-suggestions' && method === 'POST') {
+      if (client.role !== 'user') throw new GenError('Assistant is for user accounts only', { status: 403 });
+      const body = await readJson(req);
+      if (!body.intent) throw new GenError('intent is required');
+      const code = await assistant.getCodeSuggestions({
+        intent: body.intent,
+        currentCode: body.currentCode
+      });
+      return send(res, 200, { code });
+    }
 
     // ---------------------------------------------------------------- tools
     if (route === '/v1/tools' && method === 'GET') {
       const list = client.role === 'user' ? TOOLS.filter((t) => !isInternalOnlyTool(t.id)) : TOOLS;
       return send(res, 200, { tools: list.map(describeTool) });
     }
-    let m = /^\/v1\/tools\/([\w.-]+)$/.exec(route);
+    m = /^\/v1\/tools\/([\w.-]+)$/.exec(route);
     if (m && method === 'GET') {
       if (client.role === 'user' && isInternalOnlyTool(m[1])) {
         throw new GenError(`Tool ${m[1]} is internal-only and not available for user accounts`, { status: 403 });

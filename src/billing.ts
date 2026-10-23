@@ -556,3 +556,169 @@ export function handleStripeWebhook(rawBody: Buffer | string, signatureHeader: s
 
   return { ok: true, type: event?.type ?? 'unknown', ignored: true };
 }
+
+// ---------------------------------------------------------------- Subscriptions
+
+export type SubscriptionPlan = {
+  id: string;
+  name: string;
+  priceCents: number;
+  creditsPerMonth: number;
+  maxGames: number;
+  maxMembersPerGame: number;
+  stripePriceId: string | null;
+  active: number;
+  created: number;
+};
+
+export type UserSubscription = {
+  id: string;
+  userId: string;
+  planId: string;
+  stripeSubscriptionId: string | null;
+  status: 'active' | 'canceled' | 'past_due' | 'trialing';
+  currentPeriodStart: number;
+  currentPeriodEnd: number;
+  cancelAtPeriodEnd: number;
+  created: number;
+  updated: number;
+};
+
+export function getSubscriptionPlan(planId: string): SubscriptionPlan | null {
+  const row = db.prepare('SELECT * FROM subscription_plans WHERE id = ? AND active = 1').get(planId) as any;
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    priceCents: row.price_cents,
+    creditsPerMonth: row.credits_per_month,
+    maxGames: row.max_games,
+    maxMembersPerGame: row.max_members_per_game,
+    stripePriceId: row.stripe_price_id,
+    active: row.active,
+    created: row.created,
+  };
+}
+
+export function listSubscriptionPlans(): SubscriptionPlan[] {
+  const rows = db.prepare('SELECT * FROM subscription_plans WHERE active = 1 ORDER BY price_cents').all() as any[];
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    priceCents: row.price_cents,
+    creditsPerMonth: row.credits_per_month,
+    maxGames: row.max_games,
+    maxMembersPerGame: row.max_members_per_game,
+    stripePriceId: row.stripe_price_id,
+    active: row.active,
+    created: row.created,
+  }));
+}
+
+export function createSubscriptionPlan(plan: Omit<SubscriptionPlan, 'created'>): SubscriptionPlan {
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO subscription_plans (id, name, price_cents, credits_per_month, max_games, max_members_per_game, stripe_price_id, active, created)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    plan.id,
+    plan.name,
+    plan.priceCents,
+    plan.creditsPerMonth,
+    plan.maxGames,
+    plan.maxMembersPerGame,
+    plan.stripePriceId,
+    plan.active,
+    now,
+  );
+  return { ...plan, created: now };
+}
+
+export function getUserSubscription(userId: string): UserSubscription | null {
+  const row = db.prepare(
+    "SELECT * FROM user_subscriptions WHERE user_id = ? AND status IN ('active', 'trialing') ORDER BY created DESC LIMIT 1",
+  ).get(userId) as any;
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    planId: row.plan_id,
+    stripeSubscriptionId: row.stripe_subscription_id,
+    status: row.status,
+    currentPeriodStart: row.current_period_start,
+    currentPeriodEnd: row.current_period_end,
+    cancelAtPeriodEnd: row.cancel_at_period_end,
+    created: row.created,
+    updated: row.updated,
+  };
+}
+
+export function createUserSubscription(sub: Omit<UserSubscription, 'created' | 'updated'>): UserSubscription {
+  const now = Date.now();
+  const subId = id('sub', 8);
+  db.prepare(
+    `INSERT INTO user_subscriptions (id, user_id, plan_id, stripe_subscription_id, status, current_period_start, current_period_end, cancel_at_period_end, created, updated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    subId,
+    sub.userId,
+    sub.planId,
+    sub.stripeSubscriptionId,
+    sub.status,
+    sub.currentPeriodStart,
+    sub.currentPeriodEnd,
+    sub.cancelAtPeriodEnd,
+    now,
+    now,
+  );
+  return { ...sub, id: subId, created: now, updated: now };
+}
+
+export function updateUserSubscription(
+  subId: string,
+  updates: Partial<Pick<UserSubscription, 'status' | 'currentPeriodStart' | 'currentPeriodEnd' | 'cancelAtPeriodEnd'>>,
+): void {
+  const fields: string[] = [];
+  const values: any[] = [];
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.currentPeriodStart !== undefined) {
+    fields.push('current_period_start = ?');
+    values.push(updates.currentPeriodStart);
+  }
+  if (updates.currentPeriodEnd !== undefined) {
+    fields.push('current_period_end = ?');
+    values.push(updates.currentPeriodEnd);
+  }
+  if (updates.cancelAtPeriodEnd !== undefined) {
+    fields.push('cancel_at_period_end = ?');
+    values.push(updates.cancelAtPeriodEnd);
+  }
+  if (!fields.length) return;
+  fields.push('updated = ?');
+  values.push(Date.now());
+  values.push(subId);
+  db.prepare(`UPDATE user_subscriptions SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+}
+
+/**
+ * Allocate monthly credits to a user based on their subscription plan.
+ * Called when a subscription renews (via Stripe webhook or a cron).
+ */
+export function allocateMonthlyCredits(userId: string): { allocated: boolean; credits: number } {
+  const sub = getUserSubscription(userId);
+  if (!sub || (sub.status !== 'active' && sub.status !== 'trialing')) {
+    return { allocated: false, credits: 0 };
+  }
+  const plan = getSubscriptionPlan(sub.planId);
+  if (!plan) return { allocated: false, credits: 0 };
+
+  grantCredits(userId, plan.creditsPerMonth, {
+    kind: 'admin_grant',
+    detail: `Monthly credit allocation: ${plan.name}`,
+  });
+
+  return { allocated: true, credits: plan.creditsPerMonth };
+}

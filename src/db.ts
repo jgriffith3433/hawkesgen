@@ -162,6 +162,83 @@ const MIGRATIONS: string[] = [
    );
    CREATE INDEX credit_ledger_user ON credit_ledger (user_id, created DESC);
    CREATE INDEX credit_ledger_job ON credit_ledger (job_id);`,
+  // Subscription plans and user subscriptions for monthly credit allocation.
+  `CREATE TABLE subscription_plans (
+     id TEXT PRIMARY KEY,
+     name TEXT NOT NULL,
+     price_cents INTEGER NOT NULL,
+     credits_per_month INTEGER NOT NULL,
+     max_games INTEGER NOT NULL DEFAULT 3,
+     max_members_per_game INTEGER NOT NULL DEFAULT 4,
+     stripe_price_id TEXT UNIQUE,
+     active INTEGER NOT NULL DEFAULT 1,
+     created INTEGER NOT NULL
+   );
+
+   CREATE TABLE user_subscriptions (
+     id TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     plan_id TEXT NOT NULL REFERENCES subscription_plans (id),
+     stripe_subscription_id TEXT UNIQUE,
+     status TEXT NOT NULL,
+     current_period_start INTEGER NOT NULL,
+     current_period_end INTEGER NOT NULL,
+     cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+     created INTEGER NOT NULL,
+     updated INTEGER NOT NULL
+   );
+   CREATE INDEX user_subscriptions_user ON user_subscriptions (user_id);
+   CREATE INDEX user_subscriptions_status ON user_subscriptions (status, current_period_end);`,
+  // Games: collaborative web game projects with Babylon.js runtime.
+  `CREATE TABLE games (
+     id TEXT PRIMARY KEY,
+     user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     slug TEXT NOT NULL,
+     name TEXT NOT NULL,
+     description TEXT NOT NULL DEFAULT '',
+     published INTEGER NOT NULL DEFAULT 0,
+     published_at INTEGER,
+     subdomain TEXT UNIQUE,
+     created INTEGER NOT NULL,
+     updated INTEGER NOT NULL
+   );
+   CREATE INDEX games_user ON games (user_id, created DESC);
+   CREATE INDEX games_slug ON games (user_id, slug);
+   CREATE INDEX games_subdomain ON games (subdomain) WHERE subdomain IS NOT NULL;
+
+   CREATE TABLE game_members (
+     id TEXT PRIMARY KEY,
+     game_id TEXT NOT NULL REFERENCES games (id) ON DELETE CASCADE,
+     user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     role TEXT NOT NULL,
+     invited_by TEXT,
+     joined INTEGER NOT NULL
+   );
+   CREATE UNIQUE INDEX game_members_unique ON game_members (game_id, user_id);
+   CREATE INDEX game_members_user ON game_members (user_id);
+
+   CREATE TABLE game_files (
+     id TEXT PRIMARY KEY,
+     game_id TEXT NOT NULL REFERENCES games (id) ON DELETE CASCADE,
+     path TEXT NOT NULL,
+     content TEXT NOT NULL,
+     updated_by TEXT NOT NULL,
+     created INTEGER NOT NULL,
+     updated INTEGER NOT NULL
+   );
+   CREATE UNIQUE INDEX game_files_path ON game_files (game_id, path);
+   CREATE INDEX game_files_updated ON game_files (game_id, updated DESC);
+
+   CREATE TABLE game_releases (
+     id TEXT PRIMARY KEY,
+     game_id TEXT NOT NULL REFERENCES games (id) ON DELETE CASCADE,
+     version TEXT NOT NULL,
+     notes TEXT NOT NULL DEFAULT '',
+     files TEXT NOT NULL,
+     released_by TEXT NOT NULL,
+     created INTEGER NOT NULL
+   );
+   CREATE INDEX game_releases_game ON game_releases (game_id, created DESC);`,
 ];
 
 db.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
