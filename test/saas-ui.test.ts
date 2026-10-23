@@ -34,19 +34,14 @@ async function fetchRoute(route: string, init?: RequestInit) {
 }
 
 test('/home, /app, and /public/* serve valid HTML, CSS, and JS on every server', async () => {
-  // 1. /home serves the public marketing & portfolio site
+  // 1. /home serves the public game builder landing page
   const home = await fetchRoute('/home');
   assert.equal(home.status, 200);
   assert.match(String(home.headers.get('content-type')), /text\/html/);
-  assert.match(home.text, /One Prompt Pipeline for Games, Film &amp; Interactive Media/);
-  assert.match(home.text, /Built With Hawkes Gen/);
-  assert.match(home.text, /https:\/\/doseofdestruction\.com/);
-  assert.match(home.text, /https:\/\/phorigins\.com/);
-  assert.match(home.text, /https:\/\/sickofitgame\.com/);
-  assert.match(home.text, /https:\/\/yoobalandgame\.com/);
-  assert.match(home.text, /https:\/\/theplacedepartment\.com/);
-  assert.match(home.text, /https:\/\/imaginelivetv\.com/);
-  assert.match(home.text, /Transparent Credit Pricing/);
+  assert.match(home.text, /Build Web Games with AI/);
+  assert.match(home.text, /Create Games/);
+  assert.match(home.text, /Collaborative/);
+  assert.match(home.text, /Simple Pricing/);
 
   // 2. /app serves the Creator Studio web app
   const app = await fetchRoute('/app');
@@ -113,8 +108,8 @@ test('HAWKESGEN_PUBLIC_SAAS=1 serves landing page at / and keeps operator consol
   try {
     const rootPublic = await fetchRoute('/');
     assert.equal(rootPublic.status, 200);
-    assert.match(rootPublic.text, /One Prompt Pipeline for Games, Film &amp; Interactive Media/);
-    assert.match(rootPublic.text, /Built With Hawkes Gen/);
+    assert.match(rootPublic.text, /Build Web Games with AI/);
+    assert.match(rootPublic.text, /Create Games/);
 
     const admin = await fetchRoute('/admin');
     assert.equal(admin.status, 200);

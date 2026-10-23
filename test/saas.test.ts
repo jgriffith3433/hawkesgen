@@ -533,16 +533,16 @@ test('runtime Stripe config (GET/POST /v1/billing/config and GET /v1/billing/pac
     body: { secretKey: '', publishableKey: '', webhookSecret: '' },
   });
 
-  // 4. X-Hawkes-Public-Saas: 1 serves dashboard/public/index.html at / and requires auth on /v1/me
+  // 4. X-Hawkes-Public-Saas: 1 serves dashboard/public/landing.html at / and requires auth on /v1/me
   const adminRoot = await reqJson('/');
   assert.equal(adminRoot.status, 200);
   assert.equal(typeof adminRoot.body, 'string');
-  assert.ok(!adminRoot.body.includes('One Prompt Pipeline for Games, Film'));
+  assert.ok(!adminRoot.body.includes('Build Web Games with AI'));
 
   const publicRoot = await reqJson('/', { headers: { 'X-Hawkes-Public-Saas': '1' } });
   assert.equal(publicRoot.status, 200);
   assert.equal(typeof publicRoot.body, 'string');
-  assert.ok(publicRoot.body.includes('One Prompt Pipeline for Games, Film'));
+  assert.ok(publicRoot.body.includes('Build Web Games with AI'));
 
   const localMe = await reqJson('/v1/me');
   assert.equal(localMe.status, 200);
