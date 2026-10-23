@@ -43,15 +43,13 @@ test('/home, /app, and /public/* serve valid HTML, CSS, and JS on every server',
   assert.match(home.text, /collaborat/i);
   assert.match(home.text, /Simple Pricing/);
 
-  // 2. /app serves the Creator Studio web app
+  // 2. /app serves the Hawkes Play game builder
   const app = await fetchRoute('/app');
   assert.equal(app.status, 200);
   assert.match(String(app.headers.get('content-type')), /text\/html/);
-  assert.match(app.text, /Creator Studio/);
-  assert.match(app.text, /Image &amp; Textures/);
-  assert.match(app.text, /Video &amp; Lip-Sync/);
-  assert.match(app.text, /3D Mesh &amp; Rigging/);
-  assert.match(app.text, /Animation &amp; Motion/);
+  assert.match(app.text, /Hawkes Play/);
+  assert.match(app.text, /Game Builder/);
+  assert.match(app.text, /My Games/);
   assert.match(app.text, /Audio Studio/);
   assert.match(app.text, /Pipelines/);
   assert.match(app.text, /My Generations Gallery/);
