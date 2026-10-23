@@ -855,18 +855,24 @@ export const queue = new Queue();
 /** Downloads models a family needs onto a server (exposed for the fleet sync action). */
 export const syncModels = syncServer;
 
-/** A queued job's place in line: how many jobs are ahead of it in its lane (the GPU, or its provider), running or
- *  waiting. Counts only, so a customer learns nothing about anyone else's work. */
-export function queuePosition(j: Job): { ahead: number; lane: string } | null {
+/** A queued job's place in line: how many queued jobs in its lane (the GPU, or its provider) will be served before it
+ *  (a higher priority, or the same priority and older). Jobs already running aren't in line: they are on servers of
+ *  their own, so counting them said "10 ahead" to a job that was next. `running` says how busy the lane is.
+ *  Counts only, so a customer learns nothing about anyone else's work. */
+export function queuePosition(j: Job): { ahead: number; running: number; lane: string } | null {
   if (j.status !== 'queued') return null;
   const tool = getTool(j.tool);
   if (!tool) return null;
   const lane = tool.provider === 'comfy' ? 'gpu' : tool.provider;
-  const rows = db.prepare("SELECT tool, status, created FROM jobs WHERE status IN ('queued', 'running') AND id != ?").all(j.id) as { tool: string; status: string; created: number }[];
-  const ahead = rows.filter((r) => {
+  const rows = db.prepare("SELECT tool, status, priority, created FROM jobs WHERE status IN ('queued', 'running') AND id != ?").all(j.id) as { tool: string; status: string; priority: number; created: number }[];
+  let ahead = 0;
+  let running = 0;
+  for (const r of rows) {
     const t = getTool(r.tool);
-    if (!t || (t.provider === 'comfy' ? 'gpu' : t.provider) !== lane) return false;
-    return r.status === 'running' || r.created < j.created;
-  }).length;
-  return { ahead, lane };
+    if (!t || (t.provider === 'comfy' ? 'gpu' : t.provider) !== lane) continue;
+    if (r.status === 'running') { running++; continue; }
+    const p = r.priority ?? 0, mine = j.priority ?? 0;
+    if (p > mine || (p === mine && r.created < j.created)) ahead++;
+  }
+  return { ahead, running, lane };
 }
