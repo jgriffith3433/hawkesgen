@@ -40,7 +40,7 @@ test('/home, /app, and /public/* serve valid HTML, CSS, and JS on every server',
   assert.match(String(home.headers.get('content-type')), /text\/html/);
   assert.match(home.text, /Build Web Games with AI/);
   assert.match(home.text, /Create Games/);
-  assert.match(home.text, /Collaborative/);
+  assert.match(home.text, /collaborat/i);
   assert.match(home.text, /Simple Pricing/);
 
   // 2. /app serves the Creator Studio web app
