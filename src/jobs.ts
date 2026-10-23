@@ -480,10 +480,15 @@ class Queue {
     // API and local lanes.
     for (const j of waiting.filter((x) => toolOf(x).provider !== 'comfy')) {
       const provider = toolOf(j).provider as 'elevenlabs' | 'anthropic' | 'local' | 'builder' | 'playtest' | 'pipeline';
-      const lane = this.lanes.get(provider) ?? new Set();
-      this.lanes.set(provider, lane);
+      // A pipeline that is a step of another job (asset.make's image.viewsheet) runs in its own lane, never behind the
+      // cap: its parent already holds a pipeline slot and waits for it. Queued behind the cap, six asset.make jobs held
+      // every slot while their own view-sheet steps waited for one, and nothing ever finished (2026-10-23, the starter pack).
+      const nested = provider === 'pipeline' && Boolean(j.labels?.parent);
+      const key = nested ? 'pipeline-step' : provider;
+      const lane = this.lanes.get(key) ?? new Set();
+      this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
-      const limit = provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? 6 : settings.concurrency[provider];
+      const limit = nested ? Infinity : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? 6 : settings.concurrency[provider];
       // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
       const weight = provider === 'playtest' ? tabsOf(j) : 1;
       const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;
