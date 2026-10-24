@@ -24,6 +24,13 @@ export const FAMILY_MODELS: Record<string, string[]> = {
   'wan-animate': ['Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors', 'lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors', 'umt5_xxl_fp8_e4m3fn_scaled.safetensors', 'wan_2.1_vae.safetensors', 'clip_vision_h.safetensors'],
 };
 
+/** fal's Qwen-Image-Edit-2511 Multiple-Angles LoRA (also in workflows/image-angles): installed on first use. */
+export const ANGLES_LORA = {
+  file: 'qwen-image-edit-2511-multiple-angles-lora.safetensors',
+  dir: 'loras',
+  url: 'https://huggingface.co/fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA/resolve/main/qwen-image-edit-2511-multiple-angles-lora.safetensors',
+};
+
 /**
  * Qwen-Image-Edit-2511, 4-step Lightning: edit images[0] as the prompt says,
  * with images[1] and images[2] as extra references.
@@ -37,14 +44,16 @@ export const FAMILY_MODELS: Record<string, string[]> = {
 export function imageEdit({ images, prompt, negative = '', seed, width, height, prefix = 'hawkesgen/edit', s = {} as any }: {
   images: string[]; prompt: string; negative?: string; seed: number; width?: number; height?: number; prefix?: string; s?: any;
 }) {
-  const { steps = 4, cfg = 1, shift = 3.1, lora: loraStrength = 1, sampler = 'euler', scheduler = 'simple', denoise = 1 } = s;
+  const { steps = 4, cfg = 1, shift = 3.1, lora: loraStrength = 1, sampler = 'euler', scheduler = 'simple', denoise = 1, angles = 0 } = s;
   const g = graph();
   const unet = g.add('UNETLoader', { unet_name: 'qwen_image_edit_2511_fp8mixed.safetensors', weight_dtype: 'default' });
   const clip = g.add('CLIPLoader', { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' });
   const vae = g.add('VAELoader', { vae_name: 'qwen_image_vae.safetensors' });
   const sampling = g.add('ModelSamplingAuraFlow', { model: g.out(unet), shift });
   const norm = g.add('CFGNorm', { model: g.out(sampling), strength: 1 });
-  const lora = g.add('LoraLoaderModelOnly', { model: g.out(norm), lora_name: 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors', strength_model: loraStrength });
+  const lightning = g.add('LoraLoaderModelOnly', { model: g.out(norm), lora_name: 'Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors', strength_model: loraStrength });
+  // fal's Multiple-Angles LoRA (trained on 3D renders): prompts like "<sks> back view eye-level shot medium shot".
+  const lora = Number(angles) > 0 ? g.add('LoraLoaderModelOnly', { model: g.out(lightning), lora_name: ANGLES_LORA.file, strength_model: Number(angles) }) : lightning;
   const loads = images.slice(0, 3).map((image) => g.add('LoadImage', { image }));
   const first = width && height
     ? g.add('ImageScale', { image: g.out(loads[0]), upscale_method: 'lanczos', width, height, crop: 'disabled' })

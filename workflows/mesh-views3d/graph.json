@@ -362,31 +362,6 @@
    "title": "Decimate Mesh"
   }
  },
- "192": {
-  "class_type": "RemoveBackground",
-  "inputs": {
-   "bg_removal_model": [
-    "193",
-    0
-   ],
-   "image": [
-    "338",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Remove Background"
-  }
- },
- "193": {
-  "class_type": "LoadBackgroundRemovalModel",
-  "inputs": {
-   "bg_removal_name": "birefnet.safetensors"
-  },
-  "_meta": {
-   "title": "Load Background Removal Model"
-  }
- },
  "196": {
   "class_type": "UnwrapMesh",
   "inputs": {
@@ -638,26 +613,6 @@
    "title": "Texture Resolution"
   }
  },
- "312": {
-  "class_type": "ImageCropToMask",
-  "inputs": {
-   "width": 1024,
-   "height": 1024,
-   "pad_factor": 1.1,
-   "grow_mask": 0,
-   "images": [
-    "338",
-    0
-   ],
-   "masks": [
-    "192",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image to Mask"
-  }
- },
  "319": {
   "class_type": "UNETLoader",
   "inputs": {
@@ -697,18 +652,6 @@
    "title": "Pixal3D Multi-View Conditioning"
   }
  },
- "338": {
-  "class_type": "ImageCropV2",
-  "inputs": {
-   "image": [
-    "364",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image"
-  }
- },
  "340": {
   "class_type": "SaveImageAdvanced",
   "inputs": {
@@ -717,36 +660,12 @@
    "format.bit_depth": "8-bit",
    "format.input_color_space": "sRGB",
    "images": [
-    "312",
+    "401",
     0
    ]
   },
   "_meta": {
-   "title": "Save Image (Advanced)"
-  }
- },
- "341": {
-  "class_type": "ImageCropV2",
-  "inputs": {
-   "image": [
-    "364",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image"
-  }
- },
- "342": {
-  "class_type": "ImageCropV2",
-  "inputs": {
-   "image": [
-    "364",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image"
+   "title": "front view"
   }
  },
  "343": {
@@ -757,12 +676,12 @@
    "format.bit_depth": "8-bit",
    "format.input_color_space": "sRGB",
    "images": [
-    "350",
+    "403",
     0
    ]
   },
   "_meta": {
-   "title": "Save Image (Advanced)"
+   "title": "back view"
   }
  },
  "344": {
@@ -773,24 +692,12 @@
    "format.bit_depth": "8-bit",
    "format.input_color_space": "sRGB",
    "images": [
-    "349",
+    "402",
     0
    ]
   },
   "_meta": {
-   "title": "Save Image (Advanced)"
-  }
- },
- "345": {
-  "class_type": "ImageCropV2",
-  "inputs": {
-   "image": [
-    "364",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image"
+   "title": "left view"
   }
  },
  "346": {
@@ -801,129 +708,12 @@
    "format.bit_depth": "8-bit",
    "format.input_color_space": "sRGB",
    "images": [
-    "352",
+    "404",
     0
    ]
   },
   "_meta": {
-   "title": "Save Image (Advanced)"
-  }
- },
- "348": {
-  "class_type": "RemoveBackground",
-  "inputs": {
-   "bg_removal_model": [
-    "193",
-    0
-   ],
-   "image": [
-    "341",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Remove Background"
-  }
- },
- "349": {
-  "class_type": "ImageCropToMask",
-  "inputs": {
-   "width": 1024,
-   "height": 1024,
-   "pad_factor": 1.1,
-   "grow_mask": 0,
-   "images": [
-    "341",
-    0
-   ],
-   "masks": [
-    "348",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image to Mask"
-  }
- },
- "350": {
-  "class_type": "ImageCropToMask",
-  "inputs": {
-   "width": 1024,
-   "height": 1024,
-   "pad_factor": 1.1,
-   "grow_mask": 0,
-   "images": [
-    "342",
-    0
-   ],
-   "masks": [
-    "351",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image to Mask"
-  }
- },
- "351": {
-  "class_type": "RemoveBackground",
-  "inputs": {
-   "bg_removal_model": [
-    "193",
-    0
-   ],
-   "image": [
-    "342",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Remove Background"
-  }
- },
- "352": {
-  "class_type": "ImageCropToMask",
-  "inputs": {
-   "width": 1024,
-   "height": 1024,
-   "pad_factor": 1.1,
-   "grow_mask": 0,
-   "images": [
-    "345",
-    0
-   ],
-   "masks": [
-    "353",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Crop Image to Mask"
-  }
- },
- "353": {
-  "class_type": "RemoveBackground",
-  "inputs": {
-   "bg_removal_model": [
-    "193",
-    0
-   ],
-   "image": [
-    "345",
-    0
-   ]
-  },
-  "_meta": {
-   "title": "Remove Background"
-  }
- },
- "364": {
-  "class_type": "LoadImage",
-  "inputs": {
-   "image": "character_turnaround_4view_sheet.png"
-  },
-  "_meta": {
-   "title": "Load Image"
+   "title": "right view"
   }
  },
  "372": {
@@ -937,6 +727,42 @@
   },
   "_meta": {
    "title": "Save 3D (Advanced)"
+  }
+ },
+ "401": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "front.png"
+  },
+  "_meta": {
+   "title": "front"
+  }
+ },
+ "402": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "left.png"
+  },
+  "_meta": {
+   "title": "left"
+  }
+ },
+ "403": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "back.png"
+  },
+  "_meta": {
+   "title": "back"
+  }
+ },
+ "404": {
+  "class_type": "LoadImage",
+  "inputs": {
+   "image": "right.png"
+  },
+  "_meta": {
+   "title": "right"
   }
  }
 }

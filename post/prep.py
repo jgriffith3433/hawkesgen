@@ -12,6 +12,20 @@ Ported from Dose Of Destruction's tools/gpu/prep.py.
 
     python prep.py canvas <out.png> <width> <height> [color]
         A flat canvas to paint on.
+
+    python prep.py split <sheet> <n> <out1> ... <outn>
+        A sheet of n views side by side cut into n equal panels by its width, left to right.
+
+    python prep.py views <size> <pad> <in1> ... <in4> <out1> ... <out4>
+        Views of one object framed the way Pixal3D wants them: each cut out (its alpha, or what differs from the
+        border's color), on black, square, every view at the same scale (the object's height is the same in each,
+        as it is from any side at eye level) and the widest spanning 1/pad of the frame. Prints JSON per view.
+
+    python prep.py panel <image> <out.png> <cell> <n> <index> [color]
+        A canvas of n square cells side by side on a flat color with the image fitted into cell index.
+
+    python prep.py inspect <image>
+        JSON: size, whether it has transparency, and whether it looks like a black and white mask.
 """
 
 import json
@@ -60,6 +74,76 @@ def canvas(out, width, height, color="808080"):
     Image.new("RGB", (width, height), rgb(color)).save(out)
 
 
+def cutout(im):
+    """(RGBA on black, alpha) for a view: its own alpha when it has transparency, else what differs from the border."""
+    from PIL import ImageChops
+    im = im.convert("RGBA")
+    alpha = im.getchannel("A")
+    if alpha.getextrema()[0] >= 250:
+        rgbim = im.convert("RGB")
+        w, h = rgbim.size
+        border = [rgbim.getpixel((x, y)) for x in (0, w // 2, w - 1) for y in (0, h // 2, h - 1) if (x, y) != (w // 2, h // 2)]
+        bg = max(set(border), key=border.count)
+        diff = ImageChops.difference(rgbim, Image.new("RGB", rgbim.size, bg))
+        r, g, b = diff.split()
+        d = ImageChops.lighter(ImageChops.lighter(r, g), b)
+        alpha = d.point(lambda v: 0 if v < 10 else 255 if v > 34 else (v - 10) * 255 // 24)
+    black = Image.new("RGBA", im.size, (0, 0, 0, 255))
+    black.paste(im.convert("RGB"), (0, 0), alpha)
+    return black.convert("RGB"), alpha
+
+
+def split(sheet, n, outs):
+    im = Image.open(sheet)
+    w, h = im.size
+    for i, out in enumerate(outs[:n]):
+        im.crop((round(i * w / n), 0, round((i + 1) * w / n), h)).save(out)
+
+
+def views(size, pad, ins, outs):
+    cuts = []
+    for f in ins:
+        rgbim, alpha = cutout(Image.open(f))
+        box = alpha.point(lambda v: 255 if v > 127 else 0).getbbox()
+        if not box:
+            sys.exit(f"no object found in {f} (empty or the same color as its background)")
+        cuts.append((rgbim, alpha, box))
+    # In units of each view's own object height: the frame is the widest view (or the height) times pad.
+    extent = max(max((b[2] - b[0]) / (b[3] - b[1]), 1.0) for _, _, b in cuts) * pad
+    info = []
+    for (rgbim, alpha, b), out in zip(cuts, outs):
+        bw, bh = b[2] - b[0], b[3] - b[1]
+        k = size / (extent * bh)
+        obj = rgbim.crop(b).resize((max(1, round(bw * k)), max(1, round(bh * k))), Image.LANCZOS)
+        a = alpha.crop(b).resize(obj.size, Image.LANCZOS)
+        frame = Image.new("RGB", (size, size), (0, 0, 0))
+        frame.paste(obj, ((size - obj.width) // 2, (size - obj.height) // 2), a)
+        frame.save(out)
+        info.append({"box": list(b), "height": bh, "scale": round(k, 4), "size": [obj.width, obj.height]})
+    hs = [x["height"] for x in info]
+    print(json.dumps({"views": info, "heightRatio": round(max(hs) / min(hs), 3)}))
+
+
+def panel(src, out, cell, n, index, color="e6e6e6"):
+    im = Image.open(src).convert("RGBA")
+    scale = min(cell / im.width, cell / im.height)
+    im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.LANCZOS)
+    canvas = Image.new("RGBA", (cell * n, cell), (*rgb(color), 255))
+    canvas.alpha_composite(im, (index * cell + (cell - im.width) // 2, (cell - im.height) // 2))
+    canvas.convert("RGB").save(out)
+
+
+def inspect(f):
+    im = Image.open(f)
+    rgba = im.convert("RGBA")
+    transparent = rgba.getchannel("A").getextrema()[0] < 250
+    small = rgba.convert("RGB").resize((64, 64))
+    raw = small.tobytes()
+    px = [raw[i:i + 3] for i in range(0, len(raw), 3)]
+    bw = sum(1 for p in px if max(p) - min(p) < 12 and (max(p) < 24 or min(p) > 232))
+    print(json.dumps({"width": im.width, "height": im.height, "transparent": transparent, "mask": (not transparent) and bw / len(px) > 0.97}))
+
+
 def main():
     cmd, a = sys.argv[1], sys.argv[2:]
     if cmd == "frame":
@@ -70,6 +154,15 @@ def main():
         motion(a[0], a[1], int(a[2]), int(a[3]), int(a[4]), int(a[5]) if len(a) > 5 else 16)
     elif cmd == "canvas":
         canvas(a[0], int(a[1]), int(a[2]), a[3] if len(a) > 3 else "808080")
+    elif cmd == "split":
+        split(a[0], int(a[1]), a[2:])
+    elif cmd == "views":
+        n = (len(a) - 2) // 2
+        views(int(a[0]), float(a[1]), a[2:2 + n], a[2 + n:2 + 2 * n])
+    elif cmd == "panel":
+        panel(a[0], a[1], int(a[2]), int(a[3]), int(a[4]), a[5] if len(a) > 5 else "e6e6e6")
+    elif cmd == "inspect":
+        inspect(a[0])
     else:
         sys.exit(f"unknown command {cmd}")
 

@@ -17,7 +17,7 @@ export const MESH_ORDER = ['mesh.views3d', 'image.viewsheet', 'image.sheet'];
 const NOTICE = 'DEPRECATED (one view guesses the back; use mesh.views3d): ';
 export const HOW_TO_GET_VIEWS = 'Make the views with image.viewsheet (give it the cutout of the front view: it makes the back, left and right of the same ' +
   'character, checks they match and lays the sheet) or image.sheet (when you already have the views, front, back, left, right), then run mesh.views3d ' +
-  'on the sheet. image.angles is not enough (it has no back view). The preset shared/character3d does all of it.';
+  'on its front, back, left and right outputs (or the sheet). image.angles is not enough (it has no back view). The preset shared/character3d does all of it.';
 
 export function singleViewMessage(toolId: string) {
   return `${toolId} makes 3D from ONE image, so the model has to guess the back and the sides and the mesh comes out lumpy and lopsided. ` +
@@ -65,17 +65,59 @@ export function decorateMeshTool(t: Tool): Tool {
   if (t.id === 'mesh.views3d') {
     return {
       ...t,
-      description: 'THE way Gen turns images into 3D (always more than one view). A textured PBR GLB (Pixal3D multi-view + TRELLIS.2) from a sheet of front, back, left and right views of the same character, side by side in equal cells. Make the sheet with image.viewsheet (from the front view) or image.sheet; the preset shared/character3d runs the whole chain.',
+      description: 'THE way Gen turns images into 3D (always more than one view). A textured PBR GLB (Pixal3D multi-view + TRELLIS.2) from the front, back, left and right views of the same character or object: ' +
+        'pass them as front, back, left, right (image.viewsheet outputs them; left = the camera moved to your left, so the object faces right in the picture), or one sheet of them side by side in 4 equal cells, front|back|left|right (the sheet of image.viewsheet, image.sheet). ' +
+        'Gen frames them the way Pixal3D wants (on black, square, the same scale in every view) and saves the four views it received (front view, left view, back view, right view). The preset shared/character3d runs the whole chain.',
       guard(call) {
-        const file = Array.isArray(call.inputs.image) ? call.inputs.image[0] : call.inputs.image;
-        const size = file ? imageSize(file) : null;
-        if (size && size.width < MIN_SHEET_RATIO * size.height) {
-          throw new GenError(`mesh.views3d wants a sheet of 4 views side by side (front, back, left, right: about 4 times wider than tall), and this image is ${size.width}x${size.height}, which looks like a single view. ${HOW_TO_GET_VIEWS}`);
-        }
+        views3dSources(call.inputs);
+      },
+      async run(ctx) {
+        const src = views3dSources(ctx.inputs);
+        const files: Record<string, string> = {};
+        if (src.sheet) {
+          ctx.step('splitting the sheet into its four views');
+          const parts = VIEW_ORDER.map((v) => ctx.tmp(`panel-${v}.png`));
+          await ctx.python('prep.py', ['split', src.sheet, String(VIEW_ORDER.length), ...parts]);
+          VIEW_ORDER.forEach((v, i) => (files[v] = parts[i]));
+        } else Object.assign(files, src.views);
+        ctx.step('framing the views for Pixal3D (on black, the same scale)');
+        const framed = VIEW_ORDER.map((v) => ctx.tmp(`framed-${v}.png`));
+        const info = JSON.parse(await ctx.python('prep.py', ['views', String(PIXAL_SIZE), String(PIXAL_PAD), ...VIEW_ORDER.map((v) => files[v]), ...framed]));
+        if (info.heightRatio > 1.25) ctx.log(`warning: the object's height differs ${info.heightRatio}x between the views; each view was scaled to the same height`);
+        const inputs = Object.fromEntries(VIEW_ORDER.map((v, i) => [v, framed[i]]));
+        await t.run({ ...ctx, inputs });
       },
     };
   }
   return t;
+}
+
+/**
+ * The order of views in a sheet (image.viewsheet, image.sheet) and in Gen everywhere: front, back, left, right.
+ * "left" is the view from your left as you face the front: the camera moves 90 degrees to the viewer's left, so the object
+ * faces RIGHT in the picture and shows its own right side ("right" is the mirror case). That is what Pixal3D's
+ * conditioning calls left (ComfyUI's own example sheet, front|left|back|right: in its left panel the figure faces right),
+ * and what blender.character's angles op calls left (the camera at -X, the character facing -Y). Swapping the two
+ * twists the mesh.
+ */
+export const VIEW_ORDER = ['front', 'back', 'left', 'right'] as const;
+/** Pixal3D's views: square, this size, the object's widest extent over all views spanning 1/PAD of the frame. */
+export const PIXAL_SIZE = 1024;
+export const PIXAL_PAD = 1.1;
+
+/** What mesh.views3d was given: the four views, or one sheet of them. Throws (at submit) when it is neither. */
+export function views3dSources(inputs: Record<string, any>): { sheet?: string; views?: Record<string, string> } {
+  const one = (v: unknown) => (Array.isArray(v) ? v[0] : v) as string | undefined;
+  const given = VIEW_ORDER.filter((v) => one(inputs[v]));
+  if (given.length === VIEW_ORDER.length) return { views: Object.fromEntries(VIEW_ORDER.map((v) => [v, one(inputs[v])!])) };
+  if (given.length) throw new GenError(`mesh.views3d needs all four views (front, back, left, right), or one sheet of them as image; it got only ${given.join(', ')}. ${HOW_TO_GET_VIEWS}`);
+  const sheet = one(inputs.image);
+  if (!sheet) throw new GenError(`mesh.views3d needs the four views (front, back, left, right) or a sheet of them (image). ${HOW_TO_GET_VIEWS}`);
+  const size = imageSize(sheet);
+  if (size && size.width < MIN_SHEET_RATIO * size.height) {
+    throw new GenError(`mesh.views3d wants a sheet of 4 views side by side (front, back, left, right: about 4 times wider than tall), and this image is ${size.width}x${size.height}, which looks like a single view. ${HOW_TO_GET_VIEWS}`);
+  }
+  return { sheet };
 }
 
 /** The tool list's order: the image-to-3D tools first (mesh.views3d at the top), the deprecated ones last. */

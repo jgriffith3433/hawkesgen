@@ -24,7 +24,7 @@ test('shared/character3d: four views, never one: viewsheet before mesh.views3d, 
   const mesh = tools.indexOf('mesh.views3d');
   assert.ok(sheet > 0 && mesh > sheet, 'the view sheet comes before the 3D step');
   assert.ok(tools.indexOf('image.remove-background') < sheet, 'views are cut out');
-  assert.match(steps[mesh].inputs.image, /:sheet$/, 'mesh.views3d reads the sheet');
+  for (const v of ['front', 'back', 'left', 'right']) assert.equal(steps[mesh].inputs[v], `$prev:${v}`, `mesh.views3d reads the ${v} view the sheet step made`);
   assert.ok(steps[sheet].params.cell >= 1024);
   const bl = steps.find((s) => s.tool === 'blender.character');
   checkOps(bl.params.ops, ['/a.glb']);
@@ -70,8 +70,11 @@ test('every preset and kind recipe that makes a mesh goes through mesh.views3d a
       assert.ok(!['mesh.textured', 'mesh.from-image'].includes(s.tool), `${where}: ${s.tool} makes 3D from one image; use mesh.views3d`);
       if (s.tool === 'mesh.views3d') {
         const ref = String(s.inputs?.image ?? '');
-        const viaSheetStep = /^\$(prev|step\d+):sheet$/.test(ref) && steps.some((x: any, j: number) => j < i && x.tool === 'image.viewsheet');
-        assert.ok(viaSheetStep || /^slot:\.\/sheet$/.test(ref), `${where}: mesh.views3d must read a view sheet, got ${ref}`);
+        const afterSheet = steps.some((x: any, j: number) => j < i && x.tool === 'image.viewsheet');
+        const viaSheetStep = /^\$(prev|step\d+):sheet$/.test(ref) && afterSheet;
+        // Or the four views image.viewsheet outputs, each to the mesh.views3d input of the same name.
+        const viaViews = afterSheet && ['front', 'back', 'left', 'right'].every((v) => new RegExp(`^\\$(prev|step\\d+):${v}$`).test(String(s.inputs?.[v] ?? '')));
+        assert.ok(viaSheetStep || viaViews || /^slot:\.\/sheet$/.test(ref), `${where}: mesh.views3d must read a view sheet or its four views, got ${JSON.stringify(s.inputs)}`);
       }
     });
   }

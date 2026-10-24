@@ -118,7 +118,7 @@
             "steps": [
               { "tool": "image.remove-background", "inputs": { "image": "$input:0" }, "save": "cutout" },
               { "tool": "image.viewsheet", "params": { "form": "prop", "cell": 1024, "retries": 2 }, "inputs": { "image": "$prev:cutout" }, "save": "sheet" },
-              { "tool": "mesh.views3d", "inputs": { "image": "$prev:sheet" }, "save": "model" }
+              { "tool": "mesh.views3d", "inputs": { "front": "$prev:front", "back": "$prev:back", "left": "$prev:left", "right": "$prev:right" }, "save": "model" }
             ],
             "inputs": { "files": ["slot:./reference"] },
             "saves": { "model": "model" }

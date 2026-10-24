@@ -56,7 +56,10 @@
           {
             "tool": "mesh.views3d",
             "inputs": {
-              "image": "$prev:sheet"
+              "front": "$prev:front",
+              "back": "$prev:back",
+              "left": "$prev:left",
+              "right": "$prev:right"
             },
             "save": "raw"
           },
@@ -180,7 +183,10 @@
           {
             "tool": "mesh.views3d",
             "inputs": {
-              "image": "$prev:sheet"
+              "front": "$prev:front",
+              "back": "$prev:back",
+              "left": "$prev:left",
+              "right": "$prev:right"
             },
             "save": "model"
           }

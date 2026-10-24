@@ -5,7 +5,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import type { Tool, RunContext, ParamSpec } from './types.ts';
-import { imageEdit, imageToVideo, animate, FAMILY_MODELS } from '../providers/comfy/graphs.ts';
+import { imageEdit, imageToVideo, animate, FAMILY_MODELS, ANGLES_LORA } from '../providers/comfy/graphs.ts';
 import type { Graph } from '../providers/comfy/client.ts';
 import { GenError } from '../util.ts';
 
@@ -24,7 +24,7 @@ const qwenSettings: Record<string, ParamSpec> = {
   denoise: { type: 'number', min: 0, max: 1, default: 1, description: 'Below 1 keeps more of image 1 (its shapes and layout).' },
 };
 
-const qwenS = (p: Record<string, any>) => ({ steps: p.steps, cfg: p.cfg, shift: p.shift, lora: p.lora, sampler: p.sampler, scheduler: p.scheduler, denoise: p.denoise });
+const qwenS = (p: Record<string, any>) => ({ steps: p.steps, cfg: p.cfg, shift: p.shift, lora: p.lora, sampler: p.sampler, scheduler: p.scheduler, denoise: p.denoise, angles: p.angles });
 
 /** Saves every take of a graph-per-seed tool. */
 async function takes(ctx: RunContext, build: (seed: number) => Graph, ext: string, label: string) {
@@ -52,17 +52,20 @@ export const imageEditTool: Tool = {
   params: {
     prompt: { type: 'text', required: true },
     negative: { type: 'text', default: '', advanced: true },
-    width: { type: 'integer', min: 64, max: 2048, description: 'With height: scale image 1 to exactly this size (sets the output size).' },
+    width: { type: 'integer', min: 64, max: 4096, description: 'With height: scale image 1 to exactly this size (sets the output size). Up to 4096 wide for a 4:1 turnaround.' },
     height: { type: 'integer', min: 64, max: 2048 },
+    angles: { type: 'number', min: 0, max: 1.5, default: 0, description: 'Strength of the Multiple-Angles LoRA (0 = off; 0.9 to turn the camera). With it, prompt "<sks> [front view | right side view | back view | left side view | front-right quarter view ...] [eye-level shot | elevated shot | high-angle shot | low-angle shot] [close-up | medium shot | wide shot]".', advanced: true },
     ...qwenSettings,
     ...common,
   },
-  models: () => FAMILY_MODELS['qwen-edit'],
+  models: (p) => [...FAMILY_MODELS['qwen-edit'], ...(Number(p.angles) > 0 ? [ANGLES_LORA.file] : [])],
   gpuSeconds: () => 15,
   async run(ctx) {
     const c = ctx.comfy!;
     const p = ctx.params;
     if ((p.width === undefined) !== (p.height === undefined)) throw new GenError('Give both width and height, or neither');
+    if (Number(p.width) * Number(p.height) > 4.2e6) throw new GenError('width x height is at most about 4 megapixels (4096x1024)');
+    if (Number(p.angles) > 0) await c.ensureModels([ANGLES_LORA]);
     ctx.step('uploading the images');
     const images: string[] = [];
     for (const [i, f] of ctx.inputs.images.entries()) {

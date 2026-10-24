@@ -30,10 +30,17 @@ function toLink(l: any): Link {
 }
 
 /** Is this input spec a widget (a value saved in widgets_values) rather than a link? */
-function isWidget(spec: any) {
+export function isWidget(spec: any) {
   const [type, opts] = spec;
   if (opts?.forceInput || opts?.rawLink) return false;
   if (Array.isArray(type) || WIDGET_TYPES.has(type) || type === 'COMFY_DYNAMICCOMBO_V3' || opts?.widgetType) return true;
+  // A widget with no socket (ImageCropV2's crop_region, a BOUNDING_BOX; ImageCropToMask's background, a COLOR) is saved in
+  // widgets_values like any other. Dropping it made ComfyUI use its default: mesh.views3d cropped the same top-left
+  // 512x512 corner of the sheet for all four views (2026-10-23).
+  if (opts?.socketless) return true;
+  // Another type the frontend draws as a widget (an editor: CreateBoundingBoxes' editor_state) has a real default value;
+  // link types (IMAGE, MASK...) have none, or null.
+  if (typeof type === 'string' && opts && opts.default !== undefined && opts.default !== null && !type.includes(',')) return true;
   // A type that accepts several primitives ("FLOAT,INT": LTXVEmptyLatentAudio's frame_rate) is still a widget; missing it
   // shifts every later widget value (batch_size got the frame rate, 25, and the sampler failed).
   return typeof type === 'string' && type.includes(',') && type.split(',').every((t) => WIDGET_TYPES.has(t.trim()));
