@@ -8,7 +8,7 @@ import { paths } from './config.ts';
 export const db = new DatabaseSync(paths.db);
 // busy_timeout first: switching to WAL needs a moment alone with the file, and another process opening it (a second
 // test file, the CLI next to the service) would otherwise fail at once with "database is locked".
-db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
 
 const MIGRATIONS: string[] = [
   `CREATE TABLE jobs (
