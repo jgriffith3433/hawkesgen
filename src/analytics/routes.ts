@@ -3,7 +3,9 @@
 //   GET /v1/analytics/overview                      every product
 //   GET /v1/analytics/:product                      every section at once
 //   GET /v1/analytics/:product/:section             traffic | sessions | retention | funnel | dropoff | levels | deaths
-//                                                   | features | feedback | errors | perf | builds | insights | export
+//                                                   | features | engagement | frustration | feedback | errors | perf
+//                                                   | accounts | builds | insights | export
+//   GET /v1/analytics/:product/accounts/:user       one account: its summary and sessions
 //   GET /v1/analytics/:product/sessions/list        the session list; /sessions/:id one session's timeline
 
 import type { ServerResponse } from 'node:http';
@@ -53,6 +55,10 @@ export function handleAnalytics(client: Client, route: string, method: string, q
       for (const [k, fn] of Object.entries(Q.SECTIONS)) out[k] = (fn as any)(product, f);
       return out;
     }));
+  }
+  if (section === 'accounts') {
+    if (parts[2]) return ok({ ...Q.accounts(product, { ...f, user: parts[2] }, 1, 0), sessions: Q.sessionList(product, { ...f, user: parts[2] }, 100, 0) });
+    return ok(Q.accounts(product, f, Number(q('limit')) || 100, Number(q('offset')) || 0));
   }
   if (section === 'sessions' && parts[2] === 'list') return ok(Q.sessionList(product, f, Number(q('limit')) || 50, Number(q('offset')) || 0));
   if (section === 'sessions' && parts[2]) {

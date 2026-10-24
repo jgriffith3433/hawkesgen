@@ -15,6 +15,8 @@ export type Filters = {
   device?: string;
   browser?: string;
   country?: string;
+  /** One account (the site's own id from identify). */
+  user?: string;
   bots: boolean;
   internal: boolean;
 };
@@ -43,6 +45,7 @@ export function parseFilters(q: (k: string) => string | undefined, now = Date.no
     from, to,
     env: env === 'all' ? null : env.split(',').map((s) => s.trim()).filter(Boolean),
     build: q('build') || undefined, device: q('device') || undefined, browser: q('browser') || undefined, country: q('country')?.toUpperCase() || undefined,
+    user: q('user') || undefined,
     bots: q('bots') === '1', internal: q('internal') === '1',
   };
 }
@@ -55,7 +58,7 @@ function sessionWhere(product: string, f: Filters, a = 's') {
     sql.push(`${a}.env IN (${f.env.map(() => '?').join(', ')})`);
     args.push(...f.env);
   }
-  for (const [k, col] of [['build', 'build'], ['device', 'device'], ['browser', 'browser'], ['country', 'country']] as const) {
+  for (const [k, col] of [['build', 'build'], ['device', 'device'], ['browser', 'browser'], ['country', 'country'], ['user', 'user_id']] as const) {
     if (f[k]) {
       sql.push(`${a}.${col} = ?`);
       args.push(f[k]);
@@ -615,6 +618,160 @@ export function features(product: string, f: Filters) {
   };
 }
 
+// ------------------------------------------------------------------ frustration
+
+/** A frustration this close to a session's last event counts as one the player left on. */
+const LEFT_AFTER = 2 * 60_000;
+/** Pages with ids in them (games, shares, versions) grouped as one page. */
+const pageGroup = (p: unknown) => String(p ?? '(none)').replace(/\/(g|s|v|t)\/[\w-]+/g, '/$1/*');
+
+/**
+ * What got in players' way: `frustration` events by kind (with where and the latest), rage clicks by what was clicked,
+ * errors, and how often each was among the last things before the session ended (left within 2 minutes).
+ */
+export function frustration(product: string, f: Filters, now = Date.now()) {
+  const sessions = sessionsIn(product, f, 's.id, s.anon, s.last_t, s.ended, s.user_id');
+  const byId = new Map(sessions.map((x) => [x.id, x]));
+  const rows = eventsIn(product, f, ['frustration', 'rage_click', 'error'], 'at').filter((e) => byId.has(e.session));
+  // A session still going hasn't ended on anything.
+  const leftOn = (e: any) => {
+    const x = byId.get(e.session);
+    return Boolean(x && now - x.ended > ACTIVE_NOW && x.last_t != null && x.last_t - e.t <= LEFT_AFTER);
+  };
+  type G = { count: number; sessions: Set<string>; players: Set<string>; accounts: Set<string>; left: Set<string>; pages: Map<string, number>; last: any };
+  const group = (m: Map<string, G>, k: string, e: any) => {
+    let g = m.get(k);
+    if (!g) m.set(k, (g = { count: 0, sessions: new Set(), players: new Set(), accounts: new Set(), left: new Set(), pages: new Map(), last: null }));
+    g.count++;
+    g.sessions.add(e.session);
+    g.players.add(e.anon);
+    const u = byId.get(e.session)?.user_id;
+    if (u) g.accounts.add(u);
+    if (leftOn(e)) g.left.add(e.session);
+    const page = pageGroup(e.page);
+    g.pages.set(page, (g.pages.get(page) ?? 0) + 1);
+    if (!g.last || e.at > g.last.at) g.last = { at: e.at, page: e.page, props: e.props, session: e.session };
+  };
+  const kinds = new Map<string, G>();
+  const rage = new Map<string, G>();
+  for (const e of rows) {
+    if (e.name === 'frustration') group(kinds, String(e.props.kind ?? '(unnamed)'), e);
+    else if (e.name === 'rage_click') {
+      group(kinds, 'rage_click', e);
+      group(rage, `${pageGroup(e.page)} ${e.props.target ?? '?'}`, e);
+    } else group(kinds, 'error', e);
+  }
+  const list = (m: Map<string, G>, key: string) => [...m.entries()].map(([k, g]) => ({
+    [key]: k, count: g.count, sessions: g.sessions.size, players: g.players.size, accounts: g.accounts.size,
+    shareOfSessions: rate(g.sessions.size, sessions.length), leftAfter: g.left.size, leftAfterRate: rate(g.left.size, g.sessions.size),
+    pages: Object.fromEntries([...g.pages.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)), last: g.last,
+  })).sort((a, b) => b.sessions - a.sessions || b.count - a.count);
+  const hit = new Set(rows.map((e) => e.session));
+  const left = new Set(rows.filter(leftOn).map((e) => e.session));
+  return {
+    sessions: sessions.length, sessionsWithFrustration: hit.size, frustrationRate: rate(hit.size, sessions.length),
+    leftAfterFrustration: left.size, leftAfterRate: rate(left.size, hit.size),
+    kinds: list(kinds, 'kind') as (ReturnType<typeof list>[number] & { kind: string })[], rageClicks: list(rage, 'where').slice(0, 30),
+    recent: rows.filter((e) => e.name === 'frustration').slice(-30).reverse().map((e) => ({ at: e.at, kind: e.props.kind ?? null, page: e.page, props: e.props, session: e.session, user: byId.get(e.session)?.user_id ?? null })),
+  };
+}
+
+// ------------------------------------------------------------------ engagement (time per activity)
+
+/** Time players spend on each activity, from `engage` events (seconds since the last engage of that name). */
+export function engagement(product: string, f: Filters) {
+  const sessions = sessionsIn(product, f, 's.id, s.anon, s.active_ms, s.user_id');
+  const byId = new Map(sessions.map((x) => [x.id, x]));
+  const totalActive = sessions.reduce((a, x) => a + x.active_ms / 1000, 0);
+  const w = eventWhere(product, f, ['engage']);
+  const rows = adb.prepare(`SELECT json_extract(e.props, '$.name') AS name, e.session AS session, SUM(json_extract(e.props, '$.seconds')) AS seconds
+    FROM events e WHERE ${w.sql} GROUP BY 1, 2`).all(...w.args) as any[];
+  const m = new Map<string, { seconds: number; perPlayer: Map<string, number>; sessions: Set<string>; accounts: Set<string> }>();
+  for (const r of rows) {
+    const s = byId.get(r.session);
+    if (!s) continue;
+    const k = String(r.name ?? '(unnamed)');
+    let x = m.get(k);
+    if (!x) m.set(k, (x = { seconds: 0, perPlayer: new Map(), sessions: new Set(), accounts: new Set() }));
+    const sec = Number(r.seconds) || 0;
+    x.seconds += sec;
+    x.perPlayer.set(s.anon, (x.perPlayer.get(s.anon) ?? 0) + sec);
+    x.sessions.add(r.session);
+    if (s.user_id) x.accounts.add(s.user_id);
+  }
+  const players = distinct(sessions.map((x) => x.anon));
+  return {
+    sessions: sessions.length, players, activeSeconds: round(totalActive, 0),
+    activities: [...m.entries()].map(([name, x]) => ({
+      name, seconds: round(x.seconds, 0) ?? 0, players: x.perPlayer.size, accounts: x.accounts.size, sessions: x.sessions.size,
+      // Activities overlap (driving is also playing), so each is its own share, at most all of it.
+      shareOfPlayers: rate(x.perPlayer.size, players), shareOfActiveTime: totalActive ? Math.min(1, rate(x.seconds, totalActive) ?? 0) : null,
+      medianSecondsPerPlayer: round(median([...x.perPlayer.values()]), 0), p90SecondsPerPlayer: round(quantile([...x.perPlayer.values()], 0.9), 0),
+    })).sort((a, b) => b.seconds - a.seconds),
+  };
+}
+
+// ------------------------------------------------------------------ accounts (who likes what)
+
+/** Events that mark a step of an account's life on the site. */
+const MILESTONES = ['signup', 'purchase', 'plan_paid', 'checkout_start', 'plan_start', 'game_create', 'game_share', 'game_join', 'sandbox_claimed', 'asset_made'];
+
+/**
+ * The site's accounts (identify), each with their sessions, active time, what they spent their time on and used, what
+ * got in their way, their ratings and their milestones (signup, purchase...). Anonymous sessions aren't here.
+ */
+export function accounts(product: string, f: Filters, limit = 100, offset = 0) {
+  const w = sessionWhere(product, f);
+  const rows = adb.prepare(`SELECT s.user_id AS user, COUNT(*) AS sessions, COUNT(DISTINCT s.anon) AS browsers, MIN(s.started) AS first, MAX(s.ended) AS last,
+      SUM(s.active_ms) / 1000 AS active, SUM(s.frustrations) AS frustrations, SUM(s.errors) AS errors, GROUP_CONCAT(DISTINCT s.device) AS devices
+    FROM sessions s WHERE ${w.sql} AND s.user_id IS NOT NULL AND s.ended >= ? AND s.started < ? GROUP BY s.user_id ORDER BY last DESC`).all(...w.args, f.from, f.to) as any[];
+  const page = rows.slice(offset, offset + Math.min(500, Math.max(1, limit)));
+  const users = new Set(page.map((r) => r.user));
+  const sessionUser = new Map<string, string>();
+  for (const r of adb.prepare(`SELECT s.id, s.user_id FROM sessions s WHERE ${w.sql} AND s.user_id IS NOT NULL AND s.ended >= ? AND s.started < ?`).iterate(...w.args, f.from, f.to) as Iterable<any>) {
+    if (users.has(r.user_id)) sessionUser.set(r.id, r.user_id);
+  }
+  type Per = { engage: Map<string, number>; features: Set<string>; kinds: Map<string, number>; ratings: any[]; milestones: Map<string, number> };
+  const per = new Map<string, Per>();
+  const of = (u: string) => {
+    let x = per.get(u);
+    if (!x) per.set(u, (x = { engage: new Map(), features: new Set(), kinds: new Map(), ratings: [], milestones: new Map() }));
+    return x;
+  };
+  const marks = new Set(MILESTONES);
+  if (sessionUser.size) {
+    const ev = eventWhere(product, f, ['engage', 'feature', 'frustration', 'rage_click', 'feedback', ...marks]);
+    const q = adb.prepare(`SELECT e.session, e.name, e.at, json_extract(e.props, '$.name') AS n, json_extract(e.props, '$.seconds') AS sec, json_extract(e.props, '$.kind') AS kind,
+        json_extract(e.props, '$.rating') AS rating, json_extract(e.props, '$.text') AS text, json_extract(e.props, '$.context') AS context
+      FROM events e WHERE ${ev.sql} ORDER BY e.at`);
+    for (const e of q.iterate(...ev.args) as Iterable<any>) {
+      const u = sessionUser.get(e.session);
+      if (!u) continue;
+      const x = of(u);
+      const n = String(e.n ?? '?');
+      if (e.name === 'engage') x.engage.set(n, (x.engage.get(n) ?? 0) + (Number(e.sec) || 0));
+      else if (e.name === 'feature') x.features.add(n);
+      else if (e.name === 'frustration' || e.name === 'rage_click') {
+        const k = e.name === 'rage_click' ? 'rage_click' : String(e.kind ?? '?');
+        x.kinds.set(k, (x.kinds.get(k) ?? 0) + 1);
+      } else if (e.name === 'feedback') x.ratings.push({ at: e.at, rating: e.rating, text: e.text ?? null, context: e.context ?? null });
+      else x.milestones.set(e.name, (x.milestones.get(e.name) ?? 0) + 1);
+    }
+  }
+  const top = (m: Map<string, number>, n = 6) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, v]) => ({ name, value: round(v, 0) }));
+  return {
+    total: rows.length, identifiedSessions: rows.reduce((a, r) => a + r.sessions, 0),
+    accounts: page.map((r) => {
+      const x = per.get(r.user) ?? of(r.user);
+      return {
+        user: r.user, sessions: r.sessions, browsers: r.browsers, first: r.first, last: r.last, activeSeconds: round(Number(r.active) || 0, 0),
+        devices: String(r.devices ?? '').split(',').filter(Boolean), frustrations: r.frustrations ?? 0, errors: r.errors ?? 0,
+        topActivities: top(x.engage), features: [...x.features].sort(), frustrationKinds: top(x.kinds), ratings: x.ratings.slice(-5), milestones: Object.fromEntries(x.milestones),
+      };
+    }),
+  };
+}
+
 // ------------------------------------------------------------------ feedback
 
 export function feedback(product: string, f: Filters, limit = 100) {
@@ -756,7 +913,8 @@ export function sessionList(product: string, f: Filters, limit = 50, offset = 0)
   const w = sessionWhere(product, f);
   const total = (adb.prepare(`SELECT COUNT(*) AS n FROM sessions s WHERE ${w.sql} AND s.started >= ? AND s.started < ?`).get(...w.args, f.from, f.to) as any).n;
   const items = adb.prepare(`SELECT s.id, s.anon, s.env, s.build, s.started, s.ended, s.active_ms, s.events, s.pages, s.ready, s.ready_ms, s.deaths, s.errors, s.levels_done, s.max_progress,
-      s.last_level, s.last_screen, s.last_event, s.device, s.browser, s.os, s.country, s.city, s.referrer, s.bot, s.internal
+      s.last_level, s.last_screen, s.last_event, s.device, s.browser, s.os, s.country, s.city, s.referrer, s.bot, s.internal,
+      s.user_id, s.frustrations
     FROM sessions s WHERE ${w.sql} AND s.started >= ? AND s.started < ? ORDER BY s.started DESC LIMIT ? OFFSET ?`).all(...w.args, f.from, f.to, Math.min(500, limit), offset);
   return { total, items };
 }
@@ -845,8 +1003,11 @@ export function insights(product: string, f: Filters, now = Date.now()) {
   const er = errors(product, f);
   const topErr = er.groups[0];
   if (topErr && topErr.sessions >= MIN_SAMPLE.errorSessions && er.sessions >= MIN_SAMPLE.sessions) out.push({ kind: 'error', weight: (topErr.sessions / er.sessions) * 3, n: er.sessions, data: { signature: topErr.signature, sessions: topErr.sessions, browsers: topErr.browsers, builds: topErr.builds }, text: `"${String(topErr.message ?? topErr.signature).slice(0, 100)}" hit ${topErr.sessions} of ${er.sessions} sessions (${pct(topErr.sessions / er.sessions)}), mostly on ${Object.keys(topErr.browsers)[0]}.` });
+  const fr = frustration(product, f, now);
+  const topFr = fr.kinds[0];
+  if (topFr && topFr.sessions >= MIN_SAMPLE.errorSessions && fr.sessions >= MIN_SAMPLE.sessions) out.push({ kind: 'frustration', weight: (topFr.shareOfSessions ?? 0) * 3 + (topFr.leftAfterRate ?? 0), n: fr.sessions, data: topFr, text: `${topFr.kind} got in the way in ${topFr.sessions} of ${fr.sessions} sessions (${pct(topFr.shareOfSessions)}); ${pct(topFr.leftAfterRate)} of those left within 2 minutes.` });
   out.sort((a, b) => b.weight - a.weight);
   return { from: f.from, to: f.to, sessions: cur.sessions, minimumSample: MIN_SAMPLE, insights: out.map(({ weight, ...x }) => x) };
 }
 
-export const SECTIONS = { traffic, sessions: sessionStats, retention, segments, funnel, dropoff, levels, deaths, features, feedback, errors, perf } as const;
+export const SECTIONS = { traffic, sessions: sessionStats, retention, segments, funnel, dropoff, levels, deaths, features, engagement, frustration, feedback, errors, perf, accounts } as const;

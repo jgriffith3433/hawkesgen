@@ -9,6 +9,7 @@ import { products, envFor, type Product } from './registry.ts';
 import { parseUA } from './ua.ts';
 import { lookup, type Geo } from './geo.ts';
 import { ingest, knownNames, addName, type Batch, type Ev } from './store.ts';
+import { authenticate } from '../auth.ts';
 
 export const LIMITS = {
   body: 64 * 1024,
@@ -29,7 +30,7 @@ export const LIMITS = {
 export const STANDARD = new Set([
   'page_view', 'session_start', 'session_end', 'game_load_start', 'game_ready', 'screen', 'run_start', 'run_end',
   'level_start', 'level_end', 'death', 'progress', 'checkpoint', 'choice', 'feature', 'video', 'feedback', 'error',
-  'perf', 'outbound', 'exit',
+  'perf', 'outbound', 'exit', 'frustration', 'engage',
 ]);
 
 const str = (v: unknown, max: number, re?: RegExp): string | null => {
@@ -125,6 +126,8 @@ export function normalize(body: any, meta: Meta, geo: (ip: string | null) => Geo
   const anon = str(body.anon, 64, /^[\w-]{8,64}$/);
   const session = str(body.session, 64, /^[\w-]{8,64}$/);
   if (!anon || !session) return drop('anon and session ids are required (8-64 of A-Z a-z 0-9 _ -)');
+  // The site's own account id (hawkesAnalytics.identify): pseudonymous, no email or name.
+  const user = str(body.user, 64, /^[\w-]{4,64}$/);
   if (!total) return drop('no events');
 
   const known = knownNames(product.id);
@@ -168,7 +171,7 @@ export function normalize(body: any, meta: Meta, geo: (ip: string | null) => Geo
   const utm = entry.utm && typeof entry.utm === 'object' ? entry.utm : {};
   const build = body.build && typeof body.build === 'object' ? body.build : {};
   const batch: Batch = {
-    product: product.id, env, anon, session,
+    product: product.id, env, anon, session, user,
     build: { version: str(build.version, 40), commit: str(build.commit, 40, /^[0-9a-f]{4,40}$/i), date: str(build.date, 40) },
     device: {
       screen: str(d.screen, 20, /^\d{2,5}x\d{2,5}$/),
@@ -230,9 +233,24 @@ function reply(res: ServerResponse, status: number, body: unknown) {
   res.end(JSON.stringify(body));
 }
 
-export async function handleCollect(req: IncomingMessage, res: ServerResponse) {
+/**
+ * A site's own server passing on its visitors' batches (POST /v1/analytics/relay; the hawkesgen.com portal does, for
+ * games that run in a sandbox with no origin of their own): with a Gen key, it says the page's origin, the visitor's
+ * address and browser. Its own route because Caddy drops any key sent to the public collect door.
+ */
+function relayed(req: IncomingMessage): { origin: string; ip: string | null; ua: string } | null {
+  const origin = String(req.headers['x-hawkes-relay-origin'] ?? '');
+  // A real key, never "this machine": requests through Caddy come from loopback.
+  if (!origin || !/^Bearer hg_/.test(String(req.headers.authorization ?? '')) || !authenticate(req)) return null;
+  const ip = String(req.headers['x-hawkes-visitor-ip'] ?? '').trim();
+  return { origin, ip: /^[0-9a-f.:]{3,45}$/i.test(ip) ? ip : null, ua: String(req.headers['x-hawkes-visitor-ua'] ?? '').slice(0, 500) };
+}
+
+export async function handleCollect(req: IncomingMessage, res: ServerResponse, o: { relay?: boolean } = {}) {
   try {
-    const origin = String(req.headers.origin ?? '');
+    const relay = o.relay ? relayed(req) : null;
+    if (o.relay && !relay) return reply(res, 401, { ok: false, error: 'A relay needs a Gen key and X-Hawkes-Relay-Origin' });
+    const origin = relay?.origin ?? String(req.headers.origin ?? '');
     if (originAllowed(origin)) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -260,13 +278,13 @@ export async function handleCollect(req: IncomingMessage, res: ServerResponse) {
     } catch {
       return reply(res, 400, { ok: false, error: 'The body is not JSON' });
     }
-    let ip = clientIp(req);
+    let ip = relay ? relay.ip : clientIp(req);
     const n = Array.isArray(body?.events) ? body.events.length : 0;
     if (rateLimited(ip, n)) {
       ip = null;
       return reply(res, 429, { ok: false, accepted: 0, dropped: n, error: 'Too many events from this address; try again in a minute' });
     }
-    const r = normalize(body, { origin, ua: String(req.headers['user-agent'] ?? ''), ip, now: Date.now() });
+    const r = normalize(body, { origin, ua: relay ? relay.ua : String(req.headers['user-agent'] ?? ''), ip, now: Date.now() });
     ip = null;
     if (!r.batch) return reply(res, 202, { ok: false, accepted: 0, dropped: r.dropped, reason: r.reason });
     const added = ingest(r.batch);

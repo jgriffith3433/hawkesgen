@@ -5,15 +5,17 @@
  *
  * No dependencies, never throws into the game, never blocks it. Page views, sessions, active time, device, load
  * timings, errors, fps, outbound links, rage clicks and an exit snapshot are captured without game code; the game
- * adds track(), screen(), setContext(), levelStart()/levelEnd(), death(), feedback(), ask() and friends.
+ * adds track(), screen(), setContext(), levelStart()/levelEnd(), death(), feedback(), ask(), frustration(), engage()
+ * and friends; identify() ties the sessions to the site's own account id; activity() counts input the page can't see
+ * (a game in a sandboxed iframe).
  * Events go out in batches (every 5 s or 20 events) with sendBeacon; what can't be sent waits in localStorage.
  * No cookies, no fingerprinting: an anonymous random id in localStorage. hawkesAnalytics.optOut() stops everything.
  */
 (function () {
   'use strict';
-  var ANALYTICS_VERSION = 1;
+  var ANALYTICS_VERSION = 2;
   var w = typeof window !== 'undefined' ? window : null;
-  var METHODS = ['init', 'config', 'track', 'screen', 'setContext', 'loadStart', 'ready', 'levelStart', 'levelEnd', 'death', 'choice', 'feature', 'video', 'feedback', 'error', 'ask', 'optOut', 'optIn', 'internal', 'flush'];
+  var METHODS = ['init', 'config', 'track', 'screen', 'setContext', 'loadStart', 'ready', 'levelStart', 'levelEnd', 'death', 'choice', 'feature', 'video', 'feedback', 'error', 'ask', 'optOut', 'optIn', 'internal', 'flush', 'activity', 'identify', 'frustration', 'engage'];
   if (!w || !w.document) {
     // Server-side rendering, workers, Node: a do-nothing stand-in so imports never fail.
     var stub = { version: ANALYTICS_VERSION, debugLog: [] };
@@ -78,6 +80,8 @@
   var anon = get(ls, 'hawkes.anon');
   var returning = !!anon;
   if (!anon || !/^[A-Za-z0-9_-]{8,64}$/.test(anon)) { anon = rid('a_'); set(ls, 'hawkes.anon', anon); }
+  var user = get(ls, 'hawkes.user');
+  if (user && !/^[A-Za-z0-9_-]{4,64}$/.test(user)) user = null;
   if (!get(ls, 'hawkes.first')) set(ls, 'hawkes.first', new Date().toISOString().slice(0, 10));
   var playtestParam = !!(param('playtest') || param('hawkesPlaytest') != null || get(ss, 'hawkes.playtest'));
   if (playtestParam) set(ss, 'hawkes.playtest', '1');
@@ -184,6 +188,7 @@
   }
   function header(sid) {
     var h = { product: cfg.product, build: build(), env: envOf(loc.hostname, loc.pathname), anon: anon, session: sid, flags: flags(), device: device(), sdk: 'js/' + ANALYTICS_VERSION };
+    if (user) h.user = user;
     if (entryNext && sid === sess.id) h.entry = sess.entry;
     return h;
   }
@@ -315,14 +320,17 @@
       return out;
     } catch (e) { return undefined; }
   }
-  var exited = false;
+  var exited = false, exitSeq = -1;
   function exit() {
-    // The page hides or goes away: what the player last did, the game's state, then send it all.
+    // The page hides or goes away: what the player last did, the game's state, then send it all. Hidden and shown
+    // again with nothing in between (an embedded browser flickering, a quick alt-tab) says nothing new: no second exit.
     if (exited || optedOut || !sess) return;
     exited = true;
+    if (sess.seq === exitSeq) return;
     var a = activeSec();
     emit('exit', { recent: recent.slice(), state: playtestState(), active: a });
     emit('session_end', { active: a });
+    exitSeq = sess.seq;
     flush();
   }
   function visibility() {
@@ -381,6 +389,9 @@
       if (o.build) cfg.build = o.build;
       if (o.debug != null) cfg.debug = !!o.debug;
       if (o.context) assign(ctx, o.context);
+      // A page with no storage of its own (a sandboxed iframe) can be given its ids by the page that serves it.
+      if (o.anon && !ls && /^[A-Za-z0-9_-]{8,64}$/.test(String(o.anon))) { anon = String(o.anon); returning = true; }
+      if (o.user !== undefined) { user = o.user && /^[A-Za-z0-9_-]{4,64}$/.test(String(o.user)) ? String(o.user) : null; set(ls, 'hawkes.user', user); }
       start();
       flush();
     },
@@ -428,6 +439,25 @@
     optIn: function () { var was = optedOut; optedOut = false; set(ls, 'hawkes.optout', null); if (was && started) newSession(now()); else start(); },
     internal: function (on) { set(ls, 'hawkes.internal', on === false ? null : '1'); },
     flush: function () { flush(); },
+    // Input the SDK can't see itself (a game in a sandboxed frame forwards its own): keeps active time and the session.
+    activity: function () { input(); },
+    // The site's own account id (no email, no name): sessions are tied to it from now on; null on sign-out.
+    identify: function (id) {
+      id = id == null || id === '' ? null : String(id);
+      if (id && !/^[A-Za-z0-9_-]{4,64}$/.test(id)) return;
+      if (id === user) return;
+      flush(); // what came before goes with the old id
+      user = id;
+      set(ls, 'hawkes.user', id);
+    },
+    // Something got in the player's way: kind (out_of_credits, assistant_failed, job_failed, slow…) and where.
+    frustration: function (kind, props) { fns.track('frustration', assign({ kind: str(kind, 60) }, props)); },
+    // Time spent doing something (driving, building, talking to the assistant): seconds since the last engage of it.
+    engage: function (name, seconds, props) {
+      var s = Math.round(Number(seconds) * 10) / 10;
+      if (!(s > 0)) return;
+      fns.track('engage', assign({ name: str(name, 100), seconds: Math.min(s, 3600) }, props));
+    },
   };
   METHODS.forEach(function (m) {
     api[m] = function () {

@@ -44,6 +44,10 @@ a.death('imp', { where: 'bridge' });     // death; counted into the open level
 a.levelEnd(2, 'complete', { score: 10 }); // level_end with duration (s) and deaths
 a.choice('door', 'left');  a.feature('rewind');  a.video('intro', 'skip', 3.2);
 a.feedback({ rating: 4, text: 'fun', context: 'level 2' });
+a.frustration('out_of_credits', { route: '/v1/jobs' });   // something got in the player's way
+a.engage('drive', 60);                  // seconds spent on an activity since its last engage
+a.identify('usr_0123456789abcdef');     // the site's own account id (null on sign-out)
+a.activity();                           // input the SDK can't see (a game in a sandboxed iframe)
 a.track('shop_purchase', { item: 'boots' });   // custom: ^[a-z][a-z0-9_]{1,39}$
 a.error(err, 'asset');
 ```
@@ -58,6 +62,11 @@ answer (or `null`) and sends a `feedback` event.
 const answer = await hawkesAnalytics.ask({ id: 'after-level-2', question: 'How was that level?', context: 'level 2',
   kind: 'stars', comment: true, theme: { background: '#111', color: '#fff', accent: '#e33', font: 'Georgia', radius: '6px' } });
 ```
+
+**Accounts (SDK 2):** `identify(id)` ties the sessions from then on to the site's own account id (4–64 of
+`A-Z a-z 0-9 _ -`; never an email or a name), remembered in `localStorage` (`hawkes.user`) until `identify(null)`.
+Each batch then carries `user`, the session row keeps it (`user_id`), and the `accounts` route answers per account.
+A page with no storage of its own (a sandboxed iframe) can be given both ids: `init({ anon, user })`.
 
 **Identity and flags:** an anonymous random id in `localStorage` (`hawkes.anon`, with `hawkes.first` and
 `hawkes.visits`); no cookies, no fingerprinting. The session lives in `sessionStorage` (a reload continues it, a new
@@ -135,6 +144,7 @@ Content-Type: text/plain;charset=UTF-8          (or application/json)
 | `env` | `live` \| `beta` \| `preview` \| `local`, from the page's hostname | Informational: **the server decides the env from the Origin** (below) |
 | `anon` | An anonymous player id: random, kept in `localStorage` (`hawkes.anon`), never tied to a person | 8–64 of `A-Z a-z 0-9 _ -`; required |
 | `session` | A random id per session: new after 30 minutes without activity or a new tab | 8–64 of `A-Z a-z 0-9 _ -`; required |
+| `user` | The site's own account id (`identify`), when the player is signed in | 4–64 of `A-Z a-z 0-9 _ -`; optional |
 | `flags.webdriver` | `navigator.webdriver` | `true` marks the session as a bot |
 | `flags.playtest` | Studio's playtests (the page was opened by `playtest.run`: `?hawkesPlaytest`, or `window.hawkesPlaytest` driven by a bot) | `true` marks the session as a bot |
 | `flags.internal` | J's own devices: opted in by `localStorage['hawkes.internal'] = '1'` (open a page once with `?hawkes-internal=1`, or the SDK's `internal(true)`) | `true` marks the session internal |
@@ -223,7 +233,9 @@ the default funnel's order.
 | `error` | An uncaught error or a failed load | `message`, `stack?`, `source` (`window`, `promise`, `unity`, `asset`) |
 | `perf` | Each active minute | `fps` (median in that minute), `fps_p10` (10th percentile), `memory` (MB: `performance.memory` or Unity's), `gpu?` |
 | `outbound` | A link off the site | `url` (host + path) |
-| `exit` | With `session_end` when the page goes away | `recent` (the last 20 events: `name`, `t`, `screen`, `level`), `state` (the game's `window.hawkesPlaytest.state()`, trimmed to 16 KB), `active` (seconds) |
+| `frustration` | Something got in the player's way (SDK 2: `frustration(kind, props)`) | `kind` (`out_of_credits`, `server_error`, `request_failed`, `job_failed`, `assistant_failed`, `assistant_slow`…), `route?` / `page`, anything else. Counted per session with `rage_click` (`sessions.frustrations`) |
+| `engage` | Time spent on an activity (SDK 2: `engage(name, seconds)`) | `name` (`play`, `build`, `drive`, `fly`…), `seconds` since the last `engage` of that name (≤ 3,600). Count only active time |
+| `exit` | With `session_end` when the page goes away (once per hide that had something new: SDK 2) | `recent` (the last 20 events: `name`, `t`, `screen`, `level`), `state` (the game's `window.hawkesPlaytest.state()`, trimmed to 16 KB), `active` (seconds) |
 
 **Custom events:** any other name that fits `^[a-z][a-z0-9_]{1,39}$` (`shop_purchase`, `fighter_unlock`), with props
 within the limits. Prefer a standard event with props (`feature` with `name`) to a new name.
@@ -249,7 +261,7 @@ within the limits. Prefer a standard event with props (`feature` with `name`) to
 - `events`: every event (product, session, seq, at, t, name, page, screen, level, active, ctx, props), indexed by
   product + time, product + name + time, product + level + time and session + seq (unique: retries are ignored).
   **Kept 13 months.**
-- `sessions`: one row per session, updated as its events arrive: start and end, active time, events, pages, max
+- `sessions`: one row per session, updated as its events arrive: the account (`user_id`), what got in the way (`frustrations`), start and end, active time, events, pages, max
   progress, last screen / level / event, when the open level started, load and ready time, deaths, errors, levels
   completed, the exit snapshot, device (browser, OS, device, screen, language, GPU), place, referrer + landing + UTM,
   build (version, commit, date), env, `bot` and `internal`. Kept forever (the exit snapshot goes after 13 months).
@@ -267,6 +279,7 @@ Every route takes the filters; `GET` only; the key needs access to the product (
 | `from`, `to` | ISO dates or ms (override `range`; a `to` date includes that whole day) |
 | `env` | `live` (default), `beta`, `preview`, `local`, a comma list, or `all` |
 | `build`, `device`, `browser`, `country` | exact match (`country` is the ISO code) |
+| `user` | one account (the `identify` id): every section is then just its sessions |
 | `bots=1`, `internal=1` | include them (left out by default) |
 
 Times are UTC. A session belongs to the range it started in; events to the range they arrived in.
@@ -287,6 +300,9 @@ Times are UTC. A session belongs to the range it started in; events to the range
 | `…/:product/levels` | Per level: attempts, players, completes, completion rate, quit rate (quits + sessions that ended inside it), restarts, deaths and deaths per attempt, median seconds to complete, median retries before the first win, winners and players who never won |
 | `…/:product/deaths` | By cause, by level, by position (`where`, or `x,y` in 5-unit cells), by level and cause |
 | `…/:product/features` | Each feature: uses, players, sessions, share of sessions, and the median active time of sessions that used it against those that didn't. Each choice node: options with players and share |
+| `…/:product/engagement` | Time per activity from `engage`: seconds, players, accounts, share of players and of active time, median and p90 seconds per player |
+| `…/:product/frustration` | What got in players' way: `frustration` events by `kind`, `rage_click` and `error`, each with sessions, players, accounts, share of sessions, the pages, the latest, and `leftAfterRate` (sessions that ended within 2 minutes of it; sessions still going don't count); rage clicks by page and target; the latest 30 |
+| `…/:product/accounts?limit&offset` | Signed-in accounts (`identify`), newest first: sessions, browsers, devices, active time, the activities they spend time on (`engage`), the features they used, what got in their way, their latest ratings and their milestones (`signup`, `purchase`, `game_create`… and the registry funnel's steps). `…/accounts/:user` is one, with its sessions |
 | `…/:product/feedback` | Average stars, thumbs up/down, the distribution, the latest comments with their context, level, screen and build |
 | `…/:product/errors` | Grouped by signature (the message without numbers, ids and URLs, plus the top stack frame): count, sessions and players affected, browsers, builds, sources, first and last seen, a sample. And the error rate (sessions with an error) |
 | `…/:product/perf` | Ready rate, ready time p50/p90 overall and by device, fps median / p10 and memory by device and by GPU |
@@ -305,11 +321,18 @@ Times are UTC. A session belongs to the range it started in; events to the range
   `game_load_start` and never `game_ready`; its wait is its last event's time minus the load start.
 - **Retries before the first win:** the level starts a player needed before their first `complete`, minus one.
 
-## The public route (Caddy) — not deployed yet
+## The public route (Caddy)
 
-gen.hawkesgen.com puts everything behind the sign-in except `Bearer hg_` keys, so pages can't reach the collect door
-yet. The change goes in `hawkesstudio/deploy/deploy.mjs` (`installCaddy`, the `gen.${domain}` block, before
-`handle @apikey`) and needs J's OK; it is a separate task. The snippet:
+The collect door and the SDK files are public on gen.hawkesgen.com (`hawkesstudio/deploy/caddyfile.mjs`, the
+`@analytics` block, ahead of the sign-in). Gen checks the origin, the size and the rate itself.
+
+**Relays.** A site whose pages can't send themselves (hawkesgen.com's games run in a sandbox with no origin) sends to
+its own server, which passes the batch on to `POST /v1/analytics/relay` (its own route: Caddy drops any key sent to
+the collect door) with a Gen key (`Authorization: Bearer hg_…`, never "this machine") and
+`X-Hawkes-Relay-Origin` (the page's origin: it sets the env like an Origin header would), `X-Hawkes-Visitor-Ip` (for
+the place and the rate limit, then dropped) and `X-Hawkes-Visitor-Ua`. Without a valid key those headers are ignored.
+
+The Caddy block, for reference:
 
 ```caddy
 	# Player analytics and the SDK files (docs/analytics.md in hawkesgen): public, no login. Gen checks the origin,

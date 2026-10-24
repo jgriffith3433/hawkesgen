@@ -87,6 +87,10 @@ const MIGRATIONS: string[] = [
    ) WITHOUT ROWID;
 
    CREATE TABLE names (product TEXT NOT NULL, name TEXT NOT NULL, first INTEGER NOT NULL, PRIMARY KEY (product, name)) WITHOUT ROWID;`,
+  // The site's own account id (identify) and what got in the player's way (frustration events and rage clicks).
+  `ALTER TABLE sessions ADD COLUMN user_id TEXT;
+   ALTER TABLE sessions ADD COLUMN frustrations INTEGER NOT NULL DEFAULT 0;
+   CREATE INDEX sessions_user ON sessions (product, user_id, started) WHERE user_id IS NOT NULL;`,
 ];
 
 adb.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
@@ -111,6 +115,8 @@ export type Batch = {
   env: string;
   anon: string;
   session: string;
+  /** The site's account id, when the page called identify. */
+  user: string | null;
   build: { version: string | null; commit: string | null; date: string | null };
   device: { screen: string | null; lang: string | null; gpu: string | null; tz: string | null; touch: number };
   entry: { referrer: string | null; landing: string | null; utm: Record<string, string | null> };
@@ -128,7 +134,7 @@ const QUIET = new Set(['session_end', 'exit', 'perf']);
 
 const insertEvent = adb.prepare('INSERT OR IGNORE INTO events (product, session, seq, at, t, name, page, screen, level, active, ctx, props) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 const getSession = adb.prepare('SELECT * FROM sessions WHERE product = ? AND id = ?');
-const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal'];
+const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal', 'user_id', 'frustrations'];
 const putSession = adb.prepare(`INSERT OR REPLACE INTO sessions (${SESSION_COLS.join(', ')}) VALUES (${SESSION_COLS.map(() => '?').join(', ')})`);
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null);
@@ -151,12 +157,13 @@ export function ingest(b: Batch): number {
       country: b.geo?.country ?? null, region: b.geo?.region ?? null, city: b.geo?.city ?? null, tz: b.geo?.tz ?? b.device.tz,
       referrer: b.entry.referrer, landing: b.entry.landing,
       utm_source: b.entry.utm.source ?? null, utm_medium: b.entry.utm.medium ?? null, utm_campaign: b.entry.utm.campaign ?? null, utm_term: b.entry.utm.term ?? null, utm_content: b.entry.utm.content ?? null,
-      bot: 0, internal: 0,
+      bot: 0, internal: 0, user_id: null, frustrations: 0,
     };
     // What the first batch didn't know (the entry often comes with session_start, the GPU with perf).
     for (const [k, v] of [['build', b.build.version], ['commit_sha', b.build.commit], ['build_date', b.build.date], ['gpu', b.device.gpu], ['referrer', b.entry.referrer], ['landing', b.entry.landing], ['utm_source', b.entry.utm.source], ['utm_medium', b.entry.utm.medium], ['utm_campaign', b.entry.utm.campaign]] as const) {
       if (s[k] == null && v != null) s[k] = v;
     }
+    if (b.user) s.user_id = b.user; // the latest says (signed in partway through)
     if (b.bot) s.bot = 1;
     if (b.internal) s.internal = 1;
     s.ended = Math.max(s.ended, b.at);
@@ -209,6 +216,7 @@ export function apply(s: any, e: Ev) {
     }
     case 'death': s.deaths++; break;
     case 'error': s.errors++; break;
+    case 'frustration': case 'rage_click': s.frustrations = (s.frustrations ?? 0) + 1; break;
     case 'session_end': case 'exit': {
       const a = num(p.active);
       if (a != null) s.active_ms = Math.max(s.active_ms, Math.round(a * 1000));

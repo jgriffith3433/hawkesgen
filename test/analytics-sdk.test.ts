@@ -446,3 +446,57 @@ test('the Unity bridge (.jslib): loads the SDK with the product and build, and q
   assert.deepEqual(boot.ctx, { level: '1' });
   assert.ok(p.names().includes('death'));
 });
+
+test('v2: identify ties batches to an account, activity keeps active time, frustration and engage, no repeated exits', () => {
+  const ls = new MemStorage();
+  const p = page({ ls });
+  p.advance(5000);
+  assert.equal(p.sent[0].user, undefined, 'no account until identify');
+  p.a.track('before');
+  p.a.identify('usr_0123456789abcdef');
+  assert.equal(p.sent[1].user, undefined, 'what came before goes without the id');
+  assert.deepEqual(p.sent[1].events.map((e: any) => e.name), ['before']);
+  p.a.frustration('out_of_credits', { need: 8 });
+  p.a.engage('drive', 42.34);
+  p.a.engage('drive', 0);
+  p.a.flush();
+  assert.equal(p.sent[2].user, 'usr_0123456789abcdef');
+  assert.deepEqual(plainOf(p.sent[2].events.map((e: any) => [e.name, e.props])), [['frustration', { kind: 'out_of_credits', need: 8 }], ['engage', { name: 'drive', seconds: 42.3 }]]);
+  assert.equal(ls.getItem('hawkes.user'), 'usr_0123456789abcdef', 'remembered for the next page');
+  p.a.identify('no spaces allowed');
+  p.a.track('xx');
+  p.a.flush();
+  assert.equal(p.sent[3].user, 'usr_0123456789abcdef', 'a bad id is ignored');
+  p.a.identify(null);
+  p.a.track('yy');
+  p.a.flush();
+  assert.equal(p.sent[4].user, undefined, 'signed out');
+
+  // Input the page can't see (a sandboxed game frame) still counts as activity.
+  const before = p.events().at(-1).active;
+  for (let i = 0; i < 10; i++) { p.advance(50_000); p.a.activity(); }
+  p.a.track('later');
+  p.a.flush();
+  assert.ok(p.events().at(-1).active - before >= 490_000, 'active time kept going with activity()');
+
+  // Hidden, shown, hidden with nothing in between: one exit, not two.
+  p.hide();
+  p.show();
+  p.hide();
+  p.show();
+  assert.equal(p.names().filter((n: string) => n === 'exit').length, 1);
+  p.a.track('more');
+  p.hide();
+  assert.equal(p.names().filter((n: string) => n === 'exit').length, 2, 'something new happened: a new exit');
+});
+
+test('v2: a page without storage takes its ids from init', () => {
+  const p = page({ before: (w) => { Object.defineProperty(w, 'localStorage', { get() { throw new Error('sandboxed'); } }); Object.defineProperty(w, 'sessionStorage', { get() { throw new Error('sandboxed'); } }); } });
+  p.a.init({ product: 'hawkesgen', anon: 'a_fromtheserver01', user: 'usr_0123456789abcdef' });
+  assert.equal(p.sent[0].anon, 'a_fromtheserver01');
+  assert.equal(p.sent[0].user, 'usr_0123456789abcdef');
+  const q = page();
+  const mine = q.a.config().anon;
+  q.a.init({ anon: 'a_fromtheserver01' });
+  assert.equal(q.a.config().anon, mine, 'a page with its own storage keeps its own id');
+});

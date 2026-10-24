@@ -435,3 +435,72 @@ test("a site's registry funnel is its default funnel (Hawkes Gen: visit, play, f
   assert.deepEqual(steps[3].where, { step: '5' });
   assert.deepEqual(steps[6].where, { name: 'build_edit' });
 });
+
+const plain = (v: unknown) => JSON.parse(JSON.stringify(v));
+test('accounts, frustration and time per activity (hawkesgen.com); a relay with a key passes the visitor on', async () => {
+  const HG = 'https://hawkesgen.com';
+  const at = Date.now() - 2 * 3600_000; // ended well before "now": these sessions are over
+  const send = (anon: string, session: string, user: string | null, events: any[]) => {
+    const r = normalize({ product: 'hawkesgen', anon, session, user, events: events.map((e, i) => ({ seq: i, t: at + (e.dt ?? i * 1000), page: '/app', ...e })) }, { origin: HG, ua: CHROME, ip: null, now: at });
+    assert.ok(r.batch, r.reason);
+    ingest(r.batch!);
+  };
+  send('acct_anon_one', 'acct_sess_one', 'usr_00000000000000a1', [
+    { name: 'page_view' }, { name: 'engage', props: { name: 'drive', seconds: 120 } }, { name: 'engage', props: { name: 'build', seconds: 300 } },
+    { name: 'feature', props: { name: 'fly' } }, { name: 'signup' }, { name: 'frustration', props: { kind: 'out_of_credits', need: 8 } },
+    { name: 'feedback', props: { rating: 4, text: 'fun', context: 'sandbox tour' } },
+  ]);
+  // Same account on a phone; leaves 30 s after the assistant fails.
+  send('acct_anon_two', 'acct_sess_two', 'usr_00000000000000a1', [{ name: 'page_view' }, { name: 'engage', props: { name: 'drive', seconds: 60 } }, { name: 'frustration', props: { kind: 'assistant_failed' }, dt: 1000 }, { name: 'page_view', dt: 31_000 }]);
+  // Anonymous: rage clicks on the plan chip, then stays a while.
+  send('acct_anon_three', 'acct_sess_three', null, [{ name: 'page_view' }, { name: 'rage_click', props: { target: 'span#planChip' } }, { name: 'engage', props: { name: 'drive', seconds: 30 } }, { name: 'page_view', dt: 600_000 }]);
+  const f = Q.parseFilters((k) => ({ range: '24h' } as any)[k]);
+
+  const s: any = adb.prepare("SELECT user_id, frustrations FROM sessions WHERE id = 'acct_sess_one'").get();
+  assert.deepEqual({ ...s }, { user_id: 'usr_00000000000000a1', frustrations: 1 });
+
+  const fr = Q.frustration('hawkesgen', f);
+  const kind = (k: string) => fr.kinds.find((x: any) => x.kind === k)!;
+  assert.equal(kind('assistant_failed').leftAfter, 1, 'left 30 s later');
+  assert.equal(kind('rage_click').leftAfter, 0, 'stayed ten minutes');
+  assert.equal(kind('out_of_credits').accounts, 1);
+  assert.equal(fr.rageClicks[0].where, '/app span#planChip');
+  assert.equal(fr.sessionsWithFrustration, 3);
+
+  const en = Q.engagement('hawkesgen', f);
+  const drive = en.activities.find((x: any) => x.name === 'drive')!;
+  assert.equal(drive.seconds, 210);
+  assert.equal(drive.players, 3);
+  assert.equal(drive.accounts, 1);
+  assert.equal(en.activities[0].name, 'build', 'most time first');
+
+  const ac = Q.accounts('hawkesgen', f);
+  assert.equal(ac.total, 1);
+  const a = ac.accounts[0];
+  assert.equal(a.user, 'usr_00000000000000a1');
+  assert.equal(a.sessions, 2);
+  assert.equal(a.browsers, 2);
+  assert.deepEqual(plain(a.topActivities.map((x: any) => x.name)), ['build', 'drive']);
+  assert.equal(a.topActivities[1].value, 180);
+  assert.deepEqual(plain(a.features), ['fly']);
+  assert.equal(a.milestones.signup, 1);
+  assert.equal(a.ratings[0].text, 'fun');
+  assert.deepEqual(plain(a.frustrationKinds.map((x: any) => x.name).sort()), ['assistant_failed', 'out_of_credits']);
+  assert.equal(Q.sessionList('hawkesgen', { ...f, user: 'usr_00000000000000a1' }).total, 2);
+
+  // The portal relays a sandboxed game's batch with its key: the page's origin and the visitor's address count.
+  resetRateLimits();
+  const { createClient } = await import('../src/auth.ts');
+  const { key } = createClient('portal-test', 'user', ['usr_*']);
+  const relay = (headers: Record<string, string>, at = 'relay') => fetch(`${base}/v1/analytics/${at}`, { method: 'POST', headers: { 'Content-Type': 'text/plain', 'X-Hawkes-Relay-Origin': HG, 'X-Hawkes-Visitor-Ip': '203.0.113.77', 'X-Hawkes-Visitor-Ua': CHROME, ...headers }, body: JSON.stringify({ product: 'hawkesgen', anon: 'relay_anon_1', session: `relay_${headers.Authorization ? 'k' : 'n'}_sess`, events: [{ name: 'game_ready', seq: 0, page: '/play/my-game' }] }) }).then((r) => r.json());
+  assert.equal((await relay({ Authorization: `Bearer ${key}` })).accepted, 1);
+  const rs: any = adb.prepare("SELECT env, city, browser FROM sessions WHERE id = 'relay_k_sess'").get();
+  assert.deepEqual({ ...rs }, { env: 'live', city: 'Columbus', browser: 'Chrome' });
+  assert.equal((await relay({})).ok, false, 'no key, no relay');
+  assert.equal((await relay({ Authorization: `Bearer ${key}` }, 'collect')).accepted, 0, 'the public door ignores relay headers (no Origin: dropped)');
+  assert.equal((await relay({ Authorization: 'Bearer hg_not_a_key' })).ok, false);
+
+  const http1 = await (await fetch(`${base}/v1/analytics/hawkesgen/accounts/usr_00000000000000a1?range=24h`)).json();
+  assert.equal(http1.accounts[0].sessions, 2);
+  assert.equal(http1.sessions.total, 2);
+});

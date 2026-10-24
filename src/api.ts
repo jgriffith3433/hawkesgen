@@ -215,6 +215,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
   // Player analytics from every product's pages: public, with its own CORS for the registered origins (src/analytics/).
   if (route === '/v1/analytics/collect') return handleCollect(req, res);
+  // ...and from a site's own server passing on pages that can't send themselves (a Gen key; collect.ts relayed).
+  if (route === '/v1/analytics/relay' && method === 'POST') return handleCollect(req, res, { relay: true });
 
   // CORS: games' dev servers (other localhost ports) call the API from the browser.
   const origin = String(req.headers.origin ?? '');
