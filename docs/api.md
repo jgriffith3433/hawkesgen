@@ -62,10 +62,10 @@ A finished job has `outputs: [{ asset, seed, mime, kind, title }]` and/or `resul
 | Route | |
 |---|---|
 | `GET /v1/assets?project=&kind=image&tool=&q=&starred=1&job=&playtest=1&limit=&offset=` | Browse (`{ items, total }`). Excludes `playtest.run` recordings, screenshots and reports by default (unless `playtest=1`, `tool=playtest.run` or `job=` is passed); `playtest=1` returns only playtest outputs. A text search also returns CC0 motion clips (`motion:<pack>/<name>`, tags, duration, loop); `tool=motion.library` is the whole list. |
-| `GET /v1/assets/:id` | One asset: path, mime, bytes, seed, recipe, labels, tags, title |
+| `GET /v1/assets/:id` | One asset: path, mime, bytes, seed, recipe, labels, tags, title, and `lods` (its levels of detail, below). List rows carry `lods` too; a model's low copy that its job made beside it (`model.lod1`) isn't listed: it belongs to the model |
 | `PATCH /v1/assets/:id` `{ "title", "tags", "starred", "labels" }` | Organize |
 | `DELETE /v1/assets/:id` | Delete (admin) |
-| `GET /v1/files/:id[?download=1]` | The file (supports Range, so videos stream) |
+| `GET /v1/files/:id[?download=1&lod=<n>&v=<hash>]` (= `/v1/assets/:id/file`) | The file (supports Range, so videos stream). `ETag` is its sha256; `If-None-Match` answers 304. `lod=n`: a level of detail, the largest level at most n (px for images, triangles for models), else the smallest; the original when n is at least its size and bigger than every level (`X-Lod-Level` says which). With `v` = the file's hash prefix: `Cache-Control: public, max-age=31536000, immutable` |
 | `POST /v1/blobs` (body = file bytes, header `X-Filename`) | Upload an input → `{ "blob": "blob:<sha256>" }` |
 | `POST /v1/estimate` `{ project, items: [{ tool \| preset, params, count, label }], servers? }` | What a batch would cost before running it: GPU seconds per line (the median of past jobs of that tool, scaled by frames and pixels, else the tool's guess), model loads per family, server boots, API costs, `cost: { gpu, api, idleTail, total, withIdleTail }`, `wallMinutes`, `note`. `asset.make` items expand into their steps × `candidates` plus a pick. `src/estimate.ts` |
 | `POST /v1/recipes/check` `{ tool, params, inputs, project }` | `{ status: "current" \| "missing", asset }`: is there an asset from exactly this tool version, params and inputs (any seed)? |
@@ -85,6 +85,24 @@ A finished job has `outputs: [{ asset, seed, mime, kind, title }]` and/or `resul
 
 Job inputs and chain steps take `slot:<project>/<slug>/<slot>[@n|@latest]` and, in an entity's own recipes, `slot:./<slot>`.
 `GET /v1/events` also streams `library` events.
+
+## Levels of detail (src/lod.ts)
+
+Every image (PNG, JPEG, WebP) and GLB that a top-level job makes or someone uploads gets levels of detail, made by Gen
+itself (`asset.lod`: CPU, its own lane `lod`, one at a time, behind every customer's CPU job, lowest priority, as client
+`gen` in project `hawkesgen.lod`; never charged, internal-only). Images: 128, 256, 512, 1024, 2048 px below the long
+side and the full size, WebP (shape and transparency kept; pixel art nearest-neighbour and lossless). Models: `low`
+(~12% of the triangles, at most 10,000; textures an eighth of the model's, 128-256 px), `mid` (~40%, at most 50,000; <= 1024 px) when it pays,
+`high` (every triangle, textures <= 2048) for models with bigger textures; Draco in, Draco out, else quantized.
+
+The summary (`lods`): `{ kind: image | mesh, state: queued | done | skipped | failed, size: [w, h] | tris, tex, bytes,
+sha, levels: [{ level, bytes, w, h | tris, tex, role, sha }] }`, smallest first (`level`: px or triangles).
+
+| Route | What |
+|---|---|
+| `GET /v1/lods?ids=a_1,a_2,...` (up to 500) | `{ lods: { id: summary }, queued }`: many at once (a game's bundle). Assets without levels yet are queued |
+| `GET /v1/lods/status` | Assets by state, levels made and their bytes, linked low copies, `asset.lod` jobs |
+| `POST /v1/lods/backfill` `{ project?, kind?: image \| mesh, limit?, dryRun? }` | (admin) Links low copies older jobs made, then queues everything kept (uploads, top-level jobs' outputs) without levels at this version, newest first. CLI: `hawkesgen lod backfill [--project p] [--kind k]` |
 
 ## Library storage (S3)
 

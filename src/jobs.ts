@@ -20,6 +20,7 @@ import { paths, loadSettings, ROOT, DATA_DIR } from './config.ts';
 import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
+import { afterJob } from './lod.ts';
 import { putAsset, getAsset, blobPath, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
@@ -528,16 +529,23 @@ class Queue {
       // cap: its parent already holds a pipeline slot and waits for it. Queued behind the cap, six asset.make jobs held
       // every slot while their own view-sheet steps waited for one, and nothing ever finished (2026-10-23, the starter pack).
       const nested = provider === 'pipeline' && Boolean(j.labels?.parent);
-      const key = nested ? 'pipeline-step' : provider;
+      // A tool with a lane of its own (asset.lod: the LOD system's work, src/lod.ts) waits while the lanes it yields to
+      // have anything running or waiting, so customers' CPU jobs never share the CPU with it.
+      const own = toolOf(j).lane;
+      if (own?.yieldTo?.some((l) => (this.lanes.get(l)?.size ?? 0) > 0 || waiting.some((x) => x.id !== j.id && !toolOf(x).lane && toolOf(x).provider === l))) {
+        this.wait(j, `waiting: ${own.yieldTo.join(', ')} jobs go first`);
+        continue;
+      }
+      const key = own ? own.name : nested ? 'pipeline-step' : provider;
       const lane = this.lanes.get(key) ?? new Set();
       this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
-      const limit = nested ? Infinity : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
+      const limit = own ? own.limit() : nested ? Infinity : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
       // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
       const weight = provider === 'playtest' ? tabsOf(j) : 1;
       const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;
       if (used >= limit || (used > 0 && used + weight > limit)) {
-        this.wait(j, provider === 'playtest' ? `waiting: ${used} of ${limit} playtest browser tabs in use` : `waiting: ${lane.size} ${provider} jobs already running`);
+        this.wait(j, provider === 'playtest' ? `waiting: ${used} of ${limit} playtest browser tabs in use` : `waiting: ${lane.size} ${key} jobs already running`);
         continue;
       }
       // A Gen deploy is waiting for the build server to be free (hawkesstudio/deploy/hawkes-pull.mjs drops this file):
@@ -724,6 +732,13 @@ class Queue {
       if (ep) ctx.comfy = await this.comfyRun(job, ep, step, abort.signal);
       await tool.run(ctx);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
+      // The LOD system: low copies this job made are linked to their models, and its images and models get their
+      // levels made (src/lod.ts; a low-priority CPU job of Gen's own, never charged).
+      try {
+        afterJob(job);
+      } catch (e: any) {
+        job.log.push(`couldn't queue the levels of detail: ${e.message}`);
+      }
       try {
         const filed = fileJobOutputs(job);
         if (filed.length) job.log.push(`filed ${filed.length} take${filed.length === 1 ? '' : 's'} in ${job.labels.entity} ${filed.map((v) => `${v.slot} v${v.n}`).join(', ')}`);
