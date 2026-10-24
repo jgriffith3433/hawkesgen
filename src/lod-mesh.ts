@@ -124,7 +124,15 @@ export async function meshLods(plan: Plan) {
     if (fewer && !fromSource) {
       // (A scan-sized mesh, 700k triangles, still gets a low of at most `most`.)
       const ratio = Math.max(0.005, Math.min(L.ratio, L.most / tris));
-      await doc.transform(weld(), simplify({ simplifier: MeshoptSimplifier, ratio, error: L.error }));
+      if (L.role === 'low') {
+        // As few triangles as keep the shape within 1% of its size first (a flat-sided crate becomes a box), then at
+        // most the ratio whatever the error.
+        await doc.transform(weld(), simplify({ simplifier: MeshoptSimplifier, ratio: 0.01, error: 0.01 }));
+        const now = triangles(doc);
+        if (now > tris * ratio) await doc.transform(simplify({ simplifier: MeshoptSimplifier, ratio: (tris * ratio) / now, error: L.error }));
+      } else {
+        await doc.transform(weld(), simplify({ simplifier: MeshoptSimplifier, ratio, error: L.error }));
+      }
     }
     shrinkTextures(doc, cap, plan, L.role);
     await doc.transform(prune(), dedup());
