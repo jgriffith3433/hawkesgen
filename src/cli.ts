@@ -260,8 +260,9 @@ async function main() {
         : await gen.request('/lods/status');
       if (sub === 'backfill') console.log(flag('dry-run') ? `would queue ${r.found} assets (${r.skipped ?? 0} in-between skipped; ${r.linked} jobs with low copies to link)` : `queued ${r.queued} of ${r.found} found (${r.skipped ?? 0} in-between skipped); linked ${r.linked} low copies`);
       if (sub === 'prune') console.log(`${flag('dry-run') ? 'would clear' : 'cleared'} ${r.levels} levels of ${r.assets} in-between assets (${mb(r.bytes)})${flag('dry-run') ? '' : `; ${r.s3} copies deleted from S3`}`);
-      console.log(`LOD v${r.version}: ${Object.entries(r.assets).map(([k, n]) => `${n} ${k}`).join(', ') || 'nothing yet'}; ${r.levels} levels (${mb(r.bytes)}), ${r.links} linked lows`);
-      console.log(`asset.lod jobs: ${Object.entries(r.jobs).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}`);
+      const st = r.status ?? r;
+      console.log(`LOD v${st.version}: ${Object.entries(st.assets).map(([k, n]) => `${n} ${k}`).join(', ') || 'nothing yet'}; ${st.levels} levels (${mb(st.bytes)}), ${st.links} linked lows`);
+      console.log(`asset.lod jobs: ${Object.entries(st.jobs).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}`);
       return;
     }
     case 'usage': {

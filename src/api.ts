@@ -940,7 +940,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/lods/prune' && method === 'POST') {
       requireRole(client, 'admin');
       const b = await readJson(req);
-      return send(res, 200, { ...(await pruneLods({ project: typeof b.project === 'string' ? b.project : undefined, dryRun: b.dryRun === true, limit: Number(b.limit) || undefined })), ...lodStatus() });
+      // (Its own numbers, then the status under `status`: both have assets, levels and bytes.)
+      return send(res, 200, { ...(await pruneLods({ project: typeof b.project === 'string' ? b.project : undefined, dryRun: b.dryRun === true, limit: Number(b.limit) || undefined })), status: lodStatus() });
     }
     if (route === '/v1/blobs' && method === 'POST') {
       const data = await readBody(req, 2 * 1024 * 1024 * 1024);

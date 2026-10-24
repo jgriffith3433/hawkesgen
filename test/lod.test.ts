@@ -263,6 +263,11 @@ test("in-between work gets no levels: of an asset.make chain only the first step
   for (const l of viewLevels) { assert.ok(!fs.existsSync(l.path)); assert.ok(deleted.includes(storage.keyOf(l.sha256))); }
   assert.ok((db.prepare('SELECT COUNT(*) AS n FROM asset_lods WHERE asset = ?').get(result.id) as any).n > 0, 'the result keeps its levels');
   assert.equal((db.prepare('SELECT state FROM asset_lod_state WHERE asset = ?').get(view.id) as any).state, 'pruned');
+  // The route answers with its own numbers (the status beside them, not over them).
+  const route = await (await fetch(`${base}/v1/lods/prune`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'chain', dryRun: true }) })).json();
+  assert.equal(route.assets, 0, 'nothing left to clear');
+  assert.equal(route.levels, 0);
+  assert.equal(typeof route.status.levels, 'number');
   // Asked for by id (it's used after all): made again.
   assert.equal(lod.queueLods([view.id], { asked: true }), 1);
   assert.equal(lod.queueLods([view.id]), 0, 'already queued');
