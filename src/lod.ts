@@ -10,7 +10,10 @@
 //                                            server). Level = triangles.
 //
 // How they get made: when a job finishes (only top-level jobs: a pipeline's steps are intermediate) or a file is
-// uploaded, its images and GLBs are queued (queueLods). A moment later one `asset.lod` job takes the batch: provider
+// uploaded, its images and GLBs are queued (queueLods). Of an asset.make chain's saved outputs only the ends are:
+// the first step's picture (a cutout: the library's thumbnail) and the last step's result (the model, the texture);
+// the in-between (view sheets and views, masks, raw meshes) get none (kept(), pruneLods() clears old ones). Anything
+// asked for by id (GET /v1/lods) still gets levels: what's really used never goes without. A moment later one `asset.lod` job takes the batch: provider
 // local, its own lane (`lod`, one at a time, behind every customer's CPU job), the lowest priority, the child processes
 // at the lowest OS priority. It runs as Gen (client `gen`, project `hawkesgen.lod`): nobody is charged, nothing is
 // listed in a customer's jobs. Idempotent per asset and LOD_VERSION (asset_lod_state); `backfill` queues the rest.
@@ -29,7 +32,7 @@ import { spawn } from 'node:child_process';
 import { db } from './db.ts';
 import { paths, ROOT, loadSettings } from './config.ts';
 import { getAsset, type Asset } from './library.ts';
-import { backup } from './storage.ts';
+import { backup, forget } from './storage.ts';
 import type { Tool } from './tools/types.ts';
 
 /** Bump when the levels made would change: assets made at an older version are redone by the backfill. */
@@ -44,6 +47,23 @@ const BATCH = { image: 24, mesh: 4 };
 
 // (The tables are in db.ts: asset_lods, asset_lod_state, asset_lod_links.)
 
+/** Whether an asset is a kept result rather than in-between work: not a pipeline step's output, and of an asset.make
+ *  chain's saved outputs only its first step's picture (not a mask) and its last step's result. */
+export function kept(a: Pick<Asset, 'id' | 'job' | 'title' | 'meta'> | null | undefined): boolean {
+  if (!a) return false;
+  if (a.job) {
+    const j = db.prepare("SELECT json_extract(labels, '$.parent') AS parent FROM jobs WHERE id = ?").get(a.job) as { parent: string | null } | undefined;
+    if (j && j.parent) return false;
+  }
+  const m = (a.meta ?? {}) as { save?: string; step?: number; from?: string };
+  if (!m.save || !a.job || !Number.isFinite(m.step)) return true;
+  const r = db.prepare("SELECT MIN(json_extract(meta, '$.step')) AS first, MAX(json_extract(meta, '$.step')) AS last FROM assets WHERE job = ? AND json_extract(meta, '$.save') IS NOT NULL").get(a.job) as { first: number; last: number };
+  if (m.step === r.last) return true;
+  if (m.step !== r.first) return false;
+  const from = m.from ? (db.prepare('SELECT title FROM assets WHERE id = ?').get(m.from) as { title: string | null } | undefined) : undefined;
+  return !/mask/i.test(`${a.title ?? ''} ${from?.title ?? ''}`);
+}
+
 /** What kind of levels an asset gets: 'image', 'mesh', or null (none: sounds, videos, a playtest's screenshots...). */
 export function lodKind(a: Pick<Asset, 'mime' | 'meta' | 'tool'> | null | undefined): 'image' | 'mesh' | null {
   if (!a || a.tool === 'playtest.run' || (a.meta && (a.meta as any).playtest)) return null;
@@ -57,15 +77,16 @@ const pending = new Set<string>();
 let flushTimer: NodeJS.Timeout | null = null;
 
 /** These assets get their levels made soon (in one batch job). Repeats, done ones and linked lows do nothing. */
-export function queueLods(ids: string[], o: { now?: boolean } = {}) {
+export function queueLods(ids: string[], o: { now?: boolean; asked?: boolean } = {}) {
   let queued = 0;
   for (const id of ids) {
     if (!/^a_[0-9a-f]+$/.test(id) || pending.has(id)) continue;
     const a = getAsset(id);
     if (!lodKind(a)) continue;
+    if (!o.asked && !kept(a)) continue;
     if (db.prepare('SELECT 1 FROM asset_lod_links WHERE low = ?').get(id)) continue;
     const s = db.prepare('SELECT version, state, tries FROM asset_lod_state WHERE asset = ?').get(id) as { version: number; state: string; tries: number } | undefined;
-    if (s && s.version >= LOD_VERSION && (s.state !== 'failed' || s.tries >= 3)) continue;
+    if (s && s.version >= LOD_VERSION && s.state !== 'pruned' && (s.state !== 'failed' || s.tries >= 3)) continue;
     db.prepare(`INSERT INTO asset_lod_state (asset, version, state, updated) VALUES (?, ?, 'queued', ?)
                 ON CONFLICT(asset) DO UPDATE SET version = excluded.version, state = 'queued', job = NULL, updated = excluded.updated`).run(id, LOD_VERSION, Date.now());
     pending.add(id);
@@ -159,11 +180,39 @@ export function backfillLods(o: { project?: string; kind?: 'image' | 'mesh'; lim
   if (o.kind === 'image') where.push("a.mime LIKE 'image/%'");
   if (o.kind === 'mesh') where.push("a.mime = 'model/gltf-binary'");
   const rows = db.prepare(`SELECT a.id FROM assets a LEFT JOIN jobs j ON j.id = a.job LEFT JOIN asset_lod_state s ON s.asset = a.id WHERE ${where.join(' AND ')} ORDER BY a.created DESC LIMIT ${Math.max(1, Math.min(100_000, o.limit ?? 100_000))}`).all(...args) as { id: string }[];
-  if (o.dryRun) return { linked: jobsWithLows.length, queued: 0, found: rows.length };
+  const wanted = rows.filter((r) => kept(getAsset(r.id)));
+  if (o.dryRun) return { linked: jobsWithLows.length, queued: 0, found: wanted.length, skipped: rows.length - wanted.length };
   // (A 'queued' row whose job is gone or ended without it, a restart between queueing and the job: queued again.)
   db.exec(`UPDATE asset_lod_state AS s SET state = 'failed' WHERE ${LOST}`);
-  const queued = queueLods(rows.map((r) => r.id), { now: true });
-  return { linked, queued, found: rows.length };
+  const queued = queueLods(wanted.map((r) => r.id), { now: true });
+  return { linked, queued, found: wanted.length, skipped: rows.length - wanted.length };
+}
+
+/**
+ * Clears levels made for in-between work (a pipeline's steps, an asset.make chain's middle steps and masks: what kept()
+ * says no to): their files here and their copies in S3, so they cost neither disk nor storage. Their state becomes
+ * 'pruned' (asked for by id later, they're made again). -> { assets, levels, bytes } (what would go, with dryRun).
+ */
+export async function pruneLods(o: { project?: string; dryRun?: boolean; limit?: number } = {}) {
+  const rows = db.prepare(`SELECT DISTINCT l.asset FROM asset_lods l JOIN assets a ON a.id = l.asset${o.project ? ' WHERE a.project = ?' : ''}`).all(...(o.project ? [o.project] : [])) as { asset: string }[];
+  const gone = rows.map((r) => r.asset).filter((id) => !kept(getAsset(id))).slice(0, Math.max(1, Math.min(1_000_000, o.limit ?? 1_000_000)));
+  let levels = 0, bytes = 0;
+  const shas: string[] = [];
+  for (const id of gone) {
+    const ls = db.prepare('SELECT path, bytes, sha256 FROM asset_lods WHERE asset = ?').all(id) as { path: string; bytes: number; sha256: string }[];
+    levels += ls.length;
+    for (const l of ls) bytes += l.bytes;
+    if (o.dryRun) continue;
+    db.prepare('DELETE FROM asset_lods WHERE asset = ?').run(id);
+    setState(id, 'pruned');
+    for (const l of ls) {
+      // A file another asset's level or an asset itself still uses (the same content) stays.
+      if (!db.prepare('SELECT 1 FROM asset_lods WHERE path = ?').get(l.path)) fs.rmSync(l.path, { force: true });
+      shas.push(l.sha256);
+    }
+  }
+  const s3 = o.dryRun ? 0 : await forget(shas);
+  return { assets: gone.length, levels, bytes, s3 };
 }
 
 /** How far along it is: assets by state, levels made and their bytes, jobs waiting. */

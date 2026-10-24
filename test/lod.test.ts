@@ -224,3 +224,47 @@ test('the lod lane: one at a time, and only while no customer CPU job runs or wa
   const user = { id: 'u', name: 'u', role: 'user', projects: ['usr_*'] } as any;
   assert.throws(() => submit(user, { tool: 'asset.lod', project: 'usr_0000000000000001', params: { assets: [] } } as any), /internal-only/);
 });
+
+test("in-between work gets no levels: of an asset.make chain only the first step's picture and the last step's result; prune clears the rest here and in S3", async (t) => {
+  const storage = await import('../src/storage.ts');
+  const objects = new Map<string, number>();
+  const deleted: string[] = [];
+  storage.setStore({ async has(k) { return objects.has(k); }, async put(k, _f, size) { objects.set(k, size); }, async get() {}, async del(keys) { for (const k of keys) { deleted.push(k); objects.delete(k); } } });
+  t.after(() => storage.setStore(null));
+  const job = 'j_make_lodtest';
+  const step = (n: number, save: string, title: string, from?: string) => putAsset({ data: png(300, 300 + n), ext: '.png', client: 'test', project: 'chain', tool: 'asset.make', recipe, job, title, meta: { save, step: n, ...(from ? { from } : {}) } });
+  const src = image(300, 300, { project: 'chain' });
+  const mask = image(300, 301, { project: 'chain' });
+  db.prepare("UPDATE assets SET title = 'mask' WHERE id = ?").run(mask.id);
+  const cutout = step(2, 'cutout', 'cutout', src.id);
+  const maskOut = step(2, 'cutout', 'cutout', mask.id);
+  const view = step(3, 'views', 'views');
+  const result = step(5, 'texture', 'texture');
+  assert.deepEqual([cutout, maskOut, view, result].map((a) => lod.kept(a)), [true, false, false, true]);
+  // A finished chain queues only its ends.
+  db.exec('DELETE FROM asset_lod_state');
+  const q1 = lod.afterJob({ id: job, tool: 'asset.make', outputs: [cutout, maskOut, view, result].map((a) => ({ asset: a.id, mime: a.mime, title: a.title })) });
+  assert.equal(q1.queued, 2);
+  await lod.flushLods();
+  if (!pillow) return t.skip('no .venv with Pillow (the prune half needs real levels)');
+  // Levels made for the view before this rule (as the old backfill did): the prune clears them, files and S3 copies.
+  await lod.makeLods([view.id, result.id]);
+  await storage.idle();
+  const viewLevels = db.prepare('SELECT path, sha256 FROM asset_lods WHERE asset = ?').all(view.id) as { path: string; sha256: string }[];
+  assert.ok(viewLevels.length > 0);
+  const dry = await lod.pruneLods({ project: 'chain', dryRun: true });
+  assert.equal(dry.assets, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM asset_lods WHERE asset = ?').get(view.id)!.n, viewLevels.length, 'a dry run changes nothing');
+  const r = await lod.pruneLods({ project: 'chain' });
+  assert.equal(r.assets, 1);
+  assert.equal(r.levels, viewLevels.length);
+  assert.equal(r.s3, viewLevels.length);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM asset_lods WHERE asset = ?').get(view.id)!.n, 0);
+  for (const l of viewLevels) { assert.ok(!fs.existsSync(l.path)); assert.ok(deleted.includes(storage.keyOf(l.sha256))); }
+  assert.ok((db.prepare('SELECT COUNT(*) AS n FROM asset_lods WHERE asset = ?').get(result.id) as any).n > 0, 'the result keeps its levels');
+  assert.equal((db.prepare('SELECT state FROM asset_lod_state WHERE asset = ?').get(view.id) as any).state, 'pruned');
+  // Asked for by id (it's used after all): made again.
+  assert.equal(lod.queueLods([view.id], { asked: true }), 1);
+  assert.equal(lod.queueLods([view.id]), 0, 'already queued');
+  await lod.flushLods();
+});

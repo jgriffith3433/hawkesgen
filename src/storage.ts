@@ -27,6 +27,8 @@ export type Store = {
   has(key: string): Promise<boolean>;
   put(key: string, file: string, size: number): Promise<void>;
   get(key: string, dest: string): Promise<void>;
+  /** Deletes these objects (missing ones are fine). */
+  del?(keys: string[]): Promise<void>;
 };
 
 let store: Store | null = null;
@@ -67,6 +69,11 @@ async function s3Store(b: string): Promise<Store> {
     async put(key, file, size) {
       await ensure();
       await c.send(new S.PutObjectCommand({ Bucket: b, Key: key, Body: fs.createReadStream(file), ContentLength: size }));
+    },
+    async del(keys) {
+      for (let i = 0; i < keys.length; i += 1000) {
+        await c.send(new S.DeleteObjectsCommand({ Bucket: b, Delete: { Objects: keys.slice(i, i + 1000).map((Key) => ({ Key })), Quiet: true } }));
+      }
     },
     async get(key, dest) {
       const r: any = await c.send(new S.GetObjectCommand({ Bucket: b, Key: key }));
@@ -135,6 +142,23 @@ export function backup(a: { sha256: string; path: string; bytes: number }) {
 }
 
 /** Resolves when nothing is queued or uploading (tests, and the backfill route's answer). */
+/**
+ * Files that were cleared (levels of detail of in-between work): their copies in S3 go too, unless an asset or another
+ * level still has the same content. Ones still waiting to upload are dropped from the queue. -> how many were deleted.
+ */
+export async function forget(shas: string[]): Promise<number> {
+  const stillUsed = (sha: string) => Boolean(db.prepare('SELECT 1 FROM assets WHERE sha256 = ?').get(sha) || db.prepare('SELECT 1 FROM asset_lods WHERE sha256 = ?').get(sha));
+  const drop = [...new Set(shas)].filter((sha) => !stillUsed(sha));
+  if (!drop.length) return 0;
+  for (let i = queue.length - 1; i >= 0; i--) if (drop.includes(queue[i].sha)) { queued.delete(queue[i].sha); queue.splice(i, 1); }
+  const backed = drop.filter(isBackedUp);
+  const st = await getStore();
+  if (st && st.del && backed.length) await st.del(backed.map(keyOf));
+  const off = db.prepare('DELETE FROM backups WHERE sha256 = ?');
+  for (const sha of backed) off.run(sha);
+  return backed.length;
+}
+
 export function idle(): Promise<void> {
   if (!running && !queue.length) return Promise.resolve();
   return new Promise((r) => idleWaiters.push(r));

@@ -250,13 +250,16 @@ async function main() {
       return;
     }
     case 'lod': {
-      // The LOD system: every image's and model's smaller copies (src/lod.ts). backfill queues what has none yet.
+      // The LOD system: every image's and model's smaller copies (src/lod.ts). backfill queues what has none yet; prune
+      // clears levels made for in-between work (here and in S3).
       const sub = rest[0] ?? 'status';
       const mb = (b: number) => `${(b / 1048576).toFixed(1)} MB`;
-      const r = sub === 'backfill'
-        ? await gen.request('/lods/backfill', { method: 'POST', body: { project: flag('project'), kind: flag('kind'), limit: Number(flag('limit')) || undefined, dryRun: flag('dry-run') === 'true' } })
+      const body = { project: flag('project'), kind: flag('kind'), limit: Number(flag('limit')) || undefined, dryRun: flag('dry-run') === 'true' };
+      const r = sub === 'backfill' ? await gen.request('/lods/backfill', { method: 'POST', body })
+        : sub === 'prune' ? await gen.request('/lods/prune', { method: 'POST', body })
         : await gen.request('/lods/status');
-      if (sub === 'backfill') console.log(flag('dry-run') ? `would queue ${r.found} assets (${r.linked} jobs with low copies to link)` : `queued ${r.queued} of ${r.found} found; linked ${r.linked} low copies`);
+      if (sub === 'backfill') console.log(flag('dry-run') ? `would queue ${r.found} assets (${r.skipped ?? 0} in-between skipped; ${r.linked} jobs with low copies to link)` : `queued ${r.queued} of ${r.found} found (${r.skipped ?? 0} in-between skipped); linked ${r.linked} low copies`);
+      if (sub === 'prune') console.log(`${flag('dry-run') ? 'would clear' : 'cleared'} ${r.levels} levels of ${r.assets} in-between assets (${mb(r.bytes)})${flag('dry-run') ? '' : `; ${r.s3} copies deleted from S3`}`);
       console.log(`LOD v${r.version}: ${Object.entries(r.assets).map(([k, n]) => `${n} ${k}`).join(', ') || 'nothing yet'}; ${r.levels} levels (${mb(r.bytes)}), ${r.links} linked lows`);
       console.log(`asset.lod jobs: ${Object.entries(r.jobs).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}`);
       return;

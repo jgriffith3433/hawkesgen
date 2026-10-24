@@ -20,7 +20,7 @@ import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putA
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
-import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, lodStatus } from './lod.ts';
+import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, pruneLods, lodStatus } from './lod.ts';
 import { usageSummary } from './usage.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
@@ -926,7 +926,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const ids = String(q('ids') ?? '').split(',').map((s) => s.trim()).filter((s) => /^a_[0-9a-f]+$/.test(s)).slice(0, 500);
       const mine = ids.filter((id) => { const x = getAsset(id); return x && (canProject(client, x.project) || x.project === 'public'); });
       const lods = lodSummaries(mine);
-      const queued = queueLods(mine.filter((id) => !lods[id]));
+      // (Asked for by id means used: even in-between work, or levels cleared by the prune, are made.)
+      const queued = queueLods(mine.filter((id) => !lods[id] || lods[id].state === 'pruned'), { asked: true });
       return send(res, 200, { lods, queued });
     }
     if (route === '/v1/lods/status' && method === 'GET') return send(res, 200, lodStatus());
@@ -935,6 +936,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const b = await readJson(req);
       const kind = b.kind === 'image' || b.kind === 'mesh' ? b.kind : undefined;
       return send(res, 200, { ...backfillLods({ project: typeof b.project === 'string' ? b.project : undefined, kind, limit: Number(b.limit) || undefined, dryRun: b.dryRun === true }), ...lodStatus() });
+    }
+    if (route === '/v1/lods/prune' && method === 'POST') {
+      requireRole(client, 'admin');
+      const b = await readJson(req);
+      return send(res, 200, { ...(await pruneLods({ project: typeof b.project === 'string' ? b.project : undefined, dryRun: b.dryRun === true, limit: Number(b.limit) || undefined })), ...lodStatus() });
     }
     if (route === '/v1/blobs' && method === 'POST') {
       const data = await readBody(req, 2 * 1024 * 1024 * 1024);
