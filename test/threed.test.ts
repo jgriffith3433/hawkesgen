@@ -199,10 +199,12 @@ test('a sheet splits into front, back, left, right by its width, and the views a
   ]);
 });
 
-test('image.viewsheet makes views with the angles LoRA by default, or one turnaround front|left|back|right', () => {
+test('image.viewsheet: exact camera words by default, the angles LoRA or one turnaround front|left|back|right on request', () => {
   const t = getTool('image.viewsheet')!;
-  assert.equal(t.params.method.default, 'angles');
-  assert.ok(t.version >= 3);
+  assert.equal(t.params.method.default, 'prose');
+  assert.deepEqual(t.params.method.values, ['prose', 'angles', 'turnaround']);
+  assert.ok(t.version >= 4);
+  assert.equal(t.params.straighten.default, undefined, 'on for props, off for characters unless set');
   assert.equal(anglePrompt('back'), '<sks> back view eye-level shot medium shot');
   for (const v of ['back', 'left', 'right'] as const) assert.match(anglePrompt(v), /^<sks> (back view|left side view|right side view) eye-level shot medium shot$/);
   assert.deepEqual([...TURNAROUND], ['front', 'left', 'back', 'right']);
@@ -211,6 +213,8 @@ test('image.viewsheet makes views with the angles LoRA by default, or one turnar
   assert.match(p, /Panel 2[^.]*camera moved to the left, the object facing the right edge/);
   assert.match(p, /Panel 4[^.]*camera moved to the right, the object facing the left edge/);
   assert.doesNotMatch(p, /character|pose/);
-  assert.match(viewPrompt('left', 'humanoid'), /facing the right edge of the picture/);
+  assert.match(viewPrompt('left', 'humanoid'), /^An exact 90 degree side profile of the same character, the camera moved 90 degrees to the left, the front of it facing the right edge of the picture/);
+  assert.match(viewPrompt('right', 'prop'), /^An exact 90 degree side profile of the same object, the camera moved 90 degrees to the right, the front of it facing the left edge/);
+  assert.match(viewPrompt('back', 'prop'), /^The back of the same object, seen from directly behind/);
   assert.equal(getTool('image.edit')!.params.angles.default, 0);
 });

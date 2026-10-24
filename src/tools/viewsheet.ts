@@ -21,21 +21,28 @@ const MADE = ['back', 'left', 'right'] as const;
 const LIGHT = 'Full body from head to feet, flat even lighting with no cast shadows, plain flat light grey background (no checkerboard, no transparency grid, no floor), nothing else in the picture.';
 const BASE = `same size and position in the frame, the same pose as the reference (keep it a neutral standing pose, arms away from the body), the exact same design, colors, outfit, props and proportions. ${LIGHT}`;
 const PROP_BASE = 'same size and position in the frame, the exact same design, shape, colors, materials and proportions. The whole object in frame, flat even lighting with no cast shadows, plain flat light grey background (no checkerboard, no transparency grid, no floor), nothing else in the picture.';
+/**
+ * The view, in the words measured on 2026-10-23 (docs/3d-characters.md, "How views are made"): "an exact 90 degree side
+ * profile ... the camera moved 90 degrees to the left, the front ... facing the right edge of the picture" turned a
+ * straight front into a true profile in 7 of 8 edits (crate, chair), where "seen from the left side" and the angles
+ * LoRA's own words gave three-quarter views.
+ */
 const SIDE = {
-  back: 'seen from directly behind, a true back view (180 degrees from the front), ',
-  left: 'the camera moved 90 degrees to the left, a true 90 degree side profile facing the right edge of the picture, ',
-  right: 'the camera moved 90 degrees to the right, a true 90 degree side profile facing the left edge of the picture, ',
+  back: (it: string) => `The back of ${it}, seen from directly behind (180 degrees from the front), `,
+  left: (it: string) => `An exact 90 degree side profile of ${it}, the camera moved 90 degrees to the left, the front of it facing the right edge of the picture, `,
+  right: (it: string) => `An exact 90 degree side profile of ${it}, the camera moved 90 degrees to the right, the front of it facing the left edge of the picture, `,
 };
 
 /**
- * How image.viewsheet makes the back and side views.
- * - angles: one Qwen-Image-Edit 2511 edit per view with fal's Multiple-Angles LoRA, which was trained on renders of 3D
- *   objects from known camera angles ("<sks> back view eye-level shot medium shot").
- * - turnaround: ONE edit that draws the whole turnaround (front|left|back|right, 4:1) from the front, so the views are
- *   drawn together (the community Pixal3D multi-view recipe), then cut into panels.
- * - prose: one plain edit per view, the camera direction in words (version 2; often the same 3/4 view again).
+ * How image.viewsheet makes the back and side views (measured on a crate and a chair, docs/3d-characters.md):
+ * - prose (default): one Qwen-Image-Edit 2511 edit per view, the camera move in exact words (SIDE). True profiles in 7
+ *   of 8 side views; the miss was a mirrored side, which the check catches.
+ * - angles: the same words after fal's Multiple-Angles LoRA tokens ("<sks> left side view eye-level shot medium shot").
+ *   Right on the chair, but it warped the crate. The tokens alone gave three-quarter views (about 60 degrees) every time.
+ * - turnaround: ONE edit drawing the whole turnaround (front|left|back|right, 4:1) from the front (the community Pixal3D
+ *   recipe), then cut into panels. Clean on the crate; on the chair two of three sides were the front again.
  */
-export const METHODS = ['angles', 'turnaround', 'prose'] as const;
+export const METHODS = ['prose', 'angles', 'turnaround'] as const;
 export type Method = (typeof METHODS)[number];
 
 /**
@@ -48,6 +55,8 @@ export const ANGLE_WORDS: Record<(typeof MADE)[number], string> = {
   right: 'right side view',
 };
 export const anglePrompt = (view: (typeof MADE)[number]) => `<sks> ${ANGLE_WORDS[view]} eye-level shot medium shot`;
+/** The front, for straighten: the LoRA turned three-quarter product shots (a crate, a chair) into straight eye-level fronts. */
+export const FRONT_PROMPT = '<sks> front view eye-level shot medium shot';
 
 /** The turnaround's panels, left to right (Pixal3D's own order). */
 export const TURNAROUND = ['front', 'left', 'back', 'right'] as const;
@@ -67,8 +76,7 @@ export type Subject = 'humanoid' | 'creature' | 'prop';
 /** The image.edit prompt for one view. creature: limbs kept apart (Spider Bot, Yo Bot); prop: an object, no pose. */
 export function viewPrompt(view: (typeof MADE)[number], subject: Subject): string {
   const who = subject === 'prop' ? 'the same object' : 'the same character';
-  const text = `${who} ${SIDE[view]}${subject === 'prop' ? PROP_BASE : BASE}${subject === 'creature' ? LIMBS : ''}`;
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  return `${SIDE[view](who)}${subject === 'prop' ? PROP_BASE : BASE}${subject === 'creature' ? LIMBS : ''}`;
 }
 
 /** humanoid is the default; prop is an object; anything else (robot, spider, creature...) keeps its limbs apart in the views. */
@@ -128,7 +136,7 @@ export function badViews(check: ViewCheck, views: readonly string[] = MADE): str
 
 export const viewSheetTool: Tool = {
   id: 'image.viewsheet',
-  version: 3,
+  version: 4,
   title: 'View sheet for 3D (back, left, right + consistency check)',
   description: 'From the cut-out FRONT view of a character (neutral or A-pose, whole body, at least 1024 px), makes the true back, left and right views of the same character ' +
     '(Qwen-Image-Edit 2511, flat even light, plain grey background, each cut out), has Claude check that all four are the same character (colors, props, proportions, limb count) and that each looks the right way, ' +
@@ -144,7 +152,7 @@ export const viewSheetTool: Tool = {
     right: { kind: 'image', description: 'Your own right-side view (cut out).' },
   },
   params: {
-    method: { type: 'enum', values: [...METHODS], default: 'angles', description: 'How the back and side views are made: angles (one edit per view with the Multiple-Angles LoRA, trained on 3D renders), turnaround (one edit drawing all four side by side, then split) or prose (version 2: the direction in words).' },
+    method: { type: 'enum', values: [...METHODS], default: 'prose', description: 'How the back and side views are made: prose (one edit per view, the exact camera move in words: the best measured), angles (the same with the Multiple-Angles LoRA) or turnaround (one edit drawing all four side by side, then split).' },
     form: { type: 'string', default: 'humanoid', description: 'humanoid; robot / creature / spider...: limbs are kept separated and visible in every view; prop: an object, no pose.' },
     look: { type: 'text', description: 'Who or what it is, for the checker (e.g. "Spider Bot: a chrome spider robot with six legs and a red eye").', advanced: true },
     cell: { type: 'integer', min: 1024, max: 2048, default: 1024, description: 'Each view\'s square cell in pixels (1024 or more).' },
@@ -152,7 +160,7 @@ export const viewSheetTool: Tool = {
     check: { type: 'boolean', default: true, description: 'Have Claude compare the views before the sheet is made. Switch off only for a sheet you already trust.', advanced: true },
     background: { type: 'string', default: 'e6e6e6', description: 'Sheet background (hex, flat light grey).', advanced: true },
     seed: { type: 'integer', min: 0, max: 2 ** 31, description: 'Seed for the first take of each view; retries count up. Derived from the inputs when empty.', advanced: true },
-    straighten: { type: 'boolean', default: false, description: 'First turn the picture into a straight eye-level front view (Multiple-Angles LoRA, then cut out), for a product shot seen from above at three quarters. The views and the sheet use that front; the check compares everything with the original.' },
+    straighten: { type: 'boolean', description: 'First turn the picture into a straight eye-level front view (Multiple-Angles LoRA, then cut out): for a product shot seen from above at three quarters. The views and the sheet use that front; the check compares everything with the original. On for form prop unless set false; off for characters (their A-pose is already a front view).' },
     strength: { type: 'number', min: 0.3, max: 1.5, default: 0.9, description: 'method angles: the LoRA strength (0.8 to 1).', advanced: true },
   },
   gpuSeconds: () => 60,
@@ -198,7 +206,7 @@ export const viewSheetTool: Tool = {
     /** Makes one view: the edit, then its cutout. Remembers the edit so a retry doesn't get it back. */
     const make = async (view: (typeof MADE)[number], attempt: number) => {
       const params = method === 'angles'
-        ? { prompt: anglePrompt(view), angles: Number(ctx.params.strength) || 0.9 }
+        ? { prompt: `${anglePrompt(view)}. ${viewPrompt(view, subject)}`, angles: Number(ctx.params.strength) || 0.9 }
         : { prompt: viewPrompt(view, subject) };
       const edit = await submit('image.edit', view, attempt, 'edit', {
         params: { ...params, width: cell, height: cell, seed: base + attempt },
@@ -229,12 +237,12 @@ export const viewSheetTool: Tool = {
       }));
     };
 
-    if (ctx.params.straighten) {
+    if (ctx.params.straighten ?? subject === 'prop') {
       // A product shot seen from above at three quarters is not a front view: the sides made from it come out at
       // eye level, and Pixal3D is posed to the front. Turn the camera to a straight eye-level front first.
       ctx.step('turning the picture to a straight front view');
       const edit = await submit('image.edit', 'front', 0, 'edit', {
-        params: { prompt: '<sks> front view eye-level shot medium shot', angles: Number(ctx.params.strength) || 0.9, width: cell, height: cell, seed: base },
+        params: { prompt: FRONT_PROMPT, angles: Number(ctx.params.strength) || 0.9, width: cell, height: cell, seed: base },
         inputs: { images: [original] },
       });
       front = files.front = await cutout('front', 0, `asset:${edit.outputs?.[0]?.asset}`);
