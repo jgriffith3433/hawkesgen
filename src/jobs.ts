@@ -114,10 +114,11 @@ export function jobTimings(q: { since: number; project?: string; projects?: stri
 
 // A running job's log is written at most about once a second: every line used to rewrite the whole JSON column
 // (up to 300 lines) and emit an event, which starved the HTTP server while playtests and builds logged.
+const LOG_FLUSH_MS = 1000;
 const dirtyLogs = new Map<string, Job>();
 let logTimer: NodeJS.Timeout | null = null;
 
-function flushLogs() {
+export function flushLogs() {
   if (logTimer) { clearTimeout(logTimer); logTimer = null; }
   const jobs = [...dirtyLogs.values()];
   dirtyLogs.clear();
@@ -135,7 +136,7 @@ export function save(job: Job, fields: (keyof Job)[]) {
     if (job.status === 'running' || job.status === 'queued') {
       fields = fields.filter((f) => f !== 'log');
       dirtyLogs.set(job.id, job);
-      logTimer ??= setTimeout(flushLogs, 1000);
+      logTimer ??= setTimeout(flushLogs, LOG_FLUSH_MS);
       if (!fields.length) return;
     } else {
       dirtyLogs.delete(job.id);
