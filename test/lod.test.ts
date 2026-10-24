@@ -163,15 +163,15 @@ test('a model: a low (fewer triangles, small textures) and a mid, on the CPU; th
 });
 
 test("linking: a job's own low copy (model.lod1) becomes its model's, and isn't listed", () => {
-  db.prepare("INSERT INTO jobs (id, client, project, tool, params, inputs, status, created) VALUES ('j_link', 'test', 'sandbox', 'asset.make', '{}', '{}', 'done', 0)").run();
-  const put = (title: string, size: number) => putAsset({ data: Buffer.alloc(size, 1), ext: '.glb', mime: 'model/gltf-binary', client: 'test', project: 'sandbox', tool: 'asset.make', recipe, job: 'j_link', title });
+  db.prepare("INSERT INTO jobs (id, client, project, tool, params, inputs, status, created) VALUES ('j_link', 'test', 'usr_link000000000000', 'asset.make', '{}', '{}', 'done', 0)").run();
+  const put = (title: string, size: number) => putAsset({ data: Buffer.alloc(size, 1), ext: '.glb', mime: 'model/gltf-binary', client: 'test', project: 'usr_link000000000000', tool: 'asset.make', recipe, job: 'j_link', title });
   const high = put('model.high', 5000);
   const low = put('model.lod1', 500);
-  const pic = image(64, 64, { job: 'j_link' });
+  const pic = image(64, 64, { job: 'j_link', project: 'usr_link000000000000' });
   const r = lod.afterJob({ id: 'j_link', tool: 'asset.make', labels: {}, outputs: [high, low, pic].map((a) => ({ asset: a.id, mime: a.mime, title: a.title })) });
   assert.equal(r.linked, 1);
   assert.deepEqual(db.prepare('SELECT low, asset FROM asset_lod_links').all().map((x: any) => ({ ...x })), [{ low: low.id, asset: high.id }]);
-  const listed = listAssets({ project: 'sandbox', tool: 'asset.make' }).items.map((a) => a.id);
+  const listed = listAssets({ project: 'usr_link000000000000', tool: 'asset.make' }).items.map((a) => a.id);
   assert.ok(listed.includes(high.id) && !listed.includes(low.id), 'the low belongs to the model');
   // The model and the picture are queued for their levels; the low isn't (it is the model's).
   const states = Object.fromEntries((db.prepare('SELECT asset, state FROM asset_lod_state WHERE asset IN (?, ?, ?)').all(high.id, low.id, pic.id) as any[]).map((x) => [x.asset, x.state]));
@@ -198,8 +198,10 @@ test('backfill queues each asset once, as asset.lod jobs of Gen (low priority, i
   assert.equal(j.priority, -10);
   assert.deepEqual(j.params.assets, [a.id]);
   assert.equal(lod.backfillLods({ project: 'usr_00000000000000c0' }).queued, 0, 'queued already: nothing twice');
-  assert.equal(lod.backfillLods().queued >= 1, true, 'the rest (b) on a full backfill');
-  assert.ok((db.prepare('SELECT state FROM asset_lod_state WHERE asset = ?').get(b.id) as any).state === 'queued');
+  // A project whose games don't load levels (settings.lod.projects: usr_*, ubeta_*): nothing automatic, asked for by id yes.
+  lod.backfillLods();
+  assert.equal(db.prepare('SELECT state FROM asset_lod_state WHERE asset = ?').get(b.id), undefined, "another product's image gets none on its own");
+  assert.equal(lod.queueLods([b.id], { asked: true }), 1, 'asked for by id: made');
   await lod.flushLods();
 });
 
@@ -232,11 +234,11 @@ test("in-between work gets no levels: of an asset.make chain only the first step
   storage.setStore({ async has(k) { return objects.has(k); }, async put(k, _f, size) { objects.set(k, size); }, async get() {}, async del(keys) { for (const k of keys) { deleted.push(k); objects.delete(k); } } });
   t.after(() => storage.setStore(null));
   const job = 'j_make_lodtest';
-  const step = (n: number, save: string, title: string, from?: string) => putAsset({ data: png(300, 300 + n), ext: '.png', client: 'test', project: 'chain', tool: 'asset.make', recipe, job, title, meta: { save, step: n, ...(from ? { from } : {}) } });
+  const step = (n: number, save: string, title: string, from?: string) => putAsset({ data: png(300, 300 + n), ext: '.png', client: 'test', project: 'usr_chain0000000000', tool: 'asset.make', recipe, job, title, meta: { save, step: n, ...(from ? { from } : {}) } });
   // A best-of-3 pick saves its candidates first (step 1), then the cutout (a background-removal step's picture and mask).
   const candidate = step(1, 'picked', 'picked');
-  const src = image(300, 300, { project: 'chain' });
-  const mask = image(300, 301, { project: 'chain' });
+  const src = image(300, 300, { project: 'usr_chain0000000000' });
+  const mask = image(300, 301, { project: 'usr_chain0000000000' });
   db.prepare("UPDATE assets SET tool = 'image.remove-background', title = 'cutout' WHERE id = ?").run(src.id);
   db.prepare("UPDATE assets SET tool = 'image.remove-background', title = 'mask' WHERE id = ?").run(mask.id);
   const cutout = step(2, 'cutout', 'cutout', src.id);
@@ -255,10 +257,10 @@ test("in-between work gets no levels: of an asset.make chain only the first step
   await storage.idle();
   const viewLevels = db.prepare('SELECT path, sha256 FROM asset_lods WHERE asset = ?').all(view.id) as { path: string; sha256: string }[];
   assert.ok(viewLevels.length > 0);
-  const dry = await lod.pruneLods({ project: 'chain', dryRun: true });
+  const dry = await lod.pruneLods({ project: 'usr_chain0000000000', dryRun: true });
   assert.equal(dry.assets, 1);
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM asset_lods WHERE asset = ?').get(view.id)!.n, viewLevels.length, 'a dry run changes nothing');
-  const r = await lod.pruneLods({ project: 'chain' });
+  const r = await lod.pruneLods({ project: 'usr_chain0000000000' });
   assert.equal(r.assets, 1);
   assert.equal(r.levels, viewLevels.length);
   assert.equal(r.s3, viewLevels.length);
@@ -267,7 +269,7 @@ test("in-between work gets no levels: of an asset.make chain only the first step
   assert.ok((db.prepare('SELECT COUNT(*) AS n FROM asset_lods WHERE asset = ?').get(result.id) as any).n > 0, 'the result keeps its levels');
   assert.equal((db.prepare('SELECT state FROM asset_lod_state WHERE asset = ?').get(view.id) as any).state, 'pruned');
   // The route answers with its own numbers (the status beside them, not over them).
-  const route = await (await fetch(`${base}/v1/lods/prune`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'chain', dryRun: true }) })).json();
+  const route = await (await fetch(`${base}/v1/lods/prune`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'usr_chain0000000000', dryRun: true }) })).json();
   assert.equal(route.assets, 0, 'nothing left to clear');
   assert.equal(route.levels, 0);
   assert.equal(typeof route.status.levels, 'number');

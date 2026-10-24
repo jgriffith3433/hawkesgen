@@ -49,11 +49,17 @@ const BATCH = { image: 24, mesh: 4 };
 
 // (The tables are in db.ts: asset_lods, asset_lod_state, asset_lod_links.)
 
+/** Whether a project's assets get levels automatically (settings.lod.projects: games that load them). */
+export function lodProject(project: string) {
+  return loadSettings().lod.projects.some((g) => (g.endsWith('*') ? project.startsWith(g.slice(0, -1)) : project === g));
+}
+
 /** Whether an asset is a kept result rather than in-between work: not a pipeline step's output, and of an asset.make
  *  chain's saved outputs only its last step's result and its cutouts (a background-removal step's picture, not its
  *  mask: the library's thumbnail). (Not "the first step": a best-of-N pick saves its candidates before the cutout.) */
-export function kept(a: Pick<Asset, 'id' | 'job' | 'title' | 'meta'> | null | undefined): boolean {
+export function kept(a: Pick<Asset, 'id' | 'job' | 'title' | 'meta' | 'project'> | null | undefined): boolean {
   if (!a) return false;
+  if (!lodProject(a.project)) return false;
   if (a.job) {
     const j = db.prepare("SELECT json_extract(labels, '$.parent') AS parent FROM jobs WHERE id = ?").get(a.job) as { parent: string | null } | undefined;
     if (j && j.parent) return false;
@@ -197,7 +203,9 @@ export function backfillLods(o: { project?: string; kind?: 'image' | 'mesh'; lim
  * 'pruned' (asked for by id later, they're made again). -> { assets, levels, bytes } (what would go, with dryRun).
  */
 export async function pruneLods(o: { project?: string; dryRun?: boolean; limit?: number } = {}) {
-  const rows = db.prepare(`SELECT DISTINCT l.asset FROM asset_lods l JOIN assets a ON a.id = l.asset${o.project ? ' WHERE a.project = ?' : ''}`).all(...(o.project ? [o.project] : [])) as { asset: string }[];
+  // Assets with levels, and ones queued or failed without any (outside the projects that use levels, say).
+  const rows = db.prepare(`SELECT asset FROM (SELECT l.asset FROM asset_lods l UNION SELECT s.asset FROM asset_lod_state s WHERE s.state IN ('queued', 'failed')) x
+    JOIN assets a ON a.id = x.asset${o.project ? ' WHERE a.project = ?' : ''}`).all(...(o.project ? [o.project] : [])) as { asset: string }[];
   const gone = rows.map((r) => r.asset).filter((id) => !kept(getAsset(id))).slice(0, Math.max(1, Math.min(1_000_000, o.limit ?? 1_000_000)));
   let levels = 0, bytes = 0;
   const shas: string[] = [];

@@ -73,6 +73,9 @@ export type Settings = {
     /** When a job's models still don't fit after pruning, grow the server's disk up to this many GB (0: never; ~$0.08/GB-month). */
     maxDiskGb: number;
   };
+  /** The LOD system makes levels automatically only for these projects (globs: "usr_*"): the ones whose games load them
+   *  (hawkesgen.com's customers and its starter library, the beta portal's). Anything else asked for by id still gets them. */
+  lod: { projects: string[] };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number; lod: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
@@ -101,6 +104,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   // pipeline: chains (asset.make, film) only wait on their steps; many at once keep a deep queue of each GPU model family,
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
+  lod: { projects: ['usr_*', 'ubeta_*'] },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
   brain: 'claude',
   model: '',
@@ -130,6 +134,7 @@ function clean(s: Settings): Settings {
       pipeline: n(s.concurrency?.pipeline, 1, 1000, SETTINGS_DEFAULTS.concurrency.pipeline),
       lod: n(s.concurrency?.lod, 1, 4, SETTINGS_DEFAULTS.concurrency.lod),
     },
+    lod: { projects: Array.isArray(s.lod?.projects) ? s.lod!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.lod.projects },
     claude: {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),

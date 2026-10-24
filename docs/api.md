@@ -103,6 +103,7 @@ sha, levels: [{ level, bytes, w, h | tris, tex, role, sha }] }`, smallest first 
 | `GET /v1/lods?ids=a_1,a_2,...` (up to 500) | `{ lods: { id: summary }, queued }`: many at once (a game's bundle). Assets without levels yet are queued |
 | `GET /v1/lods/status` | Assets by state, levels made and their bytes, linked low copies, `asset.lod` jobs |
 | `POST /v1/lods/backfill` `{ project?, kind?: image \| mesh, limit?, dryRun? }` | (admin) Links low copies older jobs made, then queues everything kept without levels at this version, newest first. Kept: uploads, top-level jobs' outputs, and of an `asset.make` chain only its first step's picture (not a mask) and its last step's result; the in-between (view sheets, views, masks, raw meshes) and pipeline steps get none. CLI: `hawkesgen lod backfill [--project p] [--kind k]` |
+| (setting) `lod.projects` | The projects whose assets get levels automatically (globs; default `usr_*`, `ubeta_*`: hawkesgen.com's customers and starter library, the beta portal's). Others only when asked for by id (`GET /v1/lods`) |
 | `POST /v1/lods/prune` `{ project?, limit?, dryRun? }` | (admin) Clears levels made for in-between work: their files and their S3 copies (unless the same content is still used). Their state becomes `pruned`; asked for by id later (`GET /v1/lods`), they're made again. CLI: `hawkesgen lod prune [--project p] [--dry-run]` |
 
 ## Library storage (S3)
