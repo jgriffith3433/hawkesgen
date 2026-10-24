@@ -12,6 +12,7 @@
 //   hawkesgen playtester [status|launch [type=..] [region=..]|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [id=i-...] [--yes]
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
 //   hawkesgen storage [status|backfill|restore]      the library's files in S3
+//   hawkesgen lod [status|backfill [--project P] [--kind image|mesh] [--limit N] [--dry-run]]   levels of detail (src/lod.ts)
 //   hawkesgen usage [--days 30] [--by project]
 //   hawkesgen key <name> [--role user|admin|owner] [--projects a,b]
 //
@@ -31,7 +32,7 @@ for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a.startsWith('--')) {
     const [k, v] = a.slice(2).split(/=(.*)/s);
-    const BOOL = new Set(['no-wait', 'yes', 'json']);
+    const BOOL = new Set(['no-wait', 'yes', 'json', 'dry-run']);
     const val = v ?? (!BOOL.has(k) && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : 'true');
     (flags[k] ??= []).push(val);
   } else pos.push(a);
@@ -246,6 +247,18 @@ async function main() {
       console.log(`bucket: ${r.bucket ?? 'none (settings.storage.bucket)'}`);
       console.log(`${r.backedUp} of ${r.files} files backed up (${gb(r.backedUpBytes)} of ${gb(r.bytes)}), ${r.queued} uploading${r.failures ? `, ${r.failures} failed (${r.lastError})` : ''}`);
       if (sub === 'backfill') console.log(`queued ${r.added} more`);
+      return;
+    }
+    case 'lod': {
+      // The LOD system: every image's and model's smaller copies (src/lod.ts). backfill queues what has none yet.
+      const sub = rest[0] ?? 'status';
+      const mb = (b: number) => `${(b / 1048576).toFixed(1)} MB`;
+      const r = sub === 'backfill'
+        ? await gen.request('/lods/backfill', { method: 'POST', body: { project: flag('project'), kind: flag('kind'), limit: Number(flag('limit')) || undefined, dryRun: flag('dry-run') === 'true' } })
+        : await gen.request('/lods/status');
+      if (sub === 'backfill') console.log(flag('dry-run') ? `would queue ${r.found} assets (${r.linked} jobs with low copies to link)` : `queued ${r.queued} of ${r.found} found; linked ${r.linked} low copies`);
+      console.log(`LOD v${r.version}: ${Object.entries(r.assets).map(([k, n]) => `${n} ${k}`).join(', ') || 'nothing yet'}; ${r.levels} levels (${mb(r.bytes)}), ${r.links} linked lows`);
+      console.log(`asset.lod jobs: ${Object.entries(r.jobs).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}`);
       return;
     }
     case 'usage': {

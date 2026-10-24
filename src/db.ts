@@ -255,6 +255,46 @@ for (let i = version; i < MIGRATIONS.length; i++) {
   }
 }
 
+// The LOD system (src/lod.ts): every image's and model's smaller copies belong to it (asset_lods), what's made per
+// asset (asset_lod_state), and low copies a job made beside its model (asset_lod_links: hidden from lists). Created if
+// missing rather than as a numbered migration, so it can't collide with another branch's next migration.
+db.exec(`
+CREATE TABLE IF NOT EXISTS asset_lods (
+  asset TEXT NOT NULL REFERENCES assets (id) ON DELETE CASCADE,
+  level INTEGER NOT NULL,
+  role TEXT,
+  mime TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  width INTEGER,
+  height INTEGER,
+  triangles INTEGER,
+  texture INTEGER,
+  path TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  PRIMARY KEY (asset, level)
+);
+CREATE TABLE IF NOT EXISTS asset_lod_state (
+  asset TEXT PRIMARY KEY REFERENCES assets (id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  job TEXT,
+  width INTEGER,
+  height INTEGER,
+  triangles INTEGER,
+  texture INTEGER,
+  tries INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  updated INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS asset_lod_state_state ON asset_lod_state (state, updated);
+CREATE TABLE IF NOT EXISTS asset_lod_links (
+  low TEXT PRIMARY KEY REFERENCES assets (id) ON DELETE CASCADE,
+  asset TEXT NOT NULL REFERENCES assets (id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS asset_lod_links_asset ON asset_lod_links (asset);
+`);
+
 /** Parses the JSON columns of a row. */
 export function parseRow<T = any>(row: any, json: string[]): T {
   if (!row) return row;

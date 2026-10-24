@@ -91,6 +91,8 @@ export function listAssets(q: { project?: string; kind?: string; tool?: string; 
   if (q.starred) where.push('starred = 1');
   if (q.text) { where.push('(title LIKE :text OR labels LIKE :text OR tags LIKE :text OR recipe LIKE :text)'); args.text = `%${q.text}%`; }
   if (q.projects) { const scope = projectScopeSql(q.projects); if (scope) where.push(scope); }
+  // A low copy a job made beside its model belongs to the model (src/lod.ts): it isn't listed on its own.
+  if (!q.job) where.push('id NOT IN (SELECT low FROM asset_lod_links)');
   const sql = `FROM assets ${where.length ? `WHERE ${where.join(' AND ')}` : ''}`;
   const limit = Math.max(1, Math.min(500, q.limit ?? 60));
   const items = db.prepare(`SELECT * ${sql} ORDER BY created DESC LIMIT ${limit} OFFSET ${Math.max(0, q.offset ?? 0)}`).all(args as any).map((r) => parseRow<Asset>(r, JSON_COLS));
@@ -116,6 +118,8 @@ export function deleteAsset(assetId: string) {
   const a = getAsset(assetId);
   if (!a) return false;
   fs.rmSync(a.path, { force: true });
+  // Its levels of detail go with it (the rows by the foreign key; the files here).
+  for (const l of db.prepare('SELECT path FROM asset_lods WHERE asset = ?').all(assetId) as { path: string }[]) fs.rmSync(l.path, { force: true });
   db.prepare('DELETE FROM assets WHERE id = ?').run(assetId);
   return true;
 }

@@ -172,6 +172,7 @@ export const INTERNAL_ONLY_TOOLS = new Set([
   'unity.test',
   'playtest.run',
   'playtest.review',
+  'asset.lod', // the LOD system's own work (src/lod.ts): Gen queues it, nobody else
 ]);
 
 export function isInternalOnlyTool(toolId: string): boolean {

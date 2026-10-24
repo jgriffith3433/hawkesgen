@@ -89,6 +89,9 @@ export type Tool = {
   title: string;
   description: string;
   provider: 'comfy' | 'elevenlabs' | 'anthropic' | 'gemini' | 'local' | 'builder' | 'playtest' | 'pipeline';
+  /** A lane of its own instead of its provider's (asset.lod: `lod`, one at a time). `yieldTo`: it waits while any job of
+   *  those lanes runs or waits (customers' CPU work first). */
+  lane?: { name: string; limit: () => number; yieldTo?: string[] };
   /** For ComfyUI tools: the set of models it loads (servers swap between families). */
   family?: string | ((params: Record<string, any>) => string);
   output: 'image' | 'video' | 'audio' | 'text' | 'json' | 'mesh' | 'file';

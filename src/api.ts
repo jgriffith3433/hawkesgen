@@ -20,6 +20,7 @@ import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putA
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
+import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, lodStatus } from './lod.ts';
 import { usageSummary } from './usage.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
@@ -98,6 +99,12 @@ async function readJson(req: IncomingMessage) {
   } catch {
     throw new GenError('The body is not JSON');
   }
+}
+
+/** A library list with each asset's levels of detail inline (src/lod.ts), so callers need no request per asset. */
+function withLods<T extends { items: any[] }>(list: T): T {
+  const lods = lodSummaries(list.items.map((a) => a.id));
+  return { ...list, items: list.items.map((a) => (lods[a.id] ? { ...a, lods: lods[a.id] } : a)) };
 }
 
 function serveFile(req: IncomingMessage, res: ServerResponse, file: string, mime = mimeOf(file), extra: Record<string, string> = {}) {
@@ -812,6 +819,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           }).id;
         }
         if (!assetId) throw new GenError('Send asset (an asset id) or file (blob:<sha256> or asset:<id>)');
+        queueLods([assetId]);
         return send(res, 200, lib.addVersion(client, { entity: entityId, slot, asset: assetId, status: b.status, note: b.note, by: client.name }));
       }
       if (slot && (action === 'make' || action === 'revise') && method === 'POST') {
@@ -857,6 +865,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         recipe: { tool: 'file.import', version: 1, params: { title: title || null }, inputs: { file: sha } },
         title: (title || filename || 'Uploaded file').slice(0, 200),
       });
+      // An uploaded image or model gets its levels of detail like a made one (src/lod.ts).
+      queueLods([asset.id]);
       return send(res, 200, { ...asset, asset, blob: `blob:${sha}` });
     }
     if ((route === '/v1/assets' || route === '/v1/library') && method === 'GET') {
@@ -869,11 +879,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           return send(res, 200, motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset }));
         }
         const assets = listAssets({ project: fixedProject(client) ?? q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest: false, limit, offset, projects: client.projects });
-        return send(res, 200, assets);
+        return send(res, 200, withLods(assets));
       }
       const motions = playtest ? { items: [], total: 0 } : motionsForQuery({ text: q('q'), tool: q('tool'), kind: q('kind'), job: q('job'), starred: q('starred') === '1', limit, offset });
       if (q('tool') === 'motion.library') return send(res, 200, motions);
-      const assets = listAssets({ project: q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest, limit, offset, projects: client.projects });
+      const assets = withLods(listAssets({ project: q('project'), kind: q('kind'), tool: q('tool'), text: q('q'), job: q('job'), starred: q('starred') === '1', playtest, limit, offset, projects: client.projects }));
       if (!motions.total) return send(res, 200, assets);
       return send(res, 200, { items: [...motions.items, ...assets.items].slice(0, limit), total: motions.total + assets.total });
     }
@@ -885,12 +895,21 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const allowed = a && (canProject(client, a.project) || a.project === 'public');
       if (!a || !allowed) throw new GenError('No such asset', { status: 404 });
       if (isFileRoute && method === 'GET') {
+        // ?lod=<n>: the level of detail for n (px for images, triangles for models; src/lod.ts pickLod), else the original.
+        const lod = q('lod') ? pickLod(a.id, Number(q('lod'))) : null;
+        const file = lod ?? { path: a.path, mime: a.mime, sha256: a.sha256, level: null };
         // Not on this disk (a new server): from S3, the first time it's asked for.
-        if (!fs.existsSync(a.path) && !(await storage.ensureLocal(a))) throw new GenError(`${a.id}'s file is missing here and not in the library's S3 bucket`, { status: 404 });
-        const name = `${a.project}-${a.tool}-${a.id}${path.extname(a.path)}`;
-        return serveFile(req, res, a.path, a.mime, q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {});
+        if (!fs.existsSync(file.path) && !(await storage.ensureLocal(file))) throw new GenError(`${a.id}'s file is missing here and not in the library's S3 bucket`, { status: 404 });
+        // Content-addressed: the ETag is the file's hash, and a link that names it (?v=<hash prefix>) never changes.
+        const etag = `"${file.sha256}"`;
+        const v = q('v');
+        const cache: Record<string, string> = { ETag: etag, 'Cache-Control': v && v.length >= 8 && file.sha256.startsWith(v) ? 'public, max-age=31536000, immutable' : 'private, max-age=300' };
+        if (lod) cache['X-Lod-Level'] = String(lod.level);
+        if (String(req.headers['if-none-match'] ?? '') === etag) { res.writeHead(304, cache); return void res.end(); }
+        const name = `${a.project}-${a.tool}-${a.id}${lod ? `.lod${lod.level}` : ''}${path.extname(file.path)}`;
+        return serveFile(req, res, file.path, file.mime, { ...cache, ...(q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {}) });
       }
-      if (method === 'GET') return send(res, 200, a);
+      if (method === 'GET') return send(res, 200, { ...a, lods: lodSummary(a.id) });
       if (method === 'PATCH') {
         if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
         return send(res, 200, updateAsset(a.id, await readJson(req)));
@@ -899,6 +918,23 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         requireRole(client, 'admin');
         return send(res, 200, { deleted: deleteAsset(a.id) });
       }
+    }
+    // ---------------------------------------------------------- levels of detail (src/lod.ts)
+    // The levels of many assets at once (a game's bundle, a library page): one request, not one per asset. Assets that
+    // should have levels and have none yet (made before the LOD system) are queued on the way.
+    if (route === '/v1/lods' && method === 'GET') {
+      const ids = String(q('ids') ?? '').split(',').map((s) => s.trim()).filter((s) => /^a_[0-9a-f]+$/.test(s)).slice(0, 500);
+      const mine = ids.filter((id) => { const x = getAsset(id); return x && (canProject(client, x.project) || x.project === 'public'); });
+      const lods = lodSummaries(mine);
+      const queued = queueLods(mine.filter((id) => !lods[id]));
+      return send(res, 200, { lods, queued });
+    }
+    if (route === '/v1/lods/status' && method === 'GET') return send(res, 200, lodStatus());
+    if (route === '/v1/lods/backfill' && method === 'POST') {
+      requireRole(client, 'admin');
+      const b = await readJson(req);
+      const kind = b.kind === 'image' || b.kind === 'mesh' ? b.kind : undefined;
+      return send(res, 200, { ...backfillLods({ project: typeof b.project === 'string' ? b.project : undefined, kind, limit: Number(b.limit) || undefined, dryRun: b.dryRun === true }), ...lodStatus() });
     }
     if (route === '/v1/blobs' && method === 'POST') {
       const data = await readBody(req, 2 * 1024 * 1024 * 1024);

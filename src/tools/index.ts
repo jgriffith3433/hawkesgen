@@ -22,6 +22,7 @@ import { motionFromTextTool } from './motion.ts';
 import { sheetTool } from './sheet.ts';
 import { viewSheetTool } from './viewsheet.ts';
 import { decorateMeshTool, orderTools } from './threed.ts';
+import { assetLodTool } from '../lod.ts';
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
@@ -32,6 +33,7 @@ const BUILT_IN: Tool[] = [
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
   blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
+  assetLodTool,
 ];
 
 export let TOOLS: Tool[] = [];
