@@ -40,6 +40,7 @@ import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
+import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import {
   authenticateRequest,
@@ -203,6 +204,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   const route = url.pathname;
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   const method = req.method ?? 'GET';
+  noteRoute(method, route);
 
   // Player analytics from every product's pages: public, with its own CORS for the registered origins (src/analytics/).
   if (route === '/v1/analytics/collect') return handleCollect(req, res);
@@ -283,6 +285,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         // (the deploy script waits for these only; everything else resumes after a restart).
         building: (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND tool IN ('unity.build', 'unity.test')").get() as any).n,
         client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
+        // Event-loop lag: the worst delay seen and the recent blocks over 500 ms, with the requests around them.
+        loop: lagReport(),
       });
     }
 

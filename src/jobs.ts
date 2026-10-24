@@ -112,7 +112,33 @@ export function jobTimings(q: { since: number; project?: string; projects?: stri
   return { since: q.since, at: now, tools };
 }
 
-function save(job: Job, fields: (keyof Job)[]) {
+// A running job's log is written at most about once a second: every line used to rewrite the whole JSON column
+// (up to 300 lines) and emit an event, which starved the HTTP server while playtests and builds logged.
+const dirtyLogs = new Map<string, Job>();
+let logTimer: NodeJS.Timeout | null = null;
+
+function flushLogs() {
+  if (logTimer) { clearTimeout(logTimer); logTimer = null; }
+  const jobs = [...dirtyLogs.values()];
+  dirtyLogs.clear();
+  for (const job of jobs) {
+    db.prepare('UPDATE jobs SET log = :log WHERE id = :id').run({ id: job.id, log: J(job.log) });
+    events.emit('job', summary(job));
+  }
+}
+process.on('exit', () => { try { flushLogs(); } catch { /* shutting down */ } });
+
+export function save(job: Job, fields: (keyof Job)[]) {
+  if (fields.includes('log')) {
+    if (job.status === 'running' || job.status === 'queued') {
+      fields = fields.filter((f) => f !== 'log');
+      dirtyLogs.set(job.id, job);
+      logTimer ??= setTimeout(flushLogs, 1000);
+      if (!fields.length) return;
+    } else {
+      dirtyLogs.delete(job.id);
+    }
+  }
   const sets = fields.map((f) => `${f} = :${f}`).join(', ');
   const args: Record<string, any> = { id: job.id };
   for (const f of fields) args[f] = JSON_COLS.includes(f) ? J(job[f]) : (job[f] as any);

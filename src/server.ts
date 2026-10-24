@@ -5,6 +5,7 @@ import http from 'node:http';
 import { HOST, PORT, DATA_DIR } from './config.ts';
 import { handle } from './api.ts';
 import { queue } from './jobs.ts';
+import { startLagMonitor } from './lag.ts';
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch((e) => {
@@ -28,6 +29,7 @@ process.on('unhandledRejection', (e: any) => console.error(`[unhandled rejection
 
 server.listen(PORT, HOST, () => {
   console.log(`Hawkes Gen on http://${HOST}:${PORT}  (data: ${DATA_DIR})`);
+  startLagMonitor();
   queue.start();
   void import('./storage.ts').then((m) => m.resumeOnStart()).catch((e) => console.warn(`[storage] ${e.message}`));
   // Analytics: the daily rollups and the 13-month purge, and the GeoIP database (downloaded monthly).
