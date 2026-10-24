@@ -22,13 +22,21 @@ TRELLIS.2: front, back, left and right of the same character in one sheet), and 
 
 - **`image.viewsheet`** makes the sheet. Give it the cut-out front view (A-pose or a neutral pose, at least 1024 px).
   It makes the true back, left and right views of the same character (Qwen-Image-Edit 2511 through `image.edit`: flat
-  even light, plain light grey background, each view cut out), then **has Claude compare all four** (same colors, props,
+  even light, plain light grey background, each view cut out; see "How views are made"), then **has Claude compare all four** (same colors, props,
   proportions and limb count; each view really the direction it should be; the whole body in frame). A bad view is made
   again (`retries`, 2 by default, new seed each time, the rejected take is never handed back); if it still does not match
   the job fails with Claude's reason, **before** any 3D GPU time is spent (check costs cents). Outputs: `sheet` (front,
   back, left, right in 1024 px cells on flat grey, a library asset you can look at), `front`, `back`, `left`, `right`.
   Pass your own `back`/`left`/`right` (cut out) to use real art for a view. `image.sheet` lays views you already have.
+  It refuses a black and white mask as the front (pass image.remove-background's `cutout`, not its first output).
   `image.angles` is not a substitute: its angles are close-up, wide, aerial, low and 45°/90° left and right, so it has no back.
+- **`mesh.views3d`** (version 3) takes the four views as `front`, `back`, `left`, `right` (recipes pass image.viewsheet's
+  outputs: `"front": "$prev:front"`…), or one sheet as `image` (split by its width into 4 equal panels,
+  front|back|left|right). Gen frames them in code (`post/prep.py views`): each cut out (its alpha, or what differs from the
+  border), on black, square 1024, **every view at the same scale** (the object's height is made the same in each, as it
+  is from any side at eye level) with the widest spanning 1/1.1 of the frame, as Pixal3D's tooltip asks. The four views
+  Pixal3D received are saved with the GLB (`front view`, `left view`, `back view`, `right view`): look at them first when
+  a mesh is wrong. The GLB faces glTF +Z (-Y in blender.character, its front camera).
 - **`mesh.textured`, `mesh.from-image` and `mesh.from-views` are deprecated** ("one view guesses the back; use
   `mesh.views3d`"). They stay for recipes that already exist. `mesh.textured` and `mesh.from-image` **refuse a call with
   one image** and the error says how to get the views, unless it passes `allowSingleView: true` (props and blockouts
@@ -38,6 +46,73 @@ TRELLIS.2: front, back, left and right of the same character in one sheet), and 
   which are aliases now), the kind `character3d` (slots `sheet` then `mesh`), and the props: preset `shared/prop3d`
   (`phorigins/prop` and `yoobaland/prop` are aliases of it) and the PH Origins `prop` kind's `model` slot (its reference is
   a straight front view now).
+
+### View order and orientation
+
+Gen's views are always front, back, left, right, and **left is the view from your left as you face the front**: the
+camera moves 90° to the viewer's left, so the object faces the RIGHT edge of the picture and shows its own right side.
+`right` is the mirror case. blender.character's `angles` stills use the same names (left = camera at -X, the
+character facing -Y). Pixal3D's conditioning node names them the other way round (its `left` input wants the object
+facing left), so mesh.views3d's graph wires Gen's `left` to Pixal3D's `right` and Gen's `right` to its `left`.
+
+How that was settled (2026-10-23): The Mechanic holds a wrench in his right hand. Wired by name (version 2), his mesh
+faced backwards (+Y in Blender) with the wrench in his left hand; crossed, the same views and seed gave a mesh facing
+the right way with the wrench in his right hand, and every still matched its view. ComfyUI's example sheet for the
+template (front|left|back|right, its second panel facing right) is misleading. On a left/right-symmetric prop (chair,
+crate, apple) the wrong wiring only shows as the model turned 180°.
+
+### How views are made (image.viewsheet version 4)
+
+- **Props are straightened first** (`straighten`, on for `form: prop` unless set false): a generated "front view" of a
+  crate or chair is usually a three-quarter product shot from above. fal's Multiple-Angles LoRA
+  (`qwen-image-edit-2511-multiple-angles-lora`, prompt `<sks> front view eye-level shot medium shot`, strength 0.9; image.edit's
+  `angles` param) turns it into a straight eye-level front, which is cut out and used as the front for everything. The
+  check also sees the original picture, so a straightened front that changed the object is refused.
+- **Each side is one edit with the exact camera move in words** (`method: prose`, the default): "An exact 90 degree side
+  profile of the same object, the camera moved 90 degrees to the left, the front of it facing the right edge of the
+  picture, …"; the back is "The back of the same object, seen from directly behind (180 degrees from the front), …".
+- `method: angles` puts the LoRA's own words in front of those (`<sks> left side view eye-level shot medium shot. …`);
+  `method: turnaround` draws front|left|back|right in one 4:1 edit with the front in panel 1 and splits it (the
+  community Pixal3D multi-view recipe).
+
+Measured on a crate and a chair from the starter pack (straightened fronts; 2 seeds where noted):
+
+| Method | Crate sides | Chair sides | Notes |
+|---|---|---|---|
+| LoRA words alone (`<sks> left side view …`, strength 0.9, 1.0 or 1.2, with or without Lightning) | three-quarter | three-quarter (about 60°) | never a 90° profile |
+| LoRA words + exact words (`angles`) | warped boxes (2 seeds) | true profiles, right way (2 seeds) | |
+| Exact words alone (`prose`) | true profiles (2 seeds) | true profiles; 1 of 4 sides faced the wrong way | the check catches a wrong-way side |
+| One turnaround edit (`turnaround`) | clean straight sides | a side drawn as the front again (2 of 3 runs), a broken back | |
+| Old prose (version 2: "seen from the left side, a true 90 degree side profile") from the 3/4 front | the same 3/4 view again | mixed | 31 of 55 starter props refused |
+
+So version 4 straightens props and uses the exact words; the check (Claude) refuses a side that faces the wrong way.
+
+### What was wrong before (2026-10-23)
+
+1. **The converter dropped widgets with no socket.** `ImageCropV2.crop_region` (a `BOUNDING_BOX`, `socketless`) never
+   reached the graph, so ComfyUI cropped its default top-left 512×512 for all four views: Pixal3D saw the same corner
+   four times. `src/workflows/convert.ts` now keeps socketless widgets and widget types it doesn't know that have a real
+   default (only additions: no other template's values moved; `test/convert.test.ts`).
+2. **The template's crops were for its own 6336 px sheet** (front|left|back|right, uneven widths); Gen's sheets are
+   front|back|left|right in equal cells of 1024 to 2048 px. mesh.views3d no longer crops in the graph (see above).
+3. **The template crops each view to its own bounding box**, so a wide front and a narrow side came out at different
+   scales. Framing is now in code at one scale.
+4. **Left and right were crossed** (above).
+5. **The views were made the weak way** (one plain edit per view from a three-quarter front).
+6. One old starter recipe passed image.remove-background's first output (the mask) to image.viewsheet: the Shield's
+   "views" were white discs. Recipes must name `:cutout`; the viewsheet now refuses a mask.
+
+### Tested on the GPU (2026-10-23, project test-3dfix)
+
+- Chair (`j_6dceb5b72c31`, GLB `a_1d2b4f2146857ef7`), crate (`j_46943fed5bb1`, `a_566855496fbfe555`), apple (`j_c38c79fae1b6`,
+  `a_fe4ab0d9852fd905`): Pixal3D received four distinct, correctly framed views; the meshes are a clean chair (report score 98),
+  a slatted crate with its brackets (90, a darker orange texture than the picture) and an apple (83). These ran on the
+  version-2 wiring, so they face +Y; the props are symmetric, so only the 180° turn shows.
+- The Mechanic (DoD concept `a_7801ee0a2404c92c`): cutout → viewsheet (humanoid, passed Claude's check first time) →
+  mesh.views3d: `j_30b570226542` (by name, mirrored) and `j_27d4d011ea18` (crossed, right). The character mesh is
+  "messy" by the report (score 59: 8 pieces, about 1,800 non-manifold edges): the cartoon art is thin. Run the
+  `fix`/`retopo` ops (shared/character3d does).
+- Costs: about $0.10–0.33 of GPU per mesh.views3d run (5–10 minutes on a g6e), a few cents per viewsheet.
 
 ### Robots and creatures (Spider Bot, Yo Bot)
 
@@ -148,7 +223,7 @@ clips with their frame counts, what each op did, and the warnings.
 
 ### Cleaner generated characters (preset `shared/character3d`)
 
-Generated meshes are the problem: floating shards, holes, lopsided bodies, 100k noisy triangles and a texture guessed on the back. `shared/character3d` runs: A-pose → cutout → `image.viewsheet` (back, left, right, checked, laid in a sheet) → `mesh.views3d` best-of-3 → Blender `report`, `fix`, `symmetrize`, `retopo` (about 8k quads), `bake` (from the raw mesh), `report`, `lod`, `budget`, a web GLB and `collision` → `mesh.rig`. Tested: the Blender ops, locally, on a deliberately messy mesh (`test/character-art.test.ts`); the preset's references, ops and "never one view" rule are validated (`test/threed.test.ts`). Not tested end to end: the GPU steps and `image.viewsheet` against real Qwen output. Compare the two `report` scores and the turntables on the first real characters.
+Generated meshes are the problem: floating shards, holes, lopsided bodies, 100k noisy triangles and a texture guessed on the back. `shared/character3d` runs: A-pose → cutout → `image.viewsheet` (back, left, right, checked, laid in a sheet) → `mesh.views3d` best-of-3 → Blender `report`, `fix`, `symmetrize`, `retopo` (about 8k quads), `bake` (from the raw mesh), `report`, `lod`, `budget`, a web GLB and `collision` → `mesh.rig`. Tested: the Blender ops, locally, on a deliberately messy mesh (`test/character-art.test.ts`); the preset's references, ops and "never one view" rule are validated (`test/threed.test.ts`). The views and mesh.views3d were run on the GPU for three props and one character ("Tested on the GPU" above); the whole preset (A-pose, best-of-3, retopo, rig) has not been run end to end since.
 
 ## The ops
 
@@ -163,7 +238,7 @@ The first op is always `import`. The rest run in order, and any op can come more
 | `fix` | `shards` (0.02), `holes` (12), `merge` (0.0001 m), `smooth` (0) | Repairs a generated mesh: merges doubles, removes degenerate faces and loose edges, deletes pieces smaller than `shards` of the biggest piece's area, fills holes up to `holes` edges, recalculates normals. Returns before and after metrics. |
 | `symmetrize` | `side` (`auto`, `+X`, `-X`), `center`, `merge` | Mirrors the denser half over the other so a lopsided generated figure is left/right the same. Static meshes only (before rigging). |
 | `retopo` | `faces` (8000), `mode` (`quad` or `voxel`), `symmetry`, `fix` (true), `seed` | Rebuilds the surface with clean quads (Quadriflow; voxel remesh and decimate as a fallback). The original is kept as the bake source, and the result reports the silhouette error against it. Fails on a rigged character: retopologise before `mesh.rig`. |
-| `project` | `views!` (`[{ file, view: front/left/back/right or degrees, weight }]`), `size` (2048), `sharpness` (2), `margin`, `rebuild_uv` | Paints the color texture from cutout pictures (a PNG per view, background removed) projected onto the mesh. Each texel takes its color from the views that face it, weighted by angle, with occlusion; texels no view sees keep the baked color; seams are dilated. Writes `<name>_color.png` and sets the material. Azimuth: 0 front (the camera at -Y), 90 the character's left, 180 back, 270 right. Run it after `bake`. |
+| `project` | `views!` (`[{ file, view: front/left/back/right or degrees, weight }]`), `size` (2048), `sharpness` (2), `margin`, `rebuild_uv` | Paints the color texture from cutout pictures (a PNG per view, background removed) projected onto the mesh. Each texel takes its color from the views that face it, weighted by angle, with occlusion; texels no view sees keep the baked color; seams are dilated. Writes `<name>_color.png` and sets the material. Azimuth: 0 front (the camera at -Y), 90 the camera at +X (the `right` view: it sees the character's own left side), 180 back, 270 the `left` view (camera at -X). View names mean what they mean in `image.viewsheet` (below). Run it after `bake`. |
 | `lod` | `levels` (`[0.5, 0.25, 0.1]`), `name`, `compress`, `textures` | Writes a lower-detail GLB per ratio (`character_LOD1.glb`…). `compress` and `textures` work as in `export`. |
 | `pack` | `size` (largest source, 64 to 4096), `ao` (a picture's file index) | Packs roughness, metallic and optional ambient occlusion into one ORM texture (R occlusion, G roughness, B metallic: glTF's layout), so a material samples fewer textures. A material whose roughness and metallic are plain numbers needs no texture and is left alone (reported under `skipped`). Run it before `export`. |
 | `collision` | `mode` (`hulls`, `hull`, `box`, `capsule`), `faces` (64 per hull, 8 to 256), `parts` (5 slabs along the height, 1 to 16), `name` | Physics proxies. `hulls` and `hull` write `<name>_collision.glb` with convex meshes named `UCX_<name>_NN` (Unreal reads them as collision; Unity and Godot use them as MeshCollider and ConvexPolygonShape3D). `box` and `capsule` also report their size (`capsule`: radius, height, center in the result and `character.json`). |
@@ -181,7 +256,7 @@ The first op is always `import`. The rest run in order, and any op can come more
 | `split` | `by` (`connected`, `centers` or `both`; default `connected`, or `centers` when `parts` is given), `kind`, `parts`, `label`, `angles`, `segments`, `size` | Hard-surface robots: cut the mesh into named parts. `connected` splits loose pieces; `centers` (or a `kind` guess / Claude labels) assigns vertices to the nearest part centre. `label: true` renders four angles and asks Claude for centres that match the template roles, then continues. |
 | `template` | `kind!` (`spider`, `quadarm`, `biped`, `chain`), `parts`, `segments`, `smooth` (0.02 m) | Builds a robot skeleton fitted to the parts and binds each part rigidly to one bone (a short blend only where parts meet). Replaces any previous armature. Spider = 6 legs; quadarm = 4 legs + 2 arms (Yo Bot); biped = simple humanoid; chain = `segments` bones along the long axis. |
 | `clips` | `list` / `clips` (default set), `kind`, `segments` | Procedural takes for the current template: walk / run (gait `tripod` or `wave`), idle sway, attack (`stab` / `swipe` / `slam`), hit, death, jump. Omit `list` for the full starter set. |
-| `angles` | `size` (512) | Four orthographic stills (front / right / back / left) without changing the mesh. Titles `angle/front`… Used when `asset.make` picks among mesh candidates. |
+| `angles` | `size` (512) | Four stills (front / right / back / left: cameras at -Y, +X, +Y, -X) without changing the mesh, evenly lit (a key and fill that follow the camera, a grey world for ambient, Cycles 24 samples with denoising). Titles `angle/front`… Used when `asset.make` picks among mesh candidates. |
 | `export` | `format` (`fbx`, `glb` or `blend`), `name` (`character`), `clips` (all), `bones` (FBX: `mixamo`, or `generic` / `keep` for robots), `title` (the format, unless set), `compress` (GLB: `draco`), `textures` (GLB: `webp`, `jpeg`, `png`), `level` (Draco 0 to 10, 6) | Writes the file. `title` is the name the library files it under when one job writes several GLBs. `compress: "draco"` and `textures: "webp"` make a much smaller GLB for the web; the engine needs the Draco decoder, and WebP needs `EXT_texture_webp` support. Keep an uncompressed GLB too (`mesh.rig` and editing want it). The result reports `bytes`. Details below. |
 | `preview` | `turntable` (true), `clips` (all), `size` (512), `seconds` (6), `engine` (cycles), `samples` (16), `maxFrames` (300) | Makes a turntable of the rest pose (the camera goes once around) and a still, plus a video of each clip from a three-quarter view. The camera follows a clip that travels. All of these are rendered by `hawkes_blender.py` (blender.render's shot) from a GLB of the character. |
 
@@ -289,7 +364,7 @@ include the shared kinds. A save drops any shared kind it didn't change.
 | `concept` | `image.generate` (or upload) | name and look: a turnaround / reference |
 | `apose` | `image.edit` (Qwen 2511) | `concept`: "same character, A-pose, arms 45 degrees down, legs apart, front view, plain background" |
 | `cutout` | `image.remove-background` | `apose` |
-| `sheet` | `image.viewsheet`: true back, left and right of the same character, Claude's consistency check (bad views made again), laid out as front\|back\|left\|right on flat grey. `data.form` robot/creature keeps limbs apart | `cutout` (+ `data.look` for the check) |
+| `sheet` | `image.viewsheet`: true back, left and right of the same character, Claude's consistency check (bad views made again), laid out as front\|back\|left\|right on flat grey (the views are also filed by the job). `data.form` robot/creature keeps limbs apart | `cutout` (+ `data.look` for the check) |
 | `angles` | `image.angles` (optional) | `cutout`: close-up, wide, aerial, low and 45°/90° looks, for reference only |
 | `mesh` | `asset.make`: `mesh.views3d`, 3 candidates, Claude picks from **4-angle Blender stills** against the concept (`refs`), then `blender.character` clean (25k tris) + bake | `sheet` (+ concept as ref) |
 | `rig` | humanoid: `mesh.rig`; robot (`data.form=robot`): `blender.character` split/template/clips (`data.template`) | `mesh`; walk/turntable → `preview/turntable` |

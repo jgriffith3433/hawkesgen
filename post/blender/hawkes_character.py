@@ -2230,14 +2230,16 @@ def op_lod(o):
     return {"op": "lod", "from": tris, "levels": made}
 
 
-VIEW_ANGLES = {"front": 0, "left": 90, "back": 180, "right": 270}
+# View names as Gen uses them everywhere (image.viewsheet, the angles op): "left" is the camera moved to the viewer's left
+# (at -X, azimuth 270), seeing the character's own right side.
+VIEW_ANGLES = {"front": 0, "right": 90, "back": 180, "left": 270}
 
 
 def _view_azimuth(v):
     a = v.get("view", v.get("angle", 0))
     if isinstance(a, str):
         if a not in VIEW_ANGLES:
-            fail(f"project: view {a!r} is front, left, back, right or an angle in degrees (0 = the front, 90 = the character's left)")
+            fail(f"project: view {a!r} is front, left, back, right or an angle in degrees (0 = the front, 90 = the camera at +X, seeing the character's own left side)")
         return VIEW_ANGLES[a]
     return float(a)
 
