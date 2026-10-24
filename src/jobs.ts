@@ -122,8 +122,10 @@ function flushLogs() {
   const jobs = [...dirtyLogs.values()];
   dirtyLogs.clear();
   for (const job of jobs) {
-    db.prepare('UPDATE jobs SET log = :log WHERE id = :id').run({ id: job.id, log: J(job.log) });
-    events.emit('job', summary(job));
+    // Only while the job is still queued or running: a cancel through another copy of the job (getJob) may have
+    // finished it since, and this copy's old status must not go out as an event.
+    const r = db.prepare("UPDATE jobs SET log = :log WHERE id = :id AND status IN ('queued', 'running')").run({ id: job.id, log: J(job.log) });
+    if (r.changes) events.emit('job', summary(job));
   }
 }
 process.on('exit', () => { try { flushLogs(); } catch { /* shutting down */ } });
