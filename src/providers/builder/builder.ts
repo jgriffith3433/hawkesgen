@@ -37,6 +37,7 @@ import { rdpText } from './rdp.ts';
 
 /** Windows on-demand prices (US East), for estimates. */
 export const BUILDER_TYPES: Record<string, { vcpus: number; memory: number; price: number }> = {
+  'm7i.xlarge': { vcpus: 4, memory: 16, price: 0.386 },
   'm7i.2xlarge': { vcpus: 8, memory: 32, price: 0.771 },
   'c7i.4xlarge': { vcpus: 16, memory: 32, price: 1.45 },
   'm7i.4xlarge': { vcpus: 16, memory: 64, price: 1.542 },
