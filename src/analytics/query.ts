@@ -321,6 +321,79 @@ export function retention(product: string, f: Filters, now = Date.now()) {
   return { total: fin(total), cohorts: [...cohorts.values()].sort((a, b) => a.week.localeCompare(b.week)).map(fin) };
 }
 
+/**
+ * Which players stick around, and what they did first: players first seen in the range, grouped by their first session
+ * (where they came from, their device, the context the page set (entry, input, tier, account), whether they had fun
+ * (`first_fun`) and how long they played (`progress` steps)), each group with D1/D7 retention and the first session's
+ * median active time; and for every `feature` used in a first session, retention with it against without it.
+ * Groups under 5 players are still listed (n says how many); judge small numbers as small.
+ */
+export function segments(product: string, f: Filters, now = Date.now()) {
+  const w = sessionWhere(product, { ...f, build: undefined });
+  const firsts = adb.prepare(`SELECT s.anon, s.id, s.started, s.device, s.referrer, s.utm_source, s.active_ms FROM sessions s
+    JOIN (SELECT anon, MIN(started) AS first FROM sessions s WHERE ${w.sql} GROUP BY anon) x ON x.anon = s.anon AND x.first = s.started
+    WHERE s.product = ? AND s.started >= ? AND s.started < ?`).all(...w.args, product, f.from, f.to) as any[];
+  const last = new Map<string, number>();
+  for (const r of adb.prepare(`SELECT s.anon, MAX(s.started) AS last FROM sessions s WHERE ${w.sql} AND s.started >= ? GROUP BY s.anon`).all(...w.args, f.from) as any[]) last.set(r.anon, r.last);
+  const firstIds = new Set(firsts.map((r) => r.id));
+  // What each first session said and did (context keys, fun, minutes played, features).
+  const seen = new Map<string, { ctx: Record<string, string>; fun: boolean; minutes: number; features: Set<string> }>();
+  const evs = adb.prepare(`SELECT e.session, e.name, e.ctx, json_extract(e.props, '$.name') AS feature, json_extract(e.props, '$.step') AS step, json_extract(e.props, '$.label') AS label
+    FROM events e WHERE e.product = ? AND e.at >= ? AND e.at < ? AND (e.ctx IS NOT NULL OR e.name IN ('first_fun', 'progress', 'feature'))`).all(product, f.from, f.to + 2 * DAY) as any[];
+  for (const e of evs) {
+    if (!firstIds.has(e.session)) continue;
+    let s = seen.get(e.session);
+    if (!s) seen.set(e.session, (s = { ctx: {}, fun: false, minutes: 0, features: new Set() }));
+    if (e.ctx) { try { for (const [k, v] of Object.entries(JSON.parse(e.ctx))) if (v != null && ['entry', 'input', 'tier', 'account', 'mode'].includes(k)) s.ctx[k] = String(v); } catch { /* not JSON */ } }
+    if (e.name === 'first_fun') s.fun = true;
+    if (e.name === 'progress' && e.label === 'minutes_played') s.minutes = Math.max(s.minutes, Number(e.step) || 0);
+    if (e.name === 'feature' && e.feature) s.features.add(String(e.feature));
+  }
+  const today = midnight(now);
+  const back = (r: any, n: number): boolean | null => {
+    const firstDay = midnight(r.started);
+    if (firstDay + n * DAY > today) return null; // their day n hasn't come yet
+    return midnight(last.get(r.anon) ?? r.started) >= firstDay + n * DAY;
+  };
+  const sourceOf = (r: any) => r.utm_source || (r.referrer ? String(r.referrer).replace(/^https?:\/\//, '').split('/')[0] : '(direct)');
+  const summarize = (rows: any[]) => {
+    const out: any = { players: rows.length, medianFirstActiveSeconds: round(median(rows.map((r) => r.active_ms / 1000)), 0) };
+    for (const n of [1, 7] as const) {
+      const elig = rows.map((r) => back(r, n)).filter((v) => v !== null);
+      out[`d${n}`] = { eligible: elig.length, returned: elig.filter(Boolean).length, rate: rate(elig.filter(Boolean).length, elig.length) };
+    }
+    return out;
+  };
+  const groupBy = (key: (r: any) => string | null) => {
+    const m = new Map<string, any[]>();
+    for (const r of firsts) { const k = key(r) ?? '(unknown)'; if (!m.has(k)) m.set(k, []); m.get(k)!.push(r); }
+    return [...m.entries()].map(([value, rows]) => ({ value, ...summarize(rows) })).sort((a, b) => b.players - a.players);
+  };
+  const ctxOf = (r: any, k: string) => seen.get(r.id)?.ctx[k] ?? null;
+  const played = (r: any) => { const m = seen.get(r.id)?.minutes ?? 0; return m >= 10 ? '10+ min' : m >= 5 ? '5-10 min' : m >= 1 ? '1-5 min' : 'under 1 min'; };
+  const names = new Set<string>();
+  for (const s of seen.values()) for (const x of s.features) names.add(x);
+  const features = [...names].map((name) => {
+    const used = firsts.filter((r) => seen.get(r.id)?.features.has(name));
+    const not = firsts.filter((r) => !seen.get(r.id)?.features.has(name));
+    const a = summarize(used), b = summarize(not);
+    return { name, with: a, without: b, d1Lift: a.d1.rate != null && b.d1.rate != null ? round(a.d1.rate - b.d1.rate, 3) : null, d7Lift: a.d7.rate != null && b.d7.rate != null ? round(a.d7.rate - b.d7.rate, 3) : null };
+  }).sort((x, y) => y.with.players - x.with.players);
+  return {
+    total: summarize(firsts),
+    by: {
+      entry: groupBy((r) => ctxOf(r, 'entry')),
+      source: groupBy(sourceOf),
+      device: groupBy((r) => r.device || null),
+      input: groupBy((r) => ctxOf(r, 'input')),
+      account: groupBy((r) => ctxOf(r, 'account')),
+      hadFun: groupBy((r) => (seen.get(r.id)?.fun ? 'had fun (first_fun)' : 'no fun event')),
+      played: groupBy(played),
+    },
+    features,
+  };
+}
+
 // ------------------------------------------------------------------ funnel
 
 export type Step = { name: string; where: Record<string, string>; label: string };
@@ -776,4 +849,4 @@ export function insights(product: string, f: Filters, now = Date.now()) {
   return { from: f.from, to: f.to, sessions: cur.sessions, minimumSample: MIN_SAMPLE, insights: out.map(({ weight, ...x }) => x) };
 }
 
-export const SECTIONS = { traffic, sessions: sessionStats, retention, funnel, dropoff, levels, deaths, features, feedback, errors, perf } as const;
+export const SECTIONS = { traffic, sessions: sessionStats, retention, segments, funnel, dropoff, levels, deaths, features, feedback, errors, perf } as const;
