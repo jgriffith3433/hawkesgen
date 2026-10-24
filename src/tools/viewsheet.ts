@@ -63,6 +63,25 @@ const CHECK_SCHEMA = {
 };
 export type ViewCheck = { views: { view: string; ok: boolean; problem: string }[]; summary: string };
 
+/**
+ * The check for an object (form "prop"). The character rules (the back of the head, side profiles facing opposite ways)
+ * rejected every symmetric prop: an apple, a ball, a pizza, a barrel or a crate looks the same from several sides, which
+ * is correct (2026-10-23: 31 of 55 starter models refused, among them the ball and the apple). An object view fails only
+ * when it is a different or changed object, cut off, not on a plain background, or plainly the front again for an object
+ * whose sides differ.
+ */
+export function propCheck(look: string, images: string[]) {
+  return {
+    system: 'You check turnaround views of one game object (a prop) before they are turned into a 3D model. A wrong view wastes an expensive 3D run, so refuse real mismatches, and accept views that look alike because the object looks alike from those sides.',
+    prompt: `Image 1 is the FRONT view and the reference. Images 2, 3 and 4 are the BACK, the LEFT-side and the RIGHT-side views. ${look}` +
+      'For each of the back, left and right views decide ok: true when ALL of these hold: it is the SAME object as the front (same shape, colors, materials, parts and proportions; nothing added, removed or merged); the whole object is in frame on a plain background; and it is a believable view from that side. ' +
+      'Many objects are symmetric (round, square or mirrored: a ball, an apple, a pizza, a barrel, a crate, a table, a lantern): their back may look like the front and the left like the right, and that is CORRECT, so do not refuse a view for looking like another view of a symmetric object. ' +
+      'Refuse a view only when: it shows a different or changed object; parts, colors or proportions differ; it is cut off or not on a plain background; or the object clearly has different sides (a chair, a car, a bookshelf, a robot) and the view plainly shows the same side as the front instead of its back or side. Small rendering differences are fine. ' +
+      'When not ok, say in one short sentence what is wrong.',
+    images, schema: CHECK_SCHEMA, effort: 'low' as const, maxTokens: 3000,
+  };
+}
+
 /** The views the check rejected (a view Claude didn't mention counts as fine only when the answer is otherwise complete). */
 export function badViews(check: ViewCheck, views: readonly string[] = MADE): string[] {
   const out: string[] = [];
@@ -75,7 +94,7 @@ export function badViews(check: ViewCheck, views: readonly string[] = MADE): str
 
 export const viewSheetTool: Tool = {
   id: 'image.viewsheet',
-  version: 1,
+  version: 2,
   title: 'View sheet for 3D (back, left, right + consistency check)',
   description: 'From the cut-out FRONT view of a character (neutral or A-pose, whole body, at least 1024 px), makes the true back, left and right views of the same character ' +
     '(Qwen-Image-Edit 2511, flat even light, plain grey background, each cut out), has Claude check that all four are the same character (colors, props, proportions, limb count) and that each looks the right way, ' +
@@ -148,9 +167,9 @@ export const viewSheetTool: Tool = {
         await Promise.all(pending.map((v) => make(v, attempt)));
       }
       if (!ctx.params.check) break;
-      ctx.step('Claude is checking the views are the same character');
-      const look = ctx.params.look ? `The character: ${String(ctx.params.look).slice(0, 1500)}\n` : '';
-      const r = await ask({
+      ctx.step(`Claude is checking the views are the same ${subject === 'prop' ? 'object' : 'character'}`);
+      const look = ctx.params.look ? `The ${subject === 'prop' ? 'object' : 'character'}: ${String(ctx.params.look).slice(0, 1500)}\n` : '';
+      const r = await ask(subject === 'prop' ? propCheck(look, VIEWS.map((v) => files[v])) : {
         system: 'You check turnaround views of one game character before they are turned into a 3D model. A wrong view wastes an expensive 3D run, so be strict about real mismatches and relaxed about small rendering differences.',
         prompt: `Image 1 is the FRONT view and the reference. Images 2, 3 and 4 are the BACK, the LEFT-side and the RIGHT-side views. ${look}` +
           `For each of the back, left and right views decide ok: true only when it is the SAME character as the front (same colors, props, outfit, proportions and the same number of limbs, nothing added, merged or lost) AND it really is that view (a back view shows the back of the head and body; left and right are true side profiles, not 3/4 views, and face opposite ways) AND the whole body is in frame on a plain background. ` +

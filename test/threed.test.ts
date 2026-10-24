@@ -13,7 +13,7 @@ const { submit, queue } = await import('../src/jobs.ts');
 const { TOOLS, getTool } = await import('../src/tools/index.ts');
 const { putAsset } = await import('../src/library.ts');
 const { imageSize } = await import('../src/tools/threed.ts');
-const { viewPrompt, subjectOf, badViews } = await import('../src/tools/viewsheet.ts');
+const { viewPrompt, subjectOf, badViews, propCheck } = await import('../src/tools/viewsheet.ts');
 
 const owner = { id: 'test', name: 'test', role: 'owner', projects: ['*'] } as any;
 
@@ -115,4 +115,14 @@ test('image.viewsheet takes the front and optional own views, sheet cells of at 
   for (const k of ['back', 'left', 'right']) assert.ok(t.inputs[k] && !t.inputs[k].required, k);
   assert.ok(t.params.cell.min! >= 1024);
   assert.equal(t.provider, 'pipeline');
+});
+
+test('the view check of an object accepts look-alike sides of a symmetric object, and still refuses a changed one', () => {
+  // The character rules (back of the head, profiles facing opposite ways) refused 31 of 55 starter props on 2026-10-23.
+  const c = propCheck('The object: a red apple\n', ['f', 'b', 'l', 'r']);
+  assert.match(c.prompt, /symmetric/);
+  assert.match(c.prompt, /do not refuse a view for looking like another view/);
+  assert.match(c.prompt, /different or changed object/);
+  assert.doesNotMatch(c.prompt + c.system, /head|limbs|outfit|character/i);
+  assert.deepEqual(c.images, ['f', 'b', 'l', 'r']);
 });
