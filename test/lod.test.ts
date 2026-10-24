@@ -233,17 +233,20 @@ test("in-between work gets no levels: of an asset.make chain only the first step
   t.after(() => storage.setStore(null));
   const job = 'j_make_lodtest';
   const step = (n: number, save: string, title: string, from?: string) => putAsset({ data: png(300, 300 + n), ext: '.png', client: 'test', project: 'chain', tool: 'asset.make', recipe, job, title, meta: { save, step: n, ...(from ? { from } : {}) } });
+  // A best-of-3 pick saves its candidates first (step 1), then the cutout (a background-removal step's picture and mask).
+  const candidate = step(1, 'picked', 'picked');
   const src = image(300, 300, { project: 'chain' });
   const mask = image(300, 301, { project: 'chain' });
-  db.prepare("UPDATE assets SET title = 'mask' WHERE id = ?").run(mask.id);
+  db.prepare("UPDATE assets SET tool = 'image.remove-background', title = 'cutout' WHERE id = ?").run(src.id);
+  db.prepare("UPDATE assets SET tool = 'image.remove-background', title = 'mask' WHERE id = ?").run(mask.id);
   const cutout = step(2, 'cutout', 'cutout', src.id);
   const maskOut = step(2, 'cutout', 'cutout', mask.id);
   const view = step(3, 'views', 'views');
   const result = step(5, 'texture', 'texture');
-  assert.deepEqual([cutout, maskOut, view, result].map((a) => lod.kept(a)), [true, false, false, true]);
+  assert.deepEqual([candidate, cutout, maskOut, view, result].map((a) => lod.kept(a)), [false, true, false, false, true]);
   // A finished chain queues only its ends.
   db.exec('DELETE FROM asset_lod_state');
-  const q1 = lod.afterJob({ id: job, tool: 'asset.make', outputs: [cutout, maskOut, view, result].map((a) => ({ asset: a.id, mime: a.mime, title: a.title })) });
+  const q1 = lod.afterJob({ id: job, tool: 'asset.make', outputs: [candidate, cutout, maskOut, view, result].map((a) => ({ asset: a.id, mime: a.mime, title: a.title })) });
   assert.equal(q1.queued, 2);
   await lod.flushLods();
   if (!pillow) return t.skip('no .venv with Pillow (the prune half needs real levels)');

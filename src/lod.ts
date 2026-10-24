@@ -10,8 +10,8 @@
 //                                            server). Level = triangles.
 //
 // How they get made: when a job finishes (only top-level jobs: a pipeline's steps are intermediate) or a file is
-// uploaded, its images and GLBs are queued (queueLods). Of an asset.make chain's saved outputs only the ends are:
-// the first step's picture (a cutout: the library's thumbnail) and the last step's result (the model, the texture);
+// uploaded, its images and GLBs are queued (queueLods). Of an asset.make chain's saved outputs only these are:
+// its cutouts (the library's thumbnail) and the last step's result (the model, the texture);
 // the in-between (view sheets and views, masks, raw meshes) get none (kept(), pruneLods() clears old ones). Anything
 // asked for by id (GET /v1/lods) still gets levels: what's really used never goes without. A moment later one `asset.lod` job takes the batch: provider
 // local, its own lane (`lod`, one at a time, behind every customer's CPU job), the lowest priority, the child processes
@@ -41,6 +41,8 @@ export const LOD_VERSION = 1;
 export const LOD_PROJECT = 'hawkesgen.lod';
 export const LOD_CLIENT = { id: 'gen', name: 'Hawkes Gen', role: 'owner' as const, projects: ['*'] };
 const IMAGE_MIME = /^image\/(png|jpeg|webp)$/;
+/** Steps whose picture is a chain's cutout (kept: it's the thumbnail), not in-between work. */
+const CUTOUT_TOOLS = new Set(['image.remove-background', 'image.cutout']);
 const MESH_MIME = /^model\/gltf-binary$/;
 /** Assets per job: images are quick (a second or two each), models take longer. */
 const BATCH = { image: 24, mesh: 4 };
@@ -48,7 +50,8 @@ const BATCH = { image: 24, mesh: 4 };
 // (The tables are in db.ts: asset_lods, asset_lod_state, asset_lod_links.)
 
 /** Whether an asset is a kept result rather than in-between work: not a pipeline step's output, and of an asset.make
- *  chain's saved outputs only its first step's picture (not a mask) and its last step's result. */
+ *  chain's saved outputs only its last step's result and its cutouts (a background-removal step's picture, not its
+ *  mask: the library's thumbnail). (Not "the first step": a best-of-N pick saves its candidates before the cutout.) */
 export function kept(a: Pick<Asset, 'id' | 'job' | 'title' | 'meta'> | null | undefined): boolean {
   if (!a) return false;
   if (a.job) {
@@ -57,11 +60,10 @@ export function kept(a: Pick<Asset, 'id' | 'job' | 'title' | 'meta'> | null | un
   }
   const m = (a.meta ?? {}) as { save?: string; step?: number; from?: string };
   if (!m.save || !a.job || !Number.isFinite(m.step)) return true;
-  const r = db.prepare("SELECT MIN(json_extract(meta, '$.step')) AS first, MAX(json_extract(meta, '$.step')) AS last FROM assets WHERE job = ? AND json_extract(meta, '$.save') IS NOT NULL").get(a.job) as { first: number; last: number };
+  const r = db.prepare("SELECT MAX(json_extract(meta, '$.step')) AS last FROM assets WHERE job = ? AND json_extract(meta, '$.save') IS NOT NULL").get(a.job) as { last: number };
   if (m.step === r.last) return true;
-  if (m.step !== r.first) return false;
-  const from = m.from ? (db.prepare('SELECT title FROM assets WHERE id = ?').get(m.from) as { title: string | null } | undefined) : undefined;
-  return !/mask/i.test(`${a.title ?? ''} ${from?.title ?? ''}`);
+  const from = m.from ? (db.prepare('SELECT title, tool FROM assets WHERE id = ?').get(m.from) as { title: string | null; tool: string } | undefined) : undefined;
+  return Boolean(from && CUTOUT_TOOLS.has(from.tool) && !/mask/i.test(`${a.title ?? ''} ${from.title ?? ''}`));
 }
 
 /** What kind of levels an asset gets: 'image', 'mesh', or null (none: sounds, videos, a playtest's screenshots...). */
@@ -173,7 +175,8 @@ export function backfillLods(o: { project?: string; kind?: 'image' | 'mesh'; lim
     // Only what was kept: uploads and top-level jobs' outputs (a pipeline's steps are its intermediate work).
     "(a.job IS NULL OR j.id IS NULL OR json_extract(j.labels, '$.parent') IS NULL)",
     'a.id NOT IN (SELECT low FROM asset_lod_links)',
-    `(s.asset IS NULL OR s.version < ${LOD_VERSION} OR (s.state = 'failed' AND s.tries < 3) OR (${LOST}))`,
+    // (Pruned ones too: the rule for what's kept may have changed since; kept() below decides.)
+    `(s.asset IS NULL OR s.version < ${LOD_VERSION} OR s.state = 'pruned' OR (s.state = 'failed' AND s.tries < 3) OR (${LOST}))`,
   ];
   const args: string[] = [];
   if (o.project) { where.push('a.project = ?'); args.push(o.project); }
