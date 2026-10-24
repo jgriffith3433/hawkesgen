@@ -339,6 +339,19 @@ test('retention: rolling D1/D7 by first-seen week, only for players whose day ha
   assert.equal(r.cohorts.reduce((a: number, c: any) => a + c.players, 0), 4);
 });
 
+test('segments: who sticks around, by their first session, and retention with and without each feature', () => {
+  const s = Q.segments('phorigins', F(), NOW);
+  assert.equal(s.total.players, 4);
+  assert.deepEqual(s.total.d1, { eligible: 4, returned: 2, rate: 0.5 });
+  assert.deepEqual(s.by.device.map((g: any) => [g.value, g.players]), [['desktop', 4]]);
+  assert.deepEqual(s.by.entry.map((g: any) => g.value), ['(unknown)']);
+  assert.equal(s.by.played[0].value, 'under 1 min');
+  // P1 used rewind in their first session and came back; of the three who didn't, one came back by day 1 (P3).
+  const rewind = s.features.find((x: any) => x.name === 'rewind')!;
+  assert.deepEqual([rewind.with.players, rewind.with.d1.rate, rewind.without.players, rewind.without.d1.rate], [1, 1, 3, 0.333]);
+  assert.equal(rewind.d1Lift, 0.667);
+});
+
 test('funnel: ordered steps per player, the default from the levels, the biggest loss', () => {
   const f = Q.funnel('phorigins', F(), Q.parseSteps('game_ready,level_start:level=1,level_start:level=2'));
   assert.deepEqual(f.steps.map((s: any) => s.count), [3, 2, 1]);
@@ -413,9 +426,12 @@ test('the query API over HTTP: overview, a section, export as CSV, unknown produ
   assert.equal((await fetch(`${base}/v1/analytics/nope/levels`)).status, 404);
   assert.equal((await fetch(`${base}/v1/analytics/sickofit/nope`)).status, 404);
   const all = await (await fetch(`${base}/v1/analytics/phorigins?from=2026-09-01&to=2026-10-18`)).json();
-  for (const k of ['traffic', 'sessions', 'retention', 'funnel', 'dropoff', 'levels', 'deaths', 'features', 'feedback', 'errors', 'perf']) assert.ok(k in all, k);
+  for (const k of ['traffic', 'sessions', 'retention', 'segments', 'funnel', 'dropoff', 'levels', 'deaths', 'features', 'feedback', 'errors', 'perf']) assert.ok(k in all, k);
 });
 
-test("a site's registry funnel is its default funnel (Hawkes Gen: visit to purchase)", () => {
-  assert.deepEqual(Q.defaultSteps('hawkesgen', F()).map((s: any) => s.name), ['page_view', 'signup_open', 'signup', 'job_start', 'checkout_start', 'purchase']);
+test("a site's registry funnel is its default funnel (Hawkes Gen: visit, play, fun, sign up, build, share, buy)", () => {
+  const steps = Q.defaultSteps('hawkesgen', F());
+  assert.deepEqual(steps.map((s: any) => s.name), ['page_view', 'game_ready', 'first_fun', 'progress', 'signup', 'game_create', 'feature', 'game_share', 'purchase']);
+  assert.deepEqual(steps[3].where, { step: '5' });
+  assert.deepEqual(steps[6].where, { name: 'build_edit' });
 });
