@@ -92,7 +92,7 @@ Every image (PNG, JPEG, WebP) and GLB that a top-level job makes or someone uplo
 itself (`asset.lod`: CPU, its own lane `lod`, one at a time, behind every customer's CPU job, lowest priority, as client
 `gen` in project `hawkesgen.lod`; never charged, internal-only). Images: 128, 256, 512, 1024, 2048 px below the long
 side and the full size, WebP (shape and transparency kept; pixel art nearest-neighbour and lossless). Models: `low`
-(~12% of the triangles, at most 10,000; textures <= 512 px), `mid` (~40%, at most 50,000; <= 1024 px) when it pays,
+(~12% of the triangles, at most 10,000; textures an eighth of the model's, 128-256 px), `mid` (~40%, at most 50,000; <= 1024 px) when it pays,
 `high` (every triangle, textures <= 2048) for models with bigger textures; Draco in, Draco out, else quantized.
 
 The summary (`lods`): `{ kind: image | mesh, state: queued | done | skipped | failed, size: [w, h] | tris, tex, bytes,

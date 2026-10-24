@@ -54,7 +54,8 @@ def fit(w, h, size):
 
 
 def save_webp(im, path, lossless=False):
-    im.save(path, 'WEBP', quality=QUALITY, method=4, lossless=lossless, exact=has_alpha(im))
+    # (method 6: the slowest and smallest; this runs in its own lane, and every byte is downloaded by every player.)
+    im.save(path, 'WEBP', quality=QUALITY, method=6, lossless=lossless, exact=has_alpha(im))
     return os.path.getsize(path)
 
 

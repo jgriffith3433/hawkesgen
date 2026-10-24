@@ -154,7 +154,7 @@ test('a model: a low (fewer triangles, small textures) and a mid, on the CPU; th
   assert.equal(s.tex, 4096);
   const by = Object.fromEntries(s.levels.map((l) => [l.role, l]));
   assert.ok(by.low && by.low.tris! < 7200 * 0.3, `low: ${by.low?.tris} triangles`);
-  assert.ok(by.low.tex! <= 512);
+  assert.ok(by.low.tex! <= 256);
   assert.ok(by.mid && by.mid.tex! <= 1024);
   assert.equal(by.high.tris, 7200, 'every triangle');
   assert.equal(by.high.tex, 2048);

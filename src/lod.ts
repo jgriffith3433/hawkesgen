@@ -4,7 +4,7 @@
 //   images (texture, sprite, sky, picture)  every power-of-two size below the long side (128 ... 2048) as WebP, the
 //                                            shape and transparency kept; the full size as WebP when that's smaller
 //                                            (post/lod.py, Pillow). Level = the long side, px.
-//   models (GLB)                             a low (~12% of the triangles, textures <= 512 px), a mid when it pays
+//   models (GLB)                             a low (~12% of the triangles, textures an eighth of the model's, 128-256 px), a mid when it pays
 //                                            (~40%, <= 1024 px) and, for 4096 px textures, a high with them at 2048
 //                                            (src/lod-mesh.ts: gltf-transform + meshoptimizer on the CPU; never a GPU
 //                                            server). Level = triangles.

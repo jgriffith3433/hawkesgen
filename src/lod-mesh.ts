@@ -9,9 +9,11 @@
 // bytes, role }] }.
 //
 // The levels (each only when it pays):
-//   high  every triangle, textures at most 2048 px: only when the model has bigger ones (a 4096 px base colour)
+//   high  every triangle, textures at most 2048 px and as WebP: when that's a much smaller file (a 4096 px base colour,
+//         PNGs inside)
 //   mid   about 40% of the triangles (at most 50,000), textures at most 1024 px (a phone's near copy)
-//   low   about 12% of the triangles (at most 10,000), textures at most 512 px (far away)
+//   low   about 12% of the triangles (at most 10,000), textures an eighth of the model's, 128 to 256 px (far away: it
+//         covers a few dozen pixels on screen)
 // A model that came Draco-compressed stays Draco (the engine already has the decoder for it); others are quantized,
 // which every glTF loader reads with no decoder.
 import fs from 'node:fs';
@@ -26,7 +28,7 @@ import draco3d from 'draco3dgltf';
 export const MESH_LEVELS = [
   { role: 'high', ratio: 1, most: Infinity, error: 0, texture: 2048 },
   { role: 'mid', ratio: 0.4, most: 50_000, error: 0.01, texture: 1024 },
-  { role: 'low', ratio: 0.12, most: 10_000, error: 0.05, texture: 512 },
+  { role: 'low', ratio: 0.12, most: 10_000, error: 0.05, texture: 256, eighth: true },
 ];
 /** Below this many triangles a model is cheap already: only its textures get smaller copies. */
 const SMALL = 600;
@@ -109,10 +111,11 @@ export async function meshLods(plan: Plan) {
   const dracoIn = first.getRoot().listExtensionsUsed().some((e) => e.extensionName === KHRDracoMeshCompression.EXTENSION_NAME);
   const out: { level: number; texture: number; path: string; bytes: number; role: string }[] = [];
   for (const L of MESH_LEVELS) {
-    const cap = Math.min(L.texture, tex || L.texture);
+    const cap = Math.min(L.texture, tex || L.texture, (L as any).eighth && tex ? Math.max(128, tex / 8) : Infinity);
     const fewer = L.ratio < 1 && tris > SMALL;
-    // high: only for models with textures over 2048; mid: only when it's really between the model and its low.
-    if (L.role === 'high' && tex <= L.texture) continue;
+    // high is tried for every textured model (it's kept only when its file is much smaller: PNGs inside as WebP, 4096 px
+    // textures at 2048); mid only when it's really between the model and its low.
+    if (L.role === 'high' && !tex) continue;
     if (L.role === 'mid' && tex <= L.texture && tris < 6000) continue;
     if (L.role === 'low' && !fewer && tex <= L.texture) continue;
     // The low level starts from the job's own low copy when there is one (Blender already decimated it well).
@@ -128,11 +131,11 @@ export async function meshLods(plan: Plan) {
     await compress(doc, dracoIn);
     const n = triangles(doc);
     const t = biggestTexture(doc);
-    // Nothing gained (the same triangles and textures as the model or a level already made): not kept.
-    if (n >= tris && t >= tex) continue;
     if (out.some((o) => o.level === n)) continue;
-    const file = `${plan.out}.${L.role}.glb`;
     const data = await reader.writeBinary(doc);
+    // Nothing gained (the same triangles and textures as the model, and a file not a fifth smaller): not kept.
+    if (n >= tris && t >= tex && data.length > bytes.length * 0.8) continue;
+    const file = `${plan.out}.${L.role}.glb`;
     fs.writeFileSync(file, data);
     out.push({ level: n, texture: t, path: file, bytes: data.length, role: L.role });
   }
