@@ -140,16 +140,19 @@ test('mesh.views3d: four views, or one sheet; never a partial set or a single pi
   for (const v of ['image', ...VIEW_ORDER]) assert.ok(t.inputs[v] && !t.inputs[v].required, v);
 });
 
-test('mesh.views3d hands each view to the Pixal3D input of the same name (left is left), with no fixed crops', () => {
+test('mesh.views3d hands the left view of Gen to the right input of Pixal3D and vice versa (measured), front and back as named, no fixed crops', () => {
   const m = JSON.parse(fs.readFileSync(path.join('workflows', 'mesh-views3d', 'workflow.json'), 'utf8'));
   const g = JSON.parse(fs.readFileSync(path.join('workflows', 'mesh-views3d', 'graph.json'), 'utf8'));
   const cond = Object.values<any>(g).find((n) => n.class_type === 'Pixal3DMultiViewConditioning');
   assert.equal(cond.inputs.fov, 20);
+  // Gen's left view (the object facing right in the picture) is what Pixal3D calls right: wired by name, The Mechanic's
+  // wrench moved to his other hand and the mesh faced backwards (2026-10-23).
+  const PIXAL: Record<string, string> = { front: 'front', back: 'back', left: 'right', right: 'left' };
   for (const v of ['front', 'back', 'left', 'right']) {
     const [load] = m.inputs[v].targets[0];
     assert.equal(g[load].class_type, 'LoadImage', v);
     // Follow the conditioning's input back through the save that keeps what Pixal3D received.
-    let ref = cond.inputs[v];
+    let ref = cond.inputs[PIXAL[v]];
     while (ref[0] !== load) {
       const n = g[ref[0]];
       assert.ok(n && n.class_type === 'SaveImageAdvanced', `${v} reaches ${n?.class_type} instead of its LoadImage`);

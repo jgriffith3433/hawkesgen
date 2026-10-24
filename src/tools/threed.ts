@@ -95,10 +95,12 @@ export function decorateMeshTool(t: Tool): Tool {
 /**
  * The order of views in a sheet (image.viewsheet, image.sheet) and in Gen everywhere: front, back, left, right.
  * "left" is the view from your left as you face the front: the camera moves 90 degrees to the viewer's left, so the object
- * faces RIGHT in the picture and shows its own right side ("right" is the mirror case). That is what Pixal3D's
- * conditioning calls left (ComfyUI's own example sheet, front|left|back|right: in its left panel the figure faces right),
- * and what blender.character's angles op calls left (the camera at -X, the character facing -Y). Swapping the two
- * twists the mesh.
+ * faces RIGHT in the picture and shows its own right side ("right" is the mirror case), as blender.character's angles op
+ * names its stills (the camera at -X, the character facing -Y). Pixal3D's conditioning names them the other way round:
+ * its left input wants the object facing LEFT. mesh.views3d's graph wires Gen's left to Pixal3D's right and Gen's right
+ * to Pixal3D's left. Measured on The Mechanic (a wrench in his right hand): wired by name, the mesh faced backwards with
+ * the wrench in his left hand; crossed, it faces glTF +Z with the wrench in the right hand. (ComfyUI's example sheet,
+ * whose second panel faces right, is misleading.)
  */
 export const VIEW_ORDER = ['front', 'back', 'left', 'right'] as const;
 /** Pixal3D's views: square, this size, the object's widest extent over all views spanning 1/PAD of the frame. */

@@ -1,8 +1,8 @@
 {
   "id": "mesh.views3d",
-  "version": 2,
+  "version": 3,
   "title": "3D model from four views (Pixal3D multi-view)",
-  "description": "A textured PBR 3D model (GLB) from the front, back, left and right views of one character or object (Pixal3D multi-view + TRELLIS.2). Give the four views (image.viewsheet outputs front, back, left, right) or one sheet of them side by side in equal cells, front|back|left|right. Gen frames them for Pixal3D (on black, the same scale in every view) and saves the four views Pixal3D received.",
+  "description": "A textured PBR 3D model (GLB) from the front, back, left and right views of one character or object (Pixal3D multi-view + TRELLIS.2). Give the four views (image.viewsheet outputs front, back, left, right) or one sheet of them side by side in equal cells, front|back|left|right. Gen frames them for Pixal3D (on black, the same scale in every view), hands Gen's left view (the object facing right) to Pixal3D's right input and Gen's right view to its left input (measured: wired the other way the mesh came out mirrored and turned around), and saves the four views it received. The GLB faces glTF +Z (blender.character: -Y).",
   "family": "mesh.views3d",
   "output": "mesh",
   "models": [

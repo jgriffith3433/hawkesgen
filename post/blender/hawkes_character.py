@@ -1539,7 +1539,10 @@ def connected_parts(meshes):
 
 
 def render_angles(size=512):
-    """Four orthographic-ish stills (front, right, back, left) for Claude to label parts. Cycles, few samples."""
+    """Four stills (front, right, back, left), evenly lit: they are how a mesh is judged (asset.make's best-of-N pick,
+    split's labels, people). A key and a fill light move with the camera and a flat grey world adds ambient light, so
+    every side gets the same exposure (the old two lights on the front side left the back dark); Cycles at 24 samples
+    with denoising (2 samples without it speckled)."""
     need_char("split")
     adir = os.path.join(OUT, "angles")
     os.makedirs(adir, exist_ok=True)
@@ -1551,19 +1554,31 @@ def render_angles(size=512):
     prev = (scene.render.engine, scene.render.resolution_x, scene.render.resolution_y,
             scene.cycles.samples if hasattr(scene, "cycles") else None,
             scene.camera)
+    prev_denoise = getattr(scene.cycles, "use_denoising", None)
+    prev_world = scene.world
     scene.render.engine = "CYCLES"
-    scene.cycles.samples = 2
-    scene.cycles.use_denoising = False
+    scene.cycles.samples = 24
+    scene.cycles.use_denoising = True
+    try:
+        scene.cycles.denoiser = "OPENIMAGEDENOISE"
+    except Exception:
+        pass
     scene.render.resolution_x = scene.render.resolution_y = int(size)
     scene.render.film_transparent = True
-    # Lights
+    world = bpy.data.worlds.new("hb_ang_world")
+    world.use_nodes = True
+    bg = world.node_tree.nodes.get("Background")
+    if bg:
+        bg.inputs[0].default_value = (0.8, 0.8, 0.8, 1.0)
+        bg.inputs[1].default_value = 0.6
+    scene.world = world
+    # Key (above, to the camera's left) and fill (lower, to its right): placed for each view below.
     lights = []
-    for i, loc in enumerate(((dist, -dist, dist), (-dist, -dist * 0.5, dist * 0.6))):
+    for i, energy in enumerate((260.0, 110.0)):
         L = bpy.data.lights.new(f"hb_ang_L{i}", "AREA")
-        L.energy = 200
+        L.energy = energy * (dist / 4.0) ** 2
+        L.size = dist * 0.5
         Lo = bpy.data.objects.new(f"hb_ang_L{i}", L)
-        Lo.location = mid + V(loc) * 0.01 * dist  # noqa: scale via mid offset below
-        Lo.location = V(loc) * 0.5 + mid
         scene.collection.objects.link(Lo)
         lights.append(Lo)
     cam_data = bpy.data.cameras.new("hb_ang_cam")
@@ -1577,6 +1592,11 @@ def render_angles(size=512):
         cam.location = mid + V((dx * dist, dy * dist, H * 0.35))
         direction = mid - cam.location
         cam.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+        # The camera's own left is (-dy, dx) on the ground when it looks along (-dx, -dy).
+        side = V((-dy, dx, 0))
+        for Lo, (s_side, s_up, s_back) in zip(lights, ((0.7, 0.9, 0.8), (-0.8, 0.2, 0.9))):
+            Lo.location = mid + V((dx, dy, 0)) * dist * s_back + side * dist * s_side + V((0, 0, H * 0.5 + dist * s_up))
+            Lo.rotation_euler = (mid - Lo.location).to_track_quat("-Z", "Y").to_euler()
         path = os.path.join(adir, f"{name}.png")
         scene.render.filepath = path
         say("step", f"angle {name}")
@@ -1588,9 +1608,13 @@ def render_angles(size=512):
             shutil.copy2(path, dest)
             info["outputs"].append({"file": f"angle-{name}.png", "title": f"angle/{name}", "ext": ".png"})
     remove([cam] + lights)
+    scene.world = prev_world
+    bpy.data.worlds.remove(world)
     scene.render.engine, scene.render.resolution_x, scene.render.resolution_y, samp, scene.camera = prev
     if samp is not None:
         scene.cycles.samples = samp
+    if prev_denoise is not None:
+        scene.cycles.use_denoising = prev_denoise
     return files
 
 
