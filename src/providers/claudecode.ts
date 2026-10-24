@@ -81,15 +81,24 @@ function cliEnv(): NodeJS.ProcessEnv {
 }
 
 // ---------------------------------------------------------------- one call
-/** Program and arguments for one call. */
-export function cliArgs({ model, effort, system, schema }: AskInput) {
+/** A system prompt longer than this goes in a file (--system-prompt-file): one argument may be at most 128 KB on Linux
+ *  (MAX_ARG_STRLEN), and the portal's assistant sends its whole engine guide as the system prompt ("spawn E2BIG"). */
+export const SYSTEM_INLINE_MAX = 16_000;
+
+/** Program and arguments for one call. A long system prompt is written into `dir` (the call's own folder). */
+export function cliArgs({ model, effort, system, schema }: AskInput, dir?: string) {
   const file = env('HAWKESGEN_CLAUDE') ?? 'claude';
   const pre: string[] = env('HAWKESGEN_CLAUDE_ARGS') ? JSON.parse(env('HAWKESGEN_CLAUDE_ARGS')!) : [];
   const args = [
     '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
     '--model', model, '--tools', '', '--strict-mcp-config', '--setting-sources', '', '--no-session-persistence', '--disable-slash-commands',
-    '--system-prompt', system?.trim() ? system : 'You are Claude. Answer the request directly.',
   ];
+  const sys = system?.trim() ? system : 'You are Claude. Answer the request directly.';
+  if (dir && sys.length > SYSTEM_INLINE_MAX) {
+    const f = path.join(dir, 'system.md');
+    fs.writeFileSync(f, sys);
+    args.push('--system-prompt-file', f);
+  } else args.push('--system-prompt', sys);
   if (effort) args.push('--effort', effort);
   if (schema) args.push('--json-schema', JSON.stringify(schema));
   return { file, args: [...pre, ...args] };
@@ -109,10 +118,10 @@ export function userMessage(prompt: string, images: string[] = []) {
 type Outcome = { result?: any; model?: string; stderr: string; code: number | null };
 
 function runOnce(input: AskInput, timeoutMs: number, signal?: AbortSignal): Promise<Outcome> {
-  const { file, args } = cliArgs(input);
-  const stdin = userMessage(input.prompt, input.images);
   const cwd = path.join(paths.tmp, 'claude', id('c'));
   fs.mkdirSync(cwd, { recursive: true });
+  const { file, args } = cliArgs(input, cwd);
+  const stdin = userMessage(input.prompt, input.images);
   return new Promise<Outcome>((resolve, reject) => {
     const child = spawn(file, args, { cwd, env: cliEnv(), windowsHide: true });
     let buf = '';

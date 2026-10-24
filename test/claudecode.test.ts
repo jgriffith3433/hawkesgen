@@ -137,3 +137,16 @@ test('the API backend is still there behind the setting', () => {
   assert.equal(loadSettings().claude.backend, 'api');
   saveSettings({ claude: { ...loadSettings().claude, backend: 'max-plan' } });
 });
+
+test('a long system prompt goes in a file (one argument over 128 KB fails to start: spawn E2BIG)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-sys-'));
+  const short = maxPlan.cliArgs({ prompt: 'hi', model: 'claude-opus-5-5', system: 'Be brief.' }, dir).args;
+  assert.equal(short[short.indexOf('--system-prompt') + 1], 'Be brief.');
+  assert.ok(!short.includes('--system-prompt-file'));
+  const guide = 'The engine guide. '.repeat(20_000); // ~360 KB, like the portal's assistant
+  const long = maxPlan.cliArgs({ prompt: 'make a mountain', model: 'claude-opus-5-5', system: guide }, dir).args;
+  assert.ok(!long.includes('--system-prompt'), 'not inline');
+  const f = long[long.indexOf('--system-prompt-file') + 1];
+  assert.equal(fs.readFileSync(f, 'utf8'), guide);
+  assert.ok(long.every((a) => a.length < 100_000), 'every argument short');
+});
