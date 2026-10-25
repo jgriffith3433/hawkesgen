@@ -879,15 +879,89 @@ export async function comfyEndpoints(): Promise<Endpoint[]> {
 
 // -------------------------------------------------------------------- ssh
 
+/** The last few real lines of ssh's stderr (never empty). */
+function sshTail(err: string, code: number | null) {
+  const lines = err.split('\n').map((l) => l.trim()).filter((l) => l && !/^Warning: Permanently added/i.test(l));
+  return lines.slice(-3).join(' | ') || `exit ${code}`;
+}
+
+/** Turns ssh/scp's stderr into a message that says what really happened. Pure (tested). */
+export function sshFailure(err: string, code: number | null, ctx: { id?: string; ip?: string; keyFile: string; platform?: string; what?: string }) {
+  const where = `${ctx.id ?? 'server'}${ctx.ip ? ` (${ctx.ip})` : ''}, key ${ctx.keyFile}`;
+  const what = ctx.what ?? 'ssh';
+  if (/unprotected private key|bad permissions/i.test(err)) {
+    return (ctx.platform ?? process.platform) === 'win32'
+      ? `${what} refused the key file's permissions (${where}). In PowerShell: icacls "${ctx.keyFile}" /inheritance:r /grant:r "$env:USERNAME:R"`
+      : `${what} refused the key file's permissions (${where}): chmod 600 ${ctx.keyFile}. ${sshTail(err, code)}`;
+  }
+  if (/permission denied \(.*publickey/i.test(err)) return `key rejected by ${where}: the key doesn't match this server. ${sshTail(err, code)}`;
+  return `${what} failed on ${where}: ${sshTail(err, code)} (if your IP changed, refresh access)`;
+}
+
+const isKeyRejected = (err: string) => /permission denied \(.*publickey/i.test(err);
+const goodKey = new Map<string, string>(); // instance id -> the key file that worked
+
+/** The key files to try for a server, in order: the one that worked before, the instance's own, then every other .pem in the fleet folder. */
+function keyCandidates(instanceId: string, keyName: string | undefined) {
+  const own = keyName ? path.join(paths.fleet, `${keyName}.pem`) : null;
+  let all: string[] = [];
+  try { all = fs.readdirSync(paths.fleet).filter((n) => n.endsWith('.pem')).sort().map((n) => path.join(paths.fleet, n)); } catch { /* none */ }
+  const first = [goodKey.get(instanceId), own].filter((k): k is string => Boolean(k) && fs.existsSync(k!));
+  return [...new Set([...first, ...all])];
+}
+
+type Run = { code: number | null; out: string; err: string; spawnError?: string };
+function runKeyed(cmd: string, args: string[], timeoutMs?: number): Promise<Run> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { windowsHide: true });
+    const timer = timeoutMs ? setTimeout(() => child.kill(), timeoutMs) : null;
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', (e) => { if (timer) clearTimeout(timer); resolve({ code: null, out, err, spawnError: e.message }); });
+    child.on('close', (code) => { if (timer) clearTimeout(timer); resolve({ code, out, err }); });
+  });
+}
+
+/** Runs ssh or scp with the server's key; when the server rejects it, tries the other keys in the fleet folder (adopted servers can carry another key pair) and remembers the one that works. */
+async function withKey(cmd: 'ssh' | 'scp', found: Found, build: (key: string, ip: string) => string[], timeoutMs?: number): Promise<Run & { key: string }> {
+  const ip = found.instance.PublicIpAddress as string;
+  const id = found.instance.InstanceId as string;
+  const keyName = found.instance.KeyName ?? record(id).keyName;
+  const keys = keyCandidates(id, keyName);
+  const own = keyName ? `${keyName}.pem` : '(none recorded)';
+  if (!keys.length) throw fleetError(`No SSH key for ${id} (${ip}): its key pair is ${own} and there is no .pem in ${paths.fleet}.`);
+  let last: (Run & { key: string }) | null = null;
+  let retriedChmod = false;
+  for (let k = 0; k < keys.length; k++) {
+    const key = keys[k];
+    lockKey(key);
+    let r = await runKeyed(cmd, build(key, ip), timeoutMs);
+    if (/unprotected private key|bad permissions/i.test(r.err) && !retriedChmod && process.platform !== 'win32') {
+      retriedChmod = true;
+      try { fs.chmodSync(key, 0o600); } catch { /* not ours */ }
+      r = await runKeyed(cmd, build(key, ip), timeoutMs);
+    }
+    last = { ...r, key };
+    if (r.spawnError) throw fleetError(`Couldn't run ${cmd} (${r.spawnError}). Install OpenSSH.`);
+    if (r.code === 0 || (cmd === 'ssh' && r.out)) { goodKey.set(id, key); return last; }
+    if (!isKeyRejected(r.err)) break;
+    if (goodKey.get(id) === key) goodKey.delete(id);
+  }
+  return last!;
+}
+
 /** The address and SSH key of a running server (for tunnels). */
 export async function sshTarget(instanceId: string) {
   const found = await findServer(instanceId);
   const ip = found?.instance.PublicIpAddress;
   if (!found || !ip) throw fleetError(`The server ${instanceId} is not running.`);
   const keyName = found.instance.KeyName ?? record(found.instance.InstanceId).keyName;
-  const key = path.join(paths.fleet, `${keyName}.pem`);
-  lockKey(key);
-  return { ip: ip as string, key };
+  const keys = keyCandidates(instanceId, keyName);
+  if (!keys.length) throw fleetError(`No SSH key for ${instanceId} (${ip}): its key pair is ${keyName ?? '(none recorded)'}.pem and that file isn't in ${paths.fleet}.`);
+  lockKey(keys[0]);
+  return { ip: ip as string, key: keys[0] };
 }
 
 /** The ssh command for a GPU server (Linux: no Remote Desktop). The key file stays on the control server; only its name is given. */
@@ -909,26 +983,9 @@ export async function sshRun(remote: string, instanceId?: string, { timeoutMs = 
   if (!found) throw fleetError('There is no GPU server.');
   const ip = found.instance.PublicIpAddress;
   if (!ip) throw fleetError(`The server is ${found.instance.State?.Name}; it has no address until it runs.`);
-  const keyName = found.instance.KeyName ?? record(found.instance.InstanceId).keyName;
-  const key = path.join(paths.fleet, `${keyName}.pem`);
-  if (!fs.existsSync(key)) throw fleetError(`The SSH key ${keyName}.pem isn't in ${paths.fleet}.`);
-  lockKey(key);
-  return new Promise((resolve, reject) => {
-    const child = spawn('ssh', ['-i', key, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=8', '-o', 'BatchMode=yes', `ubuntu@${ip}`, remote], { windowsHide: true });
-    const timer = setTimeout(() => child.kill(), timeoutMs);
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (d) => (out += d));
-    child.stderr.on('data', (d) => (err += d));
-    child.on('error', (e) => reject(fleetError(`Couldn't run ssh (${e.message}). Install OpenSSH.`)));
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      if (code === 0 || out) resolve(out);
-      else reject(fleetError(/permission|unprotected|bad permissions/i.test(err)
-        ? `ssh refused the key file's permissions. In PowerShell: icacls "${key}" /inheritance:r /grant:r "$env:USERNAME:R"`
-        : `ssh failed: ${err.trim().split('\n').pop() || `exit ${code}`} (if your IP changed, refresh access)`));
-    });
-  });
+  const r = await withKey('ssh', found, (key, addr) => ['-i', key, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=8', '-o', 'BatchMode=yes', `ubuntu@${addr}`, remote], timeoutMs);
+  if (r.code === 0 || r.out) return r.out;
+  throw fleetError(sshFailure(r.err, r.code, { id: found.instance.InstanceId, ip, keyFile: path.basename(r.key) }));
 }
 
 /** Copies a local file to a server (to /tmp, then moved into place with sudo). For models made here, e.g. trained LoRAs. */
@@ -936,17 +993,9 @@ export async function scpToServer(local: string, remote: string, instanceId?: st
   const found = await findServer(instanceId);
   const ip = found?.instance.PublicIpAddress;
   if (!found || !ip) throw fleetError('The GPU server is not running.');
-  const keyName = found.instance.KeyName ?? record(found.instance.InstanceId).keyName;
-  const key = path.join(paths.fleet, `${keyName}.pem`);
-  lockKey(key);
   const tmp = `/tmp/hg-${crypto.randomBytes(6).toString('hex')}`;
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('scp', ['-i', key, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-q', local, `ubuntu@${ip}:${tmp}`], { windowsHide: true });
-    let err = '';
-    child.stderr.on('data', (d) => (err += d));
-    child.on('error', (e) => reject(fleetError(`Couldn't run scp (${e.message}).`)));
-    child.on('close', (code) => (code === 0 ? resolve() : reject(fleetError(`upload failed: ${err.trim() || `exit ${code}`}`))));
-  });
+  const r = await withKey('scp', found, (key, addr) => ['-i', key, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'BatchMode=yes', '-q', local, `ubuntu@${addr}:${tmp}`]);
+  if (r.code !== 0) throw fleetError(sshFailure(r.err, r.code, { id: found.instance.InstanceId, ip, keyFile: path.basename(r.key), what: 'upload (scp)' }));
   await sshRun(`sudo mkdir -p "$(dirname '${remote}')" && sudo mv ${tmp} '${remote}' && sudo chmod 644 '${remote}' && echo ok`, found.instance.InstanceId);
 }
 

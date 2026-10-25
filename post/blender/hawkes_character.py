@@ -423,10 +423,15 @@ def clip_name(name, used=None):
     return name
 
 
+def object_names(objs):
+    """Names as plain strings, taken while the objects still exist (Blender 5 invalidates removed ones)."""
+    return [o if isinstance(o, str) else o.name for o in objs]
+
+
 def action_label(act, path, objs=()):
     """A clip's name: the animation's. FBX imports name actions "<object>|<take>|<layer>" (Mixamo's take is always
     "mixamo.com"), so without those parts; with nothing left, the file's name (not a library file's hash)."""
-    skip = {o.name for o in objs} | {"mixamo.com", "take 001", "armatureaction", "action", "scene", ""}
+    skip = set(objs) | {"mixamo.com", "take 001", "armatureaction", "action", "scene", ""}
     parts = [x for x in act.name.split("|") if x.lower() not in skip and x not in skip and not re.fullmatch(r"(?i)layer\d+", x)]
     n = parts[-1] if parts else ""
     if not n:
@@ -448,6 +453,7 @@ def op_import(o):
     if path.lower().endswith(".bvh"):
         fail("import: a .bvh is motion only; import the character, then retarget the .bvh onto it")
     objs, acts = import_file(path)
+    obj_names = object_names(objs)
     arms = [x for x in objs if x.type == "ARMATURE"]
     if len(arms) > 1:
         warn(f"import: {len(arms)} skeletons in the file; using {arms[0].name}")
@@ -477,7 +483,7 @@ def op_import(o):
         CHAR["map"], CHAR["scheme"] = canon_map(arm, o.get("names") or "auto", o.get("map"))
         if o.get("clips", True):
             for a in [a for a in acts if bone_action(a)]:
-                sampled.append((action_label(a, path, objs), *sample(arm, a)))
+                sampled.append((action_label(a, path, obj_names), *sample(arm, a)))
         ad = arm.animation_data_create()
         for t in list(ad.nla_tracks):
             ad.nla_tracks.remove(t)
@@ -888,6 +894,7 @@ def op_retarget(o):
 def retarget_file(o, path, several):
     arm = CHAR["arm"]
     objs, acts = import_file(path)
+    obj_names = object_names(objs)
     srcs = [x for x in objs if x.type == "ARMATURE"]
     if not srcs:
         remove(objs)
@@ -932,7 +939,7 @@ def retarget_file(o, path, several):
     made = []
     for act in acts_b:
         one = o.get("name") and not several and len(acts_b) == 1
-        name = clip_name(o["name"] if one else action_label(act, path, objs))
+        name = clip_name(o["name"] if one else action_label(act, path, obj_names))
         say("step", f"retargeting {name} ({len(pairs)} bones, {scheme} names)")
         assign(src, act)
         f0, f1 = frame_range(act)

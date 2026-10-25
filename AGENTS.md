@@ -212,6 +212,10 @@ and site builds can't read this private repo. `clients/js/sdk.json` lists where 
 commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`, `ANALYTICS_VERSION`) when behavior
 changes. Every client sends `X-Hawkes-Client` (js/7, py/6, unity/0.2.1); `GET /v1/health` lists callers behind.
 
+## SSH to GPU servers
+
+`sshRun`, `scpToServer` and `sshTarget` (`fleet.ts`) use the instance's key pair, and when a server rejects it ("Permission denied (publickey)") try every other `.pem` in `.data/fleet` and remember the one that works. Errors name the server, its address and the key file and quote ssh's real last lines (`sshFailure`); the icacls hint is Windows only and only for a real "unprotected private key".
+
 ## Checking your changes
 
 - `npm run typecheck` and `npm test`, then restart the service.
