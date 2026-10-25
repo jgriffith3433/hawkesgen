@@ -82,6 +82,48 @@ export function beamsForVram(totalMib: number): number {
   return 10;
 }
 
+/**
+ * Third-party modules each venv must import at run time, as `module:pip-name`. Read from the imports of the pinned
+ * code (SkinTokens' src/ and demo.py, Make-It-Animatable's app code and our mia_run.py). Their requirements.txt files
+ * leave several out (scipy first: SkinTokens imports it in six files, and it only arrives by luck with other packages),
+ * so a missing one is pip-installed after the requirements, and again on a server whose venv predates this list.
+ * torch, bpy and flash-attn are left out: they have their own install steps (flash-attn is optional).
+ */
+export const SKIN_IMPORTS = [
+  'numpy:numpy', 'scipy:scipy', 'trimesh:trimesh', 'einops:einops', 'omegaconf:omegaconf', 'lightning:lightning',
+  'transformers:transformers', 'diffusers:diffusers', 'huggingface_hub:huggingface_hub', 'box:python-box', 'addict:addict',
+  'open3d:open3d', 'gradio:gradio', 'bottle:bottle', 'tornado:tornado', 'requests:requests', 'tqdm:tqdm', 'yaml:pyyaml',
+  'safetensors:safetensors', 'sklearn:scikit-learn', 'PIL:pillow',
+] as const;
+export const MIA_IMPORTS = [
+  'numpy:numpy', 'scipy:scipy', 'trimesh:trimesh', 'einops:einops', 'omegaconf:omegaconf', 'timm:timm',
+  'pytorch_lightning:pytorch-lightning', 'transformers:transformers', 'diffusers:diffusers', 'huggingface_hub:huggingface_hub',
+  'safetensors:safetensors', 'yaml:pyyaml', 'tqdm:tqdm', 'requests:requests', 'PIL:pillow', 'cv2:opencv-contrib-python',
+  'skimage:scikit-image', 'sklearn:scikit-learn', 'matplotlib:matplotlib', 'plyfile:plyfile', 'shapely:shapely', 'mcubes:PyMCubes',
+] as const;
+
+/** Shell that makes sure every module in `list` imports in `py`, pip-installing the ones that don't, then checks again. */
+function verifyImports(py: string, label: string, list: readonly string[]) {
+  const mods = list.map((x) => x.split(':')[0]);
+  const pairs = list.join(' ');
+  return [
+    `for pair in ${pairs}; do`,
+    `  mod="\${pair%%:*}"; pkg="\${pair##*:}"`,
+    `  if ! ${py} -c "import $mod" >/dev/null 2>&1; then echo "rig: ${label} venv lacks $mod, installing $pkg"; ${py} -m pip install "$pkg" || echo "rig: pip install $pkg failed" >&2; fi`,
+    'done',
+    `${py} -c "import ${mods.join(', ')}"`,
+  ].join('\n');
+}
+
+/** The verify step: imports the full list in each venv and installs whatever fails. Runs on every install and on every ready server. */
+export function verifyScript() {
+  return [
+    verifyImports(MIA_PYTHON, 'mia', MIA_IMPORTS),
+    verifyImports(SKIN_PYTHON, 'skin', SKIN_IMPORTS),
+    'echo "rig deps ok"',
+  ].join('\n');
+}
+
 const TEMPLATE_PY = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../post/rig/make_template.py'));
 
 function measureB64() {
@@ -118,6 +160,8 @@ export function installScript(sudo = 'sudo ') {
     'set -euo pipefail',
     `MARK='${READY_MARK}'`,
     `if [ "$(cat ${RIG_ROOT}/READY 2>/dev/null || true)" = "$MARK" ]; then`,
+    // Ready servers still get the verify step: a venv made before a package was added to the lists gets it now.
+    `  ${verifyScript().replace(/\n/g, '\n  ')}`,
     `  echo "rig ready ${READY_MARK}"`,
     '  exit 0',
     'fi',
@@ -147,6 +191,7 @@ export function installScript(sudo = 'sudo ') {
     `if [ ! -x ${MIA_PYTHON} ]; then python3.11 -m venv ${RIG_ROOT}/mia/.venv; fi`,
     `${MIA_PYTHON} -m pip install -U pip`,
     `${MIA_PYTHON} -m pip install -r ${MIA_ROOT}/requirements.txt`,
+    verifyImports(MIA_PYTHON, 'mia', MIA_IMPORTS),
     `printf '%s' '${b64}' | base64 -d > ${RIG_ROOT}/make_template.py`,
     `mkdir -p ${MIA_ROOT}/data/Mixamo`,
     `${MIA_PYTHON} ${RIG_ROOT}/make_template.py ${MIA_ROOT}/data/Mixamo/bones.fbx`,
@@ -163,6 +208,7 @@ export function installScript(sudo = 'sudo ') {
     `${SKIN_PYTHON} -m pip install -U pip`,
     `${SKIN_PYTHON} -m pip install torch==2.7.0 torchvision==0.22.0 torchaudio==2.7.0 --index-url https://download.pytorch.org/whl/cu128`,
     `${SKIN_PYTHON} -m pip install -r ${SKIN_ROOT}/requirements.txt`,
+    verifyImports(SKIN_PYTHON, 'skin', SKIN_IMPORTS),
     // flash-attn often fails to build. TokenRig uses PyTorch attention when it is absent.
     `${SKIN_PYTHON} -m pip install flash-attn --no-build-isolation || echo "flash-attn skipped"`,
     `cd ${SKIN_ROOT} && ${SKIN_PYTHON} download.py --model`,

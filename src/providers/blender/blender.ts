@@ -116,7 +116,9 @@ export async function blenderWorkspace(instanceId: string, jobId: string): Promi
           if (code) {
             if (code === '0') return;
             const tail = await sshRun(`grep -a -v -E '^(Fra:|HB frame|  )' ${dir}/log.txt | tail -n 25`, instanceId).catch(() => '');
-            throw new GenError(`Blender failed (exit ${code}):\n${tail.trim()}`);
+            // The filter above drops a Python traceback's indented frames; add the last traceback whole.
+            const tb = await sshRun(`awk '/^Traceback/{f=1;b=""} f{b=b $0 "\\n"} END{printf "%s", b}' ${dir}/log.txt | head -n 30`, instanceId).catch(() => '');
+            throw new GenError(`Blender failed (exit ${code}):\n${tail.trim()}${tb.trim() ? `\n--- last Python traceback ---\n${tb.trim()}` : ''}`);
           }
           if (Date.now() > end) {
             stop();
