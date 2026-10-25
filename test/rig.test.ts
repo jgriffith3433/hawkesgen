@@ -116,3 +116,22 @@ test('motion install script: python3.11 comes from deadsnakes when apt lacks it,
   assert.match(s, /tail -n 5 \/tmp\/motion-apt\.log/);
   assert.match(fs.readFileSync('src/providers/motion/motion.ts', 'utf8'), /the install printed nothing/);
 });
+
+test('rig install: scipy and the other run-time imports are listed, and the verify step runs on ready servers too', async () => {
+  const { installScript, verifyScript, SKIN_IMPORTS, MIA_IMPORTS, READY_MARK } = await import('../src/providers/rig/install.ts');
+  for (const list of [SKIN_IMPORTS, MIA_IMPORTS]) {
+    for (const m of ['scipy:scipy', 'numpy:numpy', 'trimesh:trimesh']) assert.ok((list as readonly string[]).includes(m), m);
+  }
+  const script = installScript();
+  assert.match(script, /scipy:scipy/);
+  assert.match(script, /import numpy, scipy, trimesh/);
+  assert.match(script, /pip install "\$pkg"/);
+  // the verify step sits inside the READY short-circuit, before its exit
+  const ready = script.slice(script.indexOf('if [ "$(cat'), script.indexOf(`exit 0`));
+  assert.match(ready, /rig deps ok/);
+  assert.match(verifyScript(), /skin\/\.venv\/bin\/python -c "import numpy, scipy/);
+  assert.ok(script.includes(READY_MARK));
+  // bash accepts the whole script
+  const r = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+});
