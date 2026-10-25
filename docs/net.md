@@ -1,7 +1,82 @@
 # Hawkes Net: the design
 
-**Status: planned. Nothing here is built.** This is the design every later Hawkes Net task follows; change it here
-first when a decision changes. The exact shapes are in `src/net/types.ts` (types only, no runtime code).
+**Status: built (2026-10-25).** The sections after "What is built" are the design it follows; where the build differs, this
+section says so and wins. Exact shapes: `src/net/types.ts` (the design's types) and the code.
+
+## What is built (read this first)
+
+| Piece | Where | What |
+|---|---|---|
+| Room core + protocol v3 | `clients/js/hawkes-net-core.mjs` | The room (from the portal's `relay.ts`, same rules), the binary codec (varints, quantized values, deltas, per-stream dictionaries), protocol 2 (JSON) kept, `Track`, snapshot/seed for moving a room. One file: runs in relay nodes and in a p2p host's page. Hot paths use integer slots and keys, not string maps. |
+| Relay node | `src/net/node.ts` (+ `rooms.ts`, `worker.ts`, `ws.ts`, `tickets.ts`, `lag.ts`) | WebSocket server (binary, subprotocol `hawkes-net.v3`), tickets checked offline (Ed25519), rooms pinned to worker processes by a hash of the room key (the primary hands the socket over: `child_process` sendHandle), p2p signal mode, the move to relay on the same sockets, resume tokens (15 s grace), Gen's publish, usage, heartbeat, drain. Runs standalone (`node src/net/node.ts`) or inside Gen. |
+| The node inside Gen | `src/net/service.ts` `startEmbedded`, `src/server.ts` (upgrade at `/v1/net/ws`) | Gen runs one node itself (`HAWKESGEN_NET_WORKERS`, default 1 worker process): the realtime traffic never runs on Gen's own event loop. `HAWKESGEN_NET_EMBEDDED=0` turns it off. For beta and small loads; relay boxes run the standalone node. |
+| Gen's side | `src/net/service.ts`, `api.ts`, `registry.ts`, `net/projects.json` | Tickets (`POST /v1/net/ticket`: a Gen key, or the public door by origin), the directory (`net_nodes`, `net_rooms`: which node holds which room, join order, live counts), node heartbeats, room events, usage into Gen's `usage` table (`provider hawkesnet`, units `player-minute:<transport>` and `gb:<transport>`), publish to a room or every room under `prefix/*`, room info, status, the SDK files at `/sdk/hawkes-net.mjs`. |
+| Client SDK | `clients/js/hawkes-net.mjs` | `join(room, { project, transport, ticket, ... })`: relay (WebSocket), p2p (WebRTC host-star: the host runs the core in its page; players start on the signal route and move onto their link; one stream, one carrier), `auto` (p2p, then the relay without the game noticing), reconnect with resume, exactly-once reliable messages across reconnects and moves, the shared clock (eased, never jumps), `send/on`, `pose/onPose`, `sync.*` (the portal's H.sync: state, action, track, push, onThing, thing, claim, hold, release, mine, holder, clear, onHost), `raw` (an engine with its own logic: hawkesgen.com's `play/net.js`), stats, sleep handling, `pagehide` leave. |
+| Demo page | `dashboard/net.html` (`/net.html`) | Dots in a room: invite link, bots in the same page, "move to the relay", live transport, host, routes, round trip and bandwidth. |
+| Tools | `tools/net-load.mjs`, `tools/net-dev.mjs` | The load test (below) and a scratch Gen with the node in it. |
+| Tests | `test/net-core.test.ts`, `net-node.test.ts`, `net-service.test.ts` | Rules from the portal's relay on both protocols, codec bounds, the measured scene's bytes, flush time, a relay room over real sockets (and with worker processes), refused tickets, resume, p2p signalling and the move to the relay with nothing reliable lost, publish, full rooms, raw mode, usage rows. |
+
+**Where the build differs from the design below:**
+
+- **Hosting (J, 2026-10-25): relay nodes take players directly, no CloudFront.** WebSocket messages aren't HTTP requests,
+  so CloudFront's request allowances don't apply to them, and a node on its own address is how game servers are run on
+  AWS. The cost is EC2 data transfer (~$0.09/GB) per byte sent, which protocol v3 cuts ~5x and p2p rooms avoid entirely.
+  A node behind CloudFront's flat-rate plan (WebSockets included) is still possible later: it only changes the node's URL.
+- **One service key, not one per project.** Gen signs every ticket and publish token with one Ed25519 key (rotated with
+  `POST /v1/net/keys/rotate`; the previous stays valid a day). Nodes fetch the public keys every minute.
+- **The node lives in Gen's repo** (`src/net/`), not a separate `hawkesnet/` repo: one CI, one deploy.
+- **p2p links carry one ordered, reliable data channel** per player (not a second unreliable one yet). Small rooms of
+  friends don't feel head-of-line blocking; the explicit-ack baselines for an unreliable channel are the next step.
+- **Signalling is Hawkes's own** (the node's signal mode). The serverless Nostr/tracker driver (Yooba Land's and Dose Of
+  Destruction's way today) is not in the SDK yet; those games keep their own copies until it is.
+- **Not built yet:** the Unity WebGL package (`com.hawkes.net`), TURN credentials (`/v1/net/turn`), a grid index for rooms
+  of 1000 (avatars are compared per pair: fine at 32-64), per-project egress caps enforced at the node.
+
+**Measured (2026-10-25, J's laptop: Intel Core Ultra 7 155U, Windows 11, Node 24; the load generator on the same machine):**
+
+- Protocol 3 vs 2, the portal's cows scene (100 cows, 3 vehicles, 20 crates, 4 players): **11.4 KB/s vs 55.3 KB/s per player
+  (4.9x smaller)** (`test/net-core.test.ts`).
+- A 32-player room's flush with 120 things: 0.42 ms mean.
+- The relay node alone (no workers): 256 players in rooms of 32 with 60 moving things each and avatars at 15 Hz: **0.32
+  CPU cores**; 512: 0.54.
+- `tools/net-load.mjs --players 1000 --room 32 --workers 4`: **all connected, none dropped, delivery p50 39 ms / p99 81 ms**
+  (including the generators' own queueing), each worker at 250 players: 0.67 CPU, timers late by 27 ms at p99,
+  **8.3 KB/s per player**. At 2000 players (500 per worker) on the same laptop the workers saturate (p99 136 ms): plan
+  ~250-400 players per worker process on this class of machine; a Linux box with real cores does better. Rerun on the
+  real box before sizing it.
+- Real browsers (Chrome): 7 players p2p each on a WebRTC link to the host, then 12: the room moved to the relay on the same
+  sockets, one move, host kept.
+
+### Using it
+
+```js
+import { join } from 'https://gen.hawkesgen.com/sdk/hawkes-net.mjs'; // or a copy (clients/js/sdk.json)
+const net = await join('lobby-1', { project: 'mygame', name: 'Ada' });   // public door: the page's origin must be the project's
+net.on('chat', (text, from) => console.log(from.name, text));
+net.send('chat', 'hi');                       // reliable: once, in order, also across reconnects and the move to the relay
+net.pose([x, y, z], yaw);                     // my avatar; others get it through net.onPose((id, s, at) => ...)
+const t = net.sync.track({ pos: [0, 1, 2] }); // smooth playback of others' snapshots
+```
+
+- **Tickets.** A page on one of the project's `origins` (net/projects.json) gets player tickets with no key (the public
+  door; per-address limits). A game server, a bot or a test gets them with a Gen key (`Authorization: Bearer hg_...`),
+  any role. A game with its own server can mint tickets there and pass `ticket` to `join` (a string, or a function that
+  returns Gen's answer, called again on reconnects).
+- **Server sends.** `POST /v1/net/publish { project, room | 'prefix/*', ops | event, by, except }` with a Gen key.
+- **An engine with its own multiplayer logic** passes `onRaw` and sends with `net.raw.send(m)` in the core's message
+  shapes (hawkesgen.com's `public/play/net.js` does).
+- **Status.** `GET /v1/net/status` (nodes, rooms per project and transport), `GET /v1/net/nodes`, the demo at `/net.html`.
+
+### Running a relay box
+
+`node src/net/node.ts` with `NET_GEN_KEY` (a Gen key whose projects include `hawkesnet`), `NET_NODE_ID`,
+`NET_PUBLIC_URL` (`wss://<host>/v3`, what tickets name), `NET_ADMIN_URL` (where Gen sends publishes), `NET_PORT`,
+`NET_WORKERS` (default: the cores). TLS in front (Caddy) or a load balancer. It heartbeats to Gen, which then places new
+rooms there (relay boxes before the node inside Gen). SIGTERM drains: players are told to move and Gen places their rooms
+elsewhere. On the control server, Caddy must let `/v1/net/ws` and the public door through without the Studio login
+(hawkesstudio `deploy/caddyfile.mjs`, `@net`).
+
+## The design
 
 Hawkes Net is how Hawkes games play together: one client SDK, two ways to carry it (peer to peer, or a relay we run),
 and a service in Gen that hands out tickets, knows where rooms live and counts usage. A game says *what* it wants
@@ -380,6 +455,9 @@ Settings, the dashboard's Usage tab):
 
 ## 8. Hosting the relay
 
+> **Decided 2026-10-25 (J): nodes take players directly, no CloudFront** (see "What is built"). The CloudFront text below is
+> the option kept for later, not the plan.
+
 **One small Graviton box, its own process, behind CloudFront, on a flat-rate plan.**
 
 - **Box**: an EC2 `c7g.large` (2 vCPU Graviton3, 4 GB; about **$0.0725/h**, ~$53/month on demand; a `t4g.medium` at ~$0.0336/h is
@@ -414,6 +492,12 @@ Settings, the dashboard's Usage tab):
   moving a project to Durable Objects is a directory change, not an SDK change.
 
 ## 9. What it costs: per 1,000 concurrent players
+
+> **With the decision and the measurements (2026-10-25):** the relay sends **~8 KB/s per player** in a world of 60 moving
+> things and 31 avatars (measured, protocol 3), so **1,000 players on the relay = ~29 GB an hour = ~$2.60 an hour in EC2
+> data transfer** ($0.09/GB), plus the boxes (a c7g.large is ~$0.07 an hour and holds several hundred players: measure on
+> it). That is **~0.26 cents per player-hour**. Rooms of friends that stay peer to peer cost nothing. The table below was
+> written before the measurements and with CloudFront in mind; keep it for the comparison.
 
 Assumptions (all of them are numbers someone can change; formulas below):
 

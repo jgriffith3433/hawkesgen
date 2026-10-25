@@ -6,6 +6,7 @@ import { HOST, PORT, DATA_DIR } from './config.ts';
 import { handle } from './api.ts';
 import { queue } from './jobs.ts';
 import { startLagMonitor } from './lag.ts';
+import { refuse } from './net/ws.ts';
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch((e) => {
@@ -13,6 +14,17 @@ const server = http.createServer((req, res) => {
     if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: String(e?.message ?? e) }));
   });
+});
+
+// Hawkes Net's node inside Gen takes WebSocket upgrades at /v1/net/ws (src/net/service.ts); nothing else upgrades.
+server.on('upgrade', (req, socket, head) => {
+  const route = new URL(req.url ?? '/', 'http://localhost').pathname;
+  if (route !== '/v1/net/ws') return refuse(socket, 404, 'Not found');
+  void import('./net/service.ts').then((m) => {
+    const node = m.embeddedNode();
+    if (!node) return refuse(socket, 503, 'Hawkes Net is starting; try again in a second');
+    node.upgrade(req, socket, head);
+  }).catch(() => refuse(socket, 503, 'Hawkes Net is not available'));
 });
 
 server.on('error', (e: any) => {
@@ -31,6 +43,8 @@ server.listen(PORT, HOST, () => {
   console.log(`Hawkes Gen on http://${HOST}:${PORT}  (data: ${DATA_DIR})`);
   startLagMonitor();
   queue.start();
+  // Hawkes Net: the relay node Gen runs itself (HAWKESGEN_NET_EMBEDDED=0 turns it off).
+  void import('./net/service.ts').then((m) => m.startEmbedded()).then((n) => n && console.log(`[net] node ${n.o.id} ready (${n.workers.length} worker${n.workers.length === 1 ? '' : 's'})`)).catch((e) => console.warn(`[net] ${e.message}`));
   void import('./storage.ts').then((m) => m.resumeOnStart()).catch((e) => console.warn(`[storage] ${e.message}`));
   // Analytics: the daily rollups and the 13-month purge, and the GeoIP database (downloaded monthly).
   void import('./analytics/store.ts').then((m) => m.startMaintenance()).catch((e) => console.warn(`[analytics] ${e.message}`));
@@ -56,6 +70,8 @@ server.listen(PORT, HOST, () => {
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
     console.log('stopping (running jobs resume on the next start)');
-    process.exit(0);
+    // Hawkes Net players are told to move (they reconnect when Gen is back); then out.
+    void import('./net/service.ts').then((m) => m.stopEmbedded()).catch(() => {}).finally(() => process.exit(0));
+    setTimeout(() => process.exit(0), 4000).unref();
   });
 }

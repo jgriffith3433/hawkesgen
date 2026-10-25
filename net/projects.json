@@ -1,0 +1,37 @@
+{
+  "$comment": "Projects that use Hawkes Net (docs/net.md 'Limits and usage'). A project not listed here may still use Hawkes Net with a Gen API key for it: it gets the defaults below. origins: pages that may ask for player tickets with no key (the public door; http://localhost and 127.0.0.1 are always allowed). keyProjects: Gen key project patterns that may make tickets for this project besides keys for the project itself (the portal's key works in usr_* projects). transports: what the project may use. defaults: the room config a ticket starts a room with (a request's config is clamped to it). limits: per project. testPrefix: rooms named so are playtests: free and not counted in totals.",
+  "defaults": {
+    "origins": [],
+    "keyProjects": [],
+    "transports": ["p2p", "relay"],
+    "signal": "hawkes",
+    "defaults": { "topology": "star", "profile": "medium", "maxPlayers": 64, "p2pMax": 8, "interest": { "tiers": [[45, 0, 0], [130, 250, 0], [320, 1000, 250], [null, 3000, 1000]], "farAvatarM": 120 } },
+    "limits": { "rooms": 200, "playersPerRoom": 64, "players": 2000, "downBytesPerSec": 49152, "upBytesPerSec": 32768, "msgsPerSec": 90, "innerPerSec": 900, "messageBytes": 65536, "ents": 4096, "states": 2048, "egressBytesPerSec": 5242880, "monthlyBytes": 5000000000000 },
+    "testPrefix": "t-"
+  },
+  "projects": {
+    "hawkesgenwebsite": {
+      "name": "hawkesgen.com games",
+      "origins": ["https://hawkesgen.com", "https://www.hawkesgen.com", "https://hawkesgenwebsite.hawkesgen.com"],
+      "keyProjects": ["usr_*", "ubeta_*"],
+      "defaults": { "topology": "star", "profile": "heavy", "maxPlayers": 32, "p2pMax": 4 },
+      "limits": { "rooms": 2000, "playersPerRoom": 32, "players": 20000, "downBytesPerSec": 98304, "messageBytes": 204800 }
+    },
+    "netdemo": {
+      "name": "Hawkes Net demo",
+      "origins": ["https://gen.hawkesgen.com", "https://hawkesgen.com", "https://www.hawkesgen.com", "https://hawkesgenwebsite.hawkesgen.com"],
+      "defaults": { "topology": "star", "profile": "light", "maxPlayers": 64, "p2pMax": 8 },
+      "limits": { "rooms": 500, "players": 5000 }
+    },
+    "doseofdestruction": {
+      "name": "Dose Of Destruction",
+      "origins": ["https://doseofdestruction.com", "https://www.doseofdestruction.com", "https://dod.hawkesgen.com"],
+      "defaults": { "topology": "pair", "profile": "light", "maxPlayers": 2, "p2pMax": 2 }
+    },
+    "yoobaland": {
+      "name": "Yooba Land",
+      "origins": ["https://yoobalandgame.com", "https://www.yoobalandgame.com", "https://yoobaland.hawkesgen.com"],
+      "defaults": { "topology": "star", "profile": "light", "maxPlayers": 24, "p2pMax": 24 }
+    }
+  }
+}

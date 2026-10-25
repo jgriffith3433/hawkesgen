@@ -44,6 +44,7 @@ import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
+import { handleNet } from './net/api.ts';
 import {
   authenticateRequest,
   isPublicSaas,
@@ -220,6 +221,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   if (route === '/v1/analytics/collect') return handleCollect(req, res);
   // ...and from a site's own server passing on pages that can't send themselves (a Gen key; collect.ts relayed).
   if (route === '/v1/analytics/relay' && method === 'POST') return handleCollect(req, res, { relay: true });
+  // Hawkes Net (src/net/, docs/net.md): tickets, the directory, node reports, the SDK files. Its own auth and CORS.
+  if (route.startsWith('/v1/net/') || route.startsWith('/sdk/net') || route.startsWith('/sdk/hawkes-net')) return handleNet(req, res, route);
 
   // CORS: games' dev servers (other localhost ports) call the API from the browser.
   const origin = String(req.headers.origin ?? '');
