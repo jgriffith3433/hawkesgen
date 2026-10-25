@@ -22,7 +22,7 @@ export async function ensureMotion(instanceId: string, step: (s: string) => void
     step(`installing motion models on ${instanceId} (once: Kimodo SOMA and HY-Motion, several GB)`);
     const out = await sshRun(`bash -c ${shq(installScript())} 2>&1 | tail -n 40`, instanceId, { timeoutMs: 90 * 60_000 });
     if (!out.includes(`motion ready ${READY_MARK}`)) {
-      throw new GenError(`The motion models didn't install on ${instanceId}: ${out.trim().split('\n').slice(-8).join(' / ')}`);
+      throw new GenError(`The motion models didn't install on ${instanceId}: ${out.trim().split('\n').slice(-8).join(' / ') || 'the install printed nothing (see /tmp/motion-apt.log on the server)'}`);
     }
   }
   installed.add(instanceId);
