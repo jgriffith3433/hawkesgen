@@ -135,6 +135,12 @@ What it sets up, each step skipped when it already exists:
 Cost: no monthly fee. The free tier covers 1 TB out and 10M requests a month; after that about $0.085/GB and $0.01 per 10,000 HTTPS
 requests in the US. S3 to CloudFront transfer is free. No WAF (Shield Standard is on). The script prints this at the end of every run.
 
+**`cdn` links in answers:** when `settings.storage.cdn` is set, asset answers (`GET /v1/assets/:id`), library list rows, LOD summaries
+(the original and each level) and `GET /v1/lods` carry `cdn`: `<storage.cdn>/sha256/<hash>`, only for files whose S3 copy exists
+(`inS3`); otherwise the field is left out and callers keep `GET /v1/assets/:id/file`, which is unchanged. The bucket stays private but
+**a hash link is public to anyone who has it**: hand them out only for things the caller shows publicly (published games,
+community things, templates, shares).
+
 On when `settings.storage.bucket` (or `HAWKESGEN_LIBRARY_BUCKET`) is set: each new file is uploaded by content in the
 background, and a missing file comes back from S3 when a job or a download needs it. CLI: `hawkesgen storage
 [status|backfill|restore]`.

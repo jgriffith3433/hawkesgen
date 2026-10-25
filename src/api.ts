@@ -102,10 +102,12 @@ async function readJson(req: IncomingMessage) {
   }
 }
 
+const cdnField = (sha: string) => { const cdn = storage.cdnUrl(sha); return cdn ? { cdn } : {}; };
+
 /** A library list with each asset's levels of detail inline (src/lod.ts), so callers need no request per asset. */
 function withLods<T extends { items: any[] }>(list: T): T {
   const lods = lodSummaries(list.items.map((a) => a.id));
-  return { ...list, items: list.items.map((a) => ({ ...a, inS3: storage.inS3(a.sha256), ...(lods[a.id] ? { lods: lods[a.id] } : {}) })) };
+  return { ...list, items: list.items.map((a) => ({ ...a, inS3: storage.inS3(a.sha256), ...cdnField(a.sha256), ...(lods[a.id] ? { lods: lods[a.id] } : {}) })) };
 }
 
 function serveFile(req: IncomingMessage, res: ServerResponse, file: string, mime = mimeOf(file), extra: Record<string, string> = {}) {
@@ -913,7 +915,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const name = `${a.project}-${a.tool}-${a.id}${lod ? `.lod${lod.level}` : ''}${path.extname(file.path)}`;
         return serveFile(req, res, file.path, file.mime, { ...cache, ...(q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {}) });
       }
-      if (method === 'GET') return send(res, 200, { ...a, inS3: storage.inS3(a.sha256), lods: lodSummary(a.id) });
+      if (method === 'GET') return send(res, 200, { ...a, inS3: storage.inS3(a.sha256), ...cdnField(a.sha256), lods: lodSummary(a.id) });
       if (method === 'PATCH') {
         if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
         return send(res, 200, updateAsset(a.id, await readJson(req)));

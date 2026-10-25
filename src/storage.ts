@@ -195,6 +195,13 @@ export function idle(): Promise<void> {
 /** Is this content in the bucket (so a CDN link to sha256/<hash> will work)? */
 export const inS3 = (sha: string) => isBackedUp(sha);
 
+/** The public CDN link for this content (`<storage.cdn>/sha256/<hash>`), only when storage.cdn is set and the file is in S3;
+ *  otherwise undefined and callers keep the API's file route. Anyone holding the link can read the file. */
+export function cdnUrl(sha: string): string | undefined {
+  const base = loadSettings().storage.cdn;
+  return base && isBackedUp(sha) ? `${base}/sha256/${sha}` : undefined;
+}
+
 /** Queues every asset not backed up yet. -> how many were queued. */
 export function backfill({ limit = 100000 } = {}) {
   const rows = db.prepare('SELECT a.sha256, a.path, a.bytes, a.mime FROM assets a LEFT JOIN backups b ON b.sha256 = a.sha256 WHERE b.sha256 IS NULL GROUP BY a.sha256 LIMIT ?').all(limit) as { sha256: string; path: string; bytes: number; mime: string }[];

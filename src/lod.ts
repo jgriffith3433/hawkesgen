@@ -32,7 +32,7 @@ import { spawn } from 'node:child_process';
 import { db } from './db.ts';
 import { paths, ROOT, loadSettings } from './config.ts';
 import { getAsset, type Asset } from './library.ts';
-import { backup, forget, inS3 } from './storage.ts';
+import { backup, forget, inS3, cdnUrl } from './storage.ts';
 import type { Tool } from './tools/types.ts';
 
 /** Bump when the levels made would change: assets made at an older version are redone by the backfill. */
@@ -372,7 +372,7 @@ export const assetLodTool: Tool = {
 };
 
 // ------------------------------------------------------------------ reading them
-export type LodLevel = { level: number; bytes: number; w?: number; h?: number; tris?: number; tex?: number; role?: string; sha: string; inS3: boolean };
+export type LodLevel = { level: number; bytes: number; w?: number; h?: number; tris?: number; tex?: number; role?: string; sha: string; inS3: boolean; /** Public CDN link, only when storage.cdn is set and the file is in S3. */ cdn?: string };
 export type LodSummary = {
   kind: 'image' | 'mesh';
   state: string;
@@ -384,9 +384,12 @@ export type LodSummary = {
   sha: string;
   /** The original's file is in the S3 bucket (a CDN link will work). Each level has its own. */
   inS3: boolean;
+  cdn?: string;
   /** Smallest first. */
   levels: LodLevel[];
 };
+
+const cdnField = (sha: string) => { const cdn = cdnUrl(sha); return cdn ? { cdn } : {}; };
 
 /** The levels of these assets, by id (compact: lists and bundles carry them inline). Ids without any are left out. */
 export function lodSummaries(ids: string[]): Record<string, LodSummary> {
@@ -399,7 +402,7 @@ export function lodSummaries(ids: string[]): Record<string, LodSummary> {
     for (const a of assets) {
       const kind = MESH_MIME.test(a.mime) ? 'mesh' : 'image';
       out[a.id] = {
-        kind, state: a.state, bytes: a.bytes, sha: a.sha256.slice(0, 16), inS3: inS3(a.sha256), levels: [],
+        kind, state: a.state, bytes: a.bytes, sha: a.sha256.slice(0, 16), inS3: inS3(a.sha256), ...cdnField(a.sha256), levels: [],
         ...(kind === 'image' ? (a.width ? { size: [a.width, a.height] as [number, number] } : {}) : { tris: a.triangles ?? undefined, tex: a.texture ?? undefined }),
       };
     }
@@ -407,8 +410,8 @@ export function lodSummaries(ids: string[]): Record<string, LodSummary> {
       const s = out[r.asset];
       if (!s) continue;
       s.levels.push(s.kind === 'image'
-        ? { level: r.level, bytes: r.bytes, w: r.width, h: r.height, sha: r.sha256.slice(0, 16), inS3: inS3(r.sha256) }
-        : { level: r.level, bytes: r.bytes, tris: r.triangles, tex: r.texture, role: r.role, sha: r.sha256.slice(0, 16), inS3: inS3(r.sha256) });
+        ? { level: r.level, bytes: r.bytes, w: r.width, h: r.height, sha: r.sha256.slice(0, 16), inS3: inS3(r.sha256), ...cdnField(r.sha256) }
+        : { level: r.level, bytes: r.bytes, tris: r.triangles, tex: r.texture, role: r.role, sha: r.sha256.slice(0, 16), inS3: inS3(r.sha256), ...cdnField(r.sha256) });
     }
   }
   return out;

@@ -83,3 +83,14 @@ test('metadata: a dry run counts the wrong objects, apply fixes them, and it can
   const again = await storage.fixMetadata({ apply: true });
   assert.equal(again.checked, 0); // already right ones are remembered
 });
+
+test('cdn link only for files in S3, and only when storage.cdn is set', async () => {
+  const { saveSettings } = await import('../src/config.ts');
+  saveSettings({ storage: { bucket: 'test-bucket', cdn: 'https://cdn.example.com' } });
+  const a = make('cdn one');
+  assert.equal(storage.cdnUrl(a.sha256), undefined); // not backed up yet
+  await storage.idle();
+  assert.equal(storage.cdnUrl(a.sha256), `https://cdn.example.com/sha256/${a.sha256}`);
+  saveSettings({ storage: { bucket: 'test-bucket', cdn: null } });
+  assert.equal(storage.cdnUrl(a.sha256), undefined);
+});
