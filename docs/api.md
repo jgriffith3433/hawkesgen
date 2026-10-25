@@ -117,6 +117,24 @@ sha, levels: [{ level, bytes, w, h | tris, tex, role, sha }] }`, smallest first 
 
 Objects carry the asset's Content-Type (HTML and SVG go as `application/octet-stream`) and `Cache-Control: public, max-age=31536000, immutable`. Asset answers and LOD summaries (and each level) carry `inS3`: true when a CDN link to `sha256/<hash>` will work.
 
+## CDN
+
+`cdn.hawkesgen.com` serves the library's S3 files (`https://cdn.hawkesgen.com/sha256/<hash>`) through CloudFront. Made by
+`node deploy/cdn.mjs` (idempotent; **dry run by default**, `--apply` to create; J runs it, an agent never does). It uses Gen's
+AWS config and never prints keys. Options: `--domain`, `--zone`, `--bucket`, `--alarm-usd` (default 20).
+
+What it sets up, each step skipped when it already exists:
+- an ACM certificate in us-east-1 (DNS-validated through Route 53; if it isn't issued yet, run `--apply` again in a few minutes)
+- an Origin Access Control, so the bucket stays private; the bucket policy lets only this distribution read `sha256/*` (other statements are kept)
+- a cache policy keyed on the path only (no cookies, headers or query strings; one-year TTLs, because files are content-addressed) with compression
+- a response headers policy: `Access-Control-Allow-Origin: *` (sandboxed games have origin null), `Timing-Allow-Origin: *`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox` (a file can never act as a page)
+- the distribution (PriceClass_100: US, Canada, Europe edges; pay-as-you-go, not a flat-rate plan) and the Route 53 A/AAAA alias
+- a CloudWatch alarm `hawkesgen-cdn-cloudfront-charges` on CloudFront's month-to-date charges (needs "Receive Billing Alerts" on in the account; add an SNS topic in CloudWatch to be emailed)
+- `settings.storage.cdn` = `https://cdn.hawkesgen.com` (saved in the checkout it runs in; on the cloud server `POST /v1/settings` with `{"storage":{"bucket":"...","cdn":"https://cdn.hawkesgen.com"}}`; `storage` is replaced as a whole, so send the bucket too)
+
+Cost: no monthly fee. The free tier covers 1 TB out and 10M requests a month; after that about $0.085/GB and $0.01 per 10,000 HTTPS
+requests in the US. S3 to CloudFront transfer is free. No WAF (Shield Standard is on). The script prints this at the end of every run.
+
 On when `settings.storage.bucket` (or `HAWKESGEN_LIBRARY_BUCKET`) is set: each new file is uploaded by content in the
 background, and a missing file comes back from S3 when a job or a download needs it. CLI: `hawkesgen storage
 [status|backfill|restore]`.
