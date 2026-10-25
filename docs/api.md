@@ -242,8 +242,8 @@ Filters on every read: `range` (`30d`) or `from`/`to`, `env` (`live`; `all`), `b
 | `POST /v1/net/ticket` | A join ticket: `{ project, room, name?, sub?, role?, transport: 'auto' \| 'p2p' \| 'relay', config?, client: { sdk, protocols: [3] } }` -> `{ ticket, peer, ord, config, relayUrl, signalUrl, transports, ice, expiresAt, node, epoch }`. With a Gen key (any role; the key's projects, or a key project the registry lists in `keyProjects`), or **no key from one of the project's own sites** (`net/projects.json` origins, plus localhost; players only; limited per address and per project). `403` site or key not allowed, `429` the project's rooms or players at their limit, `503` no node up |
 | `GET /v1/net/ws` (WebSocket) | The node inside Gen. `?t=<ticket>&want=auto\|p2p\|relay` or `?r=<resume>`; subprotocol `hawkes-net.v3`. Closes with `4009` when the room is full |
 | `GET /v1/net/keys` | **Public.** The public keys nodes check tickets with |
-| `GET /v1/net/status`, `/v1/net/nodes` | **Public.** Nodes (up, players, capacity, load) and rooms per project and transport |
-| `POST /v1/net/publish` | A server's world edits or event into a room: `{ project, room \| 'prefix/*', ops?, event?: { name, data }, by?, fx?, except? }` -> `{ delivered, rooms? }` |
+| `GET /v1/net/status`, `/v1/net/nodes` | **Public.** Nodes (up, players, capacity, load) and totals; rooms per project and transport only with a key |
+| `POST /v1/net/publish` | A server's world edits or event into a room: `{ project, room \| 'prefix/*', ops?, event?: { name, data }, by?, fx?, except? }` -> `{ delivered, rooms? }`; or `kick: { sub? }` puts out everyone (or those who joined as `sub`) -> `{ kicked }` |
 | `POST /v1/net/room` | `{ project, room }` -> `{ open, players, transport, limit }` |
 | `POST /v1/net/nodes/heartbeat`, `/v1/net/nodes/room`, `/v1/net/usage` | Relay nodes reporting in (a key for the project `hawkesnet`, or an admin key) |
 | `POST /v1/net/keys/rotate` | Owner: a new signing key (the old one works a day more) |

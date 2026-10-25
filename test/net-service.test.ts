@@ -218,3 +218,33 @@ test("the portal's key, narrowed to one customer, issues tickets in that custome
   assert.equal((await ask('usr_00000000000000bb', 'usr_00000000000000aa')).status, 403, "another customer's project");
   assert.equal((await ask('netdemo')).status, 403, 'a project the key has no part in');
 });
+
+test("Gen's publish can put people out of a room: everyone, or those who joined as one sub; they don't come back", async () => {
+  const a = await join('kick1', opts({ name: 'Ada', transport: 'relay', sub: 'u-ada' }));
+  const b = await join('kick1', opts({ name: 'Bo', transport: 'relay', sub: 'u-bo' }));
+  try {
+    await wait(() => a.peers.has(b.id), 4000, 'A sees B');
+    const problems: string[] = [];
+    b.when('problem', (p: any) => problems.push(p.code));
+    const r = await svc.publish({ id: 'local', name: 't', role: 'owner', projects: ['*'] } as any, { project: 'netdemo', room: 'kick1', kick: { sub: 'u-bo' } });
+    assert.equal(r.kicked, 1, 'only Bo');
+    await wait(() => b.status === 'closed', 4000, 'Bo is out');
+    assert.ok(problems.includes('refused'), 'told why');
+    await wait(() => !a.peers.has(b.id), 4000, 'A sees Bo leave');
+    await new Promise((res) => setTimeout(res, 1500));
+    assert.equal(b.status, 'closed', 'and does not come back by itself');
+    assert.equal(a.status, 'online', 'Ada stays');
+  } finally { await a.leave(); await b.leave(); }
+});
+
+test("the portal's rooms have no keyless door, and localhost is a door only where Gen is open to its own machine", async () => {
+  const r = await fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Origin: 'https://hawkesgen.com', 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'hawkesgenwebsite', room: 'g/g_x/edit', client: { protocols: [3] } }) });
+  assert.equal(r.status, 403, 'an Origin header can be set by anyone: the portal asks with its key');
+  const { originAllowed, netProject } = await import('../src/net/registry.ts');
+  const { loadSettings, saveSettings } = await import('../src/config.ts');
+  assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), true, 'on this machine');
+  const was = loadSettings();
+  saveSettings({ ...was, localOpen: false });
+  try { assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), false, 'on the server: anyone can say localhost'); }
+  finally { saveSettings(was); }
+});

@@ -18,6 +18,8 @@ const COLORS = ['#4a9eff', '#a855f7', '#34d399', '#fbbf24', '#ef4444', '#f97316'
 /** How long a dropped player keeps their place (a phone locking, a network blink) before the room lets them go. */
 export const GRACE_MS = 15_000;
 const IDLE_MS = 20_000;
+const PER_IP = 256; // sockets from one address in one process (a school or a phone carrier's shared address still plays)
+const RESUME_S = 600; // a resume token lives 10 minutes (the grace is 15 s; a page tries a few times)
 const SEED_WAIT_MS = 3000;
 const SIG_PER_SEC = 60;
 const SIG_BYTES_PER_SEC = 24 * 1024;
@@ -48,6 +50,7 @@ export class Rooms {
   rooms = new Map<string, Room>();
   keys: PublicKeys = new Map();
   private seen = new SeenIds();
+  private byIp = new Map<string, number>();
   private usage = new Map<string, UsageAcc>();
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -78,13 +81,24 @@ export class Rooms {
   upgrade(headers: Headers, url: URL, raw: Duplex, head: Uint8Array | null) {
     const now = Date.now();
     if (this.draining) return refuse(raw, 503, 'This node is draining; ask for a new ticket');
+    // Sockets per address in this process (behind a proxy on this machine, the address it forwarded for).
+    const remote = String((raw as any).remoteAddress ?? '');
+    const fwd = String(headers['x-forwarded-for'] ?? '').split(',').pop()!.trim();
+    const local = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+    const ip = local && fwd ? fwd : remote || '?';
+    const had = this.byIp.get(ip) ?? 0;
+    // (This machine itself, not through the proxy, isn't capped: load tests and Gen's own bots.)
+    if (!(local && !fwd) && had >= PER_IP) return refuse(raw, 429, 'Too many connections from this address');
+    this.byIp.set(ip, had + 1);
+    raw.once('close', () => { const n = (this.byIp.get(ip) ?? 1) - 1; if (n > 0) this.byIp.set(ip, n); else this.byIp.delete(ip); });
     const v = url.searchParams.get('v') === '2' ? 2 : 3;
     const resume = url.searchParams.get('r');
     if (resume) {
       const r = checkResume(this.o.secret, resume);
       const room = r && this.rooms.get(`${r.prj}/${r.room}`);
       const peer = room && room.peers.get(r!.peer);
-      if (!r || !room || !peer) return refuse(raw, 410, 'That place in the room is gone; join again');
+      // Only this instance of the room: one closed and opened again reuses peer ids, and an old token must not take one.
+      if (!r || !room || !peer || r.inst !== room.opened) return refuse(raw, 410, 'That place in the room is gone; join again');
       const ws = accept(headers, raw, head, { maxMessage: room.lim.messageBytes || 64 * 1024, idleMs: IDLE_MS, protocols: ['hawkes-net.v3', 'hawkes-net.v2'] });
       if (!ws) return;
       return this.attach(room, peer, ws, v, now, true);
@@ -97,12 +111,15 @@ export class Rooms {
     const key = `${t.prj}/${t.room}`;
     let room = this.rooms.get(key);
     if (room && t.epoch && t.epoch < room.dirEpoch) return refuse(raw, 409, 'Old ticket for this room; ask for a new one');
-    const want = (url.searchParams.get('want') as Payload['want']) || t.want || 'auto';
+    // The room's mode is the ticket's (Gen decided it from the request); a URL can't change it.
+    const want = t.want || 'auto';
     if (!room) room = this.open(t, want, now);
+    // A peer id is one person: a ticket for an id already here is stale (the directory forgot the room and counted again).
+    if (room.peers.has(t.peer)) { if (!room.peers.size) this.close(room); return refuse(raw, 409, 'Old ticket for this room; ask for a new one'); }
     const max = Math.min(room.cfg.maxPlayers || 64, room.lim.playersPerRoom || 64);
     const present = [...room.peers.values()].filter((p) => p.role !== 'spectator').length;
     // A p2p-only room past its p2p size can't grow (the game shards it); 'auto' moves to the relay instead (below).
-    const full = (t.role !== 'spectator' && present >= max) || (room.mode === 'p2p' && !room.allowRelay && present >= room.cfg.p2pMax);
+    const full = (t.role !== 'spectator' && present >= max) || room.peers.size >= max * 2 || (room.mode === 'p2p' && !room.allowRelay && present >= room.cfg.p2pMax);
     const ws = accept(headers, raw, head, { maxMessage: room.lim.messageBytes || 64 * 1024, idleMs: IDLE_MS, protocols: ['hawkes-net.v3', 'hawkes-net.v2'] });
     if (!ws) return;
     if (full) {
@@ -153,7 +170,7 @@ export class Rooms {
     if (peer.ws && peer.ws !== ws) { const old = peer.ws; peer.ws = null; old.onClose = () => {}; old.close(4000, 'replaced'); }
     peer.ws = ws;
     peer.v = ws.protocol === 'hawkes-net.v2' ? 2 : v;
-    const resume = resumeToken(this.o.secret, { prj: room.project, room: room.name, peer: peer.id, exp: Math.floor(now / 1000) + 3600, epoch: room.epoch });
+    const resume = resumeToken(this.o.secret, { prj: room.project, room: room.name, peer: peer.id, exp: Math.floor(now / 1000) + RESUME_S, epoch: room.epoch, inst: room.opened });
     ws.onMessage = (data) => this.message(room, peer, data);
     ws.onClose = (code) => this.dropped(room, peer, ws, code);
     if (room.mode === 'relay') this.joinCore(room, peer, now, resume, resumed);
@@ -215,6 +232,9 @@ export class Rooms {
       case 'migrate': {
         if (m.step === 'propose') {
           const why = ['links failed', 'host overloaded', 'game asked'].includes(m.why) ? m.why : 'game asked';
+          if (peer.role === 'spectator') return;
+          // The game and an overloaded host decide through the host; a player can only say its links failed.
+          if (why !== 'links failed' && room.host !== peer.id) return;
           if (why === 'links failed') {
             room.failed.set(peer.id, now);
             for (const [k, at] of room.failed) if (now - at > 10_000 || !room.peers.has(k)) room.failed.delete(k);
@@ -254,7 +274,7 @@ export class Rooms {
     if (snap) core.seed(room.core, { ...snap, epoch: room.epoch });
     // Everyone's socket becomes a relay connection, oldest first so the host stays who it was.
     const order = [...room.peers.values()].filter((p) => p.ws).sort((a, b) => a.ord - b.ord);
-    for (const p of order) this.joinCore(room, p, now, resumeToken(this.o.secret, { prj: room.project, room: room.name, peer: p.id, exp: Math.floor(now / 1000) + 3600, epoch: room.epoch }), false, { migrated: true, why });
+    for (const p of order) this.joinCore(room, p, now, resumeToken(this.o.secret, { prj: room.project, room: room.name, peer: p.id, exp: Math.floor(now / 1000) + RESUME_S, epoch: room.epoch, inst: room.opened }), false, { migrated: true, why });
     this.o.onRoom?.({ project: room.project, room: room.name, epoch: room.dirEpoch, event: 'moved', transport: 'relay', players: this.present(room), at: now });
   }
 
@@ -262,7 +282,8 @@ export class Rooms {
   private dropped(room: Room, peer: Peer, ws: Socket, code: number) {
     if (peer.ws !== ws) return;
     peer.ws = null;
-    if (code === 4000) return;
+    // Relay: their connection stops being flushed, so what is said meanwhile waits for them (joinCore hands it over).
+    if (room.mode === 'relay' && peer.conn) peer.conn.slow = true;
     // Kept a moment: a phone that locked or a network that blinked comes back with its resume token.
     peer.away = setTimeout(() => this.leave(room, peer, 'timeout'), GRACE_MS);
     peer.away.unref?.();
@@ -278,7 +299,8 @@ export class Rooms {
     room.peers.delete(peer.id);
     const ws = peer.ws;
     peer.ws = null;
-    if (ws && ws.open) { ws.onClose = () => {}; ws.close(1000, why); }
+    // 4003: put out of the room (the SDK leaves and does not come back on its own); 1000 otherwise.
+    if (ws && ws.open) { ws.onClose = () => {}; ws.close(why === 'kicked' ? 4003 : 1000, why); }
     if (room.mode === 'relay' && peer.conn) core.leave(room.core, peer.conn, why);
     else {
       this.toAll(room, { c: 'peer', ev: 'leave', peer: this.info(peer), why });
@@ -303,13 +325,19 @@ export class Rooms {
 
   // ------------------------------------------------------------------ server-side sends (Gen's publish)
   /** A publish token from Gen (hp1, signed with Gen's service key) and what it carries: world edits or an event. */
-  publish(token: string, body: { ops?: unknown[]; by?: string; fx?: string | null; event?: { name: string; data: unknown }; except?: string | null }) {
+  publish(token: string, body: { ops?: unknown[]; by?: string; fx?: string | null; event?: { name: string; data: unknown }; except?: string | null; kick?: { sub: string | null } }) {
     const checked = verifyToken<{ kid: string; exp: number; prj: string; room: string; jti: string }>(PUBLISH_PREFIX, token, this.keys);
     if (!checked.ok) return { ok: false, status: 401, error: `Publish refused: ${checked.why}` };
     const p = checked.payload;
     if (!this.seen.first(`pub:${p.jti}`, p.exp)) return { ok: false, status: 401, error: 'Publish token already used' };
     const room = this.rooms.get(`${p.prj}/${p.room}`);
     if (!room) return { ok: true, delivered: 0 };
+    // Put people out: everyone, or everyone joined as one `sub` (the portal: a removed member, a world an admin closed).
+    if (body.kick) {
+      let kicked = 0;
+      for (const peer of [...room.peers.values()]) if (!body.kick.sub || peer.sub === body.kick.sub) { this.leave(room, peer, 'kicked'); kicked++; }
+      return { ok: true, delivered: 0, kicked };
+    }
     const n = [...room.peers.values()].filter((x) => x.ws).length;
     if (room.mode === 'relay') {
       if (Array.isArray(body.ops) && body.ops.length) core.ops(room.core, body.ops.slice(0, 500), String(body.by ?? 'server'), body.fx ?? null, body.except ?? undefined);

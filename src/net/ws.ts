@@ -117,6 +117,7 @@ export function accept(headers: Headers, raw: Duplex, head: Uint8Array | null, o
       else if (len === 127) { if (buf.length < 10) return; const big = buf.readBigUInt64BE(2); if (big > BigInt(max)) return s.close(1009, 'too big'); len = Number(big); at = 10; }
       if (len > max) return s.close(1009, 'too big');
       if (!masked) return s.close(1002, 'clients mask');
+      if (op >= 0x8 && (len > 125 || !fin)) return s.close(1002, 'bad control frame'); // RFC 6455 5.5
       if (buf.length < at + 4 + len) return;
       const mask = buf.subarray(at, at + 4);
       const data = Buffer.from(buf.subarray(at + 4, at + 4 + len));
@@ -129,7 +130,7 @@ export function accept(headers: Headers, raw: Duplex, head: Uint8Array | null, o
         setTimeout(() => raw.destroy(), 500).unref?.();
         return;
       }
-      if (op === 0x9) { write(0xa, data); continue; }
+      if (op === 0x9) { if (s.buffered > maxBuffered) return s.close(1013, 'too slow'); write(0xa, data); continue; }
       if (op === 0xa) continue;
       if (op === 0x1 || op === 0x2 || op === 0x0) {
         if (op !== 0x0) { partsOp = op; parts = []; partsBytes = 0; }

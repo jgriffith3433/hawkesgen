@@ -6,16 +6,17 @@
     "transports": ["p2p", "relay"],
     "signal": "hawkes",
     "defaults": { "topology": "star", "profile": "medium", "maxPlayers": 64, "p2pMax": 8, "interest": { "tiers": [[45, 0, 0], [130, 250, 0], [320, 1000, 250], [null, 3000, 1000]], "farAvatarM": 120 } },
-    "limits": { "rooms": 200, "playersPerRoom": 64, "players": 2000, "downBytesPerSec": 49152, "upBytesPerSec": 32768, "msgsPerSec": 90, "innerPerSec": 900, "messageBytes": 65536, "ents": 4096, "states": 2048, "egressBytesPerSec": 5242880, "monthlyBytes": 5000000000000 },
+    "limits": { "rooms": 200, "playersPerRoom": 64, "players": 2000, "downBytesPerSec": 49152, "upBytesPerSec": 65536, "msgsPerSec": 90, "innerPerSec": 900, "messageBytes": 65536, "ents": 4096, "states": 2048, "egressBytesPerSec": 5242880, "monthlyBytes": 5000000000000 },
     "testPrefix": "t-"
   },
   "projects": {
     "hawkesgenwebsite": {
       "name": "hawkesgen.com games",
-      "origins": ["https://hawkesgen.com", "https://www.hawkesgen.com", "https://hawkesgenwebsite.hawkesgen.com"],
+      "$comment": "No origins: every ticket for the portal's rooms comes from the portal itself (its key), after its own checks (edit tokens, hidden worlds, invitations). An Origin header can be set by anyone outside a browser, so the door would let them into any room here.",
+      "origins": [],
       "keyProjects": ["usr_*", "ubeta_*"],
       "defaults": { "topology": "star", "profile": "heavy", "maxPlayers": 32, "p2pMax": 4 },
-      "limits": { "rooms": 2000, "playersPerRoom": 32, "players": 20000, "downBytesPerSec": 98304, "messageBytes": 204800 }
+      "limits": { "rooms": 2000, "playersPerRoom": 32, "players": 20000, "downBytesPerSec": 98304, "upBytesPerSec": 262144, "messageBytes": 204800 }
     },
     "netdemo": {
       "name": "Hawkes Net demo",

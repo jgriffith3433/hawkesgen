@@ -112,7 +112,8 @@ test('interest: near things at their full rate, far ones a few times a second, i
 });
 
 test('a byte budget per player: the most important goes first and nothing is lost', () => {
-  const { room, conns: [host, watcher] } = setup(2, 3);
+  // (The host here uploads far past a real game's rate: this is about the download budget, so its upload is not capped.)
+  const { room, conns: [host, watcher] } = setup(2, 3, { limits: { upBytesPerSec: 1e9 } });
   let bytes = 0;
   const last = new Map<string, number>();
   const d = new core.Codec();
@@ -276,4 +277,46 @@ test('Track plays snapshots back smoothly behind the clock', () => {
   const s = t.sample(now)!;
   assert.ok(s[0] > 7 && s[0] < 9.5, `about one interval behind (${s[0]})`);
   assert.ok(Math.abs(s[4] - s[0] * 0.1) < 0.02, 'turns follow');
+});
+
+test('a hostile peer: absurd numbers, deep values and floods never hang the room or break other streams', () => {
+  const { room, conns: [a, b] } = setup(2, 3);
+  const d = new core.Codec();
+  const got: any[] = [];
+  b.send = (f: any) => { if (core.peek(f).kind === 'bundle') got.push(...d.read(f, true).msgs); };
+  // Infinity and 1e308 used to loop forever in the varint writer.
+  send(room, a, { t: 'me', at: 1e308, s: { p: [1e308, -1e308, 5], y: 1e308, x: 1e300 } }, 1);
+  send(room, a, { t: 'xf', at: -1e308, x: [['crate', 0b111, 1e308, -1e17, 3]] }, 1);
+  let deep: any = 1;
+  for (let i = 0; i < 100; i++) deep = [deep];
+  send(room, a, { t: 'ev', name: 'deep', data: deep }, 1);
+  send(room, a, { t: 'ev', name: 'after', data: 'ok' }, 1);
+  const t0 = Date.now();
+  core.flush(room, 40);
+  assert.ok(Date.now() - t0 < 200, 'the flush ends');
+  assert.ok(got.find((m) => m.t === 'ev' && m.name === 'after'), 'the stream still reads after a deep value');
+  assert.ok(got.find((m) => m.t === 'xf'), 'the thing arrives, clamped');
+  // A flood of bytes past the upload budget is dropped, not forwarded.
+  const big = 'x'.repeat(30_000);
+  for (let i = 0; i < 10; i++) send(room, a, { t: 'ev', name: 'big', data: big }, 50);
+  got.length = 0;
+  core.flush(room, 80);
+  const bigs = got.filter((m) => m.t === 'ev' && m.name === 'big').length;
+  assert.ok(bigs >= 1 && bigs <= 4, `the upload budget holds (${bigs} of 10 forwarded)`);
+});
+
+test('a stream keeps at most so many baselines and dictionary characters, and both ends still agree', () => {
+  const enc = new core.Codec();
+  const dec = new core.Codec();
+  for (let round = 0; round < 3; round++) {
+    for (let j = 0; j < 12; j++) {
+      const x: any[] = [];
+      for (let i = 0; i < 1000; i++) x.push([`thing-${j}-${i}-${'y'.repeat(40)}`, 0b111, i, round, 0]);
+      const f = enc.bundle([{ t: 'xf', c: 'p1', at: 0, x }], 0, false);
+      dec.read(f, true);
+    }
+  }
+  assert.ok(dec.base.size <= 8192, `baselines ${dec.base.size}`);
+  assert.ok(dec.dict.chars <= 262_144, `dictionary ${dec.dict.chars} characters`);
+  assert.equal(dec.dict.list.length, enc.dict.list.length, 'the same dictionary at both ends');
 });

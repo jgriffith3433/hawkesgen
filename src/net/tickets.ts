@@ -61,7 +61,8 @@ export class SeenIds {
   /** True the first time an id is seen (and remembers it until `untilSec`). */
   first(id: string, untilSec: number): boolean {
     const now = Date.now() / 1000;
-    if (this.map.size >= this.cap) for (const [k, t] of this.map) { if (t < now) this.map.delete(k); if (this.map.size < this.cap * 0.9) break; }
+    // Ids go in about the order they expire (every ticket lives 90 s), so the expired ones are at the front.
+    if (this.map.size >= this.cap) for (const [k, t] of this.map) { if (t >= now) break; this.map.delete(k); }
     const t = this.map.get(id);
     if (t !== undefined && t >= now) return false;
     this.map.set(id, untilSec + 60);
@@ -71,12 +72,12 @@ export class SeenIds {
 
 /** A resume token: the node's own HMAC over (project, room, peer, expiry). Lets a connection come back within its
  *  grace with its place in the room. Made and checked by the same node (its secret never leaves it). */
-export function resumeToken(secret: Buffer, o: { prj: string; room: string; peer: string; exp: number; epoch: number }) {
+export function resumeToken(secret: Buffer, o: { prj: string; room: string; peer: string; exp: number; epoch: number; inst?: number }) {
   const body = Buffer.from(JSON.stringify(o)).toString('base64url');
   const mac = crypto.createHmac('sha256', secret).update(body).digest().subarray(0, 18).toString('base64url');
   return `hr1.${body}.${mac}`;
 }
-export function checkResume(secret: Buffer, token: string): { prj: string; room: string; peer: string; exp: number; epoch: number } | null {
+export function checkResume(secret: Buffer, token: string): { prj: string; room: string; peer: string; exp: number; epoch: number; inst?: number } | null {
   const parts = String(token ?? '').split('.');
   if (parts.length !== 3 || parts[0] !== 'hr1') return null;
   const want = crypto.createHmac('sha256', secret).update(parts[1]).digest().subarray(0, 18);

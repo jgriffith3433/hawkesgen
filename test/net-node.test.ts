@@ -182,3 +182,28 @@ test('node: a full room refuses the next player', async () => {
     a.ws.close();
   } finally { await n.stop(); }
 });
+
+test('node: a client closing with 4000 leaves no ghost, a stale ticket for an id already here is refused, and Infinity does not hang the room', async () => {
+  const n = await startNode(0);
+  try {
+    const a = client(n.port, `t=${encodeURIComponent(ticket('ghost', { max: 2, ord: 901 }))}`);
+    await a.open; await a.wait((m) => m.t === 'hello');
+    const b = client(n.port, `t=${encodeURIComponent(ticket('ghost', { max: 2, ord: 902 }))}`);
+    await b.open; await b.wait((m) => m.t === 'hello');
+    // The same id again (the directory forgot the room and counted again): refused, and b keeps its place.
+    const dup = client(n.port, `t=${encodeURIComponent(ticket('ghost', { max: 2, ord: 902 }))}`);
+    await assert.rejects(dup.open);
+    // A text frame with absurd numbers used to spin the worker forever at the next flush.
+    a.ws.send(JSON.stringify({ t: 'me', at: 1e308, s: { p: [1e308, 0, 0], y: 1e308 } }));
+    a.ws.send(JSON.stringify({ t: 'ev', name: 'alive', data: 1 }));
+    await b.wait((m) => m.t === 'ev' && m.name === 'alive');
+    // b says goodbye with 4000 (the code the node uses for "replaced"): it must still leave after its grace.
+    b.ws.close(4000, 'bye');
+    await b.closed;
+    await a.wait((m) => m.t === 'leave', 20_000);
+    // The room has a free place again.
+    const c = client(n.port, `t=${encodeURIComponent(ticket('ghost', { max: 2, ord: 903 }))}`);
+    await c.open; await c.wait((m) => m.t === 'hello');
+    c.ws.close(); a.ws.close();
+  } finally { await n.stop(); }
+});

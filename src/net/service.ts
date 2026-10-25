@@ -98,7 +98,8 @@ export function heartbeat(rec: NodeRecord, client: Client | null) {
 }
 export function roomEvent(e: { node: string; project: string; room: string; event: string; transport: string; players: number }) {
   const now = Date.now();
-  if (e.event === 'closed') { db.prepare('DELETE FROM net_rooms WHERE project = ? AND room = ? AND node = ?').run(e.project, e.room, e.node); return { ok: true }; }
+  // A closed room keeps its row (and its join order, so peer ids never repeat) until the sweep, hours later.
+  if (e.event === 'closed') { db.prepare('UPDATE net_rooms SET players = 0, seen_at = ? WHERE project = ? AND room = ? AND node = ?').run(now, e.project, e.room, e.node); return { ok: true }; }
   db.prepare('UPDATE net_rooms SET transport = ?, seen_at = ?, players = ? WHERE project = ? AND room = ?').run(e.transport === 'relay' ? 'relay' : 'p2p', now, Math.max(0, e.players | 0), e.project, e.room);
   return { ok: true };
 }
@@ -120,13 +121,23 @@ export function recordNetUsage(rep: { node: string; rows: any[] }, client: Clien
   return { ok: true, rows: n };
 }
 
+// Rows of rooms empty for six hours go (a ticket lives 90 s and a resume token 10 minutes, so their peer ids are long
+// dead); at most once a minute.
+let sweptAt = 0;
+function sweepRooms(now: number) {
+  if (now - sweptAt < 60_000) return;
+  sweptAt = now;
+  db.prepare('DELETE FROM net_rooms WHERE players = 0 AND seen_at < ?').run(now - 6 * 3600_000);
+}
+
 // ------------------------------------------------------------------ tickets
 const ROOM_RE = /^[a-z0-9][a-z0-9/_.-]{0,63}$/i;
-const matches = (p: string, project: string) => p === '*' || p === project || (p.endsWith('*') && project.startsWith(p.slice(0, -1)));
 /** May this key make tickets for this Hawkes Net project? Its own project, or a key-project pattern the entry lists. */
 export function keyMayIssue(c: Client, p: NetProject) {
   if (c.role === 'owner' || c.projects.includes('*') || canProject(c, p.id)) return true;
-  return c.projects.some((cp) => p.keyProjects.some((kp) => kp === cp || matches(kp, cp)));
+  // A key whose own projects entry is the pattern (the portal's key: usr_*) may; the same key narrowed to one customer
+  // (X-Hawkesgen-Project: usr_x) may not act for the whole project.
+  return c.projects.some((cp) => p.keyProjects.includes(cp));
 }
 
 // The public door (no key, by Origin): per address and per project, in memory.
@@ -175,8 +186,13 @@ export function issueTicket(body: any, auth: TicketAuth) {
     node = row ? nodeById(row.node) ?? null : null;
     if (!row || !live(node, now)) {
       // A new room, or its node went away: the least loaded live node takes it (a new epoch, so old tickets fail).
-      const open = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(players), 0) AS players FROM net_rooms WHERE project = ? AND seen_at > ?").get(project, now - 10 * 60_000) as { n: number; players: number };
+      sweepRooms(now);
+      // Rooms with people in them count toward the limit; rooms asked for but not joined yet have their own, larger cap
+      // (so tickets for rooms nobody enters can't lock a project out of new rooms).
+      const open = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(players), 0) AS players FROM net_rooms WHERE project = ? AND players > 0 AND seen_at > ?").get(project, now - 10 * 60_000) as { n: number; players: number };
       if (!row && open.n >= p.limits.rooms) throw new GenError(`${project} has ${open.n} rooms open, its limit`, { status: 429 });
+      const waiting = (db.prepare('SELECT COUNT(*) AS n FROM net_rooms WHERE project = ? AND players = 0 AND seen_at > ?').get(project, now - 5 * 60_000) as { n: number }).n;
+      if (!row && waiting >= p.limits.rooms * 5) throw new GenError(`${project} has too many rooms waiting for players`, { status: 429 });
       if (open.players >= p.limits.players) throw new GenError(`${project} has ${open.players} players online, its limit`, { status: 429 });
       node = pickNode();
       if (!node) throw new GenError('No Hawkes Net node is up right now; try again in a minute', { status: 503 });
@@ -231,7 +247,7 @@ export async function publish(client: Client, body: any) {
   if (room.endsWith('/*')) {
     const prefix = room.slice(0, -1);
     if (!ROOM_RE.test(prefix.slice(0, -1)) || prefix.length < 3) throw new GenError('Bad room prefix');
-    const names = (db.prepare("SELECT room FROM net_rooms WHERE project = ? AND substr(room, 1, ?) = ? LIMIT 200").all(project, prefix.length, prefix) as { room: string }[]).map((r) => r.room);
+    const names = (db.prepare("SELECT room FROM net_rooms WHERE project = ? AND players > 0 AND substr(room, 1, ?) = ? LIMIT 200").all(project, prefix.length, prefix) as { room: string }[]).map((r) => r.room);
     let delivered = 0;
     for (const name of names) delivered += Number((await publish(client, { ...body, room: name })).delivered) || 0;
     return { delivered, rooms: names.length, open: names.length > 0 };
@@ -243,7 +259,7 @@ export async function publish(client: Client, body: any) {
   const k = keys().pair;
   const iat = Math.floor(Date.now() / 1000);
   const token = signToken(PUBLISH_PREFIX, { v: 1, kid: k.kid, prj: project, room, iat, exp: iat + 30, jti: crypto.randomBytes(9).toString('base64url') }, k.privateKey);
-  const msg = { ops: Array.isArray(body.ops) ? body.ops : undefined, by: typeof body.by === 'string' ? body.by.slice(0, 60) : 'server', fx: typeof body.fx === 'string' ? body.fx.slice(0, 20) : null, event: body.event && typeof body.event.name === 'string' ? { name: body.event.name, data: body.event.data ?? null } : undefined, except: typeof body.except === 'string' ? body.except : null };
+  const msg = { ops: Array.isArray(body.ops) ? body.ops : undefined, by: typeof body.by === 'string' ? body.by.slice(0, 60) : 'server', fx: typeof body.fx === 'string' ? body.fx.slice(0, 20) : null, event: body.event && typeof body.event.name === 'string' ? { name: body.event.name, data: body.event.data ?? null } : undefined, except: typeof body.except === 'string' ? body.except : null, kick: body.kick && typeof body.kick === 'object' ? { sub: typeof body.kick.sub === 'string' && body.kick.sub ? body.kick.sub.slice(0, 64) : null } : undefined };
   if (node.embedded && embedded) return { open: true, ...(await embedded.publish(token, msg)) };
   if (!node.admin_url) return { delivered: 0, open: true, error: 'This node takes no publishes' };
   const r = await fetch(`${node.admin_url.replace(/\/+$/, '')}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(msg), signal: AbortSignal.timeout(5000) }).catch(() => null);

@@ -30,6 +30,22 @@ section says so and wins. Exact shapes: `src/net/types.ts` (the design's types) 
   friends don't feel head-of-line blocking; the explicit-ack baselines for an unreliable channel are the next step.
 - **Signalling is Hawkes's own** (the node's signal mode). The serverless Nostr/tracker driver (Yooba Land's and Dose Of
   Destruction's way today) is not in the SDK yet; those games keep their own copies until it is.
+- **Hardening (2026-10-25, after a review of the public paths):** numbers are always safe to encode (the varint
+  writer clamps NaN, Infinity and anything past 2^53; peers' clock stamps are kept within ten minutes of the room's), a
+  value nested past 32 levels goes as null instead of throwing mid-flush, a stream keeps at most 8192 baselines and
+  256 K characters of dictionary (both ends count the same), a synced state at most 512 keys, ownership at most `ents`
+  entries, `upBytesPerSec` is enforced per connection, control frames are 125 bytes at most and ping echoes respect the
+  slow-client cap, 64 sockets per address per process, a client's own close code never skips the grace (no ghosts), a
+  ticket for an id already in the room is refused, resume tokens live 10 minutes and only for the same instance of the
+  room, a closed room keeps its directory row (join order never restarts) until a sweep six hours later, rooms count
+  toward `limits.rooms` only with people in them (rooms asked for but not joined have a cap of five times that), the
+  mode is the ticket's (not the URL's), only the host (or players whose links failed) can move a room to the relay,
+  spectators are capped at the room's size, a key narrowed to one customer can't act for a whole project, the public
+  status has totals only, and Gen's publish can put people out (`kick: { sub }`: the portal's closed worlds and removed
+  members). **The door:** an Origin header is only a browser's word, so the door gives only player tickets, limited per
+  address; localhost is a door only where Gen is open to its own machine (`settings.localOpen`, never the server); the
+  portal's project lists no origins (its rooms include editors' rooms, so every ticket comes from the portal's key after
+  its own checks).
 - **Not built yet:** TURN credentials (`/v1/net/turn`), a grid index for rooms
   of 1000 (avatars are compared per pair: fine at 32-64), per-project egress caps enforced at the node.
 

@@ -92,7 +92,14 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       return send(res, 200, svc.issueTicket(body, auth));
     }
     if (route === '/v1/net/keys' && method === 'GET') { res.setHeader('Access-Control-Allow-Origin', '*'); return send(res, 200, { keys: svc.publicKeys() }); }
-    if (route === '/v1/net/status' && method === 'GET') { res.setHeader('Access-Control-Allow-Origin', '*'); return send(res, 200, svc.status()); }
+    if (route === '/v1/net/status' && method === 'GET') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      // Public (no login on the server): totals only. Rooms per project (customers' project ids) need a key.
+      const st = svc.status();
+      if (authenticate(req)) return send(res, 200, st);
+      const rooms = st.rooms as { rooms: number; players: number }[];
+      return send(res, 200, { ...st, rooms: undefined, totals: { rooms: rooms.reduce((n, r) => n + Number(r.rooms), 0), players: rooms.reduce((n, r) => n + Number(r.players), 0) } });
+    }
     if (route === '/v1/net/publish' && method === 'POST') {
       const c = authenticate(req);
       if (!c) return send(res, 401, { error: 'A Gen key is needed' });

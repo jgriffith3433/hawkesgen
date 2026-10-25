@@ -53,7 +53,7 @@ namespace Hawkes
         public bool IsHost => Id != "" && Id == Host;
         /// <summary>"p2p" or "relay".</summary>
         public string Transport { get; internal set; } = "";
-        /// <summary>"connecting", "open", "reconnecting", "closed".</summary>
+        /// <summary>"connecting", "online", "reconnecting", "closed".</summary>
         public string Status { get; internal set; } = "connecting";
         public bool Ready { get; internal set; }
         /// <summary>Everyone else in the room: peer id to name.</summary>
@@ -120,7 +120,7 @@ namespace Hawkes
             switch (e.e)
             {
                 case "ready":
-                    Id = e.peer; Transport = e.transport; Host = e.host; Ready = true; Status = "open";
+                    Id = e.peer; Transport = e.transport; Host = e.host; Ready = true; Status = "online";
                     foreach (var p in HawkesNet.ParsePeers(e.data)) Peers[p.peer] = p.name;
                     OnReady?.Invoke(this);
                     break;
