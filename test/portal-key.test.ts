@@ -90,5 +90,5 @@ test("a queued job's place in line counts the jobs ahead in its lane, never what
   const b = await call(`/v1/jobs/${second.body.jobs[0].id}`, portal.key, { as: 'usr_queue' });
   assert.equal(b.body.queue.lane, 'gpu');
   assert.equal(b.body.queue.ahead, a.body.queue.ahead + 1);
-  assert.deepEqual(Object.keys(b.body.queue).sort(), ['ahead', 'lane', 'running']);
+  assert.deepEqual(Object.keys(b.body.queue).sort(), ['ahead', 'etaMinutes', 'lane', 'running']);
 });
