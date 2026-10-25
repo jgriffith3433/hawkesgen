@@ -10,24 +10,29 @@ defaults and version are unchanged, so no existing recipe (`generatedFrom` keys 
 
 ## Providers and routing
 
-Every shared name takes `provider`: `open`, `elevenlabs` or `auto` (unset = auto). `Tool.route` hands the call to the
-open twin at submit (the job then runs and is recorded as that tool, with the label `requestedTool`).
+**The open suite is the default for every audio tool; ElevenLabs runs only when asked** (J, 2026-10-25: "Eleven labs is secondary").
+Every shared name takes `provider`: `open`, `elevenlabs` or `auto`; unset is `auto`, which means **open**. `Tool.route` hands the
+call to the open twin at submit (the job then runs and is recorded as that tool, with the label `requestedTool`).
 
-| Call | `auto` goes to |
+| Call | Runs on |
 |---|---|
-| `audio.voice` with an ElevenLabs voice id | ElevenLabs (always: those ids mean nothing to an open model) |
-| `audio.voice` with a Gen voice (`gv_...`) | `audio.voice-open` |
-| `audio.voice` with no voice | `audio.voice-open` once a voice model is **verified**, else ElevenLabs |
-| `audio.sfx`, `audio.voice-design` | the open twin once a model for it is verified, else ElevenLabs |
-| `audio.dialogue` | `audio.dialogue-open` when every voice is a Gen voice and a model is verified |
-| `audio.voice-save` / `-delete` with a `gv_` id | the Gen voice library; any other id: ElevenLabs |
-| `audio.voice-list` | ElevenLabs; `provider: "open"` lists the Gen library |
-| `audio.voice-change` | ElevenLabs. `provider: "open"` is refused (no open model for it yet; Chatterbox VC is the candidate) |
+| `audio.voice`, `audio.sfx`, `audio.dialogue`, `audio.voice-design`, `audio.voice-save`, `audio.voice-list`, `audio.voice-delete` | the open suite (the Gen voice library for save, list and delete), verified model or not; a verified one is preferred when several fit |
+| `audio.voice` with an ElevenLabs voice id (not `gv_`) | ElevenLabs: old content (Unity `audio.json`, DoD `content/voice.json`, PH Origins voice lines) keeps its voice |
+| `audio.dialogue` with any ElevenLabs voice id in the cast | ElevenLabs |
+| any of them with `provider: "elevenlabs"` | ElevenLabs |
+| `audio.voice-change` | ElevenLabs only (no open model yet; Chatterbox VC is the candidate). `provider: "open"` is refused |
+
+There is no silent fall back to ElevenLabs for list, design, save, delete or sound effects. A speak or dialogue call
+that carries an ElevenLabs voice id and fails on the open path may fall back to ElevenLabs (and says so in its log);
+`provider: "open"` never falls back. The model's default `eleven_*` value is always filled in, so a model name alone does
+not select ElevenLabs: pass `provider: "elevenlabs"` or an ElevenLabs voice id.
+
+**While ElevenLabs billing is blocked** (the fail-fast billing error) a call with an ElevenLabs voice id fails and the message
+says how to go on: clone that character's existing recording with `audio.voice-clone` (then `audio.voice` with `voice: gv_...`),
+or design a new voice with `audio.voice-design` and keep it with `audio.voice-save` (`elevenlabsId` links the old id).
 
 **Verified** = `settings.audio.verified` (POST `/v1/settings`, owner): a model that passed its smoke test and the audition.
-Until J marks one, `auto` changes nothing for anyone. If `auto` ran on the open path and it is unavailable (install failed,
-no server) and the call has an ElevenLabs voice, the job falls back to ElevenLabs and says so in its log; `provider: "open"`
-never falls back.
+It no longer gates routing; it only ranks models when several can do the job.
 
 `GET /v1/audio/models` lists every model with its license, size, VRAM, what it can do and whether it is verified.
 
