@@ -12,6 +12,7 @@
 //   hawkesgen playtester [status|launch [type=..] [region=..]|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [id=i-...] [--yes]
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
 //   hawkesgen storage [status|backfill|restore]      the library's files in S3
+//   hawkesgen storage metadata [--apply]              fix Content-Type and Cache-Control on objects already in S3 (dry run without --apply)
 //   hawkesgen lod [status|backfill [--project P] [--kind image|mesh] [--limit N] [--dry-run]]   levels of detail (src/lod.ts)
 //   hawkesgen usage [--days 30] [--by project]
 //   hawkesgen key <name> [--role user|admin|owner] [--projects a,b]
@@ -32,7 +33,7 @@ for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a.startsWith('--')) {
     const [k, v] = a.slice(2).split(/=(.*)/s);
-    const BOOL = new Set(['no-wait', 'yes', 'json', 'dry-run']);
+    const BOOL = new Set(['no-wait', 'yes', 'json', 'dry-run', 'apply']);
     const val = v ?? (!BOOL.has(k) && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : 'true');
     (flags[k] ??= []).push(val);
   } else pos.push(a);
@@ -241,6 +242,21 @@ async function main() {
     }
     case 'storage': {
       const sub = rest[0] ?? 'status';
+      if (sub === 'metadata') {
+        // One batch per request, in order, until the end: a run that stops resumes (objects already right are remembered).
+        const apply = flag('apply') === 'true';
+        const t = { checked: 0, ok: 0, wrong: 0, fixed: 0, missing: 0, failed: 0 };
+        let after = '';
+        for (;;) {
+          const b = await gen.request('/storage/metadata', { method: 'POST', body: { apply, after } });
+          for (const k of Object.keys(t) as (keyof typeof t)[]) t[k] += b[k];
+          console.log(`checked ${t.checked}: ${t.ok} right, ${t.wrong} wrong${apply ? `, ${t.fixed} fixed` : ''}, ${t.missing} not in S3, ${t.failed} failed`);
+          if (!b.next) break;
+          after = b.next;
+        }
+        if (!apply && t.wrong) console.log('Dry run. Run again with --apply to fix them.');
+        return;
+      }
       const r = sub === 'status' ? await gen.request('/storage') : await gen.request(`/storage/${sub}`, { method: 'POST', body: {} });
       const gb = (b: number) => `${(b / 1073741824).toFixed(2)} GB`;
       if (sub === 'restore') return console.log(`checked ${r.checked}, restored ${r.restored}, missing ${r.missing}`);

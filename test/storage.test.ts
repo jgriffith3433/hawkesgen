@@ -12,10 +12,13 @@ const storage = await import('../src/storage.ts');
 const { putAsset } = await import('../src/library.ts');
 
 const objects = new Map<string, Buffer>();
+const meta = new Map<string, { contentType: string; cacheControl?: string }>();
 const fake = {
   puts: 0,
   async has(key: string) { return objects.has(key); },
-  async put(key: string, file: string) { fake.puts++; objects.set(key, fs.readFileSync(file)); },
+  async put(key: string, file: string, _size: number, contentType: string) { fake.puts++; objects.set(key, fs.readFileSync(file)); meta.set(key, { contentType, cacheControl: storage.CACHE_CONTROL }); },
+  async head(key: string) { return objects.has(key) ? meta.get(key)! : null; },
+  async setMeta(key: string, contentType: string) { meta.set(key, { contentType, cacheControl: storage.CACHE_CONTROL }); },
   async get(key: string, dest: string) {
     const b = objects.get(key);
     if (!b) throw new Error('NoSuchKey');
@@ -52,4 +55,31 @@ test('backfill, then every new asset once by content; a missing file comes back'
   const r = await storage.restoreAll();
   assert.equal(r.restored, 1);
   assert.equal(r.missing, 0);
+});
+
+test('objects go up with the asset mime; html and svg as octet-stream', async () => {
+  assert.equal(storage.safeMime('image/png'), 'image/png');
+  assert.equal(storage.safeMime('text/html; charset=utf-8'), 'application/octet-stream');
+  assert.equal(storage.safeMime('image/svg+xml'), 'application/octet-stream');
+  const a = make('typed');
+  await storage.idle();
+  assert.equal(meta.get(storage.keyOf(a.sha256))?.contentType, 'text/plain');
+  assert.equal(storage.inS3(a.sha256), true);
+  assert.equal(storage.status().queueLength, 0);
+});
+
+test('metadata: a dry run counts the wrong objects, apply fixes them, and it can resume', async () => {
+  const a = make('old object');
+  await storage.idle();
+  const key = storage.keyOf(a.sha256);
+  meta.set(key, { contentType: 'binary/octet-stream' }); // uploaded before the metadata existed
+  const dry = await storage.fixMetadata();
+  assert.equal(dry.wrong, 1);
+  assert.equal(dry.fixed, 0);
+  assert.equal(meta.get(key)?.contentType, 'binary/octet-stream');
+  const done = await storage.fixMetadata({ apply: true });
+  assert.equal(done.fixed, 1);
+  assert.deepEqual(meta.get(key), { contentType: 'text/plain', cacheControl: storage.CACHE_CONTROL });
+  const again = await storage.fixMetadata({ apply: true });
+  assert.equal(again.checked, 0); // already right ones are remembered
 });

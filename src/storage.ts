@@ -14,6 +14,7 @@ import path from 'node:path';
 import { db } from './db.ts';
 import { awsConfig } from './providers/comfy/fleet.ts';
 import { loadSettings } from './config.ts';
+import { mimeOf } from './util.ts';
 
 const REGION = 'us-east-1';
 export const bucket = (): string | null => {
@@ -22,10 +23,22 @@ export const bucket = (): string | null => {
 };
 export const keyOf = (sha: string) => `sha256/${sha}`;
 
+/** Keys are sha256/<hash>, so a key's bytes never change: browsers and a CDN may keep them forever. */
+export const CACHE_CONTROL = 'public, max-age=31536000, immutable';
+/** The Content-Type an object is stored with: the asset's mime, but never one a browser would run as a page (HTML, SVG). */
+export const safeMime = (mime: string | null | undefined) => {
+  const m = String(mime ?? '').split(';')[0].trim().toLowerCase();
+  return !m || m === 'text/html' || m === 'image/svg+xml' || m === 'application/xhtml+xml' ? 'application/octet-stream' : m;
+};
+
 /** What storage needs from S3 (the real client, or a fake in tests). */
 export type Store = {
   has(key: string): Promise<boolean>;
-  put(key: string, file: string, size: number): Promise<void>;
+  put(key: string, file: string, size: number, contentType: string): Promise<void>;
+  /** An object's metadata (null when it isn't there). */
+  head?(key: string): Promise<{ contentType?: string; cacheControl?: string } | null>;
+  /** Rewrites an object's metadata in place (CopyObject onto itself, MetadataDirective REPLACE). */
+  setMeta?(key: string, contentType: string): Promise<void>;
   get(key: string, dest: string): Promise<void>;
   /** Deletes these objects (missing ones are fine). */
   del?(keys: string[]): Promise<void>;
@@ -66,9 +79,23 @@ async function s3Store(b: string): Promise<Store> {
         throw e;
       }
     },
-    async put(key, file, size) {
+    async put(key, file, size, contentType) {
       await ensure();
-      await c.send(new S.PutObjectCommand({ Bucket: b, Key: key, Body: fs.createReadStream(file), ContentLength: size }));
+      await c.send(new S.PutObjectCommand({ Bucket: b, Key: key, Body: fs.createReadStream(file), ContentLength: size, ContentType: contentType, CacheControl: CACHE_CONTROL }));
+    },
+    async head(key) {
+      await ensure();
+      try {
+        const r: any = await c.send(new S.HeadObjectCommand({ Bucket: b, Key: key }));
+        return { contentType: r.ContentType, cacheControl: r.CacheControl };
+      } catch (e: any) {
+        if (e?.$metadata?.httpStatusCode === 404 || e?.name === 'NotFound') return null;
+        throw e;
+      }
+    },
+    async setMeta(key, contentType) {
+      await ensure();
+      await c.send(new S.CopyObjectCommand({ Bucket: b, Key: key, CopySource: `${b}/${key.split('/').map(encodeURIComponent).join('/')}`, ContentType: contentType, CacheControl: CACHE_CONTROL, MetadataDirective: 'REPLACE' }));
     },
     async del(keys) {
       for (let i = 0; i < keys.length; i += 1000) {
@@ -99,15 +126,16 @@ db.exec('CREATE TABLE IF NOT EXISTS backups (sha256 TEXT PRIMARY KEY, at INTEGER
 const isBackedUp = (sha: string) => !!db.prepare('SELECT 1 FROM backups WHERE sha256 = ?').get(sha);
 const markBackedUp = (sha: string) => db.prepare('INSERT OR IGNORE INTO backups (sha256, at) VALUES (?, ?)').run(sha, Date.now());
 
-const queue: { sha: string; file: string; bytes: number }[] = [];
+const queue: { sha: string; file: string; bytes: number; mime: string }[] = [];
 const queued = new Set<string>();
 let running = 0;
+const CONCURRENCY = 4; // uploads start the moment an asset or level is made; four at a time
 let failures = 0;
 let lastError: string | null = null;
 const idleWaiters: (() => void)[] = [];
 
 function pump() {
-  while (running < 2 && queue.length) {
+  while (running < CONCURRENCY && queue.length) {
     const item = queue.shift()!;
     running++;
     void (async () => {
@@ -116,7 +144,7 @@ function pump() {
         if (!s) return;
         if (!fs.existsSync(item.file)) return;
         const key = keyOf(item.sha);
-        if (!(await s.has(key))) await s.put(key, item.file, item.bytes);
+        if (!(await s.has(key))) await s.put(key, item.file, item.bytes, safeMime(item.mime));
         markBackedUp(item.sha);
       } catch (e: any) {
         failures++;
@@ -133,11 +161,11 @@ function pump() {
 }
 
 /** Queues an asset's file for S3 (once per content). Called as each asset is made. */
-export function backup(a: { sha256: string; path: string; bytes: number }) {
+export function backup(a: { sha256: string; path: string; bytes: number; mime?: string }) {
   if (!bucket() && !store) return;
   if (queued.has(a.sha256) || isBackedUp(a.sha256)) return;
   queued.add(a.sha256);
-  queue.push({ sha: a.sha256, file: a.path, bytes: a.bytes });
+  queue.push({ sha: a.sha256, file: a.path, bytes: a.bytes, mime: a.mime ?? mimeOf(a.path) });
   pump();
 }
 
@@ -164,9 +192,12 @@ export function idle(): Promise<void> {
   return new Promise((r) => idleWaiters.push(r));
 }
 
+/** Is this content in the bucket (so a CDN link to sha256/<hash> will work)? */
+export const inS3 = (sha: string) => isBackedUp(sha);
+
 /** Queues every asset not backed up yet. -> how many were queued. */
 export function backfill({ limit = 100000 } = {}) {
-  const rows = db.prepare('SELECT a.sha256, a.path, a.bytes FROM assets a LEFT JOIN backups b ON b.sha256 = a.sha256 WHERE b.sha256 IS NULL GROUP BY a.sha256 LIMIT ?').all(limit) as { sha256: string; path: string; bytes: number }[];
+  const rows = db.prepare('SELECT a.sha256, a.path, a.bytes, a.mime FROM assets a LEFT JOIN backups b ON b.sha256 = a.sha256 WHERE b.sha256 IS NULL GROUP BY a.sha256 LIMIT ?').all(limit) as { sha256: string; path: string; bytes: number; mime: string }[];
   for (const r of rows) backup(r);
   return rows.length;
 }
@@ -174,7 +205,49 @@ export function backfill({ limit = 100000 } = {}) {
 export function status() {
   const assets = db.prepare('SELECT COUNT(DISTINCT sha256) AS files, COALESCE(SUM(bytes), 0) AS bytes FROM assets').get() as { files: number; bytes: number };
   const done = db.prepare('SELECT COUNT(*) AS files, COALESCE(SUM(x.bytes), 0) AS bytes FROM backups b JOIN (SELECT sha256, MAX(bytes) AS bytes FROM assets GROUP BY sha256) x ON x.sha256 = b.sha256').get() as { files: number; bytes: number };
-  return { bucket: bucket(), files: assets.files, backedUp: done.files, bytes: assets.bytes, backedUpBytes: done.bytes, queued: queue.length + running, failures, lastError };
+  return { bucket: bucket(), files: assets.files, backedUp: done.files, bytes: assets.bytes, backedUpBytes: done.bytes, queued: queue.length + running, queueLength: queue.length, uploading: running, failures, lastError };
+}
+
+// ------------------------------------------------------------------ metadata
+
+db.exec('CREATE TABLE IF NOT EXISTS backup_meta (sha256 TEXT PRIMARY KEY, at INTEGER NOT NULL)');
+
+/**
+ * Objects uploaded before ContentType and CacheControl were set get them now (CopyObject onto itself, REPLACE). One
+ * batch per call, in sha order after `after`; objects already right are remembered, so a run that stops resumes where
+ * it left off. Dry run (the default) only counts. -> counts and the cursor for the next batch (null at the end).
+ */
+export async function fixMetadata({ apply = false, limit = 200, after = '' } = {}) {
+  const s = await getStore();
+  if (!s || !s.head || !s.setMeta) throw new Error('No bucket (or a store that cannot read metadata)');
+  // Every backed-up content with the mime of an asset or level that has it.
+  const rows = db.prepare(`SELECT b.sha256, COALESCE((SELECT mime FROM assets WHERE sha256 = b.sha256 LIMIT 1), (SELECT mime FROM asset_lods WHERE sha256 = b.sha256 LIMIT 1)) AS mime
+    FROM backups b WHERE b.sha256 > ? AND b.sha256 NOT IN (SELECT sha256 FROM backup_meta) ORDER BY b.sha256 LIMIT ?`).all(after, limit) as { sha256: string; mime: string | null }[];
+  const r = { checked: 0, ok: 0, wrong: 0, fixed: 0, missing: 0, failed: 0, next: rows.length === limit ? rows[rows.length - 1].sha256 : (null as string | null) };
+  const done = db.prepare('INSERT OR IGNORE INTO backup_meta (sha256, at) VALUES (?, ?)');
+  const todo = [...rows];
+  await Promise.all(Array.from({ length: Math.min(8, todo.length) }, async () => {
+    for (let row = todo.shift(); row; row = todo.shift()) {
+      r.checked++;
+      try {
+        const key = keyOf(row.sha256);
+        const want = safeMime(row.mime ?? 'application/octet-stream');
+        const h = await s.head!(key);
+        if (!h) { r.missing++; continue; }
+        if (h.contentType === want && h.cacheControl === CACHE_CONTROL) { r.ok++; done.run(row.sha256, Date.now()); continue; }
+        r.wrong++;
+        if (apply) {
+          await s.setMeta!(key, want);
+          r.fixed++;
+          done.run(row.sha256, Date.now());
+        }
+      } catch (e: any) {
+        r.failed++;
+        lastError = e?.message ?? String(e);
+      }
+    }
+  }));
+  return r;
 }
 
 // ------------------------------------------------------------------ restores
