@@ -7,6 +7,7 @@
 // Every player sends its avatar 15 times a second; each room's first player also simulates --things moving things at
 // 10 a second (the portal's measured scene is ~120). Reports delivery latency (p50/p99/max), dropped connections,
 // bytes per player, and the node's event-loop delay and CPU, then the verdict against p99 < 100 ms.
+import fs from 'node:fs';
 import { fork } from 'node:child_process';
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -29,6 +30,7 @@ async function main() {
   const procs = Number(args.procs ?? Math.max(2, Math.min(8, os.availableParallelism() - workers)));
   const ramp = Number(args.ramp ?? 10);
   const core = await import('../clients/js/hawkes-net-core.mjs');
+  if (args.url) return remote({ players, roomSize, seconds, things, procs, ramp });
   const { NetNode } = await import('../src/net/node.ts');
   const T = await import('../src/net/tickets.ts');
   const key = T.newKeyPair('kload');
@@ -91,6 +93,67 @@ async function main() {
   process.exit(rep.pass ? 0 : 1);
 }
 
+/**
+ * --url https://net.hawkesgen.com: a real Hawkes Net service. Tickets come from it (POST /v1/net/ticket with this PC's
+ * Gen key from ~/.hawkes/client.json, never printed; rooms "t-load-<n>" of --project, default netdemo: test rooms are
+ * free and not counted), players connect where each ticket says, and the node's numbers come from its public status.
+ * One address can hold only so many sockets (256 per relay process): keep --players under that times the workers.
+ */
+async function remote({ players, roomSize, seconds, things, procs, ramp }) {
+  const base = String(args.url).replace(/\/+$/, '');
+  const c = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.hawkes', 'client.json'), 'utf8'));
+  const key = String(args.key ?? c.genKey).trim();
+  const project = String(args.project ?? 'netdemo');
+  const run = Math.random().toString(36).slice(2, 7);
+  console.log(`remote: ${base}; ${players} players in rooms of ${roomSize}, ${things} things per room, ${procs} generator processes, ${seconds} s (+${ramp} s ramp)`);
+  const tickets = [];
+  let relay = null;
+  for (let i = 0; i < players; i += 25) {
+    const batch = await Promise.all(Array.from({ length: Math.min(25, players - i) }, async (_, j) => {
+      const n = i + j;
+      const room = `t-load-${run}-${Math.floor(n / roomSize)}`;
+      const r = await fetch(`${base}/v1/net/ticket`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ project, room, name: `P${n}`, sub: `load-${run}-${n}`, transport: 'relay', config: { maxPlayers: roomSize }, client: { sdk: 'load', protocols: [3] } }) });
+      if (!r.ok) throw new Error(`ticket ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      const t = await r.json();
+      relay = t.relayUrl;
+      return { room, ord: t.ord, host: n % roomSize === 0, t: t.ticket };
+    }));
+    tickets.push(...batch);
+  }
+  const per = Math.ceil(players / procs);
+  const results = [];
+  const kids = [];
+  for (let p = 0; p < procs; p++) {
+    const mine = tickets.slice(p * per, (p + 1) * per);
+    if (!mine.length) continue;
+    const k = fork(fileURLToPath(import.meta.url), ['--child', '1'], { execArgv: ['--disable-warning=ExperimentalWarning'] });
+    kids.push(k);
+    k.send({ url: relay, tickets: mine, seconds, ramp, things });
+    results.push(new Promise((res) => k.on('message', (m) => { if (m.done) res(m); })));
+  }
+  const samples = [];
+  const sampler = setInterval(async () => { try { samples.push(await (await fetch(`${base}/v1/net/status`)).json()); } catch {} }, 3000);
+  const out = await Promise.all(results);
+  clearInterval(sampler);
+  for (const k of kids) k.kill();
+  const lat = out.flatMap((r) => r.lat).sort((a, b) => a - b);
+  const pct = (q) => (lat.length ? lat[Math.min(lat.length - 1, Math.floor(q * lat.length))] : NaN);
+  const connected = out.reduce((s, r) => s + r.connected, 0);
+  const dropped = out.reduce((s, r) => s + r.dropped, 0);
+  const failed = out.reduce((s, r) => s + r.failed, 0);
+  const bytes = out.reduce((s, r) => s + r.bytes, 0);
+  const loads = samples.flatMap((s) => (s.nodes || []).map((n) => n.load || 0));
+  const rep = {
+    url: base, players, connected, failed, dropped, roomSize, things,
+    latencyMs: { p50: Math.round(pct(0.5)), p90: Math.round(pct(0.9)), p99: Math.round(pct(0.99)), max: Math.round(lat[lat.length - 1] ?? NaN), samples: lat.length, note: 'round trip through the internet to the box and back' },
+    perPlayerKBs: Math.round((bytes / Math.max(1, connected) / seconds / 1024) * 10) / 10,
+    nodeLoadMax: Math.round(Math.max(0, ...loads) * 100) / 100,
+    nodePlayersSeen: Math.max(0, ...samples.flatMap((s) => (s.nodes || []).map((n) => n.players || 0))),
+  };
+  console.log(JSON.stringify(rep, null, 2));
+  process.exit(failed === 0 && dropped === 0 ? 0 : 1);
+}
+
 // ------------------------------------------------------------------ a generator process: players
 async function child() {
   const core = await import('../clients/js/hawkes-net-core.mjs');
@@ -105,7 +168,7 @@ async function child() {
     // Spread the joins over the ramp.
     const at = start + (i / tickets.length) * ramp * 1000;
     await new Promise((r) => setTimeout(r, Math.max(0, at - Date.now())));
-    const ws = new WebSocket(`${url}?t=${encodeURIComponent(tk.t)}&want=relay`, ['hawkes-net.v3']);
+    const ws = new WebSocket(`${url}${url.includes('?') ? '&' : '?'}t=${encodeURIComponent(tk.t)}&want=relay`, ['hawkes-net.v3']);
     ws.binaryType = 'arraybuffer';
     // One in eight players decodes what it gets and measures latency; the rest only count bytes (a real page decodes,
     // but here the generator's CPU would be measured instead of the node's).
