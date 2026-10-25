@@ -457,6 +457,33 @@ export function switchTo<T extends { family: string | null; priority?: number | 
   return first.reduce((best, j) => ((waitingOf.get(j.family ?? '') ?? 0) > (waitingOf.get(best.family ?? '') ?? 0) ? j : best));
 }
 
+/** A GPU job as fair sharing sees it. `exempt`: Studio's own projects and admin/owner keys (no cap, never made to wait for a turn). */
+export type FairJob = { id: string; project: string; family: string | null; priority: number; created: number; exempt: boolean };
+
+/**
+ * Fair sharing between customer projects on the GPU. `open` is in queue order (priority, then age); `running` is each
+ * project's GPU jobs running now. A project's n-th waiting job has turn `running + n`: the queue sorts by priority, then
+ * turn, then age, so two projects with ten jobs each alternate and a project with one job is served in the first turn.
+ * A job whose turn is at or past `cap` waits (`ok: false`): the project already has its share on the GPU. Exempt jobs
+ * are always turn 0.
+ */
+export function fairOrder<T extends FairJob>(open: T[], running: Map<string, number>, cap: number): (T & { turn: number; ok: boolean })[] {
+  const seen = new Map<string, number>();
+  const out = open.map((j) => {
+    if (j.exempt) return { ...j, turn: 0, ok: true };
+    const n = seen.get(j.project) ?? 0;
+    seen.set(j.project, n + 1);
+    const turn = (running.get(j.project) ?? 0) + n;
+    return { ...j, turn, ok: turn < cap };
+  });
+  return out.sort((a, b) => b.priority - a.priority || a.turn - b.turn || a.created - b.created);
+}
+
+/** The jobs of the head's priority and turn: the ones a server may choose between by model family without costing anyone their turn. */
+export function sameTurn<T extends { priority: number; turn: number }>(sorted: T[]): T[] {
+  return sorted.length ? sorted.filter((j) => j.priority === sorted[0].priority && j.turn === sorted[0].turn) : [];
+}
+
 class Queue {
   /** Server id -> job id running on it. */
   busy = new Map<string, string>();
@@ -587,26 +614,39 @@ class Queue {
     const cap = settings.fleet.servers;
     let free = endpoints.filter((ep) => !this.busy.has(ep.id)).slice(0, Math.max(0, cap - this.busy.size));
     const taken = new Set<string>();
-    // A server keeps its models loaded between jobs: give each free server the oldest job of the family it already has.
+    // Fair sharing: each customer project has a cap of GPU jobs at once, and projects take turns (see fairOrder).
+    const share = settings.queue.perProjectGpu;
+    const running = new Map<string, number>();
+    for (const id of this.busy.values()) {
+      const p = getJob(id)?.project;
+      if (p) running.set(p, (running.get(p) ?? 0) + 1);
+    }
+    const exemptOf = exemptCheck();
+    const byId = new Map(gpu.map((j) => [j.id, j]));
+    const fair = () => fairOrder(gpu.filter((j) => !taken.has(j.id)).map((j) => ({ id: j.id, project: j.project, family: j.family, priority: j.priority, created: j.created, exempt: exemptOf(j) })), running, share).filter((j) => j.ok);
+    const take = (f: { id: string }, ep: Endpoint) => {
+      const j = byId.get(f.id)!;
+      taken.add(j.id);
+      if (!exemptOf(j)) running.set(j.project, (running.get(j.project) ?? 0) + 1);
+      void this.runOn(j, ep);
+    };
+    // A server keeps its models loaded between jobs: give each free server the next job of the family it already has,
+    // from the projects whose turn it is (the head's priority and turn), so grouping by model never costs a project its turn.
     for (const ep of [...free]) {
       const fam = this.families.get(ep.id);
-      // ...but never ahead of a job with a higher priority (a boosted video J is waiting on): that one goes first.
-      const top = gpu.find((j) => !taken.has(j.id))?.priority ?? 0;
-      const next = gpu.find((j) => !taken.has(j.id) && j.family === fam && j.priority >= top);
+      const next = sameTurn(fair()).find((j) => j.family === fam);
       if (!next) continue;
-      taken.add(next.id);
       free = free.filter((x) => x !== ep);
-      void this.runOn(next, ep);
+      take(next, ep);
     }
-    // A server that has to switch models (a load costs minutes) switches to the family with the most work waiting at the
-    // top priority, the oldest job's family on a tie: one load then serves as many jobs as it can, instead of a lone job
-    // of another family that sends it back again (a batch of asset.make chains alternates five families).
+    // A server that has to switch models (a load costs minutes) switches to the family with the most work waiting among
+    // the jobs whose turn it is, the oldest job's family on a tie: one load then serves as many jobs as it can.
     for (const ep of free) {
-      const next = switchTo(gpu.filter((j) => !taken.has(j.id)));
+      const next = switchTo(sameTurn(fair()));
       if (!next) break;
-      taken.add(next.id);
-      void this.runOn(next, ep);
+      take(next, ep);
     }
+    const eligible = new Set(fair().map((j) => j.id));
     const left = gpu.filter((j) => !taken.has(j.id));
     // While servers auto start booted in the last 10 minutes come up, the jobs say so.
     const r = this.autoRound;
@@ -616,10 +656,12 @@ class Queue {
       ? `no stopped GPU server could start (AWS had no machine free, or no quota); next try in ${Math.max(1, Math.round((r.nextTry - Date.now()) / 60_000))} min (a server in about ${Math.max(1, Math.round((r.nextTry - Date.now()) / 60_000 + BOOT_SECONDS / 60))} min if one is free then)`
       : '';
     for (const j of left) {
+      if (!eligible.has(j.id)) { this.wait(j, `waiting: this project already has ${share} GPU jobs running (its next job goes when one finishes)`); continue; }
       this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || retrying || this.waitReason}`);
     }
     if (left.length) {
-      if (endpoints.length < Math.min(cap, left.length + this.busy.size)) void this.autoStart(left.length + this.busy.size);
+      const wanting = left.filter((j) => eligible.has(j.id)).length;
+      if (wanting && endpoints.length < Math.min(cap, wanting + this.busy.size)) void this.autoStart(wanting + this.busy.size);
       if (this.timer) clearTimeout(this.timer);
       this.timer = setTimeout(() => this.pump(), endpoints.length ? 10_000 : 30_000);
     }
@@ -861,6 +903,24 @@ function removeLater(dir: string, tries = 0) {
   }
 }
 
+/** Whether a job is exempt from fair sharing: not a customer project (settings.queue.projects), or made with an admin/owner key. */
+function exemptCheck(): (j: { project: string; client: string }) => boolean {
+  const globs = loadSettings().queue.projects;
+  const roles = new Map<string, string | null>();
+  const roleOf = (id: string) => {
+    if (!roles.has(id)) roles.set(id, (db.prepare('SELECT role FROM clients WHERE id = ?').get(id) as { role: string } | undefined)?.role ?? null);
+    return roles.get(id);
+  };
+  return (j) => !globs.some((g) => (g.endsWith('*') ? j.project.startsWith(g.slice(0, -1)) : j.project === g)) || roleOf(j.client) !== 'user';
+}
+
+/** Average run time of a tool's recent finished jobs, in seconds (a minute when it has none). */
+function recentRunSeconds(tool: string): number {
+  const rows = db.prepare("SELECT started, finished FROM jobs WHERE tool = ? AND status = 'done' AND started IS NOT NULL AND finished IS NOT NULL ORDER BY finished DESC LIMIT 20").all(tool) as { started: number; finished: number }[];
+  const xs = rows.map((r) => (r.finished - r.started) / 1000).filter((x) => x > 0);
+  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 60;
+}
+
 export const queue = new Queue();
 
 /** Downloads models a family needs onto a server (exposed for the fleet sync action). */
@@ -870,20 +930,31 @@ export const syncModels = syncServer;
  *  (a higher priority, or the same priority and older). Jobs already running aren't in line: they are on servers of
  *  their own, so counting them said "10 ahead" to a job that was next. `running` says how busy the lane is.
  *  Counts only, so a customer learns nothing about anyone else's work. */
-export function queuePosition(j: Job): { ahead: number; running: number; lane: string } | null {
+export function queuePosition(j: Job): { ahead: number; running: number; lane: string; etaMinutes: number } | null {
   if (j.status !== 'queued') return null;
   const tool = getTool(j.tool);
   if (!tool) return null;
   const lane = tool.provider === 'comfy' ? 'gpu' : tool.provider;
-  const rows = db.prepare("SELECT tool, status, priority, created FROM jobs WHERE status IN ('queued', 'running') AND id != ?").all(j.id) as { tool: string; status: string; priority: number; created: number }[];
-  let ahead = 0;
+  const rows = db.prepare("SELECT id, client, project, tool, status, family, priority, created FROM jobs WHERE status IN ('queued', 'running') AND id != ?").all(j.id) as (Pick<Job, 'id' | 'client' | 'project' | 'tool' | 'status' | 'family' | 'priority' | 'created'>)[];
   let running = 0;
+  const open: (Pick<Job, 'id' | 'client' | 'project' | 'tool' | 'family' | 'priority' | 'created'>)[] = [];
+  const busyBy = new Map<string, number>();
   for (const r of rows) {
     const t = getTool(r.tool);
     if (!t || (t.provider === 'comfy' ? 'gpu' : t.provider) !== lane) continue;
-    if (r.status === 'running') { running++; continue; }
-    const p = r.priority ?? 0, mine = j.priority ?? 0;
-    if (p > mine || (p === mine && r.created < j.created)) ahead++;
+    if (r.status === 'running') { running++; busyBy.set(r.project, (busyBy.get(r.project) ?? 0) + 1); continue; }
+    open.push(r);
   }
-  return { ahead, running, lane };
+  open.push(j);
+  open.sort((a, b) => b.priority - a.priority || a.created - b.created);
+  // On the GPU the order is the fair one (projects take turns), so a project with a pile of jobs is not "ahead" of a newcomer.
+  const exempt = exemptCheck();
+  const order = lane === 'gpu'
+    ? fairOrder(open.map((r) => ({ id: r.id, project: r.project, family: r.family, priority: r.priority ?? 0, created: r.created, exempt: exempt(r) })), busyBy, loadSettings().queue.perProjectGpu).map((r) => r.id)
+    : open.map((r) => r.id);
+  const ids = order.slice(0, order.indexOf(j.id));
+  const byId = new Map(open.map((r) => [r.id, r]));
+  const slots = lane === 'gpu' ? Math.max(1, loadSettings().fleet.servers) : lane === 'builder' ? 1 : Math.max(1, (loadSettings().concurrency as Record<string, number>)[lane] ?? 1);
+  const seconds = [...ids.map((id) => byId.get(id)!.tool), j.tool].reduce((a, t) => a + recentRunSeconds(t), 0);
+  return { ahead: ids.length, running, lane, etaMinutes: Math.max(1, Math.ceil(seconds / slots / 60)) };
 }

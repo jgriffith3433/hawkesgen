@@ -76,6 +76,9 @@ export type Settings = {
   /** The LOD system makes levels automatically only for these projects (globs: "usr_*"): the ones whose games load them
    *  (hawkesgen.com's customers and its starter library, the beta portal's). Anything else asked for by id still gets them. */
   lod: { projects: string[] };
+  /** Fair sharing of the GPU between customers (src/jobs.ts `fairOrder`): `perProjectGpu` is the most GPU jobs one customer
+   *  project runs at once, `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
+  queue: { perProjectGpu: number; projects: string[] };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number; lod: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
@@ -108,6 +111,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
   lod: { projects: ['usr_*', 'ubeta_*'] },
+  queue: { perProjectGpu: 2, projects: ['usr_*', 'ubeta_*'] },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
   brain: 'claude',
   model: '',
@@ -139,6 +143,10 @@ function clean(s: Settings): Settings {
       lod: n(s.concurrency?.lod, 1, 4, SETTINGS_DEFAULTS.concurrency.lod),
     },
     lod: { projects: Array.isArray(s.lod?.projects) ? s.lod!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.lod.projects },
+    queue: {
+      perProjectGpu: n(s.queue?.perProjectGpu, 1, 16, SETTINGS_DEFAULTS.queue.perProjectGpu),
+      projects: Array.isArray(s.queue?.projects) ? s.queue!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.queue.projects,
+    },
     claude: {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
