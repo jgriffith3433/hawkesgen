@@ -216,6 +216,7 @@ Filters on every read: `range` (`30d`) or `from`/`to`, `env` (`live`; `all`), `b
 | `GET /v1/me` | Who you are (client, role, projects) |
 | `GET /v1/usage?since=<ms>&by=project\|client\|provider\|day` | Usage and cost |
 | `GET /v1/providers/elevenlabs/voices` | The ElevenLabs voice library |
+| `GET /v1/audio/models` | The open audio models: license, size, VRAM, capabilities, whether each is verified for `provider: auto`; the refused (non-commercial) ones; the loudness targets (docs/audio.md) |
 | `GET /v1/providers/anthropic/models` | Claude models the tools accept |
 | `GET/POST /v1/settings` | Service settings (owner to change) |
 | `GET/POST /v1/clients`, `POST /v1/clients/:id/disable\|enable` | API keys (owner). Roles: owner, admin, user; `projects` limits which projects a key sees |

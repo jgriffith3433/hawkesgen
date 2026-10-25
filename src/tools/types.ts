@@ -105,5 +105,7 @@ export type Tool = {
   workflow?: { dir: string; source: unknown; models: ModelRef[]; tags: string[] };
   /** Refuses a call before it is queued (throw a GenError saying what to do instead). Runs at submit, after the params are checked. */
   guard?(call: { params: Record<string, any>; inputs: Record<string, string | string[]>; labels?: Record<string, unknown> }): void;
+  /** Hands a call to another tool at submit (audio.voice -> the open-model tool). Returns the tool id to run, or null to stay. Both tools take the same params. */
+  route?(params: Record<string, any>): string | null;
   run(ctx: RunContext): Promise<void>;
 };

@@ -6,6 +6,8 @@ import { db } from '../db.ts';
 import { recordUsage } from '../usage.ts';
 import { voices, deleteVoice } from '../providers/elevenlabs.ts';
 import { GenError } from '../util.ts';
+import { listExtra, deleteExtra } from '../audio/params.ts';
+import { routeAudio } from '../audio/plan.ts';
 
 const ID = /^[A-Za-z0-9]{8,40}$/;
 /** Tools that only manage voices: a mention of an id there is not a use. */
@@ -41,7 +43,9 @@ export const voiceListTool: Tool = {
   inputs: {},
   params: {
     includePremade: { type: 'boolean', default: false, description: 'Also list ElevenLabs\' own premade voices (they use no slot).' },
+    ...listExtra,
   },
+  route: (p) => routeAudio('list', p),
   async run(ctx) {
     ctx.step('listing voices');
     const all = await voices({ force: true });
@@ -67,7 +71,9 @@ export const voiceDeleteTool: Tool = {
   params: {
     voiceId: { type: 'string', required: true, description: 'The voice id (from audio.voice-list).' },
     confirm: { type: 'boolean', default: false, description: 'Delete even though a product uses this voice.' },
+    ...deleteExtra,
   },
+  route: (p) => routeAudio('delete', p),
   guard({ params }) {
     if (!ID.test(String(params.voiceId ?? ''))) throw new GenError('voiceId must be an ElevenLabs voice id (audio.voice-list shows them)');
   },

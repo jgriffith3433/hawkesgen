@@ -35,6 +35,7 @@ import { listTemplates, getTemplate } from './templates.ts';
 import * as assistant from './assistant.ts';
 import { Retry } from './providers/comfy/retry.ts';
 import * as eleven from './providers/elevenlabs.ts';
+import { AUDIO_MODELS, REFUSED_MODELS } from './audio/registry.ts';
 import * as claude from './providers/anthropic.ts';
 import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
@@ -1316,6 +1317,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, usageSummary({ since, by: (q('by') as any) ?? 'project' }));
     }
     if (route === '/v1/providers/elevenlabs/voices' && method === 'GET') return send(res, 200, { voices: await eleven.voices({ force: q('refresh') === '1' }) });
+    // The open audio models: licence, size, what each can do, and which the `auto` provider trusts (docs/audio.md).
+    if (route === '/v1/audio/models' && method === 'GET') {
+      const verified = new Set(loadSettings().audio.verified);
+      return send(res, 200, { models: AUDIO_MODELS.map((m) => ({ ...m, verified: verified.has(m.id), selectable: !m.blocked && m.license.commercial !== false })), refused: REFUSED_MODELS, verified: [...verified], targetLufs: loadSettings().audio.targetLufs });
+    }
     if (route === '/v1/providers/anthropic/models' && method === 'GET') return send(res, 200, { models: claude.MODELS, default: claude.DEFAULT_MODEL });
 
     // ------------------------------------------------------ settings, clients
