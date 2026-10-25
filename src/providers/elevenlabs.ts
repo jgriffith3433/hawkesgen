@@ -27,7 +27,51 @@ function multipart(form: Form) {
   return { type: `multipart/form-data; boundary=${boundary}`, data: Buffer.concat(parts) };
 }
 
-function call(url: string, { method = 'GET', body, form }: { method?: string; body?: unknown; form?: Form } = {}): Promise<Res> {
+// Billing block: a 401 payment_issue / payment_required (or 402) means an unpaid invoice. Retrying cannot help, so for
+// 30 minutes every ElevenLabs call fails at once without reaching ElevenLabs. After that one call goes through as the
+// probe: success clears the block, a payment failure renews it. In memory: a restart starts clean (and probes once).
+export const BILLING_BLOCK_MS = 30 * 60 * 1000;
+export const BILLING_MESSAGE = 'ElevenLabs is blocked by an unpaid invoice; J must pay it. Do not retry.';
+let billing: { since: number; until: number; detail: string; probing: boolean } | null = null;
+let clock = () => Date.now();
+/** Tests only: a fake clock, and a way to forget the block. */
+export function _testReset(now?: () => number) {
+  billing = null;
+  clock = now ?? (() => Date.now());
+}
+export function billingState() {
+  if (!billing) return { blocked: false as const };
+  return { blocked: true as const, since: billing.since, until: billing.until, probeDue: clock() >= billing.until, detail: billing.detail, message: BILLING_MESSAGE };
+}
+const paymentFailure = (r: Res) => {
+  if (r.status === 402) return true;
+  if (r.status !== 401) return false;
+  return /payment_issue|payment_required/.test(detailStatus(r) + r.buffer.toString('utf8').slice(0, 500));
+};
+function billingGate() {
+  if (!billing) return false;
+  if (clock() < billing.until || billing.probing) throw new GenError(BILLING_MESSAGE, { status: 402, kind: 'billing' });
+  billing.probing = true;
+  return true;
+}
+
+async function call(url: string, opts: { method?: string; body?: unknown; form?: Form } = {}): Promise<Res> {
+  const probe = billingGate();
+  try {
+    const r = await rawCall(url, opts);
+    if (paymentFailure(r)) {
+      const now = clock();
+      billing = { since: billing?.since ?? now, until: now + BILLING_BLOCK_MS, detail: `${r.status}: ${r.buffer.toString('utf8').slice(0, 200)}`, probing: false };
+    } else if (probe && r.status < 500) billing = null;
+    else if (probe && billing) billing.probing = false;
+    return r;
+  } catch (e) {
+    if (probe && billing) billing.probing = false;
+    throw e;
+  }
+}
+
+function rawCall(url: string, { method = 'GET', body, form }: { method?: string; body?: unknown; form?: Form } = {}): Promise<Res> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = { 'xi-api-key': key() };
     const mp = form ? multipart(form) : null;
@@ -66,6 +110,7 @@ const retryAfter = (r: Res, tries: number) => {
   return Number.isFinite(s) && s > 0 ? Math.min(60, s) : Math.min(30, 2 ** tries);
 };
 function failure(r: Res) {
+  if (paymentFailure(r)) return new GenError(`${BILLING_MESSAGE} (ElevenLabs ${r.status})`, { status: 402, kind: 'billing' });
   const detail = detailStatus(r);
   const kind = throttled(r) ? 'throttled' : /quota|credits/.test(detail) || r.status === 402 ? 'quota' : r.status === 401 ? 'auth' : 'failed';
   return new GenError(`ElevenLabs ${r.status}: ${r.buffer.toString('utf8').slice(0, 300)}`, { status: kind === 'throttled' ? 429 : 502, kind });
@@ -78,7 +123,7 @@ async function callRetry(url: string, opts: { method?: string; body?: unknown; f
     try {
       r = await call(url, opts);
     } catch (e) {
-      if (tries >= 3) throw e;
+      if (tries >= 3 || (e instanceof GenError && e.kind === 'billing')) throw e;
       await sleep(2000 * tries);
       continue;
     }

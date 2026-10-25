@@ -156,6 +156,7 @@ render.overview = async () => {
       <div class="card stat"><b>${money(usage.total)}</b><span>spent in the last 30 days</span></div>
     </div>
     <div class="card"><div class="row spread"><h3>Providers</h3><span class="small muted">v${esc(health.version)}</span></div><div class="row">${prov}</div>
+      ${health.elevenlabsBilling?.blocked ? `<p class="small" style="color:var(--bad)">ElevenLabs billing blocked since ${new Date(health.elevenlabsBilling.since).toLocaleTimeString()}: ${esc(health.elevenlabsBilling.message)} The next job probes again at ${new Date(health.elevenlabsBilling.until).toLocaleTimeString()}.</p>` : ''}
       ${fleet?.error ? `<p class="small" style="color:var(--bad)">${esc(fleet.error)}</p>` : ''}</div>
     <div class="card"><div class="row spread"><h3>Recent jobs</h3><button data-go="jobs">All jobs</button></div>
       ${jobs.length ? `<table><thead><tr><th>Status</th><th>Tool</th><th>Project</th><th>Detail</th><th class="num">Out</th><th class="num">Cost</th></tr></thead><tbody>${jobs.slice(0, 12).map(jobRow).join('')}</tbody></table>` : '<div class="empty">No jobs yet. Try a tool in the Tools tab, or call the API from a game.</div>'}</div>`;
