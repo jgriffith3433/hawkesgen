@@ -74,7 +74,7 @@ export class NetNode {
   private cpuAt = Date.now();
   load = 0;
 
-  o: { id: string; url: string; adminUrl?: string | null; region?: string; capacity?: number; workers?: number; link: GenLink; embedded?: boolean; log?: (s: string) => void };
+  o: { id: string; url: string; adminUrl?: string | null; region?: string; capacity?: number; workers?: number; link: GenLink; embedded?: boolean; usageMs?: number; log?: (s: string) => void };
   constructor(o: NetNode['o']) { this.o = o; }
 
   private log(s: string) { (this.o.log ?? ((x) => console.log(`[net] ${x}`)))(s); }
@@ -92,7 +92,7 @@ export class NetNode {
     }
     this.timers.push(setInterval(() => void this.refreshKeys().catch(() => {}), 60_000));
     this.timers.push(setInterval(() => void this.beat().catch((e) => this.log(`heartbeat: ${e.message}`)), 10_000));
-    this.timers.push(setInterval(() => void this.reportUsage().catch((e) => this.log(`usage: ${e.message}`)), 60_000));
+    this.timers.push(setInterval(() => void this.reportUsage().catch((e) => this.log(`usage: ${e.message}`)), this.o.usageMs ?? 60_000));
     for (const t of this.timers) t.unref?.();
     void this.beat().catch(() => {});
     return this;

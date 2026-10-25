@@ -104,8 +104,21 @@ export function roomEvent(e: { node: string; project: string; room: string; even
   return { ok: true };
 }
 
+/** Where usage goes instead of this process's usage table: the Hawkes Net box (src/net/hub.ts) sends it to Gen. */
+let usageSink: ((rep: { node: string; rows: any[] }) => void) | null = null;
+export function sendUsageTo(fn: ((rep: { node: string; rows: any[] }) => void) | null) { usageSink = fn; }
+
+/** Where Hawkes Net runs when it isn't in this process: the Hawkes Net box (https://net.hawkesgen.com). Set on the cloud
+ *  server by default (HAWKES_AWS_ROLE), or by HAWKESGEN_NET_HUB; empty (J's PC, tests) = Gen runs it itself. */
+export function hubUrl(): string {
+  const v = env('HAWKESGEN_NET_HUB');
+  if (v !== undefined) return v === '0' || v === 'off' ? '' : v.replace(/\/+$/, '');
+  return env('HAWKES_AWS_ROLE') ? 'https://net.hawkesgen.com' : '';
+}
+
 /** A node's usage report: player-minutes and GB per project, filed in Gen's usage table (src/usage.ts). */
 export function recordNetUsage(rep: { node: string; rows: any[] }, client: Client | null) {
+  if (usageSink) { usageSink(rep); return { ok: true, rows: Array.isArray(rep?.rows) ? rep.rows.length : 0, forwarded: true }; }
   let n = 0;
   for (const r of Array.isArray(rep.rows) ? rep.rows.slice(0, 500) : []) {
     if (typeof r?.project !== 'string') continue;
@@ -298,9 +311,10 @@ const inProcess: GenLink = {
 };
 /** Starts the node Gen runs itself (settings: HAWKESGEN_NET_EMBEDDED=0 turns it off, HAWKESGEN_NET_WORKERS its worker processes). */
 export async function startEmbedded() {
-  if (embedded || env('HAWKESGEN_NET_EMBEDDED') === '0') return embedded;
+  // Not when the Hawkes Net box serves (the relay is off the control server: J, 2026-10-25).
+  if (embedded || env('HAWKESGEN_NET_EMBEDDED') === '0' || (hubUrl() && env('HAWKESGEN_NET_EMBEDDED') !== '1')) return embedded;
   const workers = Number(env('HAWKESGEN_NET_WORKERS') ?? 1);
-  embedded = new NetNode({ id: env('HAWKESGEN_NET_NODE_ID') ?? 'gen', url: env('HAWKESGEN_NET_URL') ?? `ws://127.0.0.1:${env('HAWKESGEN_PORT') ?? 8790}/v1/net/ws`, adminUrl: null, embedded: true, capacity: Number(env('HAWKESGEN_NET_CAPACITY') ?? 1500), workers, link: inProcess });
+  embedded = new NetNode({ id: env('HAWKESGEN_NET_NODE_ID') ?? 'gen', url: env('HAWKESGEN_NET_URL') ?? `ws://127.0.0.1:${env('HAWKESGEN_PORT') ?? 8790}/v1/net/ws`, adminUrl: null, embedded: true, capacity: Number(env('HAWKESGEN_NET_CAPACITY') ?? 1500), workers, usageMs: Number(env('HAWKESGEN_NET_USAGE_MS') ?? 60_000), link: inProcess });
   await embedded.start();
   return embedded;
 }

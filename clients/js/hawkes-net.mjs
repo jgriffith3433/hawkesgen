@@ -19,7 +19,7 @@ export const VERSION = core.VERSION;
 export const protocols = Object.freeze([3]);
 export const Track = core.Track;
 export const Links = core.Links;
-const DEFAULT_ENDPOINT = 'https://gen.hawkesgen.com';
+const DEFAULT_ENDPOINT = 'https://net.hawkesgen.com';
 const DEFAULT_ICE = [{ urls: ['stun:stun.cloudflare.com:3478'] }, { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 const PING_MS = 5000;
 const SEND_MS = 33;
@@ -55,7 +55,7 @@ class Emitter {
 /**
  * Joins a room. Resolves when the room's state has arrived (`ready`), rejects when the join is refused.
  * o: { project, transport: 'auto' | 'p2p' | 'relay', ticket (a string, or a function returning Gen's ticket answer),
- *      endpoint (Gen, default https://gen.hawkesgen.com), key (a Gen API key: servers and bots only), name, sub, role,
+ *      endpoint (the Hawkes Net service, default https://net.hawkesgen.com), key (a Gen API key: servers and bots only), name, sub, role,
  *      config (the room's shape if this join creates it), leaveOnHide (default true), rtc ({ RTCPeerConnection } in Node),
  *      WebSocket (a WebSocket class, default the global one), log (false to silence),
  *      onRaw (an engine with its own multiplayer logic: every room message in the core's shapes, see `raw` below) }

@@ -23,7 +23,7 @@ void Update() {
 - **Your ticket route** receives `{ room, name }` from the page and answers with what hawkesgen.com gave it:
   `POST https://hawkesgen.com/v1/net/rooms/ticket` with `Authorization: Bearer hg_...` and `{ "room", "name", "transport", "config" }`.
   Rooms are in your own project; usage is on your account.
-- WebGL builds only: the web SDK runs in the page (loaded from `https://gen.hawkesgen.com/sdk/hawkes-net@1.mjs`). In the
+- WebGL builds only: the web SDK runs in the page (loaded from `https://net.hawkesgen.com/sdk/hawkes-net@1.mjs`). In the
   Editor `Join` reports the problem `webgl-only`.
 - Events come on the main thread. `Poses` is refreshed once a frame.
 - Install: Package Manager > Add package from disk (`package.json`), or by path in `Packages/manifest.json`.

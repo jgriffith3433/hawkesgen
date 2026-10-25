@@ -14,7 +14,7 @@ mergeInto(LibraryManager.library, {
     };
     var who = function (p) { return p ? { peer: p.id || '', name: p.name || '' } : { peer: '', name: '' }; };
     var slot = S.rooms[handle] = { net: null, poses: {}, dirty: false, gone: false, kinds: {} };
-    var sdk = o.sdkUrl || 'https://gen.hawkesgen.com/sdk/hawkes-net@1.mjs';
+    var sdk = o.sdkUrl || 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
     var opts = { name: o.name || undefined, transport: o.transport || 'auto', role: o.role || 'player', log: o.log !== false };
     if (o.project) opts.project = o.project;
     if (o.endpoint) opts.endpoint = o.endpoint;

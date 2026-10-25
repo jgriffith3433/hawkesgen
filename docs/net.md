@@ -67,7 +67,7 @@ section says so and wins. Exact shapes: `src/net/types.ts` (the design's types) 
 ### Using it
 
 ```js
-import { join } from 'https://gen.hawkesgen.com/sdk/hawkes-net.mjs'; // or a copy (clients/js/sdk.json)
+import { join } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs'; // or a copy (clients/js/sdk.json)
 const net = await join('lobby-1', { project: 'mygame', name: 'Ada' });   // public door: the page's origin must be the project's
 net.on('chat', (text, from) => console.log(from.name, text));
 net.send('chat', 'hi');                       // reliable: once, in order, also across reconnects and the move to the relay

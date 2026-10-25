@@ -23,10 +23,10 @@ namespace Hawkes
         public string transport = "auto";
         /// <summary>"player" or "spectator".</summary>
         public string role = "player";
-        /// <summary>Gen, when not https://gen.hawkesgen.com.</summary>
+        /// <summary>The Hawkes Net service, when not https://net.hawkesgen.com.</summary>
         public string endpoint = "";
         /// <summary>Where the SDK is loaded from.</summary>
-        public string sdkUrl = "https://gen.hawkesgen.com/sdk/hawkes-net@1.mjs";
+        public string sdkUrl = "https://net.hawkesgen.com/sdk/hawkes-net@1.mjs";
         /// <summary>Leave the room when the tab is closed or hidden for long (the web default). Off for games that
         /// keep playing in the background.</summary>
         public bool leaveOnHide = true;
