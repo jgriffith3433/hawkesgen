@@ -100,3 +100,10 @@ test('mesh.rig script: an A-pose humanoid rigged, a clip baked on it by bone nam
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('rig install script: python3.11 comes from deadsnakes when apt lacks it, and a failure says where', async () => {
+  const { installScript } = await import('../src/providers/rig/install.ts');
+  const s = installScript();
+  assert.match(s, /ppa:deadsnakes\/ppa/);
+  assert.match(s, /rig install failed/);
+});

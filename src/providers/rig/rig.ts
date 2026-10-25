@@ -16,7 +16,7 @@ export async function ensureRig(instanceId: string, step: (s: string) => void = 
     step(`installing the rigging models on ${instanceId} (once: Make-It-Animatable and SkinTokens, several GB)`);
     const out = await sshRun(`bash -c ${shq(installScript())} 2>&1 | tail -n 30`, instanceId, { timeoutMs: 70 * 60_000 });
     if (!out.includes(`rig ready ${READY_MARK}`)) {
-      throw new GenError(`The rigging models didn't install on ${instanceId}: ${out.trim().split('\n').slice(-8).join(' / ')}`);
+      throw new GenError(`The rigging models didn't install on ${instanceId}: ${out.trim().split('\n').slice(-8).join(' / ') || 'the install printed nothing (see /tmp/rig-apt.log on the server)'}`);
     }
   }
   installed.add(instanceId);
