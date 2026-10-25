@@ -96,7 +96,7 @@ export type Settings = {
   /** Dollars per unit for usage reports, where the provider doesn't say. */
   rates: { elevenlabsPer1kChars: number };
   /** The library's files also go to this S3 bucket (src/storage.ts); null keeps them on this disk only. */
-  storage: { bucket: string | null };
+  storage: { bucket: string | null; /** The CDN's base URL (https://cdn.hawkesgen.com), set by deploy/cdn.mjs; files are at <cdn>/sha256/<hash>. */ cdn?: string | null };
   /** The sound suite (docs/audio.md). `verified`: open models that passed their smoke test and audition; `provider: auto` uses
    *  only these, else ElevenLabs. `targetLufs`: loudness per project (and kind) for audio.process; "default" is the fallback. */
   audio: { verified: string[]; targetLufs: Record<string, number> };
@@ -113,7 +113,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   model: '',
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
-  storage: { bucket: null },
+  storage: { bucket: null, cdn: null },
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
 };
 export const FLEET_MAX = 16;
@@ -152,7 +152,10 @@ function clean(s: Settings): Settings {
       verified: Array.isArray(s.audio?.verified) ? [...new Set(s.audio!.verified.map(String).filter((x) => /^[a-z0-9][a-z0-9._-]{0,40}$/.test(x)))] : [],
       targetLufs: Object.fromEntries(Object.entries({ ...SETTINGS_DEFAULTS.audio.targetLufs, ...(s.audio?.targetLufs ?? {}) }).map(([k, v]) => [k, Number(v)]).filter(([, v]) => Number.isFinite(v as number) && (v as number) <= -5 && (v as number) >= -40)) as Record<string, number>,
     },
-    storage: { bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null },
+    storage: {
+      bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null,
+      cdn: typeof s.storage?.cdn === 'string' && /^https:\/\/[a-z0-9.-]+$/.test(s.storage.cdn) ? s.storage.cdn : null,
+    },
   };
 }
 
