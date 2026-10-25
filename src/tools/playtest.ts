@@ -195,7 +195,7 @@ export const playtestRunTool: Tool = {
       page.setDefaultTimeout(30_000);
       page.on('console', (m: any) => {
         const type = m.type();
-        if (type === 'error' || type === 'warning') {
+        if ((type === 'error' || type === 'warning') && !isAnalyticsNoise(m.text(), m.location?.()?.url)) {
           consoleLines.push({ type, text: m.text().slice(0, 500), t: T() });
           if (consoleLines.length > 500) consoleLines.shift();
         }
@@ -206,9 +206,9 @@ export const playtestRunTool: Tool = {
       // the browser), not a failure a player would see.
       page.on('requestfailed', (r: any) => {
         const why = r.failure()?.errorText ?? 'failed';
-        if (!/ERR_ABORTED/.test(why) && !killed) failed.push({ url: r.url().slice(0, 300), status: why });
+        if (!/ERR_ABORTED/.test(why) && !killed && !isAnalyticsCollect(r.url())) failed.push({ url: r.url().slice(0, 300), status: why });
       });
-      page.on('response', (r: any) => { if (r.status() >= 400) failed.push({ url: r.url().slice(0, 300), status: r.status() }); });
+      page.on('response', (r: any) => { if (r.status() >= 400 && !isAnalyticsCollect(r.url())) failed.push({ url: r.url().slice(0, 300), status: r.status() }); });
 
       const shot = async (reason: string, scene?: string) => {
         if (killed) return;
@@ -708,7 +708,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       page.setDefaultTimeout(30_000);
       page.on('console', (m: any) => {
         const type = m.type();
-        if (type === 'error' || type === 'warning') {
+        if ((type === 'error' || type === 'warning') && !isAnalyticsNoise(m.text(), m.location?.()?.url)) {
           peer.consoleLines.push({ type, text: m.text().slice(0, 500), t: T() });
           if (peer.consoleLines.length > 500) peer.consoleLines.shift();
         }
@@ -717,9 +717,9 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       page.on('crash', () => peer.problems.push({ severity: 'bug', message: 'the page crashed (the browser tab died)', source: 'browser' }));
       page.on('requestfailed', (r: any) => {
         const why = r.failure()?.errorText ?? 'failed';
-        if (!/ERR_ABORTED/.test(why) && !killed) peer.failed.push({ url: r.url().slice(0, 300), status: why });
+        if (!/ERR_ABORTED/.test(why) && !killed && !isAnalyticsCollect(r.url())) peer.failed.push({ url: r.url().slice(0, 300), status: why });
       });
-      page.on('response', (r: any) => { if (r.status() >= 400) peer.failed.push({ url: r.url().slice(0, 300), status: r.status() }); });
+      page.on('response', (r: any) => { if (r.status() >= 400 && !isAnalyticsCollect(r.url())) peer.failed.push({ url: r.url().slice(0, 300), status: r.status() }); });
       peers.push(peer);
     }
     t0 = Date.now();
@@ -1315,6 +1315,15 @@ function summarizeFps(samples: number[]) {
 }
 
 const dedupe = (xs: string[]) => [...new Set(xs)].slice(0, 30);
+/** Hawkes Analytics batches go to /v1/analytics/collect; the SDK keeps a failed batch in its outbox and resends it, so a
+ * 5xx there (a Gen restart or deploy) is not something a player sees. The browser logs it to the console itself. */
+function isAnalyticsCollect(url?: string) {
+  return !!url && /\/v1\/analytics\/collect(\?|$)/.test(url);
+}
+function isAnalyticsNoise(text: string, url?: string) {
+  return isAnalyticsCollect(url) || (/Failed to load resource/i.test(text) && /\/v1\/analytics\/collect/.test(text));
+}
+
 function dedupeBy<T>(xs: T[], key: (x: T) => string) {
   const seen = new Set<string>();
   return xs.filter((x) => (seen.has(key(x)) ? false : (seen.add(key(x)), true)));
