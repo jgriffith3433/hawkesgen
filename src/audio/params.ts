@@ -6,7 +6,7 @@ import type { InputSpec, ParamSpec } from '../tools/types.ts';
 
 export const providerParam: ParamSpec = {
   type: 'enum', values: ['open', 'elevenlabs', 'auto'],
-  description: 'open: the open models on the Gen GPU fleet. elevenlabs: ElevenLabs. Unset is auto: a Gen voice (gv_...) or a verified open model runs open, an ElevenLabs voice id stays on ElevenLabs. docs/audio.md.',
+  description: 'Unset (or open) runs the open models on the Gen GPU fleet: the default. elevenlabs runs ElevenLabs, the secondary provider, and is only used when asked (or when the call carries an ElevenLabs voice id, old content). docs/audio.md.',
 };
 
 export const directionParam: ParamSpec = {

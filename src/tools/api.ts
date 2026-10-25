@@ -14,7 +14,7 @@ export const voiceTool: Tool = {
   id: 'audio.voice',
   version: 1,
   title: 'Speak a line',
-  description: 'ElevenLabs text to speech with a voice from the account\'s library (GET /v1/providers/elevenlabs/voices). eleven_v3 and eleven_v4 take delivery tags like [sighs] in the text.',
+  description: 'Speaks a line on the open models of the Gen GPU fleet (MOSS-TTS, Qwen3-TTS, VoxCPM2, Chatterbox): the default. Voice: a Gen voice (voice: gv_..., from audio.voice-design / audio.voice-clone / audio.voice-list), a cloned reference sample, or a description. direction (emotion, delivery, pace), openModel, verify (word-error check), language, seed and post-processing params are open-path params. Secondary: ElevenLabs text to speech runs only with provider: "elevenlabs" or an ElevenLabs voice id (old content; model eleven_v4 / eleven_v3 take delivery tags like [sighs]).',
   provider: 'elevenlabs',
   output: 'audio',
   inputs: { ...referenceInput },
@@ -30,7 +30,7 @@ export const voiceTool: Tool = {
   },
   async run(ctx) {
     const p = ctx.params;
-    if (!p.voice) throw new GenError('voice is required (an ElevenLabs voice id), or use a Gen voice / provider: "open"');
+    if (!p.voice) throw new GenError('This is the ElevenLabs path and it needs an ElevenLabs voice id. For a new voice use the open suite: leave provider unset and give a Gen voice (gv_...), a reference sample or a description.');
     for (let i = ctx.done; i < p.count; i++) {
       ctx.step(`take ${i + 1} of ${p.count}`);
       const data = await speak({ text: p.text, voice: p.voice, model: p.model, format: p.format, settings: p.settings }, ctx.signal);
@@ -67,7 +67,7 @@ export const dialogueTool: Tool = {
   id: 'audio.dialogue',
   version: 1,
   title: "Table read: a scene's dialogue in one take",
-  description: 'ElevenLabs Text to Dialogue (eleven_v3): every line of a scene voiced together, the speakers taking turns and reacting like people. lines: [{ who, text }] with cast { who: voiceId } (or [{ voice, text }]); delivery tags like [sighs] [whispers] [interrupting] in the text. Outputs the dialogue track, each line as its own clip (stems), and when each line starts and ends. Keep a scene under about 2,000 characters.',
+  description: 'A scene\'s dialogue on the open models (default): every line in its character\'s Gen voice (cast { who: gv_... }), per-line direction, laid on one track. Secondary: ElevenLabs Text to Dialogue (eleven_v3), used only with provider: "elevenlabs" or ElevenLabs voice ids in the cast: every line of a scene voiced together, the speakers taking turns and reacting like people. lines: [{ who, text }] with cast { who: voiceId } (or [{ voice, text }]); delivery tags like [sighs] [whispers] [interrupting] in the text. Outputs the dialogue track, each line as its own clip (stems), and when each line starts and ends. Keep a scene under about 2,000 characters.',
   provider: 'elevenlabs',
   output: 'audio',
   inputs: {},
@@ -122,7 +122,7 @@ export const voiceChangeTool: Tool = {
   id: 'audio.voice-change',
   version: 1,
   title: 'Voice changer: the same performance in a cast voice',
-  description: "ElevenLabs Speech to Speech: the delivery of a recording, word for word and beat for beat, in another voice (a cast character's voice id). Give audio, or a video (its sound is changed and put back). isolate first takes the voice off music and effects. For one speaker at a time: cut a two-person scene into each speaker's lines first.",
+  description: "ElevenLabs only (no open model yet; it never runs unless called, and fails while ElevenLabs billing is blocked). Speech to Speech: the delivery of a recording, word for word and beat for beat, in another voice (a cast character's voice id). Give audio, or a video (its sound is changed and put back). isolate first takes the voice off music and effects. For one speaker at a time: cut a two-person scene into each speaker's lines first.",
   provider: 'elevenlabs',
   output: 'audio',
   inputs: {
@@ -173,7 +173,7 @@ export const sfxTool: Tool = {
   id: 'audio.sfx',
   version: 1,
   title: 'Sound effect',
-  description: 'ElevenLabs sound generation: one description, one sound. Leave duration empty on a hit so the model picks the length; set loop and a duration only for beds the game repeats.',
+  description: 'A sound effect on the open models of the Gen GPU fleet (MOSS-SoundEffect; default): one description, one sound, or variants (a list of prompts) for one game event. Leave duration empty on a hit so the model picks the length; set loop and a duration only for beds the game repeats. Normalised and trimmed. Secondary: ElevenLabs sound generation, only with provider: "elevenlabs".',
   provider: 'elevenlabs',
   output: 'audio',
   inputs: {},
@@ -206,7 +206,7 @@ export const voiceDesignTool: Tool = {
   id: 'audio.voice-design',
   version: 1,
   title: 'Design a voice',
-  description: 'ElevenLabs Voice Design: candidate voices (usually 3) from a description, each as a preview clip. Nothing is saved to the account; the result lists each candidate\'s generatedVoiceId (same order as the outputs) for audio.voice-save. Previews expire after a while.',
+  description: 'Designs candidate voices (default 3, candidates param) from a description on the open models (Qwen3-TTS / VoxCPM2; default), each saved in the Gen voice library as a candidate (gv_...) with its preview clip. audio.voice-save keeps the one you choose. No slot cap. Secondary: ElevenLabs Voice Design, only with provider: "elevenlabs" (previews expire; ids are ElevenLabs generatedVoiceIds).',
   provider: 'elevenlabs',
   output: 'audio',
   inputs: {},
@@ -233,7 +233,7 @@ export const voiceSaveTool: Tool = {
   id: 'audio.voice-save',
   version: 1,
   title: 'Save a designed voice',
-  description: 'Saves an audio.voice-design candidate (its generatedVoiceId) to the ElevenLabs voice library. The result is { voiceId } for audio.voice.',
+  description: 'Keeps an audio.voice-design candidate (generatedVoiceId: gv_...) in the Gen voice library under a name (default; no slot cap). The result is { voiceId } for audio.voice. Secondary: with provider: "elevenlabs", saves an ElevenLabs candidate to the ElevenLabs account.',
   provider: 'elevenlabs',
   output: 'json',
   inputs: {},

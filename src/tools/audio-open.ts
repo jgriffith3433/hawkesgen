@@ -19,7 +19,7 @@ import { createVoice, deleteVoice as dropVoice, getVoice, isGenVoiceId, listVoic
 import { analyze, checkLoop, cut, durationOf, ff, judge, makeLoop, processAudio, type Format, type ProcessOptions } from '../audio/post.ts';
 import { intelligible, wordErrorRate } from '../audio/verify.ts';
 import { voiceOpenParams, referenceInput, postParams, sfxExtra, dialogueExtra, designExtra, saveExtra, listExtra, deleteExtra } from '../audio/params.ts';
-import { voiceTool, sfxTool, dialogueTool, voiceDesignTool, dialogueLines } from './api.ts';
+import { voiceTool, dialogueTool, dialogueLines } from './api.ts';
 
 const MOCK = process.env.HAWKESGEN_AUDIO_MOCK === '1';
 /** In the mock the tools are plain CPU jobs; for real they take a GPU server. */
@@ -105,7 +105,7 @@ async function finish(ctx: RunContext, file: string, name: string, kind: 'voice'
 
 const licenseNotes = (m: AudioModel) => (m.license.commercial === 'verify' ? [`${m.id}: commercial license not confirmed (${m.license.note})`] : []);
 
-/** The ElevenLabs tool's run, for `auto` when the open path is unavailable (a call that has an ElevenLabs voice id). */
+/** The ElevenLabs tool's run, only for a speak or dialogue call that carries an ElevenLabs voice id (old content) when the open path is unavailable. */
 async function fallback(ctx: RunContext, el: Tool, why: unknown) {
   const p = ctx.params;
   if (p.provider === 'open') throw why;
@@ -117,7 +117,7 @@ async function fallback(ctx: RunContext, el: Tool, why: unknown) {
 
 export const voiceOpenTool: Tool = {
   id: OPEN.voice, version: 1, title: 'Speak a line (open models)',
-  description: 'Speaks a line on an open model on the Gen GPU fleet (MOSS-TTS, Qwen3-TTS, VoxCPM2, Chatterbox): with DIRECTION (emotion, delivery, pace, style), in a saved Gen voice (voice: gv_...), cloned from a 3-10 s sample (input reference), or from a description. audio.voice routes here when the call names a Gen voice or a verified model can do it. Loudness-normalised, silence-trimmed; verify: true transcribes each take and checks it says the text.',
+  description: 'Speaks a line on an open model on the Gen GPU fleet (MOSS-TTS, Qwen3-TTS, VoxCPM2, Chatterbox): with DIRECTION (emotion, delivery, pace, style), in a saved Gen voice (voice: gv_...), cloned from a 3-10 s sample (input reference), or from a description. This is the default for audio.voice (the same tool: ElevenLabs only with provider "elevenlabs" or an ElevenLabs voice id). Loudness-normalised, silence-trimmed; verify: true transcribes each take and checks it says the text.',
   provider, family: (p) => `audio:${planModelId(p)}`, output: 'audio',
   inputs: referenceInput,
   params: {
@@ -205,8 +205,7 @@ export const voiceDesignOpenTool: Tool = {
       }
       ctx.result({ provider: 'open', model: model.id, text, candidates: ids, warnings: licenseNotes(model) });
     } catch (e) {
-      if (ctx.params.provider === 'open') throw e;
-      await fallback(ctx, voiceDesignTool, e);
+      throw e;
     }
   },
 };
@@ -225,7 +224,7 @@ export const voiceSaveOpenTool: Tool = {
   },
   async run(ctx) {
     const p = ctx.params;
-    if (!isGenVoiceId(p.generatedVoiceId)) throw new GenError('generatedVoiceId must be a Gen voice id (gv_...)');
+    if (!isGenVoiceId(p.generatedVoiceId)) throw new GenError('generatedVoiceId must be a Gen voice id (gv_..., from audio.voice-design); an ElevenLabs candidate id needs provider: "elevenlabs"');
     const v = saveVoice(p.generatedVoiceId, { name: p.name, description: p.description, elevenlabsId: p.elevenlabsId ?? null });
     ctx.result({ voiceId: v.id, voice: publicVoice(v) });
   },
@@ -252,6 +251,7 @@ export const voiceDeleteOpenTool: Tool = {
   provider: localProvider, output: 'json', inputs: {},
   params: { voiceId: { type: 'string', required: true }, confirm: { type: 'boolean', default: false, advanced: true }, ...deleteExtra },
   async run(ctx) {
+    if (!isGenVoiceId(ctx.params.voiceId)) throw new GenError('voiceId must be a Gen voice id (gv_..., from audio.voice-list); an ElevenLabs voice id needs provider: "elevenlabs"');
     const v = dropVoice(String(ctx.params.voiceId));
     ctx.log(`deleted Gen voice ${v.id} "${v.name}" (${JSON.stringify(v.recipe)})`);
     ctx.result({ deleted: true, voiceId: v.id, name: v.name, description: v.description });
@@ -288,7 +288,7 @@ export const voiceCloneTool: Tool = {
 
 export const sfxOpenTool: Tool = {
   id: OPEN.sfx, version: 1, title: 'Sound effect (open models)',
-  description: 'A sound effect on an open model (MOSS-SoundEffect; Stable Audio 3 Small-SFX when its ComfyUI template is imported). duration: seconds (empty: the model decides). loop: a seamless bed (made a little longer, crossfaded, loop point checked). count: takes; variants: a list of different prompts for one game event (e.g. six footsteps), each a take. Normalised, trimmed, converted. audio.sfx routes here when a verified model is available.',
+  description: 'A sound effect on an open model (MOSS-SoundEffect; Stable Audio 3 Small-SFX when its ComfyUI template is imported). duration: seconds (empty: the model decides). loop: a seamless bed (made a little longer, crossfaded, loop point checked). count: takes; variants: a list of different prompts for one game event (e.g. six footsteps), each a take. Normalised, trimmed, converted. This is the default for audio.sfx (ElevenLabs only with provider "elevenlabs").',
   provider, family: (p) => `audio:${safeModel('sfx', ['sfx'], p.openModel)}`, guard: ({ params }) => void pickModel('sfx', params.loop ? ['sfx', 'loop'] : ['sfx'], params.openModel), output: 'audio', inputs: {},
   params: {
     text: { type: 'text', required: true },
@@ -333,7 +333,7 @@ export const sfxOpenTool: Tool = {
       }
       ctx.result({ provider: 'open', model: model.id, takes, warnings: licenseNotes(model) });
     } catch (e) {
-      await fallback(ctx, sfxTool, e);
+      throw e; // no silent ElevenLabs for sound effects: say provider "elevenlabs" to use it
     }
   },
 };
@@ -413,7 +413,7 @@ export const dialogueOpenTool: Tool = {
       ctx.result({ provider: 'open', takes, seconds: takes[0]?.seconds, segments: takes[0]?.segments });
     } catch (e) {
       const cast = Object.values((ctx.params.cast ?? {}) as Record<string, string>);
-      if (cast.some(isGenVoiceId) || ctx.params.provider === 'open') throw e;
+      if (!cast.length || cast.every(isGenVoiceId) || ctx.params.provider === 'open') throw e;
       await fallback(ctx, dialogueTool, e);
     }
   },
