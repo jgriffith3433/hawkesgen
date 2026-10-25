@@ -1,12 +1,12 @@
 // Installs an open audio model on a GPU server on first use, and follows an install already under way.
 
 import path from 'node:path';
-import { sshRun } from '../comfy/fleet.ts';
+import { makeRoom, sshRun } from '../comfy/fleet.ts';
 import { shq } from '../blender/blender.ts';
 import { env, paths } from '../../config.ts';
 import { GenError, sleep } from '../../util.ts';
 import { AUDIO_MODELS } from '../../audio/registry.ts';
-import { ASR_ID, AUDIO_ROOT, VERIFY_PY, installScript, pinOf, unitOf } from './install.ts';
+import { ASR_ID, AUDIO_ROOT, VERIFY_PY, installScript, pinOf, requiredBytes, soxScript, unitOf } from './install.ts';
 
 const ready = new Set<string>();
 const b64 = (s: string) => Buffer.from(s).toString('base64');
@@ -27,6 +27,8 @@ export async function ensureAudio(instanceId: string, id: string, step: (s: stri
     const unit = unitOf(id);
     const running = (await sshRun(`systemctl is-active ${unit} 2>/dev/null || true`, instanceId)).trim() === 'active';
     if (!running) {
+      // Free the room first (least recently used models, never a core one or one in use), instead of failing on the disk check.
+      await makeRoom(instanceId, requiredBytes(id), step);
       step(`installing ${id} on ${instanceId} (once; several GB)`);
       const token = env('HF_TOKEN') || env('HUGGING_FACE_HUB_TOKEN');
       if (token && !/[\r\n']/.test(token)) await sshRun(`sudo mkdir -p ${AUDIO_ROOT}/hf && sudo chown -R ubuntu:ubuntu ${AUDIO_ROOT} && printf %s ${shq(token)} > ${AUDIO_ROOT}/hf/token && chmod 600 ${AUDIO_ROOT}/hf/token && echo token`, instanceId);
@@ -48,6 +50,11 @@ export async function ensureAudio(instanceId: string, id: string, step: (s: stri
       }
       if (Date.now() > end) throw new GenError(`${id} is still installing on ${instanceId} after 90 minutes; the install keeps running, try the job again later`, { status: 503 });
     }
+  }
+  // Servers whose model was installed before sox was required (or that never had it) get it now.
+  if (id !== ASR_ID) {
+    try { await sshRun(soxScript(), instanceId, { timeoutMs: 10 * 60_000 }); }
+    catch (e) { throw new GenError(`${id} needs sox on ${instanceId}: ${e instanceof Error ? e.message : String(e)}`, { status: 503 }); }
   }
   // The runner and the checker are small and change with Gen: refresh them every job.
   const files: [string, string][] = [['run.py', 'run.py'], ['asr.py', 'asr.py']];

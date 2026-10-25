@@ -15,7 +15,8 @@ const { routeAudio, pickModel, planSpeak, speakGpuSeconds, targetLufs } = await 
 const V = await import('../src/audio/voicelib.ts');
 const { wordErrorRate, intelligible } = await import('../src/audio/verify.ts');
 const P = await import('../src/audio/post.ts');
-const { installScript, VERIFY_PY, pinOf, installable } = await import('../src/providers/audio/install.ts');
+const { installScript, VERIFY_PY, pinOf, installable, requiredBytes, soxScript } = await import('../src/providers/audio/install.ts');
+const { planPrune } = await import('../src/providers/comfy/fleet.ts');
 const { getTool, TOOLS } = await import('../src/tools/index.ts');
 const { validateParams } = await import('../src/tools/validate.ts');
 const { saveSettings } = await import('../src/config.ts');
@@ -367,4 +368,37 @@ test('the Python runner and the ASR check at least compile', async () => {
     const r = spawnSync('python3', ['-c', `import ast,sys;ast.parse(open(sys.argv[1]).read())`, path.join(import.meta.dirname, '..', 'post', 'audio', f)]);
     assert.equal(r.status, 0, String(r.stderr));
   }
+});
+
+test('install: the disk requirement is per component, from the real sizes, and the script checks that figure', () => {
+  const GB = 1024 ** 3;
+  assert.ok(requiredBytes('asr') < 8 * GB);
+  assert.ok(requiredBytes('qwen3-tts') > modelById('qwen3-tts')!.sizeGb * GB);
+  assert.ok(requiredBytes('qwen3-tts') < 30 * GB, 'no longer the flat 30 GB');
+  assert.ok(requiredBytes('qwen3-tts') > requiredBytes('asr'));
+  assert.ok(requiredBytes('qwen3-tts') > requiredBytes('chatterbox'));
+  assert.ok(installScript('asr').includes(`-lt ${requiredBytes('asr')} ]`));
+  assert.ok(installScript('qwen3-tts').includes(`-lt ${requiredBytes('qwen3-tts')} ]`));
+});
+
+test('install: sox is installed non-interactively with a clear error, and the model install runs it (not asr)', () => {
+  const sox = soxScript();
+  assert.match(sox, /command -v sox/);
+  assert.match(sox, /DEBIAN_FRONTEND=noninteractive apt-get/);
+  assert.match(sox, /install -y sox libsox-fmt-all/);
+  assert.match(sox, /could not install sox/);
+  assert.match(installScript('qwen3-tts'), /install -y sox libsox-fmt-all/);
+  assert.doesNotMatch(installScript('asr'), /sox/);
+});
+
+test('prune: least recently used first, never the kept ones, and says when it cannot free enough', () => {
+  const files = new Map([['a/old.safetensors', 10], ['a/mid.safetensors', 10], ['a/new.safetensors', 10], ['a/core.safetensors', 50], ['a/never.safetensors', 5]]);
+  const used = { 'a/old.safetensors': 1, 'a/mid.safetensors': 2, 'a/new.safetensors': 3 };
+  const keep = new Set(['a/core.safetensors']);
+  assert.deepEqual(planPrune(files, keep, used, 15), { remove: ['a/never.safetensors', 'a/old.safetensors'], freed: 15 });
+  assert.deepEqual(planPrune(files, keep, used, 4).remove, ['a/never.safetensors']);
+  const all = planPrune(files, keep, used, 1000);
+  assert.equal(all.freed, 35);
+  assert.ok(!all.remove.includes('a/core.safetensors'));
+  assert.deepEqual(planPrune(files, keep, used, 0).remove, []);
 });

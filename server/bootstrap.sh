@@ -211,7 +211,7 @@ apt_install() {
     [ "$attempt" = 3 ] && return 1
     sleep 20
   done
-  apt-get -o DPkg::Lock::Timeout=600 install -y nginx apache2-utils ffmpeg git python3-venv python3-dev aria2 jq curl
+  apt-get -o DPkg::Lock::Timeout=600 install -y nginx apache2-utils ffmpeg git python3-venv python3-dev aria2 jq curl sox libsox-fmt-all
 }
 if begin apt; then
   run installing "system packages" apt_install || fail "apt install"

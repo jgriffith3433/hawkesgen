@@ -39,7 +39,7 @@ export function postOptions(p: Record<string, any>, project: string, kind: 'voic
   };
 }
 
-type Synth = { dir: string; items: { id: string; file: string; seconds: number; transcript?: string }[]; model: AudioModel };
+type Synth = { dir: string; items: { id: string; file: string; seconds: number; transcript?: string }[]; model: AudioModel; /** Set when verify was asked for and the transcriber could not be installed: the takes were made unchecked. */ verifySkipped?: string };
 
 /** Runs a job's items on a GPU server (or the mock) and brings the WAVs back. */
 async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak' | 'design' | 'sfx'; items: Record<string, any>[]; refs?: Record<string, string>; asr?: boolean; language?: string }): Promise<Synth> {
@@ -59,7 +59,19 @@ async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak'
   }
   const c = ctx.comfy!;
   await ensureAudio(c.server.id, o.model.id, ctx.step, ctx.signal);
-  if (o.asr) await ensureAudio(c.server.id, ASR_ID, ctx.step, ctx.signal);
+  let asr = Boolean(o.asr);
+  let verifySkipped: string | undefined;
+  if (asr) {
+    try {
+      await ensureAudio(c.server.id, ASR_ID, ctx.step, ctx.signal);
+    } catch (e) {
+      if (ctx.signal?.aborted) throw e;
+      asr = false;
+      verifySkipped = `verify was skipped: the transcriber (asr) could not be installed on ${c.server.id} (${e instanceof Error ? e.message : String(e)}); the takes were not checked against the text`;
+      ctx.log(`warning: ${verifySkipped}`);
+      ctx.step('making the takes without verification (the transcriber is not available)');
+    }
+  }
   const ws = await blenderWorkspace(c.server.id, ctx.job.id);
   try {
     const put: Record<string, string> = {};
@@ -77,7 +89,7 @@ async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak'
       `export HF_HOME=${AUDIO_ROOT}/hf HF_HUB_ENABLE_HF_TRANSFER=0 HF_HUB_OFFLINE=1`,
       `cd ${ws.dir}`,
       `${venvPython(o.model.id)} ${AUDIO_ROOT}/run.py spec.json`,
-      ...(o.asr ? [`for f in out/*.wav; do ${venvPython(ASR_ID)} ${AUDIO_ROOT}/asr.py "$f" ${o.language ?? 'en'} > "\${f%.wav}.asr.json" || echo '{"text":""}' > "\${f%.wav}.asr.json"; done`] : []),
+      ...(asr ? [`for f in out/*.wav; do ${venvPython(ASR_ID)} ${AUDIO_ROOT}/asr.py "$f" ${o.language ?? 'en'} > "\${f%.wav}.asr.json" || echo '{"text":""}' > "\${f%.wav}.asr.json"; done`] : []),
     ].join('\n');
     ctx.step(`${o.task === 'sfx' ? 'making sounds' : 'speaking'} with ${o.model.id}`);
     await c.timed(() => ws.run(script, { signal: ctx.signal, timeoutMs: 40 * 60_000, onLine: (l) => { const [w, ...r] = l.split(' '); if (w === 'step') ctx.step(r.join(' ')); } }));
@@ -87,7 +99,7 @@ async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak'
   }
   const meta = JSON.parse(fs.readFileSync(path.join(out, 'result.json'), 'utf8'));
   return {
-    dir: out, model: o.model,
+    dir: out, model: o.model, verifySkipped,
     items: meta.items.map((r: any) => {
       const asrFile = path.join(out, `${r.id}.asr.json`);
       return { id: r.id, file: path.join(out, `${r.id}.wav`), seconds: r.seconds, transcript: fs.existsSync(asrFile) ? JSON.parse(fs.readFileSync(asrFile, 'utf8')).text : undefined };
@@ -145,7 +157,7 @@ export const voiceOpenTool: Tool = {
         takes.push(t);
         if (i >= ctx.done) await ctx.emit({ data: f.data, ext: f.ext, seed: plan.items[i].seed, title: i ? `take ${i + 1}` : 'voice', meta: { model: plan.model.id, voice: p.voice ?? null, ...t } });
       }
-      ctx.result({ provider: 'open', model: plan.model.id, voice: p.voice ?? null, takes, dropped: plan.items[0].dropped, applied: { instruct: plan.items[0].instruct, exaggeration: plan.items[0].exaggeration, cfgWeight: plan.items[0].cfgWeight }, warnings: plan.warnings });
+      ctx.result({ provider: 'open', model: plan.model.id, voice: p.voice ?? null, takes, dropped: plan.items[0].dropped, applied: { instruct: plan.items[0].instruct, exaggeration: plan.items[0].exaggeration, cfgWeight: plan.items[0].cfgWeight }, warnings: plan.warnings, ...(s.verifySkipped ? { verified: false, verifySkipped: s.verifySkipped } : {}) });
     } catch (e) {
       if (!ctx.params.voice || isGenVoiceId(ctx.params.voice)) throw e;
       await fallback(ctx, voiceTool, e);
@@ -366,6 +378,7 @@ export const dialogueOpenTool: Tool = {
       if (bad) throw new GenError(`line "${bad.text.slice(0, 30)}": ${bad.voice} is an ElevenLabs voice; the open table read needs Gen voices (gv_...). Use provider: "elevenlabs" for this scene.`);
       const sr = p.sampleRate ?? 44100;
       const takes: any[] = [];
+      let verifySkipped: string | undefined;
       for (let t = ctx.done; t < p.count; t++) {
         const plans = lines.map((l, k) => planSpeak({ text: l.text, voice: l.voice, direction: (p.lines[k] as any)?.direction ?? p.direction, openModel: p.openModel, language: p.language }, { seed: (n) => ctx.seed(t * 100 + k + n) }));
         // One model per job: the first line's. A voice without a reference clip belongs to its own model, so mixed casts must share one.
@@ -373,6 +386,7 @@ export const dialogueOpenTool: Tool = {
         if (plans.some((x) => x.model.id !== model.id)) throw new GenError(`The cast needs different models (${[...new Set(plans.map((x) => x.model.id))].join(', ')}); give openModel or clone the voices from samples`);
         const items = plans.map((x, k) => ({ ...x.items[0], id: `line${k}` }));
         const s = await synthesize(ctx, { model, task: 'speak', items, asr: p.verify === true });
+        verifySkipped ??= s.verifySkipped;
         const files: string[] = [];
         const segments: any[] = [];
         let at = 0;
@@ -410,7 +424,7 @@ export const dialogueOpenTool: Tool = {
         }
         takes.push({ seconds: length, segments, model: model.id });
       }
-      ctx.result({ provider: 'open', takes, seconds: takes[0]?.seconds, segments: takes[0]?.segments });
+      ctx.result({ provider: 'open', takes, seconds: takes[0]?.seconds, segments: takes[0]?.segments, ...(verifySkipped ? { verified: false, verifySkipped } : {}) });
     } catch (e) {
       const cast = Object.values((ctx.params.cast ?? {}) as Record<string, string>);
       if (!cast.length || cast.every(isGenVoiceId) || ctx.params.provider === 'open') throw e;
