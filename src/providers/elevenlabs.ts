@@ -180,6 +180,14 @@ export async function saveDesignedVoice({ name, description, generatedVoiceId }:
   return String(voiceId);
 }
 
+/** Deletes a saved voice from the account's voice library (frees a slot). */
+export async function deleteVoice(voiceId: string, signal?: AbortSignal) {
+  if (!/^[A-Za-z0-9]{8,40}$/.test(voiceId)) throw new GenError('voiceId must be an ElevenLabs voice id');
+  const r = await callRetry(`https://api.elevenlabs.io/v1/voices/${voiceId}`, { method: 'DELETE' }, signal);
+  if (r.status < 200 || r.status >= 300) throw failure(r);
+  voiceCache = null;
+}
+
 let voiceCache: { at: number; value: any[] } | null = null;
 
 /** The account's voice library (cached for 10 minutes). */
@@ -188,7 +196,7 @@ export async function voices({ force = false } = {}) {
   const r = await call('https://api.elevenlabs.io/v1/voices');
   if (r.status < 200 || r.status >= 300) throw failure(r);
   const value = (JSON.parse(r.buffer.toString('utf8')).voices ?? []).map((v: any) => ({
-    id: v.voice_id, name: v.name, category: v.category ?? '', description: v.description ?? '', labels: v.labels ?? {}, preview: v.preview_url ?? '',
+    id: v.voice_id, name: v.name, category: v.category ?? '', description: v.description ?? '', labels: v.labels ?? {}, preview: v.preview_url ?? '', created: Number(v.created_at_unix) > 0 ? Number(v.created_at_unix) * 1000 : null,
   }));
   voiceCache = { at: Date.now(), value };
   return value;

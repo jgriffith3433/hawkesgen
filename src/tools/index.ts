@@ -4,6 +4,7 @@ import type { Tool } from './types.ts';
 import { imageEditTool, imagePaintTool, videoI2vTool, videoAnimateTool, comfyGraphTool } from './comfy.ts';
 import { cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool } from './local.ts';
 import { videoReviewTool } from './review-video.ts';
+import { voiceListTool, voiceDeleteTool } from './voices.ts';
 import { voiceTool, sfxTool, voiceDesignTool, voiceSaveTool, llmTextTool, llmJsonTool, dialogueTool, voiceChangeTool } from './api.ts';
 import { loadWorkflows, listWorkflows } from '../workflows/registry.ts';
 import { workflowTool } from '../workflows/tool.ts';
@@ -27,7 +28,7 @@ import { assetLodTool } from '../lod.ts';
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
   imageEditTool, imagePaintTool, videoI2vTool, videoAnimateTool, comfyGraphTool,
-  voiceTool, sfxTool, voiceDesignTool, voiceSaveTool, dialogueTool, voiceChangeTool, videoReviewTool,
+  voiceTool, sfxTool, voiceDesignTool, voiceSaveTool, voiceListTool, voiceDeleteTool, dialogueTool, voiceChangeTool, videoReviewTool,
   llmTextTool, llmJsonTool,
   cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
