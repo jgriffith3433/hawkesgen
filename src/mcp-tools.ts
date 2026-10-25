@@ -219,7 +219,8 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
       run: async ({ action, id, region, value, confirm }) => {
         if (!action) {
           const f = await gen.fleet();
-          return { settings: f.settings, servers: f.servers.map((s: any) => ({ id: s.id, state: s.state, ready: s.state === 'running' && s.boot?.stage === 'ready', stage: s.boot?.stage ?? null, stuck: s.stuck ?? null, installUnfinished: s.unfinished ?? null, type: s.type, zone: s.zone, perHour: s.pricePerHour, running: f.busy[s.id] ?? null })), error: f.error };
+          const elevenlabsBilling = (await gen.health().catch(() => null))?.elevenlabsBilling;
+          return { elevenlabsBilling, settings: f.settings, servers: f.servers.map((s: any) => ({ id: s.id, state: s.state, ready: s.state === 'running' && s.boot?.stage === 'ready', stage: s.boot?.stage ?? null, stuck: s.stuck ?? null, installUnfinished: s.unfinished ?? null, type: s.type, zone: s.zone, perHour: s.pricePerHour, running: f.busy[s.id] ?? null })), error: f.error };
         }
         if (action === 'machines') return gen.request('/machines?live=1');
         if (action === 'quota') return gen.request(`/fleet/quota?region=${encodeURIComponent(region || 'us-east-1')}`);
