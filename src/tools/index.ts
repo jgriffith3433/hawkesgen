@@ -6,6 +6,7 @@ import { cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeT
 import { videoReviewTool } from './review-video.ts';
 import { voiceListTool, voiceDeleteTool } from './voices.ts';
 import { voiceTool, sfxTool, voiceDesignTool, voiceSaveTool, llmTextTool, llmJsonTool, dialogueTool, voiceChangeTool } from './api.ts';
+import { AUDIO_OPEN_TOOLS } from './audio-open.ts';
 import { loadWorkflows, listWorkflows } from '../workflows/registry.ts';
 import { workflowTool } from '../workflows/tool.ts';
 import { unityBuild, unityTest } from './build.ts';
@@ -35,6 +36,7 @@ const BUILT_IN: Tool[] = [
   blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
   assetLodTool,
+  ...AUDIO_OPEN_TOOLS,
 ];
 
 export let TOOLS: Tool[] = [];

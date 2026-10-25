@@ -85,7 +85,10 @@ function resolve(project: string, it: EstimateItem): { tool: Tool; params: Recor
   } catch {
     params = applied.params ?? {}; // an estimate shouldn't fail on a missing prompt
   }
-  return { tool, params };
+  // A routed call (audio.voice -> the open-model tool) is priced as the tool that would run.
+  const routed = tool.route?.(params);
+  const target = routed && routed !== tool.id ? getTool(routed) : null;
+  return { tool: target ?? tool, params };
 }
 
 export function estimate(

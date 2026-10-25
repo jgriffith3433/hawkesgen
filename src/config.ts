@@ -97,6 +97,9 @@ export type Settings = {
   rates: { elevenlabsPer1kChars: number };
   /** The library's files also go to this S3 bucket (src/storage.ts); null keeps them on this disk only. */
   storage: { bucket: string | null };
+  /** The sound suite (docs/audio.md). `verified`: open models that passed their smoke test and audition; `provider: auto` uses
+   *  only these, else ElevenLabs. `targetLufs`: loudness per project (and kind) for audio.process; "default" is the fallback. */
+  audio: { verified: string[]; targetLufs: Record<string, number> };
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
@@ -111,6 +114,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
   storage: { bucket: null },
+  audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
 };
 export const FLEET_MAX = 16;
 
@@ -144,6 +148,10 @@ function clean(s: Settings): Settings {
     model: typeof (s as { model?: string }).model === 'string' ? (s as { model?: string }).model : '',
     localOpen: s.localOpen !== false,
     rates: { elevenlabsPer1kChars: Number(s.rates?.elevenlabsPer1kChars ?? SETTINGS_DEFAULTS.rates.elevenlabsPer1kChars) || 0 },
+    audio: {
+      verified: Array.isArray(s.audio?.verified) ? [...new Set(s.audio!.verified.map(String).filter((x) => /^[a-z0-9][a-z0-9._-]{0,40}$/.test(x)))] : [],
+      targetLufs: Object.fromEntries(Object.entries({ ...SETTINGS_DEFAULTS.audio.targetLufs, ...(s.audio?.targetLufs ?? {}) }).map(([k, v]) => [k, Number(v)]).filter(([, v]) => Number.isFinite(v as number) && (v as number) <= -5 && (v as number) >= -40)) as Record<string, number>,
+    },
     storage: { bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null },
   };
 }
@@ -156,7 +164,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -173,6 +181,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     brain: patch.brain ?? cur.brain,
     model: patch.model ?? cur.model,
     rates: { ...cur.rates, ...(patch.rates ?? {}) },
+    audio: { ...cur.audio, ...(patch.audio ?? {}) },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
   return next;

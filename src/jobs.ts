@@ -232,8 +232,9 @@ export function submit(client: Client, spec0: JobSpec): Job {
     spec.inputs = expanded.value.inputs;
     spec.labels = { ...(spec.labels ?? {}), madeFrom: expanded.used };
   }
-  const tool = getTool(spec.tool ?? '');
+  let tool = getTool(spec.tool ?? '');
   if (!tool) throw new GenError(`Unknown tool: ${spec.tool}`, { status: 404 });
+  const requested = tool.id;
   if (client.role === 'user') {
     if (isInternalOnlyTool(tool.id)) {
       throw new GenError(`Tool ${tool.id} is internal-only and not available for user accounts`, { status: 403 });
@@ -255,7 +256,17 @@ export function submit(client: Client, spec0: JobSpec): Job {
     if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') return getJob(existing.id)!;
     if (existing) db.prepare('UPDATE jobs SET key = NULL WHERE id = ?').run(existing.id);
   }
-  const params = validateParams(tool, spec.params ?? {});
+  let params = validateParams(tool, spec.params ?? {});
+  // A tool may hand the call to another (audio.voice -> the open-model voice tool); the job then runs and is recorded as that tool.
+  const routed = tool.route?.(params);
+  if (routed && routed !== tool.id) {
+    const target = getTool(routed);
+    if (target) {
+      tool = target;
+      params = validateParams(tool, params);
+      spec.labels = { ...(spec.labels ?? {}), requestedTool: requested };
+    }
+  }
   const inputs = resolveInputs(client, tool, spec.inputs ?? {});
   tool.guard?.({ params, inputs, labels: spec.labels });
   if (spec.reuse) {

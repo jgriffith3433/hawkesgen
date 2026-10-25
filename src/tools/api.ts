@@ -7,6 +7,8 @@ import fs from 'node:fs';
 import { speak, soundEffect, designVoice, saveDesignedVoice, dialogue, voiceChange, isolateVoice } from '../providers/elevenlabs.ts';
 import { ask, DEFAULT_MODEL, MODELS, usageOf } from '../providers/anthropic.ts';
 import { GenError, run } from '../util.ts';
+import { voiceOpenParams, referenceInput, sfxExtra, dialogueExtra, designExtra, saveExtra, listExtra, deleteExtra } from '../audio/params.ts';
+import { routeAudio } from '../audio/plan.ts';
 
 export const voiceTool: Tool = {
   id: 'audio.voice',
@@ -15,17 +17,20 @@ export const voiceTool: Tool = {
   description: 'ElevenLabs text to speech with a voice from the account\'s library (GET /v1/providers/elevenlabs/voices). eleven_v3 and eleven_v4 take delivery tags like [sighs] in the text.',
   provider: 'elevenlabs',
   output: 'audio',
-  inputs: {},
+  inputs: { ...referenceInput },
+  route: (p) => routeAudio('voice', p),
   params: {
     text: { type: 'text', required: true },
-    voice: { type: 'string', required: true, description: 'ElevenLabs voice id.' },
+    voice: { type: 'string', description: 'ElevenLabs voice id, or a Gen voice id (gv_..., open models).' },
     model: { type: 'string', default: 'eleven_v4', description: 'eleven_v4, eleven_v3, eleven_multilingual_v2...' },
     format: { type: 'string', default: 'mp3_44100_128', advanced: true },
     settings: { type: 'json', description: 'voice_settings (stability, similarity_boost, style...).', advanced: true },
     count: { type: 'integer', min: 1, max: 4, default: 1, description: 'Takes.' },
+    ...voiceOpenParams,
   },
   async run(ctx) {
     const p = ctx.params;
+    if (!p.voice) throw new GenError('voice is required (an ElevenLabs voice id), or use a Gen voice / provider: "open"');
     for (let i = ctx.done; i < p.count; i++) {
       ctx.step(`take ${i + 1} of ${p.count}`);
       const data = await speak({ text: p.text, voice: p.voice, model: p.model, format: p.format, settings: p.settings }, ctx.signal);
@@ -66,6 +71,7 @@ export const dialogueTool: Tool = {
   provider: 'elevenlabs',
   output: 'audio',
   inputs: {},
+  route: (p) => routeAudio('dialogue', p),
   params: {
     lines: { type: 'json', required: true, description: '[{ "who": "Exit Punk", "text": "[out of breath] I\'m eleven seconds late." }, ...] in order', example: [{ who: 'The Mechanic', text: "You're late." }, { who: 'Exit Punk', text: "[out of breath] I'm eleven seconds late." }] },
     cast: { type: 'json', description: '{ "Exit Punk": "<voice id>", ... } (the product\'s voice file)', example: { 'The Mechanic': 'voice-id', 'Exit Punk': 'voice-id' } },
@@ -73,6 +79,8 @@ export const dialogueTool: Tool = {
     model: { type: 'string', default: 'eleven_v3', advanced: true },
     format: { type: 'string', default: 'mp3_44100_128', advanced: true },
     count: { type: 'integer', min: 1, max: 3, default: 1, description: 'Takes (each a different read)' },
+    ...voiceOpenParams,
+    ...dialogueExtra,
   },
   async run(ctx) {
     const p = ctx.params;
@@ -126,7 +134,9 @@ export const voiceChangeTool: Tool = {
     isolate: { type: 'boolean', default: true, description: 'Take the voice off music, room and effects first' },
     model: { type: 'string', default: 'eleven_multilingual_sts_v2', advanced: true },
     settings: { type: 'json', advanced: true, description: 'voice_settings (stability, similarity_boost, style)' },
+    provider: voiceOpenParams.provider,
   },
+  route: (p) => routeAudio('change', p),
   async run(ctx) {
     const p = ctx.params;
     const video = ctx.inputs.video as string | undefined;
@@ -167,6 +177,7 @@ export const sfxTool: Tool = {
   provider: 'elevenlabs',
   output: 'audio',
   inputs: {},
+  route: (p) => routeAudio('sfx', p),
   params: {
     text: { type: 'text', required: true },
     duration: { type: 'number', min: 0.5, max: 30, description: 'Seconds (empty: the model decides).' },
@@ -175,6 +186,8 @@ export const sfxTool: Tool = {
     model: { type: 'string', default: 'eleven_text_to_sound_v2', advanced: true },
     format: { type: 'string', default: 'mp3_44100_128', advanced: true },
     count: { type: 'integer', min: 1, max: 4, default: 1, description: 'Takes.' },
+    ...voiceOpenParams,
+    ...sfxExtra,
   },
   async run(ctx) {
     const p = ctx.params;
@@ -201,7 +214,10 @@ export const voiceDesignTool: Tool = {
     description: { type: 'text', required: true, description: 'Age, tone, accent, attitude, recording quality.' },
     text: { type: 'text', description: 'What the previews say (100-1000 characters). Empty or shorter: ElevenLabs writes it.' },
     model: { type: 'string', default: 'eleven_ttv_v3', advanced: true },
+    ...designExtra,
+    ...voiceOpenParams,
   },
+  route: (p) => routeAudio('design', p),
   async run(ctx) {
     const p = ctx.params;
     ctx.step('designing voices');
@@ -225,7 +241,9 @@ export const voiceSaveTool: Tool = {
     generatedVoiceId: { type: 'string', required: true },
     name: { type: 'string', required: true, description: 'Name in the voice library, e.g. "Sick Of It - player".' },
     description: { type: 'text', required: true },
+    ...saveExtra,
   },
+  route: (p) => routeAudio('save', p),
   async run(ctx) {
     const p = ctx.params;
     ctx.step('saving the voice');
