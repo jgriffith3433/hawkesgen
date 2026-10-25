@@ -14,7 +14,11 @@ import { AUDIO_MODELS, type AudioModel } from '../../audio/registry.ts';
 import { sha256 } from '../../util.ts';
 
 export const AUDIO_ROOT = '/opt/hawkes-audio';
-export const MIN_FREE_BYTES = 30 * 1024 ** 3;
+const GB = 1024 ** 3;
+/** A venv with torch and the CUDA libraries, and the pip cache while it installs. */
+const VENV_BYTES = 8 * GB;
+const ASR_BYTES = 4 * GB; // faster-whisper + ctranslate2 venv (about 1 GB) and the small model (under 1 GB), with room to spare
+const SLACK_BYTES = 2 * GB;
 export const ASR_ID = 'asr';
 export const ASR_REPO = 'Systran/faster-whisper-small';
 
@@ -24,6 +28,27 @@ export const unitOf = (id: string) => `hawkes-audio-install-${id}`;
 
 /** Models with their own venv (the ones a GPU job runs: not music, which is a ComfyUI workflow). */
 export const installable = (m: AudioModel) => Boolean(m.pip.length) && Boolean(m.weights.length) && !m.blocked;
+
+/** Free disk one component needs to install: its weights (registry sizeGb) plus its venv, not one flat figure for all. */
+export function requiredBytes(id: string): number {
+  if (id === ASR_ID) return ASR_BYTES;
+  const m = AUDIO_MODELS.find((x) => x.id === id);
+  return Math.ceil((m?.sizeGb ?? 20) * GB) + VENV_BYTES + SLACK_BYTES;
+}
+
+/** Packages the models load at run time (Qwen3-TTS shells out to sox). */
+export const SYSTEM_PACKAGES = 'sox libsox-fmt-all';
+
+/** Shell that makes sure sox is there (idempotent, non-interactive); exits 1 with a clear message when apt can't. Runs on every job, as READY servers may predate it. */
+export function soxScript(sudo = 'sudo '): string {
+  const apt = `${sudo}env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600`;
+  return [
+    'if ! command -v sox >/dev/null 2>&1; then',
+    `  (${apt} install -y ${SYSTEM_PACKAGES} >/tmp/audio-sox.log 2>&1 || (${apt} update -y >>/tmp/audio-sox.log 2>&1 && ${apt} install -y ${SYSTEM_PACKAGES} >>/tmp/audio-sox.log 2>&1)) || { echo "could not install sox (apt-get install -y ${SYSTEM_PACKAGES} failed): $(tail -n 3 /tmp/audio-sox.log | tr '\n' ' ')" >&2; exit 1; }`,
+    'fi',
+    'command -v sox >/dev/null 2>&1 || { echo "sox is still missing after apt-get install" >&2; exit 1; }',
+  ].join('\n');
+}
 
 /** The shell that installs one component (a model id, or `asr`). Idempotent. */
 export function installScript(id: string, sudo = 'sudo '): string {
@@ -44,7 +69,7 @@ export function installScript(id: string, sudo = 'sudo '): string {
     `MARK='${mark}'`,
     `if [ "$(cat ${dir}/READY 2>/dev/null || true)" = "$MARK" ]; then echo "audio ready ${id}"; exit 0; fi`,
     `AVAIL=$(df -B1 --output=avail / | tail -1 | tr -d ' ')`,
-    `if [ "$AVAIL" -lt ${MIN_FREE_BYTES} ]; then echo "audio install needs 30 GB free, have $AVAIL bytes" >&2; exit 1; fi`,
+    `if [ "$AVAIL" -lt ${requiredBytes(id)} ]; then echo "audio install of ${id} needs ${(requiredBytes(id) / GB).toFixed(0)} GB free, have $AVAIL bytes" >&2; exit 1; fi`,
     `trap 'rc=$?; if [ $rc -ne 0 ]; then echo "audio install of ${id} failed (exit $rc) at: $BASH_COMMAND" >&2; tail -n 5 /tmp/audio-apt.log >&2 2>/dev/null || true; fi' EXIT`,
     `if ! ${apt} install -y ${pkgs} >/tmp/audio-apt.log 2>&1; then`,
     `  ${apt} update -y >>/tmp/audio-apt.log 2>&1 || true`,
@@ -53,6 +78,7 @@ export function installScript(id: string, sudo = 'sudo '): string {
     `  ${apt} update -y >>/tmp/audio-apt.log 2>&1`,
     `  ${apt} install -y ${pkgs} >>/tmp/audio-apt.log 2>&1`,
     'fi',
+    ...(asr ? [] : [soxScript(sudo)]),
     `${sudo}mkdir -p ${dir} ${AUDIO_ROOT}/hf && ${sudo}chown -R ubuntu:ubuntu ${AUDIO_ROOT}`,
     `export HF_HOME=${AUDIO_ROOT}/hf HF_HUB_ENABLE_HF_TRANSFER=0 PIP_DISABLE_PIP_VERSION_CHECK=1`,
     `if [ -f ${AUDIO_ROOT}/hf/token ]; then export HF_TOKEN="$(cat ${AUDIO_ROOT}/hf/token)"; fi`,

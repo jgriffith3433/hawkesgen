@@ -1137,15 +1137,7 @@ export async function installModels(instanceId: string, models: { dir: string; f
     // never ones this job needs). They download again when a job needs them.
     const need = total + reserve - have.free;
     const keep = new Set([...loadManifest().models.map((m) => `${m.dir}/${m.file}`), ...models.map((m) => `${m.dir}/${m.file}`)]);
-    const used = record(instanceId).modelsUsed ?? {};
-    const candidates = [...have.files.entries()].filter(([f]) => !keep.has(f)).sort((a, b) => (used[a[0]] ?? 0) - (used[b[0]] ?? 0));
-    const remove: string[] = [];
-    let freed = 0;
-    for (const [f, bytes] of candidates) {
-      if (freed >= need) break;
-      remove.push(f);
-      freed += bytes;
-    }
+    const { remove, freed } = planPrune(have.files, keep, record(instanceId).modelsUsed ?? {}, need);
     // Not enough even after pruning: grow the disk when the settings allow it (fleet.maxDiskGb), and keep what's there.
     if (loadSettings().fleet.maxDiskGb && (!loadSettings().fleet.autoPrune || freed < need)) {
       await growDisk(instanceId, need, onProgress);
@@ -1209,6 +1201,45 @@ export function markModelsUsed(instanceId: string, models: { dir: string; file: 
   const used = { ...(rec.modelsUsed ?? {}) };
   for (const m of models) used[`${m.dir}/${m.file}`] = Date.now();
   saveRecord(instanceId, { modelsUsed: used });
+}
+
+/**
+ * Which model files to remove to free `need` bytes: the least recently used first, never the `keep` set.
+ * `freed` is what the listed files add up to (less than `need` when there is not enough to remove).
+ */
+export function planPrune(files: Map<string, number>, keep: Set<string>, used: Record<string, number>, need: number) {
+  const candidates = [...files.entries()].filter(([f]) => !keep.has(f)).sort((a, b) => (used[a[0]] ?? 0) - (used[b[0]] ?? 0));
+  const remove: string[] = [];
+  let freed = 0;
+  for (const [f, bytes] of candidates) {
+    if (freed >= need) break;
+    remove.push(f);
+    freed += bytes;
+  }
+  return { remove, freed };
+}
+
+/** A model used this recently may belong to a job that is running now: never pruned to make room for an install. */
+export const RECENT_MODEL_MS = 30 * 60 * 1000;
+
+/**
+ * Makes sure the server has `needFree` bytes of free disk, removing the models it used least recently when it does not
+ * (settings.fleet.autoPrune). Never a core model, one in `keep`, or one used in the last RECENT_MODEL_MS (a running job
+ * may be reading it). Returns the free bytes afterwards; throws a disk error when it still is not enough.
+ */
+export async function makeRoom(instanceId: string, needFree: number, onProgress: (line: string) => void = () => {}, keep: Iterable<string> = []) {
+  const have = await serverModels(instanceId, { force: true });
+  if (have.free >= needFree) return have.free;
+  const used = record(instanceId).modelsUsed ?? {};
+  const protect = new Set([...loadManifest().models.map((m) => `${m.dir}/${m.file}`), ...keep, ...Object.entries(used).filter(([, at]) => Date.now() - at < RECENT_MODEL_MS).map(([f]) => f)]);
+  const { remove, freed } = planPrune(have.files, protect, used, needFree - have.free);
+  const short = () => new GenError(`Server ${instanceId} has ${(have.free / 1e9).toFixed(1)} GB free and the install needs ${(needFree / 1e9).toFixed(1)} GB${loadSettings().fleet.autoPrune ? `; removing models not used lately would free only ${(freed / 1e9).toFixed(1)} GB` : ' (fleet.autoPrune is off)'}. Prune models (fleet models) or use another server.`, { status: 409, kind: 'disk' });
+  if (!loadSettings().fleet.autoPrune || have.free + freed < needFree) throw short();
+  onProgress(`making room: removing ${remove.length} model${remove.length > 1 ? 's' : ''} not used lately (${(freed / 1e9).toFixed(1)} GB)`);
+  await pruneModels(instanceId, remove);
+  const after = await serverModels(instanceId, { force: true });
+  if (after.free < needFree) throw short();
+  return after.free;
 }
 
 /** Deletes model files from a server (re-downloaded when a job needs them again). Never the core models in server/models.json. */
