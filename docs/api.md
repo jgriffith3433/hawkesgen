@@ -110,9 +110,12 @@ sha, levels: [{ level, bytes, w, h | tris, tex, role, sha }] }`, smallest first 
 
 | Route | What |
 |---|---|
-| `GET /v1/storage` | The bucket, how many library files are backed up (and bytes), uploads in flight, failures |
+| `GET /v1/storage` | The bucket, how many library files are backed up (and bytes), uploads in flight (`queued` = `queueLength` waiting + `uploading`), failures |
 | `POST /v1/storage/backfill` | (admin) Queue every file not backed up yet |
+| `POST /v1/storage/metadata` | (admin) `{apply?, limit?, after?}` One batch: objects without the right Content-Type/Cache-Control are counted (dry run) or fixed with CopyObject onto itself; `next` is the cursor. CLI: `hawkesgen storage metadata [--apply]` |
 | `POST /v1/storage/restore` | (admin) Bring back every library file missing on this disk |
+
+Objects carry the asset's Content-Type (HTML and SVG go as `application/octet-stream`) and `Cache-Control: public, max-age=31536000, immutable`. Asset answers and LOD summaries (and each level) carry `inS3`: true when a CDN link to `sha256/<hash>` will work.
 
 On when `settings.storage.bucket` (or `HAWKESGEN_LIBRARY_BUCKET`) is set: each new file is uploaded by content in the
 background, and a missing file comes back from S3 when a job or a download needs it. CLI: `hawkesgen storage

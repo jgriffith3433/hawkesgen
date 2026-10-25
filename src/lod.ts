@@ -32,7 +32,7 @@ import { spawn } from 'node:child_process';
 import { db } from './db.ts';
 import { paths, ROOT, loadSettings } from './config.ts';
 import { getAsset, type Asset } from './library.ts';
-import { backup, forget } from './storage.ts';
+import { backup, forget, inS3 } from './storage.ts';
 import type { Tool } from './tools/types.ts';
 
 /** Bump when the levels made would change: assets made at an older version are redone by the backfill. */
@@ -272,7 +272,7 @@ function saveLevels(a: Asset, rows: { level: number; role?: string | null; mime:
       const bytes = fs.statSync(r.path).size;
       const sha = sha256File(r.path);
       put.run(a.id, r.level, r.role ?? null, r.mime, bytes, r.width ?? null, r.height ?? null, r.triangles ?? null, r.texture ?? null, r.path, sha, Date.now());
-      backup({ sha256: sha, path: r.path, bytes });
+      backup({ sha256: sha, path: r.path, bytes, mime: r.mime });
     }
     db.exec('COMMIT');
   } catch (e) {
@@ -372,7 +372,7 @@ export const assetLodTool: Tool = {
 };
 
 // ------------------------------------------------------------------ reading them
-export type LodLevel = { level: number; bytes: number; w?: number; h?: number; tris?: number; tex?: number; role?: string; sha: string };
+export type LodLevel = { level: number; bytes: number; w?: number; h?: number; tris?: number; tex?: number; role?: string; sha: string; inS3: boolean };
 export type LodSummary = {
   kind: 'image' | 'mesh';
   state: string;
@@ -382,6 +382,8 @@ export type LodSummary = {
   tex?: number;
   bytes: number;
   sha: string;
+  /** The original's file is in the S3 bucket (a CDN link will work). Each level has its own. */
+  inS3: boolean;
   /** Smallest first. */
   levels: LodLevel[];
 };
@@ -397,7 +399,7 @@ export function lodSummaries(ids: string[]): Record<string, LodSummary> {
     for (const a of assets) {
       const kind = MESH_MIME.test(a.mime) ? 'mesh' : 'image';
       out[a.id] = {
-        kind, state: a.state, bytes: a.bytes, sha: a.sha256.slice(0, 16), levels: [],
+        kind, state: a.state, bytes: a.bytes, sha: a.sha256.slice(0, 16), inS3: inS3(a.sha256), levels: [],
         ...(kind === 'image' ? (a.width ? { size: [a.width, a.height] as [number, number] } : {}) : { tris: a.triangles ?? undefined, tex: a.texture ?? undefined }),
       };
     }
@@ -405,8 +407,8 @@ export function lodSummaries(ids: string[]): Record<string, LodSummary> {
       const s = out[r.asset];
       if (!s) continue;
       s.levels.push(s.kind === 'image'
-        ? { level: r.level, bytes: r.bytes, w: r.width, h: r.height, sha: r.sha256.slice(0, 16) }
-        : { level: r.level, bytes: r.bytes, tris: r.triangles, tex: r.texture, role: r.role, sha: r.sha256.slice(0, 16) });
+        ? { level: r.level, bytes: r.bytes, w: r.width, h: r.height, sha: r.sha256.slice(0, 16), inS3: inS3(r.sha256) }
+        : { level: r.level, bytes: r.bytes, tris: r.triangles, tex: r.texture, role: r.role, sha: r.sha256.slice(0, 16), inS3: inS3(r.sha256) });
     }
   }
   return out;

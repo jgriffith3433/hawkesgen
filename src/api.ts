@@ -105,7 +105,7 @@ async function readJson(req: IncomingMessage) {
 /** A library list with each asset's levels of detail inline (src/lod.ts), so callers need no request per asset. */
 function withLods<T extends { items: any[] }>(list: T): T {
   const lods = lodSummaries(list.items.map((a) => a.id));
-  return { ...list, items: list.items.map((a) => (lods[a.id] ? { ...a, lods: lods[a.id] } : a)) };
+  return { ...list, items: list.items.map((a) => ({ ...a, inS3: storage.inS3(a.sha256), ...(lods[a.id] ? { lods: lods[a.id] } : {}) })) };
 }
 
 function serveFile(req: IncomingMessage, res: ServerResponse, file: string, mime = mimeOf(file), extra: Record<string, string> = {}) {
@@ -913,7 +913,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const name = `${a.project}-${a.tool}-${a.id}${lod ? `.lod${lod.level}` : ''}${path.extname(file.path)}`;
         return serveFile(req, res, file.path, file.mime, { ...cache, ...(q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {}) });
       }
-      if (method === 'GET') return send(res, 200, { ...a, lods: lodSummary(a.id) });
+      if (method === 'GET') return send(res, 200, { ...a, inS3: storage.inS3(a.sha256), lods: lodSummary(a.id) });
       if (method === 'PATCH') {
         if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
         return send(res, 200, updateAsset(a.id, await readJson(req)));
@@ -960,6 +960,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (!storage.bucket()) throw new GenError('No bucket: set settings.storage.bucket (or HAWKESGEN_LIBRARY_BUCKET) first', { status: 409 });
       const added = storage.backfill();
       return send(res, 200, { ...storage.status(), added });
+    }
+    if (route === '/v1/storage/metadata' && method === 'POST') {
+      requireRole(client, 'admin');
+      if (!storage.bucket()) throw new GenError('No bucket set', { status: 409 });
+      const b: any = await readJson(req);
+      return send(res, 200, await storage.fixMetadata({ apply: b.apply === true, limit: Math.min(1000, Number(b.limit) || 200), after: String(b.after ?? '') }));
     }
     if (route === '/v1/storage/restore' && method === 'POST') {
       requireRole(client, 'admin');

@@ -144,6 +144,8 @@ render.overview = async () => {
   const [health, jobs, usage] = await Promise.all([api('/health'), loadJobs(), api(`/usage?since=${Date.now() - 30 * 86400000}`)]);
   let fleet = null;
   try { fleet = await api('/fleet'); } catch { /* AWS not set up */ }
+  let st = null;
+  try { st = await api('/storage'); } catch { /* storage status unavailable */ }
   const running = jobs.filter((j) => j.status === 'running').length;
   const queued = jobs.filter((j) => j.status === 'queued').length;
   const ready = fleet?.servers?.filter((s) => s.state === 'running' && s.boot?.stage === 'ready').length ?? 0;
@@ -158,6 +160,8 @@ render.overview = async () => {
     <div class="card"><div class="row spread"><h3>Providers</h3><span class="small muted">v${esc(health.version)}</span></div><div class="row">${prov}</div>
       ${health.elevenlabsBilling?.blocked ? `<p class="small" style="color:var(--bad)">ElevenLabs billing blocked since ${new Date(health.elevenlabsBilling.since).toLocaleTimeString()}: ${esc(health.elevenlabsBilling.message)} The next job probes again at ${new Date(health.elevenlabsBilling.until).toLocaleTimeString()}.</p>` : ''}
       ${fleet?.error ? `<p class="small" style="color:var(--bad)">${esc(fleet.error)}</p>` : ''}</div>
+    ${st?.bucket ? `<div class="card"><div class="row spread"><h3>Library in S3</h3><span class="small muted">${esc(st.bucket)}</span></div>
+      <p class="small">${st.backedUp} of ${st.files} files backed up. ${st.queued ? `<b>${st.queued}</b> waiting to upload (${st.queueLength} in line, ${st.uploading} uploading).` : 'Nothing waiting to upload.'}${st.failures ? ` <span style="color:var(--bad)">${st.failures} failed: ${esc(st.lastError)}</span>` : ''}</p></div>` : ''}
     <div class="card"><div class="row spread"><h3>Recent jobs</h3><button data-go="jobs">All jobs</button></div>
       ${jobs.length ? `<table><thead><tr><th>Status</th><th>Tool</th><th>Project</th><th>Detail</th><th class="num">Out</th><th class="num">Cost</th></tr></thead><tbody>${jobs.slice(0, 12).map(jobRow).join('')}</tbody></table>` : '<div class="empty">No jobs yet. Try a tool in the Tools tab, or call the API from a game.</div>'}</div>`;
   bindRows($('#overview'));

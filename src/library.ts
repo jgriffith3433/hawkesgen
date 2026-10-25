@@ -63,7 +63,7 @@ export function putAsset(a: {
   db.prepare(`INSERT INTO assets (id, job, client, project, tool, kind, mime, path, bytes, sha256, seed, recipe, recipe_key, labels, tags, title, starred, meta, created)
               VALUES (:id, :job, :client, :project, :tool, :kind, :mime, :path, :bytes, :sha256, :seed, :recipe, :recipe_key, :labels, :tags, :title, :starred, :meta, :created)`).run(row);
   // Also to S3 (in the background), so the library survives this disk (src/storage.ts).
-  backup({ sha256: row.sha256, path: file, bytes: row.bytes });
+  backup({ sha256: row.sha256, path: file, bytes: row.bytes, mime });
   return getAsset(assetId)!;
 }
 
