@@ -293,6 +293,8 @@ CREATE TABLE IF NOT EXISTS asset_lod_links (
   asset TEXT NOT NULL REFERENCES assets (id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS asset_lod_links_asset ON asset_lod_links (asset);
+-- A tool's recent finished jobs (jobs.ts recentRunSeconds, the queue's wait estimate): without it each ask scans every job.
+CREATE INDEX IF NOT EXISTS jobs_tool_done ON jobs (tool, status, finished DESC);
 `);
 
 /** Parses the JSON columns of a row. */

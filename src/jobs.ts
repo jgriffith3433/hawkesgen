@@ -914,11 +914,20 @@ function exemptCheck(): (j: { project: string; client: string }) => boolean {
   return (j) => !globs.some((g) => (g.endsWith('*') ? j.project.startsWith(g.slice(0, -1)) : j.project === g)) || roleOf(j.client) !== 'user';
 }
 
-/** Average run time of a tool's recent finished jobs, in seconds (a minute when it has none). */
+/**
+ * Average run time of a tool's recent finished jobs, in seconds (a minute when it has none). Kept a minute per tool:
+ * queuePosition asks once per job ahead on every poll of a queued job, and uncached (before the jobs_tool_done index)
+ * each ask scanned the whole jobs table: Gen's event loop sat blocked 1-3 s at a time (2026-10-25).
+ */
+const runSeconds = new Map<string, { at: number; seconds: number }>();
 function recentRunSeconds(tool: string): number {
+  const hit = runSeconds.get(tool);
+  if (hit && Date.now() - hit.at < 60_000) return hit.seconds;
   const rows = db.prepare("SELECT started, finished FROM jobs WHERE tool = ? AND status = 'done' AND started IS NOT NULL AND finished IS NOT NULL ORDER BY finished DESC LIMIT 20").all(tool) as { started: number; finished: number }[];
   const xs = rows.map((r) => (r.finished - r.started) / 1000).filter((x) => x > 0);
-  return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 60;
+  const seconds = xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 60;
+  runSeconds.set(tool, { at: Date.now(), seconds });
+  return seconds;
 }
 
 export const queue = new Queue();
