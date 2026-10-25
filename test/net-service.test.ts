@@ -207,3 +207,14 @@ test("publish to every room under a prefix, and ask whether a room is open", asy
     assert.equal(none.open, false);
   } finally { await a.leave(); await b.leave(); }
 });
+
+test("the portal's key, narrowed to one customer, issues tickets in that customer's project and no other", async () => {
+  const { createClient } = await import('../src/auth.ts');
+  const { key } = createClient('portal-test', 'user', ['usr_*']);
+  const ask = (project: string, only?: string) => fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(only ? { 'X-Hawkesgen-Project': only } : {}) }, body: JSON.stringify({ project, room: 'lobby', sub: 's', client: { protocols: [3] } }) });
+  const ok = await ask('usr_00000000000000aa', 'usr_00000000000000aa');
+  assert.equal(ok.status, 200);
+  assert.match((await ok.json()).ticket, /^hn1\./);
+  assert.equal((await ask('usr_00000000000000bb', 'usr_00000000000000aa')).status, 403, "another customer's project");
+  assert.equal((await ask('netdemo')).status, 403, 'a project the key has no part in');
+});
