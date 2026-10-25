@@ -362,10 +362,14 @@ test('fallback: auto falls back to ElevenLabs when the open path fails; open doe
   await assert.rejects(() => tool.run(strict.ctx), /not a Gen voice id/);
 });
 
-test('the Python runner and the ASR check at least compile', async () => {
+test('the Python runner and the ASR check at least compile', async (t) => {
   const { spawnSync } = await import('node:child_process');
+  // A real Python: on Windows `python3` is often the Store's placeholder, which fails without running anything.
+  const py = [['python3'], ['py', '-3'], ['python']].find(([cmd, ...a]) => spawnSync(cmd, [...a, '-c', 'import sys; sys.exit(0)']).status === 0);
+  if (!py) return t.skip('no Python here');
+  const [cmd, ...pre] = py;
   for (const f of ['run.py', 'asr.py']) {
-    const r = spawnSync('python3', ['-c', `import ast,sys;ast.parse(open(sys.argv[1]).read())`, path.join(import.meta.dirname, '..', 'post', 'audio', f)]);
+    const r = spawnSync(cmd, [...pre, '-c', `import ast,sys;ast.parse(open(sys.argv[1], encoding='utf-8').read())`, path.join(import.meta.dirname, '..', 'post', 'audio', f)]);
     assert.equal(r.status, 0, String(r.stderr));
   }
 });
