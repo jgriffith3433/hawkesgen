@@ -107,3 +107,12 @@ test('rig install script: python3.11 comes from deadsnakes when apt lacks it, an
   assert.match(s, /ppa:deadsnakes\/ppa/);
   assert.match(s, /rig install failed/);
 });
+
+test('motion install script: python3.11 comes from deadsnakes when apt lacks it, and a failure says where', async () => {
+  const { installScript } = await import('../src/providers/motion/install.ts');
+  const s = installScript();
+  assert.match(s, /ppa:deadsnakes\/ppa/);
+  assert.match(s, /motion install failed/);
+  assert.match(s, /tail -n 5 \/tmp\/motion-apt\.log/);
+  assert.match(fs.readFileSync('src/providers/motion/motion.ts', 'utf8'), /the install printed nothing/);
+});
