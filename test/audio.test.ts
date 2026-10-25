@@ -71,32 +71,49 @@ test('pickModel: capability, verified first, refuses blocked and wrong kind', ()
   assert.throws(() => pickModel('voice', ['speak'], undefined, new Set(), { onlyVerified: true }), /verified/);
 });
 
-test('routing: nothing changes by itself; a Gen voice or a verified model goes open; open and elevenlabs are explicit', () => {
+test('routing: the open suite is the default; ElevenLabs only with provider elevenlabs or an ElevenLabs voice id', () => {
+  const GV = 'gv_0123456789abcdef';
+  for (const verified of [[], ['qwen3-tts', 'moss-soundeffect']]) {
+    saveSettings({ audio: { verified, targetLufs: {} } });
+    // Unset provider: open, verified or not.
+    assert.equal(routeAudio('voice', { text: 'x' }), 'audio.voice-open');
+    assert.equal(routeAudio('voice', { text: 'x', voice: GV }), 'audio.voice-open');
+    assert.equal(routeAudio('sfx', { text: 'boom' }), 'audio.sfx-open');
+    assert.equal(routeAudio('design', { description: 'x' }), 'audio.voice-design-open');
+    assert.equal(routeAudio('save', { generatedVoiceId: GV }), 'audio.voice-save-open');
+    assert.equal(routeAudio('save', { generatedVoiceId: 'abc' }), 'audio.voice-save-open'); // the open tool says what to do
+    assert.equal(routeAudio('delete', { voiceId: GV }), 'audio.voice-delete-open');
+    assert.equal(routeAudio('list', {}), 'audio.voice-list-open');
+    assert.equal(routeAudio('dialogue', { lines: [], cast: { A: GV } }), 'audio.dialogue-open');
+    assert.equal(routeAudio('dialogue', { lines: [{ who: 'A', text: 'x' }] }), 'audio.dialogue-open');
+    // Old content with an ElevenLabs voice id keeps working on ElevenLabs.
+    assert.equal(routeAudio('voice', { text: 'x', voice: '21m00Tcm4TlvDq8ikWAM' }), null);
+    assert.equal(routeAudio('dialogue', { lines: [], cast: { A: GV, B: 'elid' } }), null);
+    // Explicit ElevenLabs.
+    for (const t of ['voice', 'sfx', 'design', 'save', 'delete', 'list', 'dialogue'] as const) assert.equal(routeAudio(t, { provider: 'elevenlabs', voice: GV, voiceId: GV, generatedVoiceId: GV }), null, t);
+    assert.equal(routeAudio('voice', { text: 'x', voice: 'abc', provider: 'open' }), 'audio.voice-open');
+    assert.equal(routeAudio('list', { provider: 'open' }), 'audio.voice-list-open');
+    // voice-change has no open model.
+    assert.equal(routeAudio('change', {}), null);
+    assert.throws(() => routeAudio('change', { provider: 'open' }), /no open model/);
+    assert.throws(() => routeAudio('voice', { provider: 'both' }), /open, elevenlabs or auto/);
+  }
   saveSettings({ audio: { verified: [], targetLufs: {} } });
-  assert.equal(routeAudio('voice', { text: 'x', voice: '21m00Tcm4TlvDq8ikWAM' }), null);
-  assert.equal(routeAudio('voice', { text: 'x', voice: 'gv_0123456789abcdef' }), 'audio.voice-open');
-  assert.equal(routeAudio('voice', { text: 'x', voice: 'gv_0123456789abcdef', provider: 'elevenlabs' }), null);
-  assert.equal(routeAudio('voice', { text: 'x', voice: 'abc', provider: 'open' }), 'audio.voice-open');
-  assert.equal(routeAudio('sfx', { text: 'boom' }), null);
-  assert.equal(routeAudio('sfx', { text: 'boom', provider: 'open' }), 'audio.sfx-open');
-  assert.equal(routeAudio('design', { description: 'x' }), null);
-  assert.equal(routeAudio('save', { generatedVoiceId: 'gv_0123456789abcdef' }), 'audio.voice-save-open');
-  assert.equal(routeAudio('save', { generatedVoiceId: 'abc' }), null);
-  assert.equal(routeAudio('delete', { voiceId: 'gv_0123456789abcdef' }), 'audio.voice-delete-open');
-  assert.equal(routeAudio('list', {}), null);
-  assert.equal(routeAudio('list', { provider: 'open' }), 'audio.voice-list-open');
-  assert.equal(routeAudio('change', {}), null);
-  assert.throws(() => routeAudio('change', { provider: 'open' }), /no open model/);
-  assert.throws(() => routeAudio('voice', { provider: 'both' }), /open, elevenlabs or auto/);
-  // Once a model is verified, auto uses it where a voice is not tied to ElevenLabs.
-  saveSettings({ audio: { verified: ['qwen3-tts', 'moss-soundeffect'], targetLufs: {} } });
-  assert.equal(routeAudio('voice', { text: 'x' }), 'audio.voice-open');
-  assert.equal(routeAudio('voice', { text: 'x', voice: '21m00Tcm4TlvDq8ikWAM' }), null);
-  assert.equal(routeAudio('sfx', { text: 'boom' }), 'audio.sfx-open');
-  assert.equal(routeAudio('design', { description: 'x' }), 'audio.voice-design-open');
-  assert.equal(routeAudio('dialogue', { lines: [], cast: { A: 'gv_0123456789abcdef' } }), 'audio.dialogue-open');
-  assert.equal(routeAudio('dialogue', { lines: [], cast: { A: 'gv_0123456789abcdef', B: 'elid' } }), null);
-  saveSettings({ audio: { verified: [], targetLufs: {} } });
+});
+
+test('the ElevenLabs billing message says how to continue on the open path', async () => {
+  const { BILLING_MESSAGE } = await import('../src/providers/elevenlabs.ts');
+  assert.match(BILLING_MESSAGE, /audio\.voice-clone/);
+  assert.match(BILLING_MESSAGE, /audio\.voice-design/);
+});
+
+test('the plain audio tools describe the open suite first and expose its params', () => {
+  for (const id of ['audio.voice', 'audio.sfx', 'audio.dialogue', 'audio.voice-design']) {
+    const t = getTool(id)!;
+    assert.match(t.description, /open models/i, id);
+    assert.ok(t.description.search(/open models/i) < t.description.search(/ElevenLabs/), `${id}: open first`);
+    for (const k of ['provider', 'openModel', 'direction', 'verify']) assert.ok(t.params[k], `${id} has ${k}`);
+  }
 });
 
 test('existing callers: an old audio.voice / audio.sfx call validates to exactly the params it had before (recipes stay current)', () => {

@@ -31,7 +31,7 @@ function multipart(form: Form) {
 // 30 minutes every ElevenLabs call fails at once without reaching ElevenLabs. After that one call goes through as the
 // probe: success clears the block, a payment failure renews it. In memory: a restart starts clean (and probes once).
 export const BILLING_BLOCK_MS = 30 * 60 * 1000;
-export const BILLING_MESSAGE = 'ElevenLabs is blocked by an unpaid invoice; J must pay it. Do not retry.';
+export const BILLING_MESSAGE = 'ElevenLabs is blocked by an unpaid invoice; J must pay it. Do not retry. To continue without it, use the open suite (the default): clone that character\'s existing recording with audio.voice-clone (reference: the clip, referenceText: what it says) and speak with audio.voice voice: gv_..., or design a new voice with audio.voice-design and keep it with audio.voice-save. audio.sfx and audio.music run open too.';
 let billing: { since: number; until: number; detail: string; probing: boolean } | null = null;
 let clock = () => Date.now();
 /** Tests only: a fake clock, and a way to forget the block. */

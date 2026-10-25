@@ -93,16 +93,11 @@ export function targetLufs(project: string, kind: 'voice' | 'sfx' | 'music', ove
   return t[`${project}:${kind}`] ?? t[project] ?? t[`default:${kind}`] ?? t.default ?? null;
 }
 
-/** Tool ids. The shared names route here when a call is for the open path. */
+/** Tool ids. The shared names route here unless a call asks for ElevenLabs. */
 export const OPEN = {
   voice: 'audio.voice-open', sfx: 'audio.sfx-open', dialogue: 'audio.dialogue-open', design: 'audio.voice-design-open',
   save: 'audio.voice-save-open', list: 'audio.voice-list-open', delete: 'audio.voice-delete-open',
 } as const;
-
-const anyVerified = (kind: 'voice' | 'sfx', cap: Capability) => {
-  const v = verifiedModels();
-  return selectable(kind, cap).some((m) => v.has(m.id));
-};
 
 function provider(p: Record<string, any>): Provider {
   const v = p.provider;
@@ -112,33 +107,27 @@ function provider(p: Record<string, any>): Provider {
 }
 
 /**
- * Routes a call on one of the shared audio.* names. open: always the open tool. elevenlabs: stay. auto (the default):
- * the open tool when the call names a Gen voice (gv_...) or needs no voice and a verified open model can do it;
- * an ElevenLabs voice id, or no verified model yet, stays on ElevenLabs. So nothing that runs today changes by itself.
+ * Routes a call on one of the shared audio.* names. The open suite is the default (J, 2026-10-25: ElevenLabs is secondary).
+ * ElevenLabs runs only when the call says provider "elevenlabs", or carries an ElevenLabs voice id (old content: speak and
+ * dialogue). `auto` (provider unset) is the open path; there is no silent fall back to ElevenLabs for the library tools
+ * (list, design, save, delete) or for sound effects. voice-change has no open model yet and stays on ElevenLabs.
  */
 export function routeAudio(tool: 'voice' | 'sfx' | 'dialogue' | 'design' | 'save' | 'list' | 'delete' | 'change', p: Record<string, any>): string | null {
   const prov = provider(p);
   if (tool === 'change') {
-    if (prov === 'open') throw new GenError('audio.voice-change has no open model yet (Chatterbox VC is the candidate); use provider "elevenlabs" or leave it unset');
+    if (prov === 'open') throw new GenError('audio.voice-change has no open model yet (Chatterbox VC is the candidate); it runs on ElevenLabs only: use provider "elevenlabs"');
     return null;
   }
-  if (tool === 'save') return isGenVoiceId(p.generatedVoiceId) ? OPEN.save : null;
-  if (tool === 'delete') return isGenVoiceId(p.voiceId) ? OPEN.delete : null;
-  if (tool === 'list') return prov === 'open' ? OPEN.list : null;
-  if (tool === 'dialogue') {
-    const cast = Object.values((p.cast && typeof p.cast === 'object' ? p.cast : {}) as Record<string, unknown>).concat(Array.isArray(p.lines) ? p.lines.map((l: any) => l?.voice) : []).filter(Boolean);
-    const gen = cast.filter(isGenVoiceId).length;
-    if (prov === 'elevenlabs') return null;
-    if (prov === 'open') return OPEN.dialogue;
-    return gen && gen === cast.length && anyVerified('voice', 'speak') ? OPEN.dialogue : null;
-  }
-  const target = OPEN[tool];
   if (prov === 'elevenlabs') return null;
-  if (prov === 'open') return target;
-  if (tool === 'voice') return isGenVoiceId(p.voice) || (!p.voice && anyVerified('voice', 'speak')) ? target : null;
-  if (tool === 'design') return anyVerified('voice', 'design') ? target : null;
-  if (tool === 'sfx') return anyVerified('sfx', 'sfx') ? target : null;
-  return null;
+  if (prov === 'auto') {
+    // Old content: a call that names an ElevenLabs voice id keeps its ElevenLabs voice.
+    if (tool === 'voice' && p.voice && !isGenVoiceId(p.voice)) return null;
+    if (tool === 'dialogue') {
+      const cast = Object.values((p.cast && typeof p.cast === 'object' ? p.cast : {}) as Record<string, unknown>).concat(Array.isArray(p.lines) ? p.lines.map((l: any) => l?.voice) : []).filter(Boolean);
+      if (cast.some((v) => !isGenVoiceId(v))) return null;
+    }
+  }
+  return OPEN[tool];
 }
 
 export { AUDIO_MODELS };
