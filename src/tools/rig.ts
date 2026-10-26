@@ -169,7 +169,7 @@ export function rigScript(o: { fps: number; frames: number; turntable: boolean }
 
 export const meshRigTool: Tool = {
   id: 'mesh.rig',
-  version: 3,
+  version: 4,
   title: 'Rig and skin a mesh',
   description:
     'Rigs and skins a mesh from mesh.views3d (GLB, or FBX/OBJ). kind humanoid uses Make-It-Animatable, which builds a Mixamo skeleton ' +

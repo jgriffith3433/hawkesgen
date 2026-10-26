@@ -259,7 +259,7 @@ const MIME_EXT: Record<string, string> = { glb: '.glb', fbx: '.fbx', blend: '.bl
 
 export const blenderCharacterTool: Tool = {
   id: 'blender.character',
-  version: 5,
+  version: 6,
   title: '3D character ops in Blender (repair, retopo, bake, multi-view texture, LODs, props, retarget, robots, FBX/GLB)',
   description:
     'Runs a chain of named Blender ops on one 3D character, on a GPU server: import (GLB/FBX/OBJ), report (mesh quality: shards, holes, ' +

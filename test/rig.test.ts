@@ -31,7 +31,7 @@ test('rigScript and turntableSpec: the rig, then the orbit render of the first c
   assert.equal(t.shot.camera.amount, 360);
   assert.equal('animation' in turntableSpec({ ...{ out: 'o', glb: 'r.glb', frames: 9, fps: 24, size: 512, engine: 'cycles', samples: 8 }, clip: null }).shot.characters[0], false);
   const tool = getTool('mesh.rig');
-  assert.ok(tool && tool.family === 'rig' && tool.version === 3 && tool.output === 'mesh');
+  assert.ok(tool && tool.family === 'rig' && tool.version === 4 && tool.output === 'mesh');
   assert.deepEqual(tool!.params.kind.values, ['humanoid', 'auto']);
   assert.equal(tool!.params.keepTextures.default, true);
 });

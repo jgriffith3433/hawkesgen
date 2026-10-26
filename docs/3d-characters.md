@@ -393,7 +393,7 @@ POST /v1/entities/phorigins/pierce/slots/concept/make
 
 ## mesh.rig
 
-`mesh.rig` (version 3, family `rig`) rigs the mesh before `blender.character` sees it. It is not a ComfyUI node and
+`mesh.rig` (version 4, family `rig`) rigs the mesh before `blender.character` sees it. It is not a ComfyUI node and
 it is not on the fleet image. The first job on a server installs two venvs under `/opt/hawkes-rig` (the Blender
 install pattern in `src/providers/rig/install.ts`) and refuses to start unless the disk has 30 GB free.
 
