@@ -2,13 +2,13 @@
 // machine with more than one core, hands each socket to the worker process that owns its room (rooms are pinned to a
 // worker by a hash of the room key, so a room is always in one place and workers never talk to each other).
 //
-// It reports to Gen: a heartbeat every 10 s (players, rooms, load), rooms opening and closing (the directory), and usage
-// every 60 s (player-seconds and bytes per project). Gen is never in the data path: if Gen is unreachable, rooms keep
+// It reports to the Hawkes Net service (net/src/hub.ts): a heartbeat every 10 s (players, rooms, load), rooms opening and closing (the directory), and usage
+// every 60 s (player-seconds and bytes per project). The service is never in the data path: if it is unreachable, rooms keep
 // running and only new tickets wait.
 //
 // Two ways to run it:
-//   standalone   node src/net/node.ts   (a relay box: NET_PORT, NET_NODE_ID, NET_PUBLIC_URL, NET_GEN_URL, NET_GEN_KEY)
-//   inside Gen   src/net/api.ts starts one with the in-process link, serving wss://<gen>/v1/net/ws (beta and small loads)
+//   standalone   node net/src/node.ts   (another relay box: NET_PORT, NET_NODE_ID, NET_PUBLIC_URL, NET_GEN_URL = the Hawkes Net service, NET_GEN_KEY)
+//   in the service   net/src/service.ts startNode: the service's own node, with the in-process link (net/src/hub.ts)
 import crypto from 'node:crypto';
 import http from 'node:http';
 import os from 'node:os';
@@ -25,7 +25,7 @@ import { VERSION } from '../../clients/js/hawkes-net-core.mjs';
 export type NodeRecord = { id: string; url: string; adminUrl: string | null; region: string; status: 'up' | 'draining'; players: number; capacity: number; load: number; rooms: number; version: string; workers: number; embedded: boolean };
 export type UsageRow = { project: string; transport: 'p2p' | 'relay'; test: boolean; playerSeconds: number; bytesOut: number; bytesIn: number; peakRooms: number; peakPlayers: number; skipped: number; slowDrops: number; refused: { full: number; limit: number; ticket: number } };
 
-/** How a node talks to Gen: over HTTP (a relay box) or directly (the node inside Gen). */
+/** How a node talks to the Hawkes Net service: over HTTP (another relay box) or directly (the service's own node). */
 export type GenLink = {
   keys(): Promise<{ kid: string; pub: string }[]>;
   heartbeat(rec: NodeRecord): Promise<void>;

@@ -1,5 +1,5 @@
 [Unit]
-Description=Hawkes Net (net.hawkesgen.com): tickets, the room directory and the relay (src/net/hub.ts)
+Description=Hawkes Net (net.hawkesgen.com): tickets, the room directory and the relay (net/src/hub.ts)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ User=hawkes
 Group=hawkes
 WorkingDirectory=/srv/hawkes/hawkesgen
 EnvironmentFile=/etc/hawkes/net.env
-ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/src/net/hub.ts
+ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/net/src/hub.ts
 Restart=always
 RestartSec=2
 # SIGTERM drains: no new tickets on this node, players move on, the last usage goes to Gen.

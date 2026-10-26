@@ -1,5 +1,5 @@
 // Hawkes Net: the types every later piece builds against (docs/net.md is the design; this file is its exact shapes).
-// Types only: nothing here runs, and nothing imports it yet. The Gen routes (src/net/), the relay service, the page SDK
+// Types only: nothing here runs, and nothing imports it yet. The service's routes (net/src/), the relay service, the page SDK
 // (clients/js/hawkes-net.mjs) and the Unity bridge (com.hawkes.net) each take what they need from here, so a field
 // is named once. When a shape changes, change it here and in docs/net.md together.
 
@@ -139,7 +139,7 @@ export interface TicketPayload {
 /** The ticket on the wire: `hn1.<base64url JSON of TicketPayload>.<base64url Ed25519 signature of "hn1." + that payload>`. */
 export type Ticket = string;
 
-// ------------------------------------------------------------------ Gen routes (src/net/, planned)
+// ------------------------------------------------------------------ The service's routes (net/src/api.ts)
 
 /** POST /v1/net/ticket. With a Gen API key (servers, agents, playtests) or from an allowed origin (a static game's page). */
 export interface TicketRequest {

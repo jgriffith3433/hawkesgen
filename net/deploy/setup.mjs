@@ -1,13 +1,13 @@
 // Sets up (or repairs) the Hawkes Net box over SSH, from J's PC. Idempotent; secrets travel on stdin, never in arguments.
 // The box itself is made by hawkesstudio/deploy/provision-net.mjs (state in hawkesstudio/deploy/.keys/net.json).
 //
-//   node deploy/net/setup.mjs                 the box from that state file, Gen's key for it made if missing
-//   node deploy/net/setup.mjs --host <ip> --key <ssh key>
+//   node net/deploy/setup.mjs                 the box from that state file, Gen's key for it made if missing
+//   node net/deploy/setup.mjs --host <ip> --key <ssh key>
 //
 // What it does: the GitHub token for pulls (from this PC's git credentials, as the other boxes have), the hawkesgen
 // checkout in /srv/hawkes/hawkesgen (Hawkes Net needs no npm packages), /etc/hawkes/net.env with a Gen key for the
 // project "hawkesnet" (made through Gen's API with this PC's owner key the first time), the units (hawkes-net, its pull
-// timer) and Caddy. After this the box deploys itself from main (deploy/net/pull.mjs).
+// timer) and Caddy. After this the box deploys itself from main (net/deploy/pull.mjs).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,7 +20,7 @@ const stateFile = path.resolve(HERE, '..', '..', '..', 'hawkesstudio', 'deploy',
 const st = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : {};
 const host = arg('host') ?? st.ip;
 const key = arg('key') ?? st.key;
-if (!host || !key) throw new Error('usage: node deploy/net/setup.mjs [--host <ip> --key <ssh key>] (or make the box with hawkesstudio/deploy/provision-net.mjs)');
+if (!host || !key) throw new Error('usage: node net/deploy/setup.mjs [--host <ip> --key <ssh key>] (or make the box with hawkesstudio/deploy/provision-net.mjs)');
 const DIR = '/srv/hawkes/hawkesgen';
 const BRANCH = arg('branch') ?? 'main'; // a branch only to try a change before it is on main (the box then follows main)
 const step = (s) => console.log(`[net-setup] ${s}`);
@@ -64,7 +64,7 @@ if (ssh('sudo test -s /etc/hawkes/net.env && echo yes || echo no') !== 'yes') {
   const made = await r.json();
   const vcpu = Number(ssh('nproc')) || 2;
   const envText = [
-    '# Hawkes Net box settings (hawkesgen deploy/net/setup.mjs). The key is a Gen key for the project "hawkesnet".',
+    '# Hawkes Net box settings (hawkesgen net/deploy/setup.mjs). The key is a Gen key for the project "hawkesnet".',
     'NET_PORT=8800', 'NET_HOST=127.0.0.1', 'NET_DATA_DIR=/srv/hawkes/net-data',
     'NET_GEN_URL=https://gen.hawkesgen.com', `NET_GEN_KEY=${made.key}`,
     'NET_PUBLIC_URL=wss://net.hawkesgen.com/v1/net/ws', `NET_WORKERS=${vcpu}`, `NET_CAPACITY=${vcpu * 2000}`, `NET_NODE_ID=net-1`,

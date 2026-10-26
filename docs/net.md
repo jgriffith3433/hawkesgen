@@ -1,22 +1,22 @@
 # Hawkes Net: the design
 
 **Status: built (2026-10-25).** The sections after "What is built" are the design it follows; where the build differs, this
-section says so and wins. Exact shapes: `src/net/types.ts` (the design's types) and the code.
+section says so and wins. Exact shapes: `net/src/types.ts` (the design's types) and the code.
 
 ## What is built (read this first)
 
 | Piece | Where | What |
 |---|---|---|
 | Room core + protocol v3 | `clients/js/hawkes-net-core.mjs` | The room (from the portal's `relay.ts`, same rules), the binary codec (varints, quantized values, deltas, per-stream dictionaries), protocol 2 (JSON) kept, `Track`, snapshot/seed for moving a room. One file: runs in relay nodes and in a p2p host's page. Hot paths use integer slots and keys, not string maps. |
-| Relay node | `src/net/node.ts` (+ `rooms.ts`, `worker.ts`, `ws.ts`, `tickets.ts`, `lag.ts`) | WebSocket server (binary, subprotocol `hawkes-net.v3`), tickets checked offline (Ed25519), rooms pinned to worker processes by a hash of the room key (the primary hands the socket over: `child_process` sendHandle), p2p signal mode, the move to relay on the same sockets, resume tokens (15 s grace), Gen's publish, usage, heartbeat, drain. Runs standalone (`node src/net/node.ts`) or inside Gen. |
-| **The Hawkes Net box** | `src/net/hub.ts`, `deploy/net/` (setup, units, Caddy, self-deploy), `hawkesstudio/deploy/provision-net.mjs` | **Where it runs (J, 2026-10-25: off the control server).** `https://net.hawkesgen.com`: one EC2 instance (c7g.large, Graviton, us-east-1, ~$59/month with disk and IPv4, plus $0.09/GB the relay sends) running everything multiplayer in one service: tickets (the public door and keyed), the directory and signing keys in its own data folder (`/srv/hawkes/net-data`), publish, room info, heartbeats, status, the SDK files at `/sdk/hawkes-net@1.mjs`, and the relay with one worker process per vCPU. Gen does two things for it: checks API keys (`GET /v1/net/whoami`, the box keeps an answer a minute) and takes usage once a minute (`POST /v1/net/usage` with the box's `hawkesnet` key). Caddy in front holds the certificate; no CloudFront. The box deploys itself from main (`deploy/net/pull.mjs`: Hawkes Net's package-free tests on a clean copy, restart with drain, health check, back on failure). More relay boxes: run `node src/net/node.ts` with `NET_GEN_URL=https://net.hawkesgen.com` and a `hawkesnet` key; the directory prefers them for new rooms. Bigger box: `NET_TYPE` in provision-net.mjs (a stop and start). |
-| The node inside Gen | `src/net/service.ts` `startEmbedded`, `src/server.ts` (upgrade at `/v1/net/ws`) | On J's PC and in tests Gen still runs one node itself. On the cloud (`HAWKES_AWS_ROLE`, or `HAWKESGEN_NET_HUB=<url>`) it runs none: its Hawkes Net routes answer with a 308 to the box, except `whoami`, `usage` and the SDK files. `HAWKESGEN_NET_HUB=0` brings the node back into Gen. |
-| Gen's side | `src/net/service.ts`, `api.ts`, `registry.ts`, `net/projects.json` | Tickets (`POST /v1/net/ticket`: a Gen key, or the public door by origin), the directory (`net_nodes`, `net_rooms`: which node holds which room, join order, live counts), node heartbeats, room events, usage into Gen's `usage` table (`provider hawkesnet`, units `player-minute:<transport>` and `gb:<transport>`), publish to a room or every room under `prefix/*`, room info, status, the SDK files at `/sdk/hawkes-net.mjs`. |
+| Relay node | `net/src/node.ts` (+ `rooms.ts`, `worker.ts`, `ws.ts`, `tickets.ts`, `lag.ts`) | WebSocket server (binary, subprotocol `hawkes-net.v3`), tickets checked offline (Ed25519), rooms pinned to worker processes by a hash of the room key (the primary hands the socket over: `child_process` sendHandle), p2p signal mode, the move to relay on the same sockets, resume tokens (15 s grace), the service's publish, usage, heartbeat, drain. Runs inside the service (`net/src/hub.ts`) or standalone on another box (`node net/src/node.ts`). |
+| **The Hawkes Net box** | `net/src/hub.ts`, `net/deploy/` (setup, units, Caddy, self-deploy), `hawkesstudio/deploy/provision-net.mjs` | **Where it runs (J, 2026-10-25: off the control server).** `https://net.hawkesgen.com`: one EC2 instance (c7g.large, Graviton, us-east-1, ~$59/month with disk and IPv4, plus $0.09/GB the relay sends) running everything multiplayer in one service: tickets (the public door and keyed), the directory and signing keys in its own data folder (`/srv/hawkes/net-data`), publish, room info, heartbeats, status, the SDK files at `/sdk/hawkes-net@1.mjs`, and the relay with one worker process per vCPU. Gen does two things for it: checks API keys (`GET /v1/net/whoami`, the box keeps an answer a minute) and takes usage once a minute (`POST /v1/net/usage` with the box's `hawkesnet` key). Caddy in front holds the certificate; no CloudFront. The box deploys itself from main (`net/deploy/pull.mjs`: Hawkes Net's tests (`net/test`, no packages) on a clean copy, restart with drain, health check, back on failure). More relay boxes: run `node net/src/node.ts` with `NET_GEN_URL=https://net.hawkesgen.com` and a `hawkesnet` key; the directory prefers them for new rooms. Bigger box: `NET_TYPE` in provision-net.mjs (a stop and start). |
+| Gen's part | `src/netbridge.ts` | Three things: `GET /v1/net/whoami` (who an API key is, narrowed by `X-Hawkesgen-Project`: the box checks keys with it), `POST /v1/net/usage` (the box's usage into Gen's usage table, provider `hawkesnet`, relay GB at $0.09, peer to peer and test rooms free), and a 308 to the box for everything else under `/v1/net/` and the SDK files. Gen runs no relay and takes no WebSocket upgrades. |
+| The service | `net/src/service.ts`, `api.ts`, `registry.ts`, `store.ts`, `net/projects.json` | Tickets (`POST /v1/net/ticket`: a Gen key, or the public door by origin), the directory (`net_nodes`, `net_rooms` in the service's own `net.db`), node heartbeats, room events, usage handed to Gen, publish to a room or every room under `prefix/*` (and kicks), room info, status, the SDK files at `/sdk/hawkes-net@1.mjs`. Settings are `NET_*` environment variables (`store.ts`). |
 | Client SDK | `clients/js/hawkes-net.mjs` | `join(room, { project, transport, ticket, ... })`: relay (WebSocket), p2p (WebRTC host-star: the host runs the core in its page; players start on the signal route and move onto their link; one stream, one carrier), `auto` (p2p, then the relay without the game noticing), reconnect with resume, exactly-once reliable messages across reconnects and moves, the shared clock (eased, never jumps), `send/on`, `pose/onPose`, `sync.*` (the portal's H.sync: state, action, track, push, onThing, thing, claim, hold, release, mine, holder, clear, onHost), `raw` (an engine with its own logic: hawkesgen.com's `play/net.js`), stats, sleep handling, `pagehide` leave. |
 | Unity WebGL | `clients/unity/com.hawkes.net` | `HawkesNet.Join(room, new HawkesNetOptions { ticketUrl, name })` gives a `HawkesNetRoom`: `OnReady`, `On(kind, (json, from))` / `On<T>`, `Send(kind, data, reliable, to)`, `Pose(position, yawDegrees)` and `Poses` (read once a frame, not one SendMessage per pose), `Peers`, `Host`, `Transport`, `OnTransport`, `OnProblem`, `Migrate`, `Leave`. The web SDK runs in the page (`HawkesNet.jslib` imports it from `/sdk/hawkes-net@1.mjs`); in the Editor `Join` reports `webgl-only`. Test `test/net-unity.test.ts` runs the jslib against the real SDK and node. |
-| Demo page | `dashboard/net.html` (`/net.html`) | Dots in a room: invite link, bots in the same page, "move to the relay", live transport, host, routes, round trip and bandwidth. |
-| Tools | `tools/net-load.mjs`, `tools/net-dev.mjs` | The load test (below) and a scratch Gen with the node in it. |
-| Tests | `test/net-core.test.ts`, `net-node.test.ts`, `net-service.test.ts`, `net-unity.test.ts` | Rules from the portal's relay on both protocols, codec bounds, the measured scene's bytes, flush time, a relay room over real sockets (and with worker processes), refused tickets, resume, p2p signalling and the move to the relay with nothing reliable lost, publish, full rooms, raw mode, usage rows. |
+| Demo page | `net/public/demo.html` (`https://net.hawkesgen.com/`) | Dots in a room: invite link, bots in the same page, "move to the relay", live transport, host, routes, round trip and bandwidth. |
+| Tools | `net/tools/net-load.mjs`, `net/tools/net-dev.mjs` | The load test (below; `--url` tests a real service from outside) and the service on this PC with a scratch data folder. |
+| Tests | `net/test/` (`npm run test:net`; also in `npm test`): `net-core`, `net-node`, `net-service`, `net-hub`, `net-unity`; Gen's bridge `test/netbridge.test.ts` | Rules from the portal's relay on both protocols, codec bounds, the measured scene's bytes, flush time, a relay room over real sockets (and with worker processes), refused tickets, resume, p2p signalling and the move to the relay with nothing reliable lost, publish, full rooms, raw mode, usage rows. |
 
 **Where the build differs from the design below:**
 
@@ -26,7 +26,7 @@ section says so and wins. Exact shapes: `src/net/types.ts` (the design's types) 
   A node behind CloudFront's flat-rate plan (WebSockets included) is still possible later: it only changes the node's URL.
 - **One service key, not one per project.** Gen signs every ticket and publish token with one Ed25519 key (rotated with
   `POST /v1/net/keys/rotate`; the previous stays valid a day). Nodes fetch the public keys every minute.
-- **The node lives in Gen's repo** (`src/net/`), not a separate `hawkesnet/` repo: one CI, one deploy.
+- **Hawkes Net lives in Gen's repo, in its own folder** (`net/`: `src`, `test`, `deploy`, `tools`, `public`, `projects.json`), importing nothing from Gen: one repo, two services. Gen's whole part is `src/netbridge.ts`.
 - **p2p links carry one ordered, reliable data channel** per player (not a second unreliable one yet). Small rooms of
   friends don't feel head-of-line blocking; the explicit-ack baselines for an unreliable channel are the next step.
 - **Signalling is Hawkes's own** (the node's signal mode). The serverless Nostr/tracker driver (Yooba Land's and Dose Of
@@ -53,11 +53,11 @@ section says so and wins. Exact shapes: `src/net/types.ts` (the design's types) 
 **Measured (2026-10-25, J's laptop: Intel Core Ultra 7 155U, Windows 11, Node 24; the load generator on the same machine):**
 
 - Protocol 3 vs 2, the portal's cows scene (100 cows, 3 vehicles, 20 crates, 4 players): **11.4 KB/s vs 55.3 KB/s per player
-  (4.9x smaller)** (`test/net-core.test.ts`).
+  (4.9x smaller)** (`net/test/net-core.test.ts`).
 - A 32-player room's flush with 120 things: 0.42 ms mean.
 - The relay node alone (no workers): 256 players in rooms of 32 with 60 moving things each and avatars at 15 Hz: **0.32
   CPU cores**; 512: 0.54.
-- `tools/net-load.mjs --players 1000 --room 32 --workers 4`: **all connected, none dropped, delivery p50 39 ms / p99 81 ms**
+- `net/tools/net-load.mjs --players 1000 --room 32 --workers 4`: **all connected, none dropped, delivery p50 39 ms / p99 81 ms**
   (including the generators' own queueing), each worker at 250 players: 0.67 CPU, timers late by 27 ms at p99,
   **8.3 KB/s per player**. At 2000 players (500 per worker) on the same laptop the workers saturate (p99 136 ms): plan
   ~250-400 players per worker process on this class of machine; a Linux box with real cores does better. Rerun on the
@@ -83,11 +83,11 @@ const t = net.sync.track({ pos: [0, 1, 2] }); // smooth playback of others' snap
 - **Server sends.** `POST /v1/net/publish { project, room | 'prefix/*', ops | event, by, except }` with a Gen key.
 - **An engine with its own multiplayer logic** passes `onRaw` and sends with `net.raw.send(m)` in the core's message
   shapes (hawkesgen.com's `public/play/net.js` does).
-- **Status.** `GET /v1/net/status` (nodes, rooms per project and transport), `GET /v1/net/nodes`, the demo at `/net.html`.
+- **Status.** `GET /v1/net/status` (nodes, rooms per project and transport), `GET /v1/net/nodes`, the demo at `https://net.hawkesgen.com/`.
 
 ### Running a relay box
 
-`node src/net/node.ts` with `NET_GEN_KEY` (a Gen key whose projects include `hawkesnet`), `NET_NODE_ID`,
+`node net/src/node.ts` with `NET_GEN_KEY` (a Gen key whose projects include `hawkesnet`), `NET_NODE_ID`,
 `NET_PUBLIC_URL` (`wss://<host>/v3`, what tickets name), `NET_ADMIN_URL` (where Gen sends publishes), `NET_PORT`,
 `NET_WORKERS` (default: the cores). TLS in front (Caddy) or a load balancer. It heartbeats to Gen, which then places new
 rooms there (relay boxes before the node inside Gen). SIGTERM drains: players are told to move and Gen places their rooms
@@ -145,7 +145,7 @@ mode* working. The portal's JSON protocol (v2) must keep working for pages alrea
 
 ## 1. The client SDK
 
-`clients/js/hawkes-net.mjs` (plus `.d.ts` from `src/net/types.ts`; synced into products with `bin/hawkesgen-sdk.mjs sync`
+`clients/js/hawkes-net.mjs` (plus `.d.ts` from `net/src/types.ts`; synced into products with `bin/hawkesgen-sdk.mjs sync`
 like the other client files, and bumped through a `NET_VERSION`). Later `com.hawkes.net` for Unity WebGL: a jslib
 bridge the C# side polls, like Yooba Land's `YoobaNet.jslib` and `com.hawkes.analytics`. The C# API mirrors the JS one
 (`HawkesNet.Join`, `Send`, `On`, `State`...). The page SDK is the only implementation of the protocol on the client.
@@ -605,7 +605,7 @@ Each is one change; none is started.
 
 1. **net-core and the codec package**: extract `relay.ts` unchanged in behaviour (tests move with it), add the v3 codec with the byte
    targets and a v1/v2/v3 mixed-room test. Measures the real per-player rate and replaces the "medium" number here.
-2. **Gen: registry, keys, tickets** (`src/net/`, `net/projects.json`, `POST /v1/net/ticket`, `GET /v1/net/keys`, the public-door rules, tests).
+2. **Registry, keys, tickets** (`net/src/`, `net/projects.json`, `POST /v1/net/ticket`, `GET /v1/net/keys`, the public-door rules, tests).
 3. **Gen: directory and usage** (`net_rooms`, `net_nodes`, heartbeat, room events, `POST /v1/net/usage` into `usage`, `settings.net.rates`, a dashboard Net tab, `hawkesgen net status`).
 4. **The relay service** (`hawkesnet/`, the portal's `ws.ts` + `rooms.ts` generalised, signal mode, health, drain) and a load test that sets the
    real capacity per node. Then provisioning: the box, CloudFront Pro, the DNS (needs J's OK: it costs money).

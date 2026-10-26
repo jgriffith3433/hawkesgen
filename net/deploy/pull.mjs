@@ -1,8 +1,8 @@
 // The Hawkes Net box deploys itself (hawkes-net-pull.timer, every 2 minutes): when hawkesgen's main moved and the change
-// touches Hawkes Net (src/net, the SDK, src/config.ts, src/db.ts, src/usage.ts, src/auth.ts, src/util.ts, deploy/net),
-// it runs Hawkes Net's tests on a clean copy of the new commit, fast-forwards, restarts (the relay drains first) and checks
+// touches Hawkes Net (net/, the SDK in clients/js), it runs Hawkes Net's tests (net/test: no packages needed) on a clean
+// copy of the new commit, fast-forwards, restarts (the relay drains first) and checks
 // health; a commit whose tests or health fail is skipped. Other changes are fast-forwarded with no restart.
-// Runs as root. No dependencies.   node deploy/net/pull.mjs [--dry-run]
+// Runs as root. No dependencies.   node net/deploy/pull.mjs [--dry-run]
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -14,7 +14,7 @@ const say = (...a) => console.log('[net-pull]', ...a);
 const git = (...a) => execFileSync('sudo', ['-u', 'hawkes', '-H', 'git', '-C', DIR, ...a], { encoding: 'utf8' }).trim();
 const state = (() => { try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; } })();
 const save = () => { if (!DRY) fs.writeFileSync(STATE, JSON.stringify(state, null, 2)); };
-const NET = /^(src\/net\/|clients\/js\/hawkes-net|src\/(config|db|usage|auth|util)\.ts$|deploy\/net\/|net\/projects\.json$)/;
+const NET = /^(net\/|clients\/js\/hawkes-net)/;
 
 const healthy = async () => {
   for (let i = 0; i < 20; i++) {
@@ -34,8 +34,7 @@ function testedHere(sha) {
   try {
     cleanup();
     git('worktree', 'add', '--detach', '--quiet', wt, sha);
-    // The ones that need no npm packages (the rest load Gen's whole API, which has some; Gen's CI runs those).
-    const tests = fs.readdirSync(path.join(wt, 'test')).filter((f) => /^net-.*\.test\.ts$/.test(f) && !fs.readFileSync(path.join(wt, 'test', f), 'utf8').includes("'../src/api.ts'")).map((f) => `test/${f}`);
+    const tests = fs.readdirSync(path.join(wt, 'net', 'test')).filter((f) => f.endsWith('.test.ts')).map((f) => `net/test/${f}`);
     try {
       execFileSync('sudo', ['-u', 'hawkes', '-H', 'env', '-i', 'PATH=/usr/local/bin:/usr/bin:/bin', 'HOME=/home/hawkes', 'LANG=C.UTF-8', 'CI=1', 'nice', '-n', '19', 'node', '--disable-warning=ExperimentalWarning', '--test', '--test-timeout=120000', ...tests], { cwd: wt, stdio: ['ignore', 'pipe', 'pipe'], timeout: 15 * 60_000, maxBuffer: 64 * 1024 * 1024 });
       state.tested = { sha, ok: true, at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 1000) };

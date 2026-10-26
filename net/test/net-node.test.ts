@@ -1,4 +1,4 @@
-// A Hawkes Net relay node over real sockets (src/net/node.ts, rooms.ts, ws.ts, tickets.ts): tickets checked and
+// A Hawkes Net relay node over real sockets (net/src/node.ts, rooms.ts, ws.ts, tickets.ts): tickets checked and
 // refused, a relay room carrying protocol 3, coming back with a resume token, a p2p room's signal route, the move from
 // p2p to the relay when a room grows, Gen's publish, and the same with worker processes holding the rooms.
 import { test } from 'node:test';
@@ -6,10 +6,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import * as core from '../clients/js/hawkes-net-core.mjs';
-import { NetNode, type GenLink } from '../src/net/node.ts';
-import { newKeyPair, exportPublic, signToken, TICKET_PREFIX, PUBLISH_PREFIX } from '../src/net/tickets.ts';
-import { refuse } from '../src/net/ws.ts';
+import * as core from '../../clients/js/hawkes-net-core.mjs';
+import { NetNode, type GenLink } from '../src/node.ts';
+import { newKeyPair, exportPublic, signToken, TICKET_PREFIX, PUBLISH_PREFIX } from '../src/tickets.ts';
+import { refuse } from '../src/ws.ts';
 
 const K = newKeyPair('ktest');
 const events: any[] = [];

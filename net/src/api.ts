@@ -1,4 +1,4 @@
-// Hawkes Net's HTTP routes in Gen (docs/net.md, docs/api.md "Hawkes Net"):
+// The Hawkes Net service's HTTP routes (docs/net.md, docs/api.md "Hawkes Net"), served by net/src/hub.ts:
 //   POST /v1/net/ticket            a join ticket (a Gen key, or no key from the project's own sites: the public door)
 //   GET  /v1/net/keys              the public keys nodes check tickets with
 //   GET  /v1/net/status            nodes and rooms
@@ -8,23 +8,16 @@
 //   POST /v1/net/nodes/room        a relay node's room opened, moved or closed
 //   POST /v1/net/usage             a relay node's usage for the last minute
 //   POST /v1/net/keys/rotate       a new signing key (owner)
-//   GET  /v1/net/whoami            the calling key (its id, role and projects): how the Hawkes Net box checks keys
-//   GET  /sdk/net.mjs, /sdk/net-core.mjs (and @1): the client SDK, for pages that load it from Gen
-// When the Hawkes Net box serves (service.ts hubUrl: https://net.hawkesgen.com on the cloud), Gen answers its routes with a
-// redirect there, and keeps only whoami, usage (the box's reports land in Gen's usage table) and the SDK files.
+//   GET  /sdk/hawkes-net.mjs, /sdk/hawkes-net-core.mjs (and @1): the client SDK, for pages that load it from here
+// Keys are Gen API keys; how one is checked is set by the server (useKeyCheck: the box asks Gen's /v1/net/whoami).
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { authenticate, canProject, requireRole, type Client } from '../auth.ts';
-import { GenError } from '../util.ts';
+import { canProject, NetError, type Client } from './store.ts';
 import { netProject, originAllowed } from './registry.ts';
 import * as svc from './service.ts';
-
-/** Gen sends Hawkes Net to the box (service.ts hubUrl); the box itself turns this off (hub.ts). */
-let hubOf = () => svc.hubUrl();
-export function serveHere() { hubOf = () => ''; }
 
 const SDK_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'clients', 'js');
 const send = (res: ServerResponse, status: number, body: unknown) => {
@@ -34,21 +27,21 @@ const send = (res: ServerResponse, status: number, body: unknown) => {
 async function readJson(req: IncomingMessage, limit = 256 * 1024) {
   const chunks: Buffer[] = [];
   let n = 0;
-  for await (const c of req) { n += c.length; if (n > limit) throw new GenError('Request body too large', { status: 413 }); chunks.push(c); }
+  for await (const c of req) { n += c.length; if (n > limit) throw new NetError('Request body too large', { status: 413 }); chunks.push(c); }
   const text = Buffer.concat(chunks).toString('utf8');
   if (!text.trim()) return {};
-  try { return JSON.parse(text); } catch { throw new GenError('Body is not valid JSON'); }
+  try { return JSON.parse(text); } catch { throw new NetError('Body is not valid JSON'); }
 }
-/** How a request's key is checked: Gen's own keys here; the Hawkes Net box asks Gen (src/net/hub.ts). */
+/** How a request's key is checked (the box asks Gen: net/src/hub.ts). Unset, no key is accepted. */
 type KeyCheck = (req: IncomingMessage) => Client | null | Promise<Client | null>;
-let checkKey: KeyCheck = authenticate;
+let checkKey: KeyCheck = () => null;
 export function useKeyCheck(fn: KeyCheck) { checkKey = fn; }
 
 /** Nodes report with a key that may act for "hawkesnet" (or an admin key). */
 async function nodeClient(req: IncomingMessage): Promise<Client> {
   const c = await checkKey(req);
-  if (!c) throw new GenError('A node key is needed', { status: 401 });
-  if (!(c.role === 'owner' || c.role === 'admin' || canProject(c, 'hawkesnet'))) throw new GenError('This key is not a Hawkes Net node key', { status: 403 });
+  if (!c) throw new NetError('A node key is needed', { status: 401 });
+  if (!(c.role === 'owner' || c.role === 'admin' || canProject(c, 'hawkesnet'))) throw new NetError('This key is not a Hawkes Net node key', { status: 403 });
   return c;
 }
 
@@ -68,7 +61,7 @@ function sdkFile(name: string) {
 export async function handleNet(req: IncomingMessage, res: ServerResponse, route: string): Promise<void> {
   const method = req.method ?? 'GET';
   try {
-    // The SDK files, for pages that load them from Gen (games may also keep a copy: clients/js/sdk.json).
+    // The SDK files, for pages that load them from here (games may also keep a copy: clients/js/sdk.json).
     // (hawkes-net.mjs imports ./hawkes-net-core.mjs, so both are also served under their own names.)
     const sdk = /^\/sdk\/(net|net-core|hawkes-net|hawkes-net-core)(@1)?\.mjs$/.exec(route);
     if (sdk && (method === 'GET' || method === 'HEAD')) {
@@ -79,26 +72,6 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       return void res.end(method === 'HEAD' ? undefined : f.body);
     }
 
-    // The calling key, for the Hawkes Net box (it checks keys with Gen and keeps the answer a minute).
-    if (route === '/v1/net/whoami' && method === 'GET') {
-      const c = await checkKey(req);
-      if (!c) return send(res, 401, { error: 'Unknown or disabled API key' });
-      return send(res, 200, { client: { id: c.id, name: c.name, role: c.role, projects: c.projects } });
-    }
-    // The Hawkes Net box serves everything else (tickets, the directory, publish, nodes): a redirect there, keeping the
-    // method and body (308). A browser's preflight is answered here so its redirected request may follow.
-    const hub = hubOf();
-    if (hub && route !== '/v1/net/usage') {
-      if (method === 'OPTIONS') {
-        res.setHeader('Access-Control-Allow-Origin', String(req.headers.origin ?? '*'));
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Hawkesgen-Key, X-Hawkes-Client, X-Hawkesgen-Project');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        return void res.writeHead(204).end();
-      }
-      const url = new URL(req.url ?? route, 'http://x');
-      res.writeHead(308, { Location: `${hub}${route}${url.search}`, 'Access-Control-Allow-Origin': String(req.headers.origin ?? '*'), 'Cache-Control': 'no-store' });
-      return void res.end();
-    }
     if (route === '/v1/net/ticket') {
       // CORS for the public door: the project's own sites (checked again on the request, by project) and localhost.
       const origin = String(req.headers.origin ?? '');
@@ -115,8 +88,7 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       const hasKey = Boolean(req.headers.authorization || req.headers['x-hawkesgen-key']);
       const client = await checkKey(req);
       if (hasKey && !client) return send(res, 401, { error: 'Unknown or disabled API key' });
-      // A browser page with no key goes through the public door (its origin), even on this machine; a program on this
-      // machine with no key and no origin (a bot, a test) is the local owner.
+      // A browser page with no key goes through the public door (its origin); everything else needs a key.
       const viaDoor = !hasKey && Boolean(origin);
       const auth = svc.ticketAuth(req, viaDoor ? null : client);
       if (viaDoor && !originAllowed(netProject(String(body.project ?? '')), origin)) return send(res, 403, { error: 'This site may not ask for tickets for that project' });
@@ -144,17 +116,17 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
     }
     if (route === '/v1/net/nodes/heartbeat' && method === 'POST') return send(res, 200, svc.heartbeat(await readJson(req), await nodeClient(req)));
     if (route === '/v1/net/nodes/room' && method === 'POST') { await nodeClient(req); return send(res, 200, svc.roomEvent(await readJson(req))); }
-    if (route === '/v1/net/usage' && method === 'POST') { const c = await nodeClient(req); return send(res, 200, svc.recordNetUsage(await readJson(req, 4 * 1024 * 1024), c)); }
+    if (route === '/v1/net/usage' && method === 'POST') { await nodeClient(req); return send(res, 200, svc.recordNetUsage(await readJson(req, 4 * 1024 * 1024))); }
     if (route === '/v1/net/keys/rotate' && method === 'POST') {
       const c = await checkKey(req);
       if (!c) return send(res, 401, { error: 'A key is needed' });
-      requireRole(c, 'owner');
+      if (c.role !== 'owner') throw new NetError('Only an owner key may rotate the signing keys', { status: 403 });
       return send(res, 200, { keys: svc.rotateKeys() });
     }
     if (route === '/v1/net/nodes' && method === 'GET') { res.setHeader('Access-Control-Allow-Origin', '*'); return send(res, 200, { nodes: svc.status().nodes }); }
     return send(res, 404, { error: 'Not found' });
   } catch (e: any) {
-    if (e instanceof GenError) return send(res, (e as any).status ?? 400, { error: e.message });
+    if (e instanceof NetError) return send(res, (e as any).status ?? 400, { error: e.message });
     console.error('[net]', e);
     return send(res, 500, { error: String(e?.message ?? e) });
   }

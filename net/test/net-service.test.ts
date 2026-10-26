@@ -1,35 +1,17 @@
-// Hawkes Net end to end in Gen: tickets from POST /v1/net/ticket, the node Gen runs itself (wss://<gen>/v1/net/ws), and
-// the client SDK (clients/js/hawkes-net.mjs) in Node: a relay room (messages, avatars, things, ownership, synced states,
-// actions), an 'auto' room that starts peer to peer on the signal route and moves to the relay when it grows (with no
-// reliable message lost or repeated), the public ticket door, Gen's publish, and usage in Gen's usage table.
+// The Hawkes Net service end to end (net/src/hub.ts in this process): tickets from POST /v1/net/ticket, the service's own
+// relay node (ws://<service>/v1/net/ws), and the client SDK (clients/js/hawkes-net.mjs) in Node: a relay room (messages,
+// avatars, things, ownership, synced states, actions), an 'auto' room that starts peer to peer on the signal route and
+// moves to the relay when it grows (with no reliable message lost or repeated), the public ticket door, publish, kicks,
+// and usage handed on (the box sends it to Gen).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import http from 'node:http';
 
-process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-net-'));
-process.env.HAWKESGEN_NET_WORKERS = '0';
-const { handle } = await import('../src/api.ts');
-const svc = await import('../src/net/service.ts');
-const { refuse } = await import('../src/net/ws.ts');
-const { usageSummary } = await import('../src/usage.ts');
+const { startTestHub, addKey } = await import('./helper.ts');
 // @ts-ignore: plain JS SDK
-const { join } = await import('../clients/js/hawkes-net.mjs');
-
-const server = http.createServer((req, res) => handle(req, res).catch((e) => { res.writeHead(500); res.end(String(e)); }));
-server.on('upgrade', (req, socket, head) => {
-  if (new URL(req.url ?? '/', 'http://x').pathname !== '/v1/net/ws') return refuse(socket, 404, 'no');
-  svc.embeddedNode()!.upgrade(req, socket, head);
-});
-await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
-const port = (server.address() as any).port;
-const endpoint = `http://127.0.0.1:${port}`;
-await svc.startEmbedded();
-for (let i = 0; i < 50 && !svc.status().up; i++) await new Promise((r) => setTimeout(r, 50));
-
-test.after(async () => { await svc.stopEmbedded(); server.closeAllConnections(); server.close(); });
+const { join } = await import('../../clients/js/hawkes-net.mjs');
+const hub = await startTestHub();
+const { endpoint, svc } = hub;
+test.after(async () => { await hub.stop(); });
 
 const wait = async (pred: () => any, ms = 4000, what = 'condition') => {
   const until = Date.now() + ms;
@@ -37,7 +19,7 @@ const wait = async (pred: () => any, ms = 4000, what = 'condition') => {
 };
 const opts = (o: any = {}) => ({ project: 'netdemo', endpoint, leaveOnHide: false, log: false, ...o });
 
-test('the node inside Gen is up, and Gen hands out tickets for it', async () => {
+test('the service is up with its own relay node, and hands out tickets for it', async () => {
   const st = svc.status();
   assert.ok(st.up, 'a node is up');
   const r = await fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', body: JSON.stringify({ project: 'netdemo', room: 'tk', sub: 'x', client: { sdk: '1', protocols: [3] } }) }).then((x) => x.json());
@@ -137,7 +119,7 @@ test("'auto': peer to peer on the signal route, then the relay when a third join
   } finally { await a.leave(); await b.leave(); }
 });
 
-test("Gen's publish puts a server's world edit into the room", async () => {
+test("publish puts a server's world edit into the room", async () => {
   const a = await join('pub1', opts({ transport: 'relay' }));
   try {
     let ops: any = null;
@@ -150,16 +132,16 @@ test("Gen's publish puts a server's world edit into the room", async () => {
   } finally { await a.leave(); }
 });
 
-test("usage lands in Gen's usage table: player-minutes and GB per project and transport", async () => {
+test("usage is handed on: player-seconds and bytes per project and transport (the box sends it to Gen)", async () => {
   const a = await join('use1', opts({ transport: 'relay' }));
   const b = await join('use1', opts({ transport: 'relay' }));
   for (let i = 0; i < 30; i++) { a.pose([i, 0, 0], 0); await new Promise((r) => setTimeout(r, 40)); }
   await new Promise((r) => setTimeout(r, 1100));
-  await (svc.embeddedNode() as any).reportUsage();
+  await (svc.ownNode() as any).reportUsage();
   await a.leave(); await b.leave();
-  const rows = usageSummary({ since: 0, by: 'project' }).rows.filter((r: any) => r.grp === 'netdemo' && r.provider === 'hawkesnet');
-  assert.ok(rows.some((r: any) => r.unit === 'player-minute:relay' && r.amount > 0), JSON.stringify(rows));
-  assert.ok(rows.some((r: any) => r.unit === 'gb:relay' && r.amount > 0));
+  const rows = hub.usage.flatMap((u) => u.rows).filter((r: any) => r.project === 'netdemo' && r.transport === 'relay');
+  assert.ok(rows.some((r: any) => r.playerSeconds > 0), JSON.stringify(rows));
+  assert.ok(rows.some((r: any) => r.bytesOut > 0));
 });
 
 test('a full room: the next join is refused with a reason', async () => {
@@ -209,8 +191,7 @@ test("publish to every room under a prefix, and ask whether a room is open", asy
 });
 
 test("the portal's key, narrowed to one customer, issues tickets in that customer's project and no other", async () => {
-  const { createClient } = await import('../src/auth.ts');
-  const { key } = createClient('portal-test', 'user', ['usr_*']);
+  const key = addKey('portal', ['usr_*']);
   const ask = (project: string, only?: string) => fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(only ? { 'X-Hawkesgen-Project': only } : {}) }, body: JSON.stringify({ project, room: 'lobby', sub: 's', client: { protocols: [3] } }) });
   const ok = await ask('usr_00000000000000aa', 'usr_00000000000000aa');
   assert.equal(ok.status, 200);
@@ -219,7 +200,7 @@ test("the portal's key, narrowed to one customer, issues tickets in that custome
   assert.equal((await ask('netdemo')).status, 403, 'a project the key has no part in');
 });
 
-test("Gen's publish can put people out of a room: everyone, or those who joined as one sub; they don't come back", async () => {
+test("publish can put people out of a room: everyone, or those who joined as one sub; they don't come back", async () => {
   const a = await join('kick1', opts({ name: 'Ada', transport: 'relay', sub: 'u-ada' }));
   const b = await join('kick1', opts({ name: 'Bo', transport: 'relay', sub: 'u-bo' }));
   try {
@@ -237,14 +218,12 @@ test("Gen's publish can put people out of a room: everyone, or those who joined 
   } finally { await a.leave(); await b.leave(); }
 });
 
-test("the portal's rooms have no keyless door, and localhost is a door only where Gen is open to its own machine", async () => {
+test("the portal's rooms have no keyless door, and localhost is a door only where NET_TRUST_LOCALHOST says so", async () => {
   const r = await fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Origin: 'https://hawkesgen.com', 'Content-Type': 'application/json' }, body: JSON.stringify({ project: 'hawkesgenwebsite', room: 'g/g_x/edit', client: { protocols: [3] } }) });
   assert.equal(r.status, 403, 'an Origin header can be set by anyone: the portal asks with its key');
-  const { originAllowed, netProject } = await import('../src/net/registry.ts');
-  const { loadSettings, saveSettings } = await import('../src/config.ts');
-  assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), true, 'on this machine');
-  const was = loadSettings();
-  saveSettings({ ...was, localOpen: false });
-  try { assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), false, 'on the server: anyone can say localhost'); }
-  finally { saveSettings(was); }
+  const { originAllowed, netProject } = await import('../src/registry.ts');
+  assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), true, 'on a developer machine');
+  process.env.NET_TRUST_LOCALHOST = '0';
+  try { assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), false, 'on the box: anyone can say localhost'); }
+  finally { process.env.NET_TRUST_LOCALHOST = '1'; }
 });

@@ -4,5 +4,5 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/deploy/net/pull.mjs
+ExecStart=/usr/bin/node /srv/hawkes/hawkesgen/net/deploy/pull.mjs
 TimeoutStartSec=20min

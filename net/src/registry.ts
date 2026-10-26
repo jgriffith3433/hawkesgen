@@ -4,13 +4,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_LIMITS, DEFAULT_INTEREST } from '../../clients/js/hawkes-net-core.mjs';
-import { loadSettings } from '../config.ts';
+import { trustLocalhost } from './store.ts';
 
 export type RoomConfig = { topology: 'star' | 'pair'; profile: 'light' | 'medium' | 'heavy'; maxPlayers: number; p2pMax: number; interest: any; quant?: Record<string, number>; sendHz?: number };
 export type Limits = { rooms: number; playersPerRoom: number; players: number; downBytesPerSec: number; upBytesPerSec: number; msgsPerSec: number; innerPerSec: number; messageBytes: number; ents: number; states: number; egressBytesPerSec: number; monthlyBytes: number };
 export type NetProject = { id: string; name: string; origins: string[]; keyProjects: string[]; transports: ('p2p' | 'relay')[]; signal: string; defaults: RoomConfig; limits: Limits; testPrefix: string; listed: boolean };
 
-const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'net', 'projects.json');
+const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'projects.json');
 const BASE_LIMITS: Limits = { rooms: 200, players: 2000, egressBytesPerSec: 5 * 1024 * 1024, monthlyBytes: 5e12, ...DEFAULT_LIMITS } as Limits;
 const BASE_CONFIG: RoomConfig = { topology: 'star', profile: 'medium', maxPlayers: 64, p2pMax: 8, interest: DEFAULT_INTEREST };
 
@@ -46,14 +46,14 @@ export function netProject(id: string): NetProject {
 }
 export const listedProjects = () => Object.keys(read().projects ?? {});
 
-/** May this origin ask for player tickets with no key? (The project's origins, or, on a Gen open to its own machine
- *  (settings.localOpen: J's PC, never the server), localhost on any port.) An Origin header is only a browser's word:
+/** May this origin ask for player tickets with no key? (The project's origins, or, where NET_TRUST_LOCALHOST=1 (a
+ *  developer's machine, never the box), localhost on any port.) An Origin header is only a browser's word:
  *  anything outside a browser can send any, so the door gives only player tickets, limited per address, and a project
  *  whose rooms need more (the portal's editor rooms) lists no origins and asks with its key. */
 export function originAllowed(p: NetProject, origin: string) {
   const o = clean(origin);
   if (!o) return false;
-  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(o)) return loadSettings().localOpen;
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(o)) return trustLocalhost();
   return p.origins.includes(o);
 }
 

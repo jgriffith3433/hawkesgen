@@ -1,4 +1,4 @@
-// One worker process of a relay node (src/net/node.ts): it holds the rooms whose key hashes to it, and gets their sockets
+// One worker process of a relay node (net/src/node.ts): it holds the rooms whose key hashes to it, and gets their sockets
 // from the primary (child_process sendHandle). Everything a room does happens here.
 import { Rooms } from './rooms.ts';
 import { importPublic } from './tickets.ts';

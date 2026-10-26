@@ -20,7 +20,7 @@
     },
     "netdemo": {
       "name": "Hawkes Net demo",
-      "origins": ["https://gen.hawkesgen.com", "https://hawkesgen.com", "https://www.hawkesgen.com", "https://hawkesgenwebsite.hawkesgen.com"],
+      "origins": ["https://net.hawkesgen.com", "https://gen.hawkesgen.com", "https://hawkesgen.com", "https://www.hawkesgen.com", "https://hawkesgenwebsite.hawkesgen.com"],
       "defaults": { "topology": "star", "profile": "light", "maxPlayers": 64, "p2pMax": 8 },
       "limits": { "rooms": 500, "players": 5000 }
     },

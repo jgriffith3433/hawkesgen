@@ -3,7 +3,7 @@
 // where protocol 2 and 3 pages play together, and the bytes a player gets in the portal's measured scene.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as core from '../clients/js/hawkes-net-core.mjs';
+import * as core from '../../clients/js/hawkes-net-core.mjs';
 
 type Got = { frames: any[]; codec: any; v: number };
 

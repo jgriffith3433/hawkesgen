@@ -1,8 +1,8 @@
 // Hawkes Net load test: how many players one relay node holds (docs/net.md "Hosting").
 //
-//   node tools/net-load.mjs --players 2000 --room 32 --workers 4 --seconds 30
+//   node net/tools/net-load.mjs --players 2000 --room 32 --workers 4 --seconds 30
 //
-// Starts a relay node here (src/net/node.ts with N worker processes and a test key) unless --url is given, then
+// Starts a relay node here (net/src/node.ts with N worker processes and a test key) unless --url is given, then
 // simulated players in separate generator processes (so the generator isn't what's measured), in rooms of --room.
 // Every player sends its avatar 15 times a second; each room's first player also simulates --things moving things at
 // 10 a second (the portal's measured scene is ~120). Reports delivery latency (p50/p99/max), dropped connections,
@@ -29,10 +29,10 @@ async function main() {
   const things = Number(args.things ?? 60);
   const procs = Number(args.procs ?? Math.max(2, Math.min(8, os.availableParallelism() - workers)));
   const ramp = Number(args.ramp ?? 10);
-  const core = await import('../clients/js/hawkes-net-core.mjs');
+  const core = await import('../../clients/js/hawkes-net-core.mjs');
   if (args.url) return remote({ players, roomSize, seconds, things, procs, ramp });
-  const { NetNode } = await import('../src/net/node.ts');
-  const T = await import('../src/net/tickets.ts');
+  const { NetNode } = await import('../src/node.ts');
+  const T = await import('../src/tickets.ts');
   const key = T.newKeyPair('kload');
   const link = { keys: async () => [{ kid: key.kid, pub: T.exportPublic(key.publicKey) }], heartbeat: async () => {}, room: async () => {}, usage: async () => {} };
   const node = new NetNode({ id: 'load', url: 'ws://x', link, workers, capacity: 100000, log: () => {} });
@@ -156,7 +156,7 @@ async function remote({ players, roomSize, seconds, things, procs, ramp }) {
 
 // ------------------------------------------------------------------ a generator process: players
 async function child() {
-  const core = await import('../clients/js/hawkes-net-core.mjs');
+  const core = await import('../../clients/js/hawkes-net-core.mjs');
   const job = await new Promise((r) => process.once('message', r));
   const { url, tickets, seconds, ramp, things } = job;
   const lat = [];

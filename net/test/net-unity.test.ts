@@ -1,31 +1,15 @@
 // The Unity package's WebGL bridge (clients/unity/com.hawkes.net/Runtime/Plugins/WebGL/HawkesNet.jslib) run as Unity
-// would run it, with Emscripten's helpers stubbed (UTF8ToString, SendMessage, _malloc), against the real SDK and the node
-// Gen runs itself: join, the ready event with the peers, a peer arriving, messages both ways as JSON, poses read once a
-// frame, leaving. The C# side (HawkesNet.cs) parses exactly these events.
+// would run it, with Emscripten's helpers stubbed (UTF8ToString, SendMessage, _malloc), against the real SDK and the
+// Hawkes Net service (in this process): join, the ready event with the peers, a peer arriving, messages both ways as
+// JSON, poses read once a frame, leaving. The C# side (HawkesNet.cs) parses exactly these events.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import http from 'node:http';
-import { pathToFileURL } from 'node:url';
 
-process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-net-unity-'));
-process.env.HAWKESGEN_NET_WORKERS = '0';
-const { handle } = await import('../src/api.ts');
-const svc = await import('../src/net/service.ts');
-const { refuse } = await import('../src/net/ws.ts');
-
-const server = http.createServer((req, res) => handle(req, res).catch((e) => { res.writeHead(500); res.end(String(e)); }));
-server.on('upgrade', (req, socket, head) => {
-  if (new URL(req.url ?? '/', 'http://x').pathname !== '/v1/net/ws') return refuse(socket, 404, 'no');
-  svc.embeddedNode()!.upgrade(req, socket, head);
-});
-await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
-const endpoint = `http://127.0.0.1:${(server.address() as any).port}`;
-await svc.startEmbedded();
-for (let i = 0; i < 50 && !svc.status().up; i++) await new Promise((r) => setTimeout(r, 50));
-test.after(async () => { for (const h of Object.keys((globalThis as any).__hawkesNet?.rooms ?? {})) lib.HawkesNet_Leave(Number(h)); await svc.stopEmbedded(); server.closeAllConnections(); server.close(); });
+const { startTestHub } = await import('./helper.ts');
+const hub = await startTestHub();
+const endpoint = hub.endpoint;
+test.after(async () => { for (const h of Object.keys((globalThis as any).__hawkesNet?.rooms ?? {})) lib.HawkesNet_Leave(Number(h)); await hub.stop(); });
 
 // Emscripten as Unity's WebGL build gives a jslib: strings are pointers into the heap; here a pointer is an index.
 const heap: (string | null)[] = [null];
@@ -41,7 +25,7 @@ const env = {
   _malloc: () => heap.push(null) - 1,
   stringToUTF8: (s: string, p: number) => { heap[p] = s; },
 };
-const src = fs.readFileSync(new URL('../clients/unity/com.hawkes.net/Runtime/Plugins/WebGL/HawkesNet.jslib', import.meta.url), 'utf8');
+const src = fs.readFileSync(new URL('../../clients/unity/com.hawkes.net/Runtime/Plugins/WebGL/HawkesNet.jslib', import.meta.url), 'utf8');
 new Function(...Object.keys(env), src)(...Object.values(env));
 (globalThis as any).window = globalThis;
 
@@ -49,7 +33,7 @@ const wait = async (pred: () => any, ms = 5000, what = 'condition') => {
   const until = Date.now() + ms;
   for (;;) { const v = pred(); if (v) return v; if (Date.now() > until) throw new Error(`timed out waiting for ${what}`); await new Promise((r) => setTimeout(r, 20)); }
 };
-const sdkUrl = pathToFileURL(path.resolve('clients/js/hawkes-net.mjs')).href;
+const sdkUrl = new URL('../../clients/js/hawkes-net.mjs', import.meta.url).href;
 const opts = (name: string) => JSON.stringify({ project: 'netdemo', endpoint, name, transport: 'relay', sdkUrl, leaveOnHide: false, log: false, ticketUrl: '', role: 'player' });
 
 test('a Unity game joins through the bridge: ready, peers, messages as JSON both ways, poses once a frame, leave', async () => {

@@ -1,5 +1,5 @@
-# The Hawkes Net box (deploy/net/setup.mjs installs it). Players' WebSockets and ticket requests come straight here
-# (no CloudFront: J, 2026-10-25); Caddy holds the certificate and passes everything to src/net/hub.ts on 127.0.0.1:8800.
+# The Hawkes Net box (net/deploy/setup.mjs installs it). Players' WebSockets and ticket requests come straight here
+# (no CloudFront: J, 2026-10-25); Caddy holds the certificate and passes everything to net/src/hub.ts on 127.0.0.1:8800.
 {
 	servers {
 		timeouts {
