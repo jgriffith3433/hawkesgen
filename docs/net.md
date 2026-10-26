@@ -29,8 +29,8 @@ section says so and wins. Exact shapes: `net/src/types.ts` (the design's types) 
 - **Hawkes Net lives in Gen's repo, in its own folder** (`net/`: `src`, `test`, `deploy`, `tools`, `public`, `projects.json`), importing nothing from Gen: one repo, two services. Gen's whole part is `src/netbridge.ts`.
 - **p2p links carry one ordered, reliable data channel** per player (not a second unreliable one yet). Small rooms of
   friends don't feel head-of-line blocking; the explicit-ack baselines for an unreliable channel are the next step.
-- **Signalling is Hawkes's own** (the node's signal mode). The serverless Nostr/tracker driver (Yooba Land's and Dose Of
-  Destruction's way today) is not in the SDK yet; those games keep their own copies until it is.
+- **Signalling is Hawkes's own** (the node's signal mode). The serverless Nostr/tracker driver is not in the SDK; Dose
+  Of Destruction keeps its own copy for its pair rooms. Yooba Land's was deleted when it moved to Hawkes Net.
 - **Hardening (2026-10-25, after a review of the public paths):** numbers are always safe to encode (the varint
   writer clamps NaN, Infinity and anything past 2^53; peers' clock stamps are kept within ten minutes of the room's), a
   value nested past 32 levels goes as null instead of throwing mid-flush, a stream keeps at most 8192 baselines and
@@ -109,7 +109,7 @@ games get the same shape on the JS SDK next). Package `clients/unity/com.hawkes.
 4. **A game with its own network layer** keeps it and puts Hawkes Net under it: Yooba Land's `YoobaHawkesNet` is its
    `YoobaNet.ITransport` on `HawkesNetLobby` (its hundreds of online features unchanged; its bot peers stay in-page
    simulations merged into the room's view; presence keys and tags travel in the room as `~p` messages; other levels'
-   numbers from the public counts). Sick Of It's ghosts use `HawkesNet.Join` directly.
+   numbers from the public counts). Sick Of It's ghosts use `HawkesNet.Join` directly (to move onto `HawkesNetLobby`).
 5. **Ship a copy.** A game built on the cloud build server embeds the package in its own `Packages/` (the server has no Gen
    checkout of its own branch): copy it again when this one changes.
 
@@ -584,7 +584,7 @@ Do not run heavy worlds on p2p and do not run light ones on the relay unless the
 
 | Game | Config | Why |
 |---|---|---|
-| Yooba Land | **On Hawkes Net (J, 2026-10-26: "it's an MMO, everyone is in the same lobby")**: `transport: 'auto'`, one room per area for everyone (`p1/lobby`, `p1/level-1`), profile `light`, `p2pMax: 8`, rooms of 250 then shards (`.2` = neighborhood n2 in the game), `farAvatarM` 150. Its old serverless network (Nostr signalling, WebRTC mesh of 24) stays on the page behind `?net=p2p`. | J's word replaces m_8a95e7a2a215 for Yooba Land. |
+| Yooba Land | **On Hawkes Net (J, 2026-10-26: "it's an MMO, everyone is in the same lobby" and "Always connect to servers")**: `transport: 'relay'` (the project allows only the relay), one room per area for everyone (`p1/lobby`, `p1/level-1`), profile `light`, rooms of 250 then shards (`.2` = neighborhood n2 in the game), `farAvatarM` 60. Its old serverless network (Nostr signalling, WebRTC mesh) is deleted. | J's word replaces m_8a95e7a2a215 for Yooba Land. |
 | Dose Of Destruction | `topology: 'pair'`, `transport: 'p2p'`, `signal: 'serverless'` | Rollback needs the direct link and an unreliable channel; the lobby stays presence beats. DoD's `src/game/net/` becomes thin over the SDK's `nostr` signal driver. |
 | Portal games (`hawkesgenwebsite`) | `transport: 'auto'`, profile `heavy` becoming `medium` on v3, `p2pMax: 4` | Worlds with many moving things; they start p2p for a couple of friends and live on the relay. Their v2 pages keep working through the old URL. |
 | New casual / co-op games | `transport: 'auto'`, profile as measured | The default. |
