@@ -29,6 +29,13 @@
       "origins": ["https://doseofdestruction.com", "https://www.doseofdestruction.com", "https://dod.hawkesgen.com"],
       "defaults": { "topology": "pair", "profile": "light", "maxPlayers": 2, "p2pMax": 2 }
     },
+    "sickofit": {
+      "name": "Sick Of It",
+      "$comment": "The ghost lobby: everyone playing is in one room ('lobby' on sickofitgame.com, 't-lobby' on beta and in playtests; 'lobby-2'... when full). Poses only: the floor rides in z (level x 1000), so other floors are far and come rarely.",
+      "origins": ["https://sickofitgame.com", "https://www.sickofitgame.com", "https://sickofit.hawkesgen.com"],
+      "defaults": { "topology": "star", "profile": "light", "maxPlayers": 1000, "p2pMax": 4 },
+      "limits": { "rooms": 50, "playersPerRoom": 1000, "players": 10000 }
+    },
     "yoobaland": {
       "name": "Yooba Land",
       "origins": ["https://yoobalandgame.com", "https://www.yoobalandgame.com", "https://yoobaland.hawkesgen.com"],
