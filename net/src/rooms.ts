@@ -162,7 +162,7 @@ export class Rooms {
     const L = room.lim;
     return core.newRoom({
       key: room.key, project: room.project, epoch: room.epoch, now, interest: room.cfg.interest === null ? null : room.cfg.interest || undefined, quant: room.cfg.quant,
-      limits: { playersPerRoom: L.playersPerRoom, downBytesPerSec: L.downBytesPerSec, upBytesPerSec: L.upBytesPerSec, msgsPerSec: L.msgsPerSec, innerPerSec: L.innerPerSec, messageBytes: L.messageBytes, ents: L.ents, states: L.states },
+      limits: { playersPerRoom: L.playersPerRoom, downBytesPerSec: L.downBytesPerSec, upBytesPerSec: L.upBytesPerSec, msgsPerSec: L.msgsPerSec, innerPerSec: L.innerPerSec, messageBytes: L.messageBytes, ents: L.ents, states: L.states, ...(L.expressPerSec ? { expressPerSec: L.expressPerSec } : {}) },
     });
   }
   private present(room: Room) { let n = 0; for (const p of room.peers.values()) if (p.role !== 'spectator') n++; return n; }

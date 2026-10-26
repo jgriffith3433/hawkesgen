@@ -28,8 +28,11 @@
     },
     "doseofdestruction": {
       "name": "Dose Of Destruction",
+      "$comment": "A fighting game (docs/net.md 'Express'; DoD docs/online.md): one shared lobby room on the relay ('lobby' on doseofdestruction.com, 't-lobby' on beta and localhost) for presence and the queue, and a pair room per match ('m/<hash>', topology pair) that starts peer to peer (a direct link between the two browsers: the lowest latency) and moves to the relay when they can't link. Inputs go as express frames (rollback netcode). The leaderboard's signed results are records.",
       "origins": ["https://doseofdestruction.com", "https://www.doseofdestruction.com", "https://dod.hawkesgen.com"],
-      "defaults": { "topology": "pair", "profile": "light", "maxPlayers": 2, "p2pMax": 2 }
+      "transports": ["p2p", "relay"],
+      "defaults": { "topology": "star", "profile": "light", "maxPlayers": 1000, "p2pMax": 2 },
+      "limits": { "rooms": 5000, "playersPerRoom": 1000, "players": 10000, "msgsPerSec": 120, "expressPerSec": 300 }
     },
     "sickofit": {
       "name": "Sick Of It",

@@ -13,6 +13,7 @@
 //                                  /<id>/claim (an admin takes a Hawkes game), /<id>/rooms/<room> (who is in it), /kick
 //   GET  /sdk/hawkes-net.mjs, /sdk/hawkes-net-core.mjs (and @1): the client SDK, for pages that load it from here
 //   GET  /sdk/com.hawkes.net.tgz   the Unity package (Package Manager > Add package from tarball)
+//   GET|POST /v1/net/records       a game's public store: signed records by tag (a leaderboard's results)
 // Keys are Gen API keys; how one is checked is set by the server (useKeyCheck: the box asks Gen's /v1/net/whoami).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,6 +25,7 @@ import { netProject, originAllowed } from './registry.ts';
 import * as svc from './service.ts';
 import * as projects from './projects.ts';
 import { packageTarball } from './tarball.ts';
+import * as records from './records.ts';
 
 const SDK_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'clients', 'js');
 const send = (res: ServerResponse, status: number, body: unknown) => {
@@ -112,6 +114,29 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       const auth = svc.ticketAuth(req, viaDoor ? null : client);
       if (!viaDoor && !client) return send(res, 401, { error: 'A Gen API key, or a page on the project\'s own site' });
       return send(res, 200, svc.issueTicket(body, auth));
+    }
+    // Records (records.ts): a game's public store (a leaderboard's signed results). Reads are open to every page; a page
+    // on the project's sites writes without a key (localhost: test records only), a key that may act for it writes too.
+    if (route === '/v1/net/records') {
+      const origin = String(req.headers.origin ?? '');
+      res.setHeader('Access-Control-Allow-Origin', method === 'GET' ? '*' : origin || '*');
+      if (method !== 'GET') { res.setHeader('Vary', 'Origin'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization'); res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS'); }
+      if (method === 'OPTIONS') return void res.writeHead(204).end();
+      const ip = svc.ticketAuth(req, null).ip ?? '?';
+      if (method === 'GET') {
+        svc.doorLimit(`rec-r:${ip}`, 120);
+        const q = new URL(req.url ?? '/', 'http://x').searchParams;
+        return send(res, 200, records.getRecords(String(q.get('project') ?? ''), String(q.get('tag') ?? ''), { since: Number(q.get('since')) || 0, limit: Number(q.get('limit')) || undefined, test: q.get('test') === '1' }));
+      }
+      if (method !== 'POST') return send(res, 405, { error: 'GET or POST' });
+      const body = await readJson(req, 16 * 1024);
+      const hasKey = Boolean(req.headers.authorization);
+      // (As for tickets: a page with an Origin goes through the door; a key, or a developer's own machine, acts as itself.)
+      const c = hasKey || !origin ? await checkKey(req) : null;
+      if (hasKey && !c) return send(res, 401, { error: 'Unknown or disabled API key' });
+      if (c && !svc.keyMayIssue(c, netProject(String(body?.project ?? '')))) return send(res, 403, { error: "This key can't write that project's records" });
+      if (!c) { if (!origin) return send(res, 401, { error: "A key, or a page on the project's own sites" }); svc.doorLimit(`rec-w:${ip}`, 30); }
+      return send(res, 200, records.putRecord(body, c ? null : { origin }));
     }
     if (route === '/v1/net/counts' && (method === 'GET' || method === 'OPTIONS')) {
       // Public numbers (a project with its own sites): any page may read them, so CORS is open.

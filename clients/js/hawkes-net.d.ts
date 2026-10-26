@@ -8,6 +8,8 @@ export declare const protocols: readonly number[];
 export interface Ticket { ticket: string; peer?: string; relayUrl?: string; signalUrl?: string; transports?: string[]; expiresAt?: number; [k: string]: unknown }
 
 export interface RoomConfig {
+  /** 'star' (everyone together, the default) or 'pair' (two players at most: a match). */
+  topology?: 'star' | 'pair';
   /** Up to the project's limit (64 for customers' projects). */
   maxPlayers?: number;
   /** Peer to peer up to this many, then the relay (up to 8). */
@@ -137,9 +139,14 @@ export interface Room {
   /** Your avatar: call it every frame; the newest goes each send. */
   pose(p: [number, number, number] | number[], yaw?: number, extra?: Record<string, unknown> | null): void;
   onPose(fn: (peer: string, state: PoseState, at: number) => void): Off;
+  /** The game's own bytes, now: sent at once, forwarded at once, never queued or resent (between peers on an unordered,
+   *  no-retransmit channel). May be lost or reordered: carry your own frame numbers. At most 1200 bytes. False when
+   *  there's no way out right now. */
+  express(bytes: Uint8Array | ArrayBufferView | ArrayBuffer, opt?: { to?: string }): boolean;
+  onExpress(fn: (bytes: Uint8Array, from: string) => void): Off;
   readonly sync: Sync;
   readonly raw: { send(m: any): void };
-  stats(): { transport: string; protocol: number; seconds: number; upBytes: number; downBytes: number; upMsgs: number; downMsgs: number; rttMs: number | null; clockOffsetMs: number; migrations: number; linkRetries: number; reconnects: number };
+  stats(): { transport: string; protocol: number; seconds: number; upBytes: number; downBytes: number; upMsgs: number; downMsgs: number; expressUp: number; expressDown: number; rttMs: number | null; clockOffsetMs: number; migrations: number; linkRetries: number; reconnects: number };
   /** Asks to move the room to the relay (a game that knows it will grow). */
   migrate(why?: string): void;
   leave(reason?: string): Promise<void>;
@@ -193,6 +200,8 @@ export interface Lobby {
   /** The current room's (dropped while not in one). */
   send(kind: string, data?: unknown, opt?: SendOptions): void;
   pose(p: [number, number, number] | number[], yaw?: number, extra?: Record<string, unknown> | null): void;
+  express(bytes: Uint8Array | ArrayBufferView | ArrayBuffer, opt?: { to?: string }): boolean;
+  onExpress(fn: (bytes: Uint8Array, from: string) => void): Off;
   /** Stays subscribed across rooms. */
   on<T = any>(kind: string, fn: (data: T, from: Peer | null, meta: MessageMeta) => void): Off;
   onPose(fn: (peer: string, state: PoseState, at: number) => void): Off;

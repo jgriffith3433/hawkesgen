@@ -406,3 +406,98 @@ test('the lobby (the standard layer for web games): room names by where the page
     assert.equal(l.status, 'off', 'left: off, and sends are dropped quietly');
   } finally { l.leave(); }
 });
+
+test('express: the game\'s own bytes, forwarded at once on the relay (to everyone or one), not waiting for a bundle', async () => {
+  const a = await join('x-relay', opts({ name: 'Ada', transport: 'relay' }));
+  const b = await join('x-relay', opts({ name: 'Bo', transport: 'relay' }));
+  const c = await join('x-relay', opts({ name: 'Cy', transport: 'relay' }));
+  try {
+    await wait(() => a.peers.size === 2 && b.peers.size === 2 && c.peers.size === 2, 4000, 'three in the room');
+    const gotB: [number[], string][] = [], gotC: [number[], string][] = [];
+    b.onExpress((bytes: Uint8Array, from: string) => gotB.push([[...bytes], from]));
+    c.onExpress((bytes: Uint8Array, from: string) => gotC.push([[...bytes], from]));
+    assert.equal(a.express(new Uint8Array([7, 1, 2, 3])), true);
+    await wait(() => gotB.length && gotC.length, 2000, 'to everyone');
+    assert.deepEqual(gotB[0], [[7, 1, 2, 3], a.id]);
+    assert.deepEqual(gotC[0], [[7, 1, 2, 3], a.id], 'everyone else');
+    a.express(new Uint8Array([9]), { to: b.id });
+    await wait(() => gotB.length === 2, 2000, 'to one');
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(gotC.length, 1, 'only the one it was for');
+    assert.throws(() => a.express(new Uint8Array(1300)), /at most/);
+    // Timing: express against an ordinary unreliable message (which waits for the sender's and the relay's sends).
+    const ex: number[] = [], ev: number[] = [];
+    b.onExpress((bytes: Uint8Array) => { if (bytes[0] === 42) ex.push(performance.now() - t0); });
+    b.on('tick', () => ev.push(performance.now() - t0));
+    let t0 = 0;
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 17 + (i % 3) * 7));
+      t0 = performance.now();
+      a.express(new Uint8Array([42]));
+      await wait(() => ex.length === i + 1, 1000, 'express');
+      t0 = performance.now();
+      a.send('tick', i, { reliable: false });
+      await wait(() => ev.length === i + 1, 1000, 'event');
+    }
+    const med = (v: number[]) => [...v].sort((x, y) => x - y)[v.length >> 1];
+    assert.ok(med(ex) < med(ev), `express ${med(ex).toFixed(1)} ms vs bundled ${med(ev).toFixed(1)} ms (median)`);
+    assert.ok(med(ex) < 15, `express on this machine within 15 ms (median ${med(ex).toFixed(1)} ms)`);
+    assert.ok(a.stats().expressUp >= 14 && b.stats().expressDown >= 14);
+  } finally { await a.leave(); await b.leave(); await c.leave(); }
+});
+
+test('express in a peer to peer room: through the host (the signal route here; an unordered channel between browsers)', async () => {
+  const cfg = { config: { p2pMax: 4, maxPlayers: 4 } };
+  const a = await join('x-p2p', opts({ name: 'Host', transport: 'auto', ...cfg }));
+  const b = await join('x-p2p', opts({ name: 'Two', transport: 'auto', ...cfg }));
+  const c = await join('x-p2p', opts({ name: 'Three', transport: 'auto', ...cfg }));
+  try {
+    await wait(() => a.peers.size === 2 && b.peers.size === 2 && c.peers.size === 2, 6000, 'three in the room');
+    assert.equal(a.transport, 'p2p');
+    const got: Record<string, [number[], string][]> = { a: [], b: [], c: [] };
+    a.onExpress((x: Uint8Array, f: string) => got.a.push([[...x], f]));
+    b.onExpress((x: Uint8Array, f: string) => got.b.push([[...x], f]));
+    c.onExpress((x: Uint8Array, f: string) => got.c.push([[...x], f]));
+    b.express(new Uint8Array([1]));                 // a player: to the host's page, which forwards it
+    await wait(() => got.a.length && got.c.length, 3000, 'a player to everyone');
+    assert.deepEqual(got.a[0], [[1], b.id]);
+    assert.deepEqual(got.c[0], [[1], b.id]);
+    a.express(new Uint8Array([2]), { to: c.id });   // the host: from its own page
+    await wait(() => got.c.length === 2, 3000, 'the host to one');
+    assert.deepEqual(got.c[1], [[2], a.id]);
+    assert.equal(got.b.length, 0, 'nothing to the sender, nothing that was for someone else');
+  } finally { await a.leave(); await b.leave(); await c.leave(); }
+});
+
+test("records: a game's public store (a leaderboard's signed results): its sites write, anyone reads, localhost only test records, the newest per key and author", async () => {
+  const hex = (n: number, c: string) => c.repeat(n);
+  const ev = (o: any = {}) => ({ id: hex(64, 'a'), pubkey: hex(64, 'b'), sig: hex(128, 'c'), created_at: Math.floor(Date.now() / 1000), kind: 30078, tags: [['d', 'hawkes-dod/result/m1'], ['t', 'hawkes-dod/results/global']], content: '{"v":1}', ...o });
+  const put = (origin: string, body: any) => fetch(`${endpoint}/v1/net/records`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const get = (q: string) => fetch(`${endpoint}/v1/net/records?${q}`).then((r) => r.json());
+  const site = 'https://doseofdestruction.com';
+  process.env.NET_TRUST_LOCALHOST = '0';
+  try {
+    assert.equal((await put(site, { project: 'doseofdestruction', event: ev() })).status, 200, 'its site writes');
+    assert.equal((await put('https://evil.example', { project: 'doseofdestruction', event: ev() })).status, 403, 'another site does not');
+    assert.equal((await put('http://localhost:8089', { project: 'doseofdestruction', event: ev() })).status, 403, 'localhost: not live records');
+    assert.equal((await put('http://localhost:8089', { project: 'doseofdestruction', test: true, event: ev({ pubkey: hex(64, 'e') }) })).status, 200, 'localhost: test records');
+    assert.equal((await put(site, { project: 'nobodys-game', event: ev() })).status, 404);
+    assert.equal((await put(site, { project: 'doseofdestruction', event: ev({ tags: [['d', 'x']] }) })).status, 400, 'a tag is needed');
+    assert.equal((await put(site, { project: 'doseofdestruction', event: ev({ content: 'x'.repeat(9000) }) })).status, 413, 'at most 8 KB');
+    assert.equal((await put(site, { project: 'doseofdestruction', event: ev({ sig: 'nope' }) })).status, 400);
+  } finally { process.env.NET_TRUST_LOCALHOST = '1'; }
+  const live = await get('project=doseofdestruction&tag=hawkes-dod/results/global');
+  assert.equal(live.events.length, 1, 'the live record');
+  assert.equal((await get('project=doseofdestruction&tag=hawkes-dod/results/global&test=1')).events.length, 1, 'the test one apart');
+  // The same key and author: a newer one replaces it, an older one doesn't.
+  const t = Math.floor(Date.now() / 1000);
+  await put(site, { project: 'doseofdestruction', event: ev({ created_at: t + 5, content: '{"v":2}' }) });
+  await put(site, { project: 'doseofdestruction', event: ev({ created_at: t - 100, content: '{"v":0}' }) });
+  const after = await get('project=doseofdestruction&tag=hawkes-dod/results/global');
+  assert.deepEqual(after.events.map((e: any) => e.content), ['{"v":2}']);
+  await put(site, { project: 'doseofdestruction', event: ev({ pubkey: hex(64, 'f'), created_at: t + 1 }) });
+  assert.equal((await get('project=doseofdestruction&tag=hawkes-dod/results/global')).events.length, 2, 'another author: another record');
+  assert.equal((await get(`project=doseofdestruction&tag=hawkes-dod/results/global&since=${t + 3}`)).events.length, 1, 'since');
+  const r = await fetch(`${endpoint}/v1/net/records?project=doseofdestruction&tag=hawkes-dod/results/global`);
+  assert.equal(r.headers.get('access-control-allow-origin'), '*', 'any page reads');
+});

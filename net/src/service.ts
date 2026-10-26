@@ -137,7 +137,7 @@ export function keyMayIssue(c: Client, p: NetProject) {
 
 // The public door (no key, by Origin): per address and per project, in memory.
 const doorHits = new Map<string, number[]>();
-function doorLimit(key: string, max: number, ms = 60_000) {
+export function doorLimit(key: string, max: number, ms = 60_000) {
   const now = Date.now();
   const recent = (doorHits.get(key) ?? []).filter((t) => now - t < ms);
   if (recent.length >= max) throw new NetError('Too many tickets; wait a moment', { status: 429 });

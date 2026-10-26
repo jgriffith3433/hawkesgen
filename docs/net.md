@@ -15,6 +15,8 @@ section says so and wins. Exact shapes: `net/src/types.ts` (the design's types) 
 | Client SDK | `clients/js/hawkes-net.mjs` (types: `hawkes-net.d.ts`, served at `/sdk/hawkes-net@1.d.ts`) | `lobby({ project, liveHosts, ... })`: the standard layer for web and Babylon games (below), the same as Unity's `HawkesNetLobby`. `join(room, { project, transport, ticket, ... })`: relay (WebSocket), p2p (WebRTC host-star: the host runs the core in its page; players start on the signal route and move onto their link; one stream, one carrier), `auto` (p2p, then the relay without the game noticing), reconnect with resume, exactly-once reliable messages across reconnects and moves, the shared clock (eased, never jumps), `send/on`, `pose/onPose`, `sync.*` (the portal's H.sync: state, action, track, push, onThing, thing, claim, hold, release, mine, holder, clear, onHost), `raw` (an engine with its own logic: hawkesgen.com's `play/net.js`), stats, sleep handling, `pagehide` leave. |
 | Unity WebGL | `clients/unity/com.hawkes.net` (0.2.0) | The standard Unity layer (below, "Unity: the standard layer"): `HawkesNetLobby` (shared rooms by area, live/beta/playtest names, shards, rejoining, one status), `HawkesNetAvatars` (drop-in avatars), and the room itself, `HawkesNet.Join(room, options)`: `OnReady`, `On(kind, (data, from))` / `On<T>`, `Send` (JSON) and `SendText` (the game's own text, arriving as sent), `Pose(position, yawDegrees, extra)` and `OnPose`/`Poses` (changed poses read once a frame, with their extra values and time), `Peers`, `PeerOrder`, `Order`, `Host`, `Transport`, `OnStatus`, `OnProblem`, `Migrate`, `Leave`, and `HawkesNet.Count(project, rooms, done)` (public counts). The web SDK runs in the page (`HawkesNet.jslib` imports it from `/sdk/hawkes-net@1.mjs`); in the Editor `Join` reports `webgl-only`. Test `net/test/net-unity.test.ts` runs the jslib against the real SDK and service. Adopted by Sick Of It (its ghosts, on `HawkesNetLobby`) and Yooba Land (its whole MMO). 0.2.1 adds the Avatars sample, a changelog and the outside developer's readme (Asset Store shape). |
 | **Projects and accounts** | `net/src/projects.ts` (`net_projects`, `net_tickets`, `net_days`, `net_online`), `registry.ts` (`useProjectRows`), `GET/POST/DELETE /v1/net/projects[/<id>[/claim|/rooms/<room>[/kick]]]`; the portal's `/v1/net/projects` (hawkesgenwebsite `src/hnet.ts`); the dashboard `net/public/dashboard.html` | Every project belongs to a hawkesgen.com account (below, "Projects and accounts"). Nothing is anonymous: no project, no ticket. Each project's page: players online now and over the day, rooms and who is in them (put a player out), the ticket log (made and refused, and why), 30 days of usage. The Unity package downloads from `/sdk/com.hawkes.net.tgz` (`net/src/tarball.ts`). |
+| **Express frames** | `FRAME.express` in `hawkes-net-core.mjs`; `room.express(bytes, { to })`, `room.onExpress(fn)` in the SDK (and on `lobby()`) | For what can't wait (a fighting game's inputs): binary, unreliable, sent at once and forwarded at once, past the 33 ms bundling on both ends. On a p2p link, a second data channel (`hx`, unordered, no retransmits). Below, "Express". |
+| **Records** | `net/src/records.ts`, `GET/POST /v1/net/records` | A small store of signed events per project (a leaderboard's results): the newest per publisher and key kept, read by anyone. Below, "Records". |
 | Demo page | `net/public/demo.html` (`https://net.hawkesgen.com/demo`; the root `/` is the developer dashboard, `net/public/dashboard.html`: docs, and with a hawkesgen.com sign-in your key, rooms and usage, read from the portal, which allows that origin on `/v1/net/me` and `/v1/users/api-key`) | Dots in a room: invite link, bots in the same page, "move to the relay", live transport, host, routes, round trip and bandwidth. |
 | Tools | `net/tools/net-load.mjs`, `net/tools/net-dev.mjs` | The load test (below; `--url` tests a real service from outside) and the service on this PC with a scratch data folder. |
 | Tests | `net/test/` (`npm run test:net`; also in `npm test`): `net-core`, `net-node`, `net-service`, `net-hub`, `net-unity`; Gen's bridge `test/netbridge.test.ts` | Rules from the portal's relay on both protocols, codec bounds, the measured scene's bytes, flush time, a relay room over real sockets (and with worker processes), refused tickets, resume, p2p signalling and the move to the relay with nothing reliable lost, publish, full rooms, raw mode, usage rows. |
@@ -28,10 +30,11 @@ section says so and wins. Exact shapes: `net/src/types.ts` (the design's types) 
 - **One service key, not one per project.** Gen signs every ticket and publish token with one Ed25519 key (rotated with
   `POST /v1/net/keys/rotate`; the previous stays valid a day). Nodes fetch the public keys every minute.
 - **Hawkes Net lives in Gen's repo, in its own folder** (`net/`: `src`, `test`, `deploy`, `tools`, `public`, `projects.json`), importing nothing from Gen: one repo, two services. Gen's whole part is `src/netbridge.ts`.
-- **p2p links carry one ordered, reliable data channel** per player (not a second unreliable one yet). Small rooms of
-  friends don't feel head-of-line blocking; the explicit-ack baselines for an unreliable channel are the next step.
-- **Signalling is Hawkes's own** (the node's signal mode). The serverless Nostr/tracker driver is not in the SDK; Dose
-  Of Destruction keeps its own copy for its pair rooms. Yooba Land's was deleted when it moved to Hawkes Net.
+- **p2p links carry one ordered, reliable data channel** per player for the room's stream, plus an unordered,
+  no-retransmit one (`hx`) for express frames only (2026-10-26). The explicit-ack baselines that would put the stream
+  itself on an unreliable channel are still to do.
+- **Signalling is Hawkes's own** (the node's signal mode). The serverless Nostr/tracker driver is not in the SDK, and
+  no game uses one any more: Yooba Land's was deleted when it moved to Hawkes Net, Dose Of Destruction's on 2026-10-26.
 - **Hardening (2026-10-25, after a review of the public paths):** numbers are always safe to encode (the varint
   writer clamps NaN, Infinity and anything past 2^53; peers' clock stamps are kept within ten minutes of the room's), a
   value nested past 32 levels goes as null instead of throwing mid-flush, a stream keeps at most 8192 baselines and
@@ -91,6 +94,44 @@ const t = net.sync.track({ pos: [0, 1, 2] }); // smooth playback of others' snap
 - **Avatars in a big room.** The relay sends an avatar to a player every bundle within the room's `farAvatarM`, 5 times a
   second within four times that, and once a second past it (`flushOne` in the core): a room of a few hundred spread over a
   map costs little. Avatars are still compared per pair (no grid index yet), which is why Yooba Land's rooms stop at 250.
+
+### Express: frames for what can't wait (J, 2026-10-26)
+
+J, moving Dose Of Destruction: "fighting games need to have low latency and "feel fair" … if this changes things for
+Hawkes Net then that's okay because we want it to be a solution for all types of game modes." The room's stream is
+built for many players and many things: a client flushes every 33 ms and the relay bundles every 33 ms, which is up to
+~66 ms of waiting on top of the network. A rollback fight sends one tiny packet a frame and wants it there now.
+
+- **`room.express(bytes, { to })`** sends a `Uint8Array` (at most 1,200 bytes) as frame type 3: at once, not queued for
+  the flush. **`room.onExpress((bytes, fromId) => ...)`** gets them. `to` is one peer id (or none: everyone in the room).
+- **Unreliable.** Nothing is acked or resent: a lost frame is gone, and the game's own packets must cover it (a rollback
+  packet carries every input the other side hasn't acked). Not part of the stream, the reliable messages or resume.
+- **Relay:** the node forwards an express frame the moment it arrives (`express()` in the core), to `to` or everyone
+  else, with the sender's id, and never bundles it. **p2p:** each player's link gets a second data channel `hx`
+  (`ordered: false, maxRetransmits: 0`), so a lost packet never holds up the next; the host forwards a frame for
+  someone else at once the same way. Before a link is up, or on the signal route, they go through the node.
+- **Limits:** `limits.expressPerSec` per connection (default 240; DoD 300), counted apart from `msgsPerSec`. Over it, frames
+  are dropped, not the connection. Stats: `expressUp`, `expressDown`.
+- **Measured** (DoD's `tools/online-live.test.ts`, two players in one machine, a 60 fps fight): ~2,580 express frames each
+  way in a match, ~13 bytes of inputs each (binary, varints and run lengths, against 85 as JSON), direct and on the relay.
+- **A pair room that moves to the relay** (p2p fails between the two): the new peer list can arrive before the other
+  player's own connection does. The SDK now waits up to 5 s (`MOVE_GRACE_MS`) for a peer missing after a move before
+  calling them gone, so a fight doesn't end as a forfeit on the move.
+
+### Records: a small store of signed events (2026-10-26)
+
+For a static game that keeps something all its players read (Dose Of Destruction's leaderboard: results signed by both
+players, every page building the same Elo table from them). Hawkes Net only stores and serves; checking what a record
+means is the game's job.
+
+- **`POST /v1/net/records { project, test?, event }`**: `event` is a signed event in Nostr's shape (`id`, `pubkey`,
+  `created_at`, `kind`, `tags`, `content`, `sig`; the id and Schnorr signature are checked), at most 8 KB. One record is
+  kept per project, test flag, tag `t`, tag `d` and publisher: a newer one replaces it. From a page on the project's
+  sites (its origin, no key; 30 writes a minute per address) or with a key that may act for the project. localhost
+  (and any test page) writes only test records. 20,000 writes a project a day.
+- **`GET /v1/net/records?project=&tag=&since=&limit=&test=1`**: the tag's records since a time, newest first (up to
+  3,000), CORS open, 120 reads a minute per address.
+- **Test and live apart:** `test: true` records are a separate set, so the beta site never touches the live table.
 
 ### Unity: the standard layer
 
@@ -182,7 +223,7 @@ Three games each built their own network layer, and each is good at one thing:
 |---|---|---|
 | `hawkesgenwebsite` (the portal) `src/relay.ts`, `rooms.ts`, `ws.ts`, `public/play/net.js` | A WebSocket relay. Rooms with no sockets in the logic (`relay.ts` is pure, so tests drive it with a simulated network). The host is the oldest connection, every moving thing has an owner, the relay keeps the newest pose and state copies so joiners and new hosts start from the world as it is. Each connection gets one bundle per 33 ms: reliable things first, then moving things by interest (full rate near, 4/s, 1/s, every 3 s far) in priority order inside a byte budget (96 KB/s), delta-encoded per connection. Clients replay buffered, stamped snapshots a little in the past (`Track`). | Measured (`docs/engine-modules.md` §7): 100 cows, 3 vehicles, crates and 4 players: the host sends ~27 KB/s in ~21 messages/s, **each player gets 26-33 KB/s**. JSON is the cost. The pure core is the thing worth keeping. |
 | `YoobaLand/Docs/Online.md`, `Tools/Web/net/src` | WebRTC peer to peer, no servers: signalling over Nostr relays and WebTorrent trackers, neighborhoods of 24, a reliable and an unreliable channel per link, the "signal route" (messages ride the signalling relays when a direct link fails), bot peers in one page, iOS suspend handling. | Public relays refuse and rate-limit (damus bans, offchain.pub's web of trust, 3.5 events/s per player got three relays swapped out in 80 s; 1 batch/s did not). Without TURN a phone behind a carrier NAT never links, so a fallback route is not optional. Full mesh does not scale: 24 is the cap. A suspended iOS page looks like every peer being lost. Trystero keeps one peer id per page, so it cannot run bot peers. |
-| `doseofdestructionwebsite` `docs/online.md`, `src/game/net/` | Pair rooms (two players, one WebRTC link), rollback netcode over an unreliable channel, lobby as Nostr presence beats only. | A fight needs the shortest path (a direct link) and an unreliable channel. A lobby is presence, not a room. Same-device tabs need 127.0.0.1 ICE copies. |
+| `doseofdestructionwebsite` `docs/online.md`, `src/game/net/` | (Before 2026-10-26; now on Hawkes Net: a relay lobby room, pair rooms p2p first with relay fallback, inputs as express frames, the leaderboard as records.) Pair rooms (two players, one WebRTC link), rollback netcode over an unreliable channel, lobby as Nostr presence beats only. | A fight needs the shortest path (a direct link) and an unreliable channel. A lobby is presence, not a room. Same-device tabs need 127.0.0.1 ICE copies. |
 
 Shared lessons (shared memory): `link-failed is not a bug` (only report a peer lost with no route at all, wait 20 s,
 skip hidden pages and bots); a closed tab sends no bye unless `pagehide` leaves the room; `bot peers cannot share a

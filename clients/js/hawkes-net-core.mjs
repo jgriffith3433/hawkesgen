@@ -181,7 +181,7 @@ export function getValue(r, d, depth = 0) {
 // ===================================================================== protocol 3 frames
 // Byte 0 of every frame: the kind. 0 = a bundle (binary items, below), 1 = hello (JSON), 2 = control (JSON: pings,
 // signalling, migration; things that are rare and need no codec).
-export const FRAME = { bundle: 0, hello: 1, control: 2 };
+export const FRAME = { bundle: 0, hello: 1, control: 2, express: 3 };
 // Bundle items: a one-byte tag, the payload's length, the payload (so an older page skips a tag it doesn't know).
 export const TAG = { me: 1, xf: 2, st: 3, ev: 4, own: 5, join: 6, leave: 7, host: 8, ops: 9, clear: 10, pong: 11, ping: 13 };
 
@@ -458,6 +458,57 @@ export class Codec {
   }
 }
 
+// ------------------------------------------------------------------ express: the game's own bytes, now
+// A frame of its own (byte 0 = FRAME.express) for what can't wait for a bundle: a fighting game's inputs. It is sent the
+// moment the game calls express() and forwarded by the relay (or the p2p host) the moment it arrives, never queued,
+// never resent; between peers it rides an unordered, no-retransmit data channel. The game's bytes go as they are: a
+// payload carries its own frame numbers, so loss and reordering are the game's to handle (rollback netcode does).
+//   [3][flags: 1 from, 2 to][from: uv length + utf8][to: uv length + utf8][the game's bytes]
+export const EXPRESS_MAX = 1200;
+/** Express frames a second from one connection (unless the room's limits say otherwise). */
+export const EXPRESS_PER_SEC = 240;
+/** An express frame: from a page (`to`: one peer) or from the room (`from`: who sent it). */
+export function expressFrame(payload, o = {}) {
+  const bytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+  const from = o.from ? te.encode(String(o.from)) : null;
+  const to = o.to ? te.encode(String(o.to)) : null;
+  const w = new Writer(bytes.length + 32);
+  w.u8(FRAME.express);
+  w.u8((from ? 1 : 0) | (to ? 2 : 0));
+  if (from) { w.uv(from.length); w.raw(from); }
+  if (to) { w.uv(to.length); w.raw(to); }
+  w.raw(bytes);
+  return w.done();
+}
+/** Reads an express frame: { from, to, payload } (payload a view into the frame), or null. */
+export function readExpress(u8) {
+  try {
+    const r = new Reader(u8);
+    if (r.u8() !== FRAME.express) return null;
+    const fl = r.u8();
+    const from = fl & 1 ? r.str() : null;
+    const to = fl & 2 ? r.str() : null;
+    return { from, to, payload: u8.subarray(r.i) };
+  } catch { return null; }
+}
+/** Forwards an express frame from connection c at once: to `to`, or to everyone else in the room. A connection that
+ *  takes express itself (`sendX`: the p2p host's own page, a link's unordered channel) gets it there. */
+function express(room, c, frame, now) {
+  if (frame.length > EXPRESS_MAX + 80) return;
+  const x = readExpress(frame);
+  if (!x) return;
+  const out = expressFrame(x.payload, { from: c.id });
+  const send = (t) => {
+    if (!t.sendX && t.v !== 3) return; // a protocol 2 page can't read it
+    t.stats.outBytes += out.length; t.stats.outMsgs++;
+    room.stats.outBytes += out.length; room.stats.outMsgs++;
+    if (t.out) t.out.tokens = (t.out.tokens ?? 0) - out.length;
+    try { (t.sendX || t.send)(out); } catch { /* closed: its close handler takes it out */ }
+  };
+  if (x.to) { const t = room.conns.get(x.to); if (t && t !== c) send(t); return; }
+  for (const t of room.conns.values()) if (t !== c) send(t);
+}
+
 /** A JSON frame (hello or control): byte 0 the kind, then UTF-8 JSON. */
 export function jsonFrame(kind, obj) {
   const body = te.encode(JSON.stringify(obj));
@@ -603,7 +654,16 @@ export function receive(room, c, frame, now) {
   c.stats.inBytes += size; c.stats.inMsgs++;
   room.stats.inBytes += size; room.stats.inMsgs++;
   if (size > room.limits.messageBytes) return null;
-  if (now - c.rate.at > 1000) { c.rate.at = now; c.rate.n = 0; c.rate.inner = 0; c.rate.bytes = 0; }
+  if (now - c.rate.at > 1000) { c.rate.at = now; c.rate.n = 0; c.rate.inner = 0; c.rate.bytes = 0; c.rate.x = 0; }
+  // Express frames have their own allowance (a 60 fps game sends one a frame on top of everything else).
+  if (typeof frame !== 'string' && frame[0] === FRAME.express) {
+    if ((c.rate.x = (c.rate.x || 0) + 1) > (room.limits.expressPerSec || EXPRESS_PER_SEC)) return null;
+    const before = c.rate.bytes || 0;
+    c.rate.bytes = before + size;
+    if (before > (room.limits.upBytesPerSec || Infinity)) return null;
+    express(room, c, frame, now);
+    return null;
+  }
   if (++c.rate.n > room.limits.msgsPerSec) return null;
   // Bytes a second from one connection (what it sends is forwarded to everyone, so it is everyone's bill).
   // (One message may go past it, so a big world message still passes; the ones after it in that second don't.)

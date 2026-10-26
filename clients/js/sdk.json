@@ -21,6 +21,10 @@
       "src/devtools/hawkesgen/": [
         "hawkesgen.mjs",
         "hawkesgen-ui.mjs"
+      ],
+      "src/game/net/hawkes/": [
+        "hawkes-net.mjs",
+        "hawkes-net-core.mjs"
       ]
     },
     "phoriginswebsite": {
