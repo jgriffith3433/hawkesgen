@@ -2327,6 +2327,17 @@ def weld(obj, H):
     return before - after
 
 
+def smooth_surface(obj):
+    """Smooth shading with no stored normals: a rigger's file comes back flat-shaded (each face its own normals, the
+    vertices split per face), which shows as facets and bakes every facet into a level's normal map."""
+    select([obj], obj)
+    if obj.data.has_custom_normals:
+        bpy.ops.mesh.customdata_custom_splitnormals_clear()
+    flat = sum(1 for p in obj.data.polygons if not p.use_smooth)
+    obj.data.shade_smooth()
+    return flat
+
+
 def op_lod(o):
     """Lower-detail copies of the mesh as separate GLBs (name_LOD1.glb ...), each a ratio of the current triangles.
     A textured mesh's levels are welded, decimated, and each gets its own UVs and bake from the full mesh (rebake,
@@ -2344,6 +2355,9 @@ def op_lod(o):
     H = CHAR["height"] or 1.8
     tex, normal = _color_size(base)
     rebake = bool(o.get("rebake", True)) and tex > 0
+    # The full mesh is the levels' bake source and their shape: one smooth surface first (and so is the near export after).
+    base_welded = weld(base, H)
+    flat = smooth_surface(base)
     if rebake:
         rest_pose(CHAR["arm"])
     made = []
@@ -2358,7 +2372,7 @@ def op_lod(o):
         mod.ratio = min(1.0, float(r) * tris / max(triangles(copy), 1))
         mod.use_collapse_triangulate = True
         bpy.ops.object.modifier_apply(modifier=mod.name)
-        level = {"level": k, "ratio": r, "triangles": triangles(copy), "welded": welded}
+        level = {"level": k, "ratio": r, "triangles": triangles(copy), "welded": base_welded + welded}
         if rebake:
             size = sizes[k - 1] if sizes else max(256, tex >> (k - 1))
             got = bake_onto(copy, [base], size, ["color", "normal"] if normal else ["color"], o, label=copy.name)
@@ -2381,7 +2395,7 @@ def op_lod(o):
                 bpy.data.materials.remove(m)
     if rebake:
         rest_pose(CHAR["arm"], False)
-    return {"op": "lod", "from": tris, "levels": made, "rebaked": rebake}
+    return {"op": "lod", "from": tris, "levels": made, "rebaked": rebake, "smoothed": flat}
 
 
 # View names as Gen uses them everywhere (image.viewsheet, the angles op): "left" is the camera moved to the viewer's left

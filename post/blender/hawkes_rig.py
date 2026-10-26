@@ -22,6 +22,7 @@ import sys
 import time
 
 import bpy
+import bmesh
 import mathutils
 import mathutils.kdtree
 import numpy as np
@@ -923,6 +924,20 @@ def finish():
         if not copy_textures(meshes, SPEC["source"]) and SPEC.get("prepared") and os.path.isfile(SPEC["prepared"]):
             # The rigger rebuilt the faces: skin our own mesh (its UVs and maps untouched) with the rigger's weights.
             meshes = onto_reference(meshes, arm, SPEC["prepared"]) or meshes
+    # The riggers return flat shading (each face its own normals, the vertices split per face): weld and smooth it.
+    for o in meshes:
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        n0 = len(bm.verts)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6 * max(o.dimensions))
+        info.setdefault("welded", 0)
+        info["welded"] += n0 - len(bm.verts)
+        bm.to_mesh(o.data)
+        bm.free()
+        select([o], o)
+        if o.data.has_custom_normals:
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+        o.data.shade_smooth()
     h = plant(meshes, arm)
     h = fit_height(meshes, arm, SPEC.get("height"))
     info["height"] = round(h, 3)
