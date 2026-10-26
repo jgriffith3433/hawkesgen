@@ -106,6 +106,7 @@ export async function startHub(o: HubOptions = {}) {
 
   const node = await svc.startNode();
   const demo = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'demo.html');
+  const dashboard = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'dashboard.html');
   const server = http.createServer((req, res) => {
     const route = new URL(req.url ?? '/', 'http://x').pathname;
     if (route === '/healthz') {
@@ -113,10 +114,11 @@ export async function startHub(o: HubOptions = {}) {
       res.writeHead(st.up ? 200 : 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       return void res.end(JSON.stringify({ ok: st.up, service: 'hawkes-net', version: st.version, usageWaiting: outbox.length }));
     }
-    // The front door is the developer dashboard on the portal (docs, your key, your rooms and usage): accounts live there.
+    // The front door is the developer dashboard: docs, and with a hawkesgen.com sign-in your key, rooms and usage (the page
+    // reads them from the portal, which allows this origin).
     if (route === '/') {
-      res.writeHead(302, { Location: process.env.NET_HOME_URL || 'https://hawkesgen.com/net/docs', 'Cache-Control': 'public, max-age=300' });
-      return void res.end();
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+      return void res.end(fs.readFileSync(dashboard));
     }
     // The demo: dots in a room, peer to peer, then the relay (open it in two tabs).
     if (route === '/demo') {

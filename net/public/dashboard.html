@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hawkes Net</title>
+<meta name="description" content="Multiplayer for web games: your key, your rooms and usage, and the docs. Signed in with your hawkesgen.com account.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='9' cy='16' r='5' fill='%232f6fed'/%3E%3Ccircle cx='23' cy='9' r='4' fill='%2316a34a'/%3E%3Ccircle cx='23' cy='23' r='4' fill='%2316a34a'/%3E%3Cpath d='M13 14l6-4M13 18l6 4' stroke='%232f6fed' stroke-width='2'/%3E%3C/svg%3E">
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #14161b; --muted: #5d6470; --line: #e3e6ea; --accent: #2f6fed; --ok: #16a34a; --warn: #b45309; --bad: #dc2626; --code: #0f1115; --code-ink: #e8eaf0; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #101216; --card: #171a20; --ink: #eef0f3; --muted: #9aa1ad; --line: #272b33; --accent: #6c9bff; --warn: #f59e0b; } }
+  :root[data-theme="dark"] { --bg: #101216; --card: #171a20; --ink: #eef0f3; --muted: #9aa1ad; --line: #272b33; --accent: #6c9bff; --warn: #f59e0b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 Inter, system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; overflow-wrap: anywhere; }
+  pre { background: var(--code); color: var(--code-ink); border-radius: 10px; padding: 14px 16px; overflow: auto; font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 10px 0 14px; }
+  pre code { background: none; border: 0; padding: 0; color: inherit; }
+  header.top { position: sticky; top: 0; z-index: 2; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+  .bar { display: flex; align-items: center; gap: 16px; min-height: 56px; flex-wrap: wrap; }
+  .brand { font-weight: 700; color: var(--ink); display: flex; gap: 8px; align-items: center; }
+  .brand small { color: var(--muted); font-weight: 400; }
+  .bar nav { display: flex; gap: 14px; flex-wrap: wrap; font-size: 14px; }
+  .bar nav a { color: var(--muted); } .bar nav a:hover { color: var(--ink); }
+  .who { margin-left: auto; font-size: 14px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+  .status { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); } .dot.up { background: var(--ok); } .dot.down { background: var(--bad); }
+  main { padding: 28px 0 60px; }
+  h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 22px; margin: 40px 0 10px; scroll-margin-top: 72px; }
+  h3 { font-size: 16px; margin: 22px 0 8px; }
+  p, li { color: var(--muted); max-width: 48em; } p b, li b { color: var(--ink); }
+  .lede { font-size: 17px; margin: 0 0 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+  .btn { display: inline-block; font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+  .btn:hover { text-decoration: none; border-color: var(--muted); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
+  .tiles div { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .tiles b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+  .tiles span { color: var(--muted); font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0 14px; display: block; overflow-x: auto; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .note { font-size: 13px; color: var(--muted); }
+  .warn { color: var(--warn); }
+  .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.relay { color: var(--accent); border-color: var(--accent); } .pill.p2p { color: var(--ok); border-color: var(--ok); }
+  .keybox { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .step { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; margin-right: 8px; }
+  footer { border-top: 1px solid var(--line); padding: 18px 0 30px; font-size: 13px; color: var(--muted); }
+  footer .wrap { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap bar">
+    <a class="brand" href="/">Hawkes Net <small>multiplayer for web games</small></a>
+    <nav aria-label="Sections"><a href="#yours">Your Net</a><a href="#quickstart">Quickstart</a><a href="#reference">Reference</a><a href="#limits">Pricing</a><a href="/demo">Demo</a></nav>
+    <div class="who"><span class="status" id="status"><span class="dot"></span>checking…</span><span id="who"></span></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>Multiplayer for your web game.</h1>
+  <p class="lede">One call joins a room. Small rooms go peer to peer; past eight players the room moves to our relay and nobody reconnects. <a href="/demo">Try it in two tabs.</a></p>
+
+  <h2 id="yours" style="margin-top:20px">Your Hawkes Net</h2>
+  <div class="card" id="mine"><p class="note">Loading…</p></div>
+
+  <h2 id="quickstart">Quickstart</h2>
+  <p>Your players' pages hold no secrets, so a page never asks for a room directly. Your server asks hawkesgen.com for a <b>ticket</b> with your API key (above), hands it to the page, and the page joins with it. A ticket is good for one join, for 90 seconds; the SDK asks your route again when it needs another (reconnecting, moving to the relay).</p>
+
+  <h3 id="server"><span class="step">1</span>Your ticket route</h3>
+  <p>Any server will do. Decide who may join which room (your logins, your matchmaking), then forward the request with your key. Rooms are yours alone: nobody else's game can join them.</p>
+<pre><code>// Node (Express); the same in any language: one HTTPS POST with your key.
+app.post('/ticket', async (req, res) =&gt; {
+  const r = await fetch('https://hawkesgen.com/v1/net/rooms/ticket', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.HAWKESGEN_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ room: req.body.room, name: req.user.name, sub: req.user.id }),
+  });
+  res.status(r.status).json(await r.json());
+});</code></pre>
+  <p class="note">Keep the key on your server. <code>sub</code> is your own id for the player (the same person reconnecting keeps their place).</p>
+
+  <h3 id="page"><span class="step">2</span>Join in the page</h3>
+<pre><code>import { join } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
+
+const ticket = () =&gt; fetch('/ticket', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ room: 'lobby' }),
+}).then((r) =&gt; r.json());
+
+const net = await join('lobby', { ticket });
+
+net.on('chat', (text, from) =&gt; show(from.name, text));
+net.send('chat', 'hello');                        // reliable: once, in order
+
+net.pose([x, y, z], yaw);                          // your avatar, as often as you like
+net.onPose((peer, s) =&gt; moveAvatar(peer, s.p, s.y));
+
+net.when('peer:join', (p) =&gt; addAvatar(p.id, p.name));
+net.when('peer:leave', ({ peer }) =&gt; removeAvatar(peer.id));</code></pre>
+  <p class="note">One ES module, no build step, no dependencies. Prefer a copy? Save <a href="/sdk/hawkes-net@1.mjs">hawkes-net.mjs</a> and <a href="/sdk/hawkes-net-core.mjs">hawkes-net-core.mjs</a> side by side and import your copy.</p>
+
+  <h3 id="unity"><span class="step">3</span>Unity WebGL</h3>
+  <p>The <code>com.hawkes.net</code> package runs the same SDK in the page and gives you a C# room. Point <code>ticketUrl</code> at your route from step 1.</p>
+<pre><code>var room = HawkesNet.Join("lobby", new HawkesNetOptions { ticketUrl = "https://mygame.example/ticket", name = "Ada" });
+room.OnReady += r =&gt; Debug.Log($"in {r.Name} over {r.Transport}");
+room.On&lt;Chat&gt;("chat", (msg, from) =&gt; Show(room.Peers[from], msg.text));
+room.Send("chat", new Chat { text = "hello" });
+
+void Update() {
+    room.Pose(player.position, player.eulerAngles.y);
+    foreach (var kv in room.Poses) MoveAvatar(kv.Key, kv.Value.position, kv.Value.yaw);
+}</code></pre>
+  <p class="note">WebGL builds only. Ask us for the package while it waits for its Asset Store listing.</p>
+
+  <h2 id="rooms">Rooms and transports</h2>
+  <p>A room is any name you choose (letters, digits and <code>/ _ . -</code>, up to 64). The first ticket for a name opens it. <code>transport</code> on the ticket picks how it travels:</p>
+  <table>
+    <tr><th>transport</th><th>What happens</th><th>Use it for</th></tr>
+    <tr><td><code>auto</code> (default)</td><td>Peer to peer while small (one player hosts, the others link to them). Past <code>p2pMax</code> players, when the host leaves, or when links fail, the room moves to our relay on the same connections.</td><td>Friends' rooms, invites, small matches</td></tr>
+    <tr><td><code>relay</code></td><td>Through our relay from the start. Interest by distance and a byte budget per player keep it light.</td><td>Public rooms, big worlds, anything with more than a handful</td></tr>
+    <tr><td><code>p2p</code></td><td>Peer to peer only; the room is full at <code>p2pMax</code>.</td><td>Two to eight players who never need the relay</td></tr>
+  </table>
+  <p>Peer-to-peer traffic never touches our servers. <code>net.transport</code> says where a room is now, and <code>net.when('transport', …)</code> tells you when it moves (you don't need to do anything).</p>
+
+  <h2 id="messages">Messages and avatars</h2>
+  <table>
+    <tr><th>Call</th><th>What it does</th></tr>
+    <tr><td><code>net.send(kind, data, opt?)</code></td><td>To everyone. Reliable by default (once, in order, across reconnects and moves). <code>{ reliable: false }</code> may drop; <code>{ to: peerId }</code> sends to one; <code>{ self: true }</code> includes you.</td></tr>
+    <tr><td><code>net.on(kind, (data, from, meta) =&gt; …)</code></td><td>Messages of one kind; <code>'*'</code> for all.</td></tr>
+    <tr><td><code>net.pose([x, y, z], yaw, extra?)</code></td><td>Your avatar. Call it every frame; the newest goes out about 15 times a second, compressed.</td></tr>
+    <tr><td><code>net.onPose((peer, state, at) =&gt; …)</code></td><td>Everyone else's avatar: <code>state.p</code>, <code>state.y</code> and your extras.</td></tr>
+    <tr><td><code>net.when(event, fn)</code></td><td><code>status</code>, <code>ready</code>, <code>peer:join</code>, <code>peer:leave</code>, <code>host</code>, <code>transport</code>, <code>problem</code>.</td></tr>
+    <tr><td><code>net.now()</code></td><td>The room's shared clock, in milliseconds.</td></tr>
+    <tr><td><code>net.leave()</code></td><td>Out of the room (closing the tab does it too).</td></tr>
+  </table>
+
+  <h2 id="state">Shared state</h2>
+  <p><code>net.sync</code> keeps things in step: one player simulates each moving thing (its owner, or the host), and everyone else sees it smoothly.</p>
+  <table>
+    <tr><td><code>net.sync.push(id, [x, y, z, rx, ry, rz, vx, vy, vz])</code></td><td>A thing you simulate</td></tr>
+    <tr><td><code>net.sync.onThing((id, at, values, from) =&gt; …)</code></td><td>Things others simulate</td></tr>
+    <tr><td><code>net.sync.claim(id)</code> / <code>hold(id)</code> / <code>release(id)</code></td><td>Take a thing over (a grab, a car you drive); a held thing stays yours</td></tr>
+    <tr><td><code>net.sync.state(name, data)</code></td><td>A shared document (a score, a door); joiners get its newest copy</td></tr>
+  </table>
+
+  <h2 id="reference">Reference: <code>POST https://hawkesgen.com/v1/net/rooms/ticket</code></h2>
+  <p>With <code>Authorization: Bearer hg_…</code> (your key). JSON body:</p>
+  <table>
+    <tr><th>Field</th><th></th></tr>
+    <tr><td><code>room</code></td><td>Required. The room's name.</td></tr>
+    <tr><td><code>name</code></td><td>Shown to the others (24 characters).</td></tr>
+    <tr><td><code>sub</code></td><td>Your id for this player (64 characters).</td></tr>
+    <tr><td><code>transport</code></td><td><code>auto</code> (default), <code>relay</code> or <code>p2p</code>.</td></tr>
+    <tr><td><code>role</code></td><td><code>player</code> (default) or <code>spectator</code> (watches; doesn't count toward the room's size).</td></tr>
+    <tr><td><code>config</code></td><td>The room's shape when this ticket opens it: <code>maxPlayers</code> (up to 64), <code>p2pMax</code> (up to 8), <code>profile</code> (<code>light</code>, <code>medium</code>, <code>heavy</code>: how much a room sends), <code>sendHz</code>.</td></tr>
+  </table>
+  <p>The answer is what <code>join()</code> takes from your <code>ticket</code> function as it is: <code>ticket</code>, <code>peer</code>, <code>relayUrl</code>, <code>transports</code>, <code>expiresAt</code>, …. Errors: <code>401</code> no key or a wrong one, <code>402</code> your account can't use Hawkes Net yet (below), <code>409</code> the room is full, <code>429</code> too many rooms or tickets.</p>
+
+  <h2 id="limits">Limits and pricing</h2>
+  <ul>
+    <li>Up to 64 players a room; up to 8 peer to peer before the relay.</li>
+    <li>Hawkes Net for your own games is open to accounts that have bought credits or a plan on hawkesgen.com.</li>
+    <li>While we set prices, using it costs no credits. Your usage is counted above (player-minutes and relay data) so you'll see what you'd pay before you pay anything.</li>
+  </ul>
+</main>
+
+<footer><div class="wrap"><span>Hawkes Net, part of <a href="https://hawkesgen.com/">Hawkes Gen</a></span><span><a href="https://hawkesgen.com/legal#terms">Terms</a> · <a href="https://hawkesgen.com/legal#privacy">Privacy</a> · <a href="mailto:support@hawkesgen.com">support@hawkesgen.com</a></span></div></footer>
+
+<script>
+// The dashboard of net.hawkesgen.com. Your account lives on hawkesgen.com: this page reads your Net data there with your
+// hawkesgen.com session (same site, so the cookie goes; the portal allows only this origin), and the service's own status here.
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const num = (n, d = 0) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: d });
+  const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
+  // The portal: hawkesgen.com, or ?portal= on a test copy of this page (not on the real one).
+  const asked = new URLSearchParams(location.search).get('portal');
+  const PORTAL = location.hostname !== 'net.hawkesgen.com' && asked ? asked.replace(/\/+$/, '') : 'https://hawkesgen.com';
+  let minted = null;
+
+  function signedOut() {
+    $('who').innerHTML = `<a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Sign in</a>`;
+    $('mine').innerHTML = `
+      <p style="margin-top:0">Sign in with your <b>hawkesgen.com</b> account to get your API key and see your rooms and usage.</p>
+      <div class="keybox"><a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Continue with Google</a>
+      <a class="btn" href="${PORTAL}/app">Sign in with email</a> <span class="note">(then come back here)</span></div>
+      <p class="note">No account yet? Making one on hawkesgen.com is free.</p>`;
+  }
+
+  function render(me) {
+    $('who').innerHTML = `<code>${esc(me.project)}</code> <a class="note" href="${PORTAL}/app">hawkesgen.com account</a>`;
+    const rooms = me.rooms && !me.rooms.error ? me.rooms.rooms : null;
+    const u = me.usage && !me.usage.error ? me.usage.total : null;
+    const key = minted
+      ? `<div class="keybox"><code id="newKey">${esc(minted)}</code><button class="btn" type="button" id="copyKey">Copy</button></div><p class="note warn">Copy it now: it is shown once. Your previous key stopped working.</p>`
+      : me.key
+        ? `<p class="note">Your key starts <code>${esc(me.key.prefix)}…</code>, made ${new Date(me.key.created).toLocaleDateString()}${me.key.lastUsed ? `, last used ${ago(me.key.lastUsed)} ago` : ', not used yet'}. Lost it? A new one replaces it.</p><button class="btn" type="button" id="mint">Make a new key</button>`
+        : `<p class="note">You have no API key yet.</p><button class="btn primary" type="button" id="mint">Make my API key</button>`;
+    $('mine').innerHTML = `
+      <div class="row"><div><b>Project</b> <code>${esc(me.project)}</code></div><div class="note">Relay <code>${esc(me.service)}</code></div></div>
+      ${me.paid ? '' : `<p class="warn" style="margin:12px 0 0">Hawkes Net for your own games opens once your account has bought credits or a plan. <a href="${PORTAL}/app#credits">Get credits</a></p>`}
+      <h3>API key</h3>${key}
+      <h3>Last 30 days</h3>
+      ${u ? `<div class="tiles"><div><b>${num(u.playerMinutes, 1)}</b><span>player-minutes</span></div><div><b>${num(u.relayGb, 3)}</b><span>GB through the relay</span></div><div><b>${num(u.p2pGb, 3)}</b><span>GB peer to peer (free)</span></div><div><b>$${num(u.cost, 2)}</b><span>what the relay cost us</span></div></div>` : `<p class="note">Usage isn't available right now${me.usage?.error ? ` (${esc(me.usage.error)})` : ''}.</p>`}
+      <h3>Rooms open now <span class="note" id="refreshed"></span></h3>
+      ${rooms ? (rooms.length ? `<table><tr><th>Room</th><th>Players</th><th>Transport</th><th>Open for</th></tr>${rooms.map((r) => `<tr><td><code>${esc(r.room)}</code></td><td>${r.players}</td><td><span class="pill ${r.transport === 'relay' ? 'relay' : 'p2p'}">${r.transport === 'relay' ? 'relay' : 'peer to peer'}</span></td><td>${ago(r.openedAt)}</td></tr>`).join('')}</table>` : '<p class="note">None right now. Rooms show here while players are in them.</p>') : `<p class="note">Rooms aren't available right now${me.rooms?.error ? ` (${esc(me.rooms.error)})` : ''}.</p>`}`;
+    $('refreshed').textContent = `· updated ${new Date().toLocaleTimeString()}`;
+    $('mint')?.addEventListener('click', async () => {
+      if (me.key && !confirm('Make a new key? Your current key stops working at once, everywhere you use it (your servers, MCP clients, the Unity package).')) return;
+      const r = await fetch(`${PORTAL}/v1/users/api-key`, { method: 'POST', credentials: 'include' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.apiKey) return alert(j.error || 'Could not make a key');
+      minted = j.apiKey;
+      load();
+    });
+    $('copyKey')?.addEventListener('click', () => navigator.clipboard?.writeText(minted));
+  }
+
+  async function load() {
+    const r = await fetch(`${PORTAL}/v1/net/me`, { credentials: 'include' }).catch(() => null);
+    if (!r || r.status === 401) { signedOut(); return false; }
+    if (!r.ok) { $('mine').innerHTML = '<p class="note">Could not load your Hawkes Net right now.</p>'; return true; }
+    render(await r.json());
+    return true;
+  }
+
+  async function status() {
+    const s = await fetch('/v1/net/status').then((r) => r.json()).catch(() => null);
+    const up = s && s.up;
+    const players = s && Array.isArray(s.nodes) ? s.nodes.reduce((n, x) => n + (x.players || 0), 0) : 0;
+    $('status').innerHTML = `<span class="dot ${up ? 'up' : 'down'}"></span>${up ? `up · ${num(players)} playing` : 'service unreachable'}`;
+  }
+
+  load().then((signedIn) => { if (signedIn) setInterval(() => { if (!document.hidden) load(); }, 15_000); });
+  status();
+  setInterval(() => { if (!document.hidden) status(); }, 30_000);
+})();
+</script>
+</body>
+</html>
