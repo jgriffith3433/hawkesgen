@@ -268,6 +268,27 @@ export function roomInfo(client: Client, body: any) {
   return { open, players: open ? row!.players : 0, transport: row?.transport ?? null, limit: row ? JSON.parse(row.config).maxPlayers : netProject(project).defaults.maxPlayers };
 }
 
+/**
+ * The public counts of a project that has its own sites (the public door): how many players are in each named room, for
+ * a page that shows "12 in Level 1" before joining it. Only numbers, only for projects whose rooms any page on their
+ * sites could join anyway; per-address limits like the door's.
+ */
+export function publicCounts(project: string, rooms: string[], ip: string | null) {
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(project)) throw new NetError('project is the Hawkes Net project id');
+  const p = netProject(project);
+  if (!p.listed || !p.origins.length) throw new NetError(`${project} has no public counts`, { status: 403 });
+  const names = [...new Set(rooms.map((r) => r.trim()).filter(Boolean))];
+  if (!names.length || names.length > 24 || names.some((r) => !ROOM_RE.test(r))) throw new NetError('rooms is 1 to 24 room names, comma separated');
+  doorLimit(`cnt:${ip ?? '?'}`, 120);
+  const out: Record<string, number> = {};
+  const get = db.prepare('SELECT * FROM net_rooms WHERE project = ? AND room = ?');
+  for (const room of names) {
+    const row = get.get(project, room) as RoomRow | undefined;
+    out[room] = row && live(nodeById(row.node)) && row.players > 0 ? row.players : 0;
+  }
+  return { project, rooms: out };
+}
+
 // ------------------------------------------------------------------ status
 /** A project's rooms with people in them (or just opened), newest first: a developer's own view of their game. */
 export function projectRooms(client: Client, body: any) {

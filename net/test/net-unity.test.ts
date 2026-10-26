@@ -20,7 +20,7 @@ const env = {
   mergeInto: (_l: unknown, fns: Record<string, Function>) => Object.assign(lib, fns),
   LibraryManager: { library: {} },
   UTF8ToString: (p: number) => heap[p] ?? '',
-  SendMessage: (to: string, method: string, json: string) => { assert.equal(to, 'HawkesNet'); assert.equal(method, 'OnNet'); got.push(JSON.parse(json)); },
+  SendMessage: (to: string, method: string, json: string) => { assert.equal(to, 'HawkesNet'); assert.ok(method === 'OnNet' || method === 'OnNetCount'); got.push({ ...JSON.parse(json), _m: method }); },
   lengthBytesUTF8: (s: string) => Buffer.byteLength(s),
   _malloc: () => heap.push(null) - 1,
   stringToUTF8: (s: string, p: number) => { heap[p] = s; },
@@ -49,6 +49,7 @@ test('a Unity game joins through the bridge: ready, peers, messages as JSON both
   const joined = await wait(() => got.find((e) => e.h === 1 && e.e === 'join'), 5000, 'Ada hears Bo');
   assert.equal(joined.name, 'Bo');
   assert.equal(joined.peer, ready2.peer);
+  assert.ok(joined.ord > ready1.ord, 'the join order rides with a peer (the oldest is the host)');
 
   assert.equal(lib.HawkesNet_Send(1, ptr('chat'), ptr('{"text":"hello"}'), 1, ptr('')), 1);
   const msg = await wait(() => got.find((e) => e.h === 2 && e.e === 'msg' && e.kind === 'chat'), 5000, 'Bo gets the chat');
@@ -56,13 +57,39 @@ test('a Unity game joins through the bridge: ready, peers, messages as JSON both
   assert.equal(msg.peer, ready1.peer);
   assert.equal(lib.HawkesNet_Send(9, ptr('chat'), ptr(''), 1, ptr('')), 0, 'no such room');
 
-  lib.HawkesNet_Pose(1, 1.5, 2, -3.25, 1.25); // yaw in radians on the wire (HawkesNet.cs takes degrees)
-  const poses = await wait(() => { const p = lib.HawkesNet_Poses(2); return p ? heap[p] : null; }, 5000, 'a pose for Bo');
-  const [id, ...xyz] = String(poses).split(';')[0].split(',');
-  assert.equal(id, ready1.peer);
-  assert.deepEqual(xyz.map(Number), [1.5, 2, -3.25, 1.25]);
+  // Text: the game's own string arrives as it was sent (not as JSON).
+  assert.equal(lib.HawkesNet_SendText(1, ptr('say'), ptr('plain "words", not JSON'), 1, ptr('')), 1);
+  const said = await wait(() => got.find((e) => e.h === 2 && e.e === 'msg' && e.kind === 'say'), 5000, 'Bo gets the text');
+  assert.equal(said.text, true);
+  assert.equal(said.data, 'plain "words", not JSON');
+
+  // Poses: yaw in radians on the wire (HawkesNet.cs takes degrees), extra values with them, the sender's time.
+  lib.HawkesNet_Pose(1, 1.5, 2, -3.25, 1.25, ptr('{"f":"balloon","c":"car-1","s":1.5}'));
+  const read = () => { const p = lib.HawkesNet_Poses(2); return p ? JSON.parse(heap[p] as string).items : null; };
+  const first = await wait(read, 5000, 'a pose for Bo');
+  assert.equal(first.length, 1);
+  assert.equal(first[0].id, ready1.peer);
+  assert.deepEqual([first[0].x, first[0].y, first[0].z, first[0].r], [1.5, 2, -3.25, 1.25]);
+  assert.deepEqual(JSON.parse(first[0].e), { f: 'balloon', c: 'car-1', s: 1.5 });
+  assert.ok(first[0].at > 0, 'when, on the room clock');
   assert.equal(lib.HawkesNet_Poses(2), null, 'nothing new since the last read');
+  // A key left out is gone for the others too (the SDK merges poses; the bridge sends it as null once).
+  lib.HawkesNet_Pose(1, 2, 2, -3.25, 1.25, ptr('{"f":"balloon","s":1.5}'));
+  const second = await wait(read, 5000, 'the next pose');
+  assert.deepEqual(JSON.parse(second[0].e), { f: 'balloon', s: 1.5 });
+  lib.HawkesNet_Pose(1, 2.5, 2, -3.25, 1.25, ptr(''));
+  const third = await wait(read, 5000, 'a pose with no extras');
+  assert.equal(third[0].e, '');
   assert.ok(lib.HawkesNet_Now(1) > 0);
+
+  // The public counts (a project with its own sites): players per room.
+  lib.HawkesNet_Count(77, ptr(endpoint), ptr('netdemo'), ptr('unity1,nobody-here'), ptr('HawkesNet'));
+  const counted = await wait(() => got.find((e) => e._m === 'OnNetCount' && e.id === 77 && (e.rooms?.unity1 === 2 || !e.ok)), 5000, 'the counts');
+  assert.equal(counted.ok, true, counted.error);
+  assert.deepEqual(counted.rooms, { unity1: 2, 'nobody-here': 0 });
+  lib.HawkesNet_Count(78, ptr(endpoint), ptr('hawkesgenwebsite'), ptr('x'), ptr('HawkesNet'));
+  const refused = await wait(() => got.find((e) => e._m === 'OnNetCount' && e.id === 78), 5000, 'a refused count');
+  assert.equal(refused.ok, false, 'a project without its own sites has no public counts');
 
   lib.HawkesNet_Leave(1);
   const left = await wait(() => got.find((e) => e.h === 2 && e.e === 'leave'), 5000, 'Bo hears Ada leave');

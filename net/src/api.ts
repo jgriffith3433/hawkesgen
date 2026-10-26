@@ -1,5 +1,6 @@
 // The Hawkes Net service's HTTP routes (docs/net.md, docs/api.md "Hawkes Net"), served by net/src/hub.ts:
 //   POST /v1/net/ticket            a join ticket (a Gen key, or no key from the project's own sites: the public door)
+//   GET  /v1/net/counts            players in named rooms of a project with its own sites (public numbers)
 //   GET  /v1/net/keys              the public keys nodes check tickets with
 //   GET  /v1/net/status            nodes and rooms
 //   POST /v1/net/publish           a server's world edits or event into a room, or every room under "<prefix>/*" (a Gen key)
@@ -97,6 +98,13 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       if (viaDoor && !originAllowed(netProject(String(body.project ?? '')), origin)) return send(res, 403, { error: 'This site may not ask for tickets for that project' });
       if (!viaDoor && !client) return send(res, 401, { error: 'A Gen API key, or a page on the project\'s own site' });
       return send(res, 200, svc.issueTicket(body, auth));
+    }
+    if (route === '/v1/net/counts' && (method === 'GET' || method === 'OPTIONS')) {
+      // Public numbers (a project with its own sites): any page may read them, so CORS is open.
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (method === 'OPTIONS') return void res.writeHead(204).end();
+      const q = new URL(req.url ?? '/', 'http://x').searchParams;
+      return send(res, 200, svc.publicCounts(String(q.get('project') ?? ''), String(q.get('rooms') ?? '').split(','), svc.ticketAuth(req, null).ip));
     }
     if (route === '/v1/net/keys' && method === 'GET') { res.setHeader('Access-Control-Allow-Origin', '*'); return send(res, 200, { keys: svc.publicKeys() }); }
     if (route === '/v1/net/status' && method === 'GET') {

@@ -13,7 +13,7 @@ section says so and wins. Exact shapes: `net/src/types.ts` (the design's types) 
 | Gen's part | `src/netbridge.ts` | Three things: `GET /v1/net/whoami` (who an API key is, narrowed by `X-Hawkesgen-Project`: the box checks keys with it), `POST /v1/net/usage` (the box's usage into Gen's usage table, provider `hawkesnet`, relay GB at $0.09, peer to peer and test rooms free), and a 308 to the box for everything else under `/v1/net/` and the SDK files. Gen runs no relay and takes no WebSocket upgrades. |
 | The service | `net/src/service.ts`, `api.ts`, `registry.ts`, `store.ts`, `net/projects.json` | Tickets (`POST /v1/net/ticket`: a Gen key, or the public door by origin), the directory (`net_nodes`, `net_rooms` in the service's own `net.db`), node heartbeats, room events, usage handed to Gen, publish to a room or every room under `prefix/*` (and kicks), room info, status, the SDK files at `/sdk/hawkes-net@1.mjs`. Settings are `NET_*` environment variables (`store.ts`). |
 | Client SDK | `clients/js/hawkes-net.mjs` | `join(room, { project, transport, ticket, ... })`: relay (WebSocket), p2p (WebRTC host-star: the host runs the core in its page; players start on the signal route and move onto their link; one stream, one carrier), `auto` (p2p, then the relay without the game noticing), reconnect with resume, exactly-once reliable messages across reconnects and moves, the shared clock (eased, never jumps), `send/on`, `pose/onPose`, `sync.*` (the portal's H.sync: state, action, track, push, onThing, thing, claim, hold, release, mine, holder, clear, onHost), `raw` (an engine with its own logic: hawkesgen.com's `play/net.js`), stats, sleep handling, `pagehide` leave. |
-| Unity WebGL | `clients/unity/com.hawkes.net` | `HawkesNet.Join(room, new HawkesNetOptions { ticketUrl, name })` gives a `HawkesNetRoom`: `OnReady`, `On(kind, (json, from))` / `On<T>`, `Send(kind, data, reliable, to)`, `Pose(position, yawDegrees)` and `Poses` (read once a frame, not one SendMessage per pose), `Peers`, `Host`, `Transport`, `OnTransport`, `OnProblem`, `Migrate`, `Leave`. The web SDK runs in the page (`HawkesNet.jslib` imports it from `/sdk/hawkes-net@1.mjs`); in the Editor `Join` reports `webgl-only`. Test `test/net-unity.test.ts` runs the jslib against the real SDK and node. |
+| Unity WebGL | `clients/unity/com.hawkes.net` (0.2.0) | The standard Unity layer (below, "Unity: the standard layer"): `HawkesNetLobby` (shared rooms by area, live/beta/playtest names, shards, rejoining, one status), `HawkesNetAvatars` (drop-in avatars), and the room itself, `HawkesNet.Join(room, options)`: `OnReady`, `On(kind, (data, from))` / `On<T>`, `Send` (JSON) and `SendText` (the game's own text, arriving as sent), `Pose(position, yawDegrees, extra)` and `OnPose`/`Poses` (changed poses read once a frame, with their extra values and time), `Peers`, `PeerOrder`, `Order`, `Host`, `Transport`, `OnStatus`, `OnProblem`, `Migrate`, `Leave`, and `HawkesNet.Count(project, rooms, done)` (public counts). The web SDK runs in the page (`HawkesNet.jslib` imports it from `/sdk/hawkes-net@1.mjs`); in the Editor `Join` reports `webgl-only`. Test `net/test/net-unity.test.ts` runs the jslib against the real SDK and service. Adopted by Sick Of It (ghosts) and Yooba Land (its whole MMO). |
 | Demo page | `net/public/demo.html` (`https://net.hawkesgen.com/demo`; the root `/` is the developer dashboard, `net/public/dashboard.html`: docs, and with a hawkesgen.com sign-in your key, rooms and usage, read from the portal, which allows that origin on `/v1/net/me` and `/v1/users/api-key`) | Dots in a room: invite link, bots in the same page, "move to the relay", live transport, host, routes, round trip and bandwidth. |
 | Tools | `net/tools/net-load.mjs`, `net/tools/net-dev.mjs` | The load test (below; `--url` tests a real service from outside) and the service on this PC with a scratch data folder. |
 | Tests | `net/test/` (`npm run test:net`; also in `npm test`): `net-core`, `net-node`, `net-service`, `net-hub`, `net-unity`; Gen's bridge `test/netbridge.test.ts` | Rules from the portal's relay on both protocols, codec bounds, the measured scene's bytes, flush time, a relay room over real sockets (and with worker processes), refused tickets, resume, p2p signalling and the move to the relay with nothing reliable lost, publish, full rooms, raw mode, usage rows. |
@@ -84,6 +84,34 @@ const t = net.sync.track({ pos: [0, 1, 2] }); // smooth playback of others' snap
 - **An engine with its own multiplayer logic** passes `onRaw` and sends with `net.raw.send(m)` in the core's message
   shapes (hawkesgen.com's `public/play/net.js` does).
 - **Status.** `GET /v1/net/status` (nodes, rooms per project and transport), `GET /v1/net/nodes`, the demo at `https://net.hawkesgen.com/demo`.
+- **Public counts.** `GET /v1/net/counts?project=<id>&rooms=a,b` (no key, CORS open): `{ project, rooms: { a: 12, b: 0 } }`,
+  players in each named room, for a project with its own sites (`origins`): a page showing "12 in Level 1" before joining it.
+  Up to 24 rooms a call, 120 calls a minute per address. Numbers only.
+- **Avatars in a big room.** The relay sends an avatar to a player every bundle within the room's `farAvatarM`, 5 times a
+  second within four times that, and once a second past it (`flushOne` in the core): a room of a few hundred spread over a
+  map costs little. Avatars are still compared per pair (no grid index yet), which is why Yooba Land's rooms stop at 250.
+
+### Unity: the standard layer
+
+How a Unity game uses Hawkes Net (J, 2026-10-26: "a standard implementation of hawkes net into unity projects"; Babylon
+games get the same shape on the JS SDK next). Package `clients/unity/com.hawkes.net` (its README has the code):
+
+1. **`HawkesNetLobby`: shared rooms.** One room per area for everyone, kept joined. Room names by where the page runs: the
+   game's live hosts get `<prefix><area>`, anywhere else `t-<prefix><area>` (the test prefix: beta is free and apart from
+   live), a playtest page with `?room=<id>` `t-<id>/<prefix><area>`. A full room (the SDK's 4009) moves to the next shard
+   (`<area>.2`...). A lost or refused room joins again by itself (2 s doubling to 60 s; a refused ticket 30 s to 5 minutes:
+   the door's limits). Events (`Joined`, `PeerJoined`, `PeerLeft`, `HostChanged`, `Message`, `PoseChanged`,
+   `StatusChanged`) stay subscribed across rejoins. Status: off, connecting, online, reconnecting, offline, full.
+2. **Avatars are poses, everything else messages.** A player's place goes through `Pose(position, yaw, extra)` (the
+   relay's interest by distance applies to it, never to messages), with the game's other per-frame values in `extra`.
+   Events (an emote, a chat line, a gift) are messages; the game's own text goes with `SendText` and arrives as sent.
+3. **`HawkesNetAvatars`** for a game with no avatars of its own: a prefab per player, played back a little behind.
+4. **A game with its own network layer** keeps it and puts Hawkes Net under it: Yooba Land's `YoobaHawkesNet` is its
+   `YoobaNet.ITransport` on `HawkesNetLobby` (its hundreds of online features unchanged; its bot peers stay in-page
+   simulations merged into the room's view; presence keys and tags travel in the room as `~p` messages; other levels'
+   numbers from the public counts). Sick Of It's ghosts use `HawkesNet.Join` directly.
+5. **Ship a copy.** A game built on the cloud build server embeds the package in its own `Packages/` (the server has no Gen
+   checkout of its own branch): copy it again when this one changes.
 
 ### Running a relay box
 
@@ -556,7 +584,7 @@ Do not run heavy worlds on p2p and do not run light ones on the relay unless the
 
 | Game | Config | Why |
 |---|---|---|
-| Yooba Land | `transport: 'p2p'`, `signal: 'serverless'` today (J: no servers); profile `light`, `p2pMax: 24`; levels shard into neighborhoods as now | m_8a95e7a2a215. Later, on J's word: `transport: 'auto'`, `signal: 'hawkes+nostr'`: a level becomes one relay room (interest by distance replaces neighborhoods) and Nostr stays the fallback when Gen is unreachable. |
+| Yooba Land | **On Hawkes Net (J, 2026-10-26: "it's an MMO, everyone is in the same lobby")**: `transport: 'auto'`, one room per area for everyone (`p1/lobby`, `p1/level-1`), profile `light`, `p2pMax: 8`, rooms of 250 then shards (`.2` = neighborhood n2 in the game), `farAvatarM` 150. Its old serverless network (Nostr signalling, WebRTC mesh of 24) stays on the page behind `?net=p2p`. | J's word replaces m_8a95e7a2a215 for Yooba Land. |
 | Dose Of Destruction | `topology: 'pair'`, `transport: 'p2p'`, `signal: 'serverless'` | Rollback needs the direct link and an unreliable channel; the lobby stays presence beats. DoD's `src/game/net/` becomes thin over the SDK's `nostr` signal driver. |
 | Portal games (`hawkesgenwebsite`) | `transport: 'auto'`, profile `heavy` becoming `medium` on v3, `p2pMax: 4` | Worlds with many moving things; they start p2p for a couple of friends and live on the relay. Their v2 pages keep working through the old URL. |
 | New casual / co-op games | `transport: 'auto'`, profile as measured | The default. |
@@ -617,7 +645,7 @@ Each is one change; none is started.
 
 ## Open questions for J
 
-1. May Yooba Land's levels ever use a relay room (one room per level instead of neighborhoods)? The design keeps them serverless until you say.
+1. ~~May Yooba Land's levels ever use a relay room?~~ Yes (J, 2026-10-26): one room per area for everyone, on Hawkes Net.
 2. TURN: hand it out at all (Cloudflare's service or ours), and for which projects? It is the only p2p cost.
 3. Does the relay get a second region, or is one (us-east-1, with p2p for small rooms) enough to start?
 4. The flat CloudFront plan's limits (what happens past 50 TB, WebSocket duration) must be re-read on the day we provision it.
