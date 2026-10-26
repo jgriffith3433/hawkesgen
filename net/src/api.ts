@@ -35,6 +35,9 @@ async function readJson(req: IncomingMessage, limit = 256 * 1024) {
 /** How a request's key is checked (the box asks Gen: net/src/hub.ts). Unset, no key is accepted. */
 type KeyCheck = (req: IncomingMessage) => Client | null | Promise<Client | null>;
 let checkKey: KeyCheck = () => null;
+/** What the server adds to the operator view (hub.ts: uptime, usage waiting for Gen, key checks). */
+let opsExtra: () => Record<string, unknown> = () => ({});
+export function useOpsExtra(fn: () => Record<string, unknown>) { opsExtra = fn; }
 export function useKeyCheck(fn: KeyCheck) { checkKey = fn; }
 
 /** Nodes report with a key that may act for "hawkesnet" (or an admin key). */
@@ -122,6 +125,19 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       if (!c) return send(res, 401, { error: 'A key is needed' });
       if (c.role !== 'owner') throw new NetError('Only an owner key may rotate the signing keys', { status: 403 });
       return send(res, 200, { keys: svc.rotateKeys() });
+    }
+    // A developer's own rooms (their key, narrowed to their project like every Gen call).
+    if (route === '/v1/net/rooms' && method === 'POST') {
+      const c = await checkKey(req);
+      if (!c) return send(res, 401, { error: 'A Gen key is needed' });
+      return send(res, 200, svc.projectRooms(c, await readJson(req)));
+    }
+    // The operator's view (an owner or admin key): every node and worker, rooms per project, what waits to reach Gen.
+    if (route === '/v1/net/ops' && method === 'GET') {
+      const c = await checkKey(req);
+      if (!c) return send(res, 401, { error: 'A key is needed' });
+      if (c.role !== 'owner' && c.role !== 'admin') return send(res, 403, { error: 'Only an owner or admin key sees the operator view' });
+      return send(res, 200, { ...svc.status(), node: await svc.ownNode()?.stats().catch(() => null), extra: opsExtra() });
     }
     if (route === '/v1/net/nodes' && method === 'GET') { res.setHeader('Access-Control-Allow-Origin', '*'); return send(res, 200, { nodes: svc.status().nodes }); }
     return send(res, 404, { error: 'Not found' });

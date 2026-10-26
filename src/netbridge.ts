@@ -4,10 +4,12 @@
 //                         how the box checks Gen API keys (it keeps an answer a minute)
 //   POST /v1/net/usage    the box's usage for the last minute, filed in Gen's usage table (provider hawkesnet), with the
 //                         key of the project "hawkesnet" the box holds
+//   GET  /v1/net/usage    the caller's own Hawkes Net usage (its key's projects only): per day and in all, ?days= (30)
 //   anything else under /v1/net/ and the SDK files (/sdk/hawkes-net*.mjs, /sdk/net*.mjs): a 308 to the box, so old
 //                         pages and clients that still ask Gen find it (a browser's preflight is answered here)
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { authenticate, canProject } from './auth.ts';
+import { authenticate, canProject, projectScopeSql } from './auth.ts';
+import { db } from './db.ts';
 import { env } from './config.ts';
 import { recordUsage } from './usage.ts';
 
@@ -44,6 +46,22 @@ export function recordNetUsage(rep: any, clientId: string) {
   return { ok: true, rows: n };
 }
 
+/** Hawkes Net usage of these projects (a key's own), per day and unit, and the totals: player-minutes, GB, dollars. */
+export function netUsage(projects: string[], days = 30) {
+  const since = Date.now() - days * 24 * 3600_000;
+  const scope = projectScopeSql(projects);
+  const rows = db.prepare(`SELECT strftime('%Y-%m-%d', at / 1000, 'unixepoch') AS day, project, unit, SUM(amount) AS amount, SUM(cost) AS cost
+                           FROM usage WHERE provider = 'hawkesnet' AND at >= ?${scope ? ` AND ${scope}` : ''} GROUP BY day, project, unit ORDER BY day`).all(since) as { day: string; project: string; unit: string; amount: number; cost: number }[];
+  const total = { playerMinutes: 0, relayGb: 0, p2pGb: 0, cost: 0 };
+  for (const r of rows) {
+    if (r.unit.startsWith('player-minute:')) total.playerMinutes += r.amount;
+    else if (r.unit === 'gb:relay') total.relayGb += r.amount;
+    else if (r.unit === 'gb:p2p') total.p2pGb += r.amount;
+    total.cost += r.cost || 0;
+  }
+  return { days, rows, total };
+}
+
 export async function handleNetBridge(req: IncomingMessage, res: ServerResponse, route: string): Promise<void> {
   const method = req.method ?? 'GET';
   if (route === '/v1/net/whoami' && method === 'GET') {
@@ -58,6 +76,12 @@ export async function handleNetBridge(req: IncomingMessage, res: ServerResponse,
     const rep = await readJson(req);
     if (!rep) return send(res, 400, { error: 'Body is not valid JSON, or too large' });
     return send(res, 200, recordNetUsage(rep, c.id));
+  }
+  if (route === '/v1/net/usage' && method === 'GET') {
+    const c = authenticate(req);
+    if (!c) return send(res, 401, { error: 'A key is needed' });
+    const days = Math.max(1, Math.min(90, Number(new URL(req.url ?? route, 'http://x').searchParams.get('days')) || 30));
+    return send(res, 200, netUsage(c.projects, days));
   }
   // Everything else is the box's.
   if (method === 'OPTIONS') {

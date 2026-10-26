@@ -67,3 +67,15 @@ test('everything else goes to the box: a 308 keeping method, path and query; a p
   });
   assert.notEqual(up, 'upgraded');
 });
+
+test("a customer's own Hawkes Net usage: only their project, per day and in all", async () => {
+  const get = (key: string, only?: string) => fetch(`${gen}/v1/net/usage?days=7`, { headers: { Authorization: `Bearer ${key}`, ...(only ? { 'X-Hawkesgen-Project': only } : {}) } }).then((r) => r.json());
+  const mine = await get(portal, 'usr_00000000000000aa');
+  assert.ok(mine.rows.length > 0);
+  assert.ok(mine.rows.every((r: any) => r.project === 'usr_00000000000000aa'), 'nobody else\'s rows');
+  assert.equal(mine.total.playerMinutes, 12);
+  assert.ok(Math.abs(mine.total.relayGb - 2) < 1e-9);
+  assert.ok(Math.abs(mine.total.cost - 0.18) < 1e-9);
+  const other = await get(portal, 'usr_00000000000000bb');
+  assert.equal(other.rows.length, 0);
+});

@@ -79,7 +79,28 @@ export async function startHub(o: HubOptions = {}) {
       } catch { return; }
     }
   };
-  svc.sendUsageTo(o.usage ?? ((rep) => { outbox.push(rep); if (outbox.length > 1440) outbox.shift(); }));
+  // The operator view's numbers: the last minute's usage and totals since this process started.
+  const startedAt = Date.now();
+  let lastUsage: { at: number; rows: any[] } | null = null;
+  const totals = { playerMinutes: 0, gbOut: 0, gbIn: 0 };
+  const perProject = new Map<string, { playerMinutes: number; gbOut: number }>();
+  const send = o.usage ?? ((rep: { node: string; rows: any[] }) => { outbox.push(rep); if (outbox.length > 1440) outbox.shift(); });
+  svc.sendUsageTo((rep) => {
+    lastUsage = { at: Date.now(), rows: rep.rows };
+    for (const r of rep.rows) {
+      const pm = (Number(r.playerSeconds) || 0) / 60, gb = (Number(r.bytesOut) || 0) / 1e9;
+      totals.playerMinutes += pm; totals.gbOut += gb; totals.gbIn += (Number(r.bytesIn) || 0) / 1e9;
+      const k = `${r.project}|${r.transport}`;
+      const t = perProject.get(k) ?? { playerMinutes: 0, gbOut: 0 };
+      t.playerMinutes += pm; t.gbOut += gb;
+      perProject.set(k, t);
+    }
+    send(rep);
+  });
+  api.useOpsExtra(() => ({
+    startedAt, uptimeS: Math.round((Date.now() - startedAt) / 1000), usageWaiting: outbox.length,
+    lastMinute: lastUsage, sinceStart: { ...totals, perProject: [...perProject].map(([k, v]) => ({ project: k.split('|')[0], transport: k.split('|')[1], ...v })) },
+  }));
   const usageTimer = setInterval(() => void flushUsage(), o.usageEveryMs ?? 60_000);
   usageTimer.unref();
 

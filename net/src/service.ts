@@ -269,6 +269,17 @@ export function roomInfo(client: Client, body: any) {
 }
 
 // ------------------------------------------------------------------ status
+/** A project's rooms with people in them (or just opened), newest first: a developer's own view of their game. */
+export function projectRooms(client: Client, body: any) {
+  const project = String(body?.project ?? '');
+  const p = netProject(project);
+  if (!keyMayIssue(client, p)) throw new NetError(`This key can't read ${project}`, { status: 403 });
+  const now = Date.now();
+  const rows = db.prepare('SELECT room, transport, players, opened_at, seen_at FROM net_rooms WHERE project = ? AND seen_at > ? AND (players > 0 OR opened_at > ?) ORDER BY players DESC, seen_at DESC LIMIT 200')
+    .all(project, now - 10 * 60_000, now - 2 * 60_000) as { room: string; transport: string; players: number; opened_at: number; seen_at: number }[];
+  return { project, rooms: rows.map((r) => ({ room: r.room, transport: r.transport, players: r.players, openedAt: r.opened_at, seenAt: r.seen_at })), players: rows.reduce((n, r) => n + r.players, 0) };
+}
+
 export function status() {
   const now = Date.now();
   const ns = nodes().map((n) => ({ id: n.id, url: n.url, region: n.region, status: live(n, now) ? n.status : 'down', players: n.players, capacity: n.capacity, load: n.load, rooms: n.rooms, version: n.version, workers: n.workers, embedded: Boolean(n.embedded), beatAgoMs: now - n.beat_at }));

@@ -236,3 +236,18 @@ test('a room is open in the directory as soon as its first player is in (an invi
     assert.equal(info.players, 1);
   } finally { await a.leave(); }
 });
+
+test("a developer's own rooms, and the operator view for owner and admin keys only", async () => {
+  const a = await join('mine-1', opts({ transport: 'relay' }));
+  try {
+    const dev = addKey('dev', ['usr_dev']);
+    const listFor = (key: string, project: string) => fetch(`${endpoint}/v1/net/rooms`, { method: 'POST', headers: { Authorization: `Bearer ${key}` }, body: JSON.stringify({ project }) });
+    assert.equal((await listFor(dev, 'netdemo')).status, 403, "another project's rooms");
+    const own = await (await fetch(`${endpoint}/v1/net/rooms`, { method: 'POST', body: JSON.stringify({ project: 'netdemo' }) })).json();
+    assert.ok(own.rooms.some((r: any) => r.room === 'mine-1' && r.players === 1), JSON.stringify(own));
+    assert.equal((await fetch(`${endpoint}/v1/net/ops`, { headers: { Authorization: `Bearer ${dev}` } })).status, 403);
+    const ops = await (await fetch(`${endpoint}/v1/net/ops`)).json();
+    assert.ok(ops.node && typeof ops.node.players === 'number', 'the node and its workers');
+    assert.ok(ops.extra && typeof ops.extra.uptimeS === 'number', 'uptime and usage');
+  } finally { await a.leave(); }
+});
