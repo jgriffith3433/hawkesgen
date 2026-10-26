@@ -1,7 +1,21 @@
 # Hawkes Net for Unity WebGL
 
-Multiplayer for Unity WebGL games on Hawkes Net (Hawkes Gen `docs/net.md`): peer to peer while a room is small, the
-relay when it grows, moved between them without anyone reconnecting. Three layers; most games use the second or third.
+Multiplayer for Unity WebGL games on Hawkes Net (https://net.hawkesgen.com): peer to peer while a room is small, the
+relay when it grows, moved between them without anyone reconnecting. Three layers; most games use the first or second.
+
+## Your own game: getting in
+
+1. Sign in on **https://net.hawkesgen.com** with a hawkesgen.com account. Your project is your account's (`usr_...`).
+2. **No server** (most WebGL games: a static page, itch.io): under *Your game's sites* list where the game is served
+   (`https://mygame.com`, `https://mygame.itch.io`) and set `project = "usr_..."`. Pages there join with no key, and your
+   own machine (`http://localhost`) may too, in test rooms (`t-...`): Build And Run and play.
+   **A server** (your logins, matchmaking): set `ticketUrl` to your route instead (section 3).
+3. Put your sites' host names in the lobby's `liveHosts` (below): there your players share the live rooms; anywhere else
+   (a beta copy, localhost) the rooms are test rooms, free and apart from them.
+4. Try it: Package Manager > Hawkes Net > Samples > **Avatars** (one script on an empty GameObject: a capsule you walk
+   with WASD and everyone else's). Build for WebGL and open two tabs.
+
+Usage (player-minutes, relay data) shows on the dashboard. Peer to peer and test rooms are free.
 
 ## 1. Shared rooms: `HawkesNetLobby` (the standard way)
 
@@ -71,5 +85,5 @@ room.OnPose += (id, pose) => MoveAvatar(id, pose.position, pose.yaw);   // or re
 - WebGL builds only: the web SDK runs in the page (loaded from `https://net.hawkesgen.com/sdk/hawkes-net@1.mjs`). In the
   Editor `Join` reports the problem `webgl-only` (a lobby's status is then `offline`): keep an Editor stand-in of your own.
 - Events come on the main thread. Changed poses are read once a frame.
-- Install: by path in `Packages/manifest.json`, or embed a copy in the game's `Packages/` (what a game built on the cloud
-  build server does: Sick Of It, Yooba Land). Copy it again when this one changes.
+- Install: Package Manager > Add package from disk (this folder's `package.json`), by path in `Packages/manifest.json`, or
+  a copy in your game's `Packages/` (a build machine that can't see this folder). `CHANGELOG.md` says what changed.

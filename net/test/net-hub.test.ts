@@ -120,4 +120,9 @@ test('the front door is the dashboard; the demo page and the SDK are served by t
   const sdk = await fetch(`${hubUrl}/sdk/hawkes-net@1.mjs`);
   assert.equal(sdk.status, 200);
   assert.equal(sdk.headers.get('access-control-allow-origin'), '*');
+  const types = await fetch(`${hubUrl}/sdk/hawkes-net@1.d.ts`);
+  assert.equal(types.status, 200, 'the types, for TypeScript games');
+  assert.match(await types.text(), /export declare function lobby/);
+  assert.equal((await fetch(`${hubUrl}/sdk/hawkes-net-core.d.ts`)).status, 404, 'only the SDK has types');
+  assert.match(html, /Your game's sites/, 'a game with no server lists its sites here');
 });

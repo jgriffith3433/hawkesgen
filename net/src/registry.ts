@@ -8,7 +8,13 @@ import { trustLocalhost } from './store.ts';
 
 export type RoomConfig = { topology: 'star' | 'pair'; profile: 'light' | 'medium' | 'heavy'; maxPlayers: number; p2pMax: number; interest: any; quant?: Record<string, number>; sendHz?: number };
 export type Limits = { rooms: number; playersPerRoom: number; players: number; downBytesPerSec: number; upBytesPerSec: number; msgsPerSec: number; innerPerSec: number; messageBytes: number; ents: number; states: number; egressBytesPerSec: number; monthlyBytes: number };
-export type NetProject = { id: string; name: string; origins: string[]; keyProjects: string[]; transports: ('p2p' | 'relay')[]; signal: string; defaults: RoomConfig; limits: Limits; testPrefix: string; listed: boolean };
+export type NetProject = { id: string; name: string; origins: string[]; keyProjects: string[]; transports: ('p2p' | 'relay')[]; signal: string; defaults: RoomConfig; limits: Limits; testPrefix: string; listed: boolean; customer: boolean };
+
+/** A customer's own sites (a hawkesgen.com account's project, usr_...: their web game's pages may ask for player tickets
+ *  with no key, like a Hawkes game's): kept by the service (net_sites), set through the portal. */
+export type CustomerSites = { name: string; origins: string[] };
+let sitesOf: ((id: string) => CustomerSites | null) | null = null;
+export function useCustomerSites(fn: ((id: string) => CustomerSites | null) | null) { sitesOf = fn; }
 
 const FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'projects.json');
 const BASE_LIMITS: Limits = { rooms: 200, players: 2000, egressBytesPerSec: 5 * 1024 * 1024, monthlyBytes: 5e12, ...DEFAULT_LIMITS } as Limits;
@@ -30,18 +36,21 @@ export function netProject(id: string): NetProject {
   const raw = read();
   const d = raw.defaults ?? {};
   const p = raw.projects?.[id];
+  // Not one of ours: a customer's project with sites of its own (net_sites), else a key-only project (the defaults).
+  const site = p ? null : sitesOf?.(id) ?? null;
   const pick = (k: string) => (p && p[k] !== undefined ? p[k] : d[k]);
   return {
     id,
-    name: String(p?.name ?? id),
-    origins: [...(Array.isArray(pick('origins')) ? pick('origins') : [])].map(clean),
+    name: String(p?.name ?? site?.name ?? id),
+    origins: [...(site ? site.origins : Array.isArray(pick('origins')) ? pick('origins') : [])].map(clean),
     keyProjects: Array.isArray(pick('keyProjects')) ? pick('keyProjects').map(String) : [],
     transports: (Array.isArray(pick('transports')) ? pick('transports') : ['p2p', 'relay']).filter((t: string) => t === 'p2p' || t === 'relay'),
     signal: String(pick('signal') ?? 'hawkes'),
     defaults: { ...BASE_CONFIG, ...(d.defaults ?? {}), ...(p?.defaults ?? {}) },
     limits: { ...BASE_LIMITS, ...(d.limits ?? {}), ...(p?.limits ?? {}) },
     testPrefix: String(pick('testPrefix') ?? 't-'),
-    listed: Boolean(p),
+    listed: Boolean(p) || Boolean(site?.origins.length),
+    customer: Boolean(site),
   };
 }
 export const listedProjects = () => Object.keys(read().projects ?? {});

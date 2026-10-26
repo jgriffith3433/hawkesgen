@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 const { startTestHub, addKey } = await import('./helper.ts');
 // @ts-ignore: plain JS SDK
-const { join } = await import('../../clients/js/hawkes-net.mjs');
+const { join, lobby } = await import('../../clients/js/hawkes-net.mjs');
 const hub = await startTestHub();
 const { endpoint, svc } = hub;
 test.after(async () => { await hub.stop(); });
@@ -256,4 +256,93 @@ test("a developer's own rooms, and the operator view for owner and admin keys on
     assert.ok(ops.node && typeof ops.node.players === 'number', 'the node and its workers');
     assert.ok(ops.extra && typeof ops.extra.uptimeS === 'number', 'uptime and usage');
   } finally { await a.leave(); }
+});
+
+test("a customer's web game: the portal opens its account's door for its sites; its own key can't, and Hawkes's projects are never touched", async () => {
+  const portal = addKey('portal-sites', ['usr_*']);
+  const mine = addKey('acme', ['usr_acme']);
+  const put = (key: string, body: any) => fetch(`${endpoint}/v1/net/sites`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const door = (origin: string, room = 'lobby', project = 'usr_acme') => fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ project, room, client: { protocols: [3] } }) });
+
+  assert.equal((await door('https://acme.games')).status, 403, 'no door before the sites are set');
+  assert.equal((await put(mine, { project: 'usr_acme', origins: ['https://acme.games'] })).status, 403, "the customer's own key can't open it");
+  assert.equal((await put(portal, { project: 'sickofit', origins: ['https://acme.games'] })).status, 403, "Hawkes's own projects are the file's");
+  assert.equal((await put(portal, { project: 'usr_acme', origins: ['https://acme.games/play'] })).status, 400, 'a site, not a page');
+  assert.equal((await put(portal, { project: 'usr_acme', origins: ['http://acme.games'] })).status, 400, 'https only');
+  assert.equal((await put(portal, { project: 'usr_acme', origins: Array.from({ length: 21 }, (_, i) => `https://s${i}.acme.games`) })).status, 400, 'at most 20');
+
+  const set = await (await put(portal, { project: 'usr_acme', name: 'Acme Arena', origins: ['acme.games', 'https://WWW.acme.games/', 'https://acme.itch.io'] })).json();
+  assert.deepEqual(set.origins, ['https://acme.games', 'https://www.acme.games', 'https://acme.itch.io'], 'cleaned: https, lower case, no slash');
+  assert.equal((await door('https://acme.games')).status, 200, 'a page on its site gets a player ticket');
+  assert.equal((await door('https://www.acme.games')).status, 200);
+  assert.equal((await door('https://evil.example')).status, 403, 'other sites still not');
+  assert.equal((await door('https://acme.games', 'lobby', 'usr_other')).status, 403, "only its own project's rooms");
+  assert.equal((await door('https://acme.games', 'lobby', 'sickofit')).status, 403);
+
+  const { originAllowed, netProject } = await import('../src/registry.ts');
+  process.env.NET_TRUST_LOCALHOST = '0';
+  try {
+    assert.equal(originAllowed(netProject('usr_acme'), 'http://localhost:5173', 't-lobby'), true, 'its developers test on localhost in test rooms');
+    assert.equal(originAllowed(netProject('usr_acme'), 'http://localhost:5173', 'lobby'), false, 'never its live rooms');
+  } finally { process.env.NET_TRUST_LOCALHOST = '1'; }
+  assert.equal((await fetch(`${endpoint}/v1/net/counts?project=usr_acme&rooms=lobby`)).status, 200, 'its public counts work too');
+
+  const listed = await (await fetch(`${endpoint}/v1/net/sites`, { headers: { Authorization: `Bearer ${mine}` } })).json();
+  assert.deepEqual(listed.sites.map((x: any) => [x.project, x.name]), [['usr_acme', 'Acme Arena']], 'the customer sees its own');
+  const other = addKey('other', ['usr_other']);
+  assert.equal((await (await fetch(`${endpoint}/v1/net/sites`, { headers: { Authorization: `Bearer ${other}` } })).json()).sites.length, 0, "and nobody else's");
+
+  assert.equal((await put(portal, { project: 'usr_acme', origins: [] })).status, 200);
+  assert.equal((await door('https://acme.games')).status, 403, 'no sites: the door closes');
+});
+
+test('the lobby (the standard layer for web games): room names by where the page runs, the next shard when full, handlers kept across rooms', async () => {
+  const lo = (url: string, o: any = {}) => lobby({ ...opts({ transport: 'relay' }), liveHosts: ['mygame.com'], url, ...o });
+  assert.equal(lo('https://mygame.com/play').nameFor('level-1'), 'level-1', 'live');
+  assert.equal(lo('https://mygame.com/play').nameFor('level-1', 3), 'level-1.3', 'a shard');
+  assert.equal(lo('https://beta.mygame.dev/').nameFor('level-1'), 't-level-1', 'anywhere else: the test rooms');
+  assert.equal(lo('http://localhost:9088/?playtest=x&room=abc123').nameFor('level-1'), 't-abc123/level-1', "a playtest's own room");
+  assert.equal(lo('https://mygame.com/?room=../x').nameFor('lobby'), 'lobby', 'a bad room id is ignored');
+  assert.equal(lo('https://mygame.com/', { prefix: 'p2/' }).nameFor('lobby'), 'p2/lobby', 'the prefix');
+
+  const url = `http://localhost/?room=lob${Date.now() % 100000}`;
+  const a = lo(url, { name: 'Ada', config: { maxPlayers: 1 } });
+  const b = lo(url, { name: 'Bo', config: { maxPlayers: 1 } });
+  const statuses: string[] = [];
+  b.when('status', (x: any) => statuses.push(x.status));
+  try {
+    a.join('lobby');
+    await wait(() => a.ready, 4000, 'a in the lobby');
+    assert.match(a.roomName, /^t-lob\d+\/lobby$/);
+    b.join('lobby');
+    await wait(() => b.ready, 6000, 'b in a room');
+    assert.equal(b.shard, 2, 'the first was full: the next shard');
+    assert.equal(b.roomName, `${a.roomName}.2`);
+    assert.ok(!statuses.includes('offline'), `a full room is not an error (${statuses.join(' ')})`);
+
+  } finally { a.leave(); b.leave(); }
+
+  // Handlers subscribed once keep working when the lobby moves rooms (another area, a rejoin).
+  const u2 = `http://localhost/?room=msg${Date.now() % 100000}`;
+  const l = lo(u2, { name: 'Lu' });
+  const got: string[] = [];
+  l.on('hi', (text: string) => got.push(text));
+  try {
+    for (const area of ['town', 'field']) {
+      l.join(area);
+      await wait(() => l.ready && l.area === area, 6000, `the lobby in ${area}`);
+      const page = await join(l.roomName, opts({ transport: 'relay', name: 'Pa' }));
+      try {
+        await wait(() => l.peers.size >= 1, 3000, 'the page seen');
+        page.send('hi', area);
+        await wait(() => got.includes(area), 3000, `the message in ${area}`);
+      } finally { await page.leave(); }
+    }
+    assert.deepEqual(got, ['town', 'field'], 'one handler, two rooms, each message once');
+    l.send('ignored', 1); // in a room: goes; nothing to check but that it doesn't throw
+    l.leave();
+    l.send('dropped', 1);
+    l.pose([0, 0, 0], 0);
+    assert.equal(l.status, 'off', 'left: off, and sends are dropped quietly');
+  } finally { l.leave(); }
 });

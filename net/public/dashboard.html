@@ -49,6 +49,7 @@
   .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
   .pill.relay { color: var(--accent); border-color: var(--accent); } .pill.p2p { color: var(--ok); border-color: var(--ok); }
   .keybox { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  #siteList { width: 100%; box-sizing: border-box; font: 13px/1.5 ui-monospace, monospace; padding: 8px 10px; border: 1px solid var(--line, #ccd); border-radius: 8px; background: inherit; color: inherit; resize: vertical; }
   .step { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; margin-right: 8px; }
   footer { border-top: 1px solid var(--line); padding: 18px 0 30px; font-size: 13px; color: var(--muted); }
   footer .wrap { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
@@ -71,7 +72,22 @@
   <div class="card" id="mine"><p class="note">Loading…</p></div>
 
   <h2 id="quickstart">Quickstart</h2>
-  <p>Your players' pages hold no secrets, so a page never asks for a room directly. Your server asks hawkesgen.com for a <b>ticket</b> with your API key (above), hands it to the page, and the page joins with it. A ticket is good for one join, for 90 seconds; the SDK asks your route again when it needs another (reconnecting, moving to the relay).</p>
+  <p>Two ways in. <b>A game with no server</b> (a static page, itch.io): list its sites above and every page there joins with your project's id. <b>A game with a server</b> (logins, matchmaking): your server hands out tickets, below.</p>
+
+  <h3 id="noserver"><span class="step">0</span>No server: shared rooms</h3>
+<pre><code>import { lobby } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
+
+const lob = lobby({ project: 'usr_…', liveHosts: ['mygame.com'], name: 'Ada' }); // your project, above
+lob.on('chat', (text, from) =&gt; show(from.name, text));
+lob.onPose((peer, s) =&gt; moveAvatar(peer, s.p, s.y));
+lob.when('status', ({ status }) =&gt; hud(status));   // connecting, online, reconnecting, offline, full
+lob.join('level-1');                                // everyone in level 1 plays together
+
+lob.pose([x, y, z], yaw);                           // every frame
+lob.send('chat', 'hello');</code></pre>
+  <p class="note">A lobby is one shared room per area, kept joined: past the room's size it moves to <code>level-1.2</code>, and it joins again by itself after a dropped connection. On a site in <code>liveHosts</code> the rooms are your live ones; anywhere else (your beta, localhost) they are test rooms named <code>t-…</code>, free and apart from your players. <code>?room=abc</code> on the page puts it in its own test room (two of your browsers, one private room).</p>
+
+  <p>With a server: your players' pages hold no secrets, so a page never asks for a room directly. Your server asks hawkesgen.com for a <b>ticket</b> with your API key (above), hands it to the page, and the page joins with it. A ticket is good for one join, for 90 seconds; the SDK asks your route again when it needs another (reconnecting, moving to the relay).</p>
 
   <h3 id="server"><span class="step">1</span>Your ticket route</h3>
   <p>Any server will do. Decide who may join which room (your logins, your matchmaking), then forward the request with your key. Rooms are yours alone: nobody else's game can join them.</p>
@@ -107,7 +123,7 @@ net.when('peer:leave', ({ peer }) =&gt; removeAvatar(peer.id));</code></pre>
   <p class="note">One ES module, no build step, no dependencies. Prefer a copy? Save <a href="/sdk/hawkes-net@1.mjs">hawkes-net.mjs</a> and <a href="/sdk/hawkes-net-core.mjs">hawkes-net-core.mjs</a> side by side and import your copy.</p>
 
   <h3 id="unity"><span class="step">3</span>Unity WebGL</h3>
-  <p>The <code>com.hawkes.net</code> package runs the same SDK in the page and gives you a C# room. Point <code>ticketUrl</code> at your route from step 1.</p>
+  <p>The <code>com.hawkes.net</code> package runs the same SDK in the page and gives you a C# room. No server: <code>new HawkesNetLobby(new HawkesNetOptions { project = "usr_…" }, "mygame.com")</code> and <code>lobby.Join("level-1")</code>, the same lobby as above (<code>HawkesNetAvatars</code> drops it on a GameObject with a prefab per player). With a server: point <code>ticketUrl</code> at your route from step 1.</p>
 <pre><code>var room = HawkesNet.Join("lobby", new HawkesNetOptions { ticketUrl = "https://mygame.example/ticket", name = "Ada" });
 room.OnReady += r =&gt; Debug.Log($"in {r.Name} over {r.Transport}");
 room.On&lt;Chat&gt;("chat", (msg, from) =&gt; Show(room.Peers[from], msg.text));
@@ -185,6 +201,7 @@ void Update() {
   const asked = new URLSearchParams(location.search).get('portal');
   const PORTAL = location.hostname !== 'net.hawkesgen.com' && asked ? asked.replace(/\/+$/, '') : 'https://hawkesgen.com';
   let minted = null;
+  let editing = false; // the sites box is being typed in: the refresh waits
 
   function signedOut() {
     $('who').innerHTML = `<a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Sign in</a>`;
@@ -208,6 +225,10 @@ void Update() {
       <div class="row"><div><b>Project</b> <code>${esc(me.project)}</code></div><div class="note">Relay <code>${esc(me.service)}</code></div></div>
       ${me.paid ? '' : `<p class="warn" style="margin:12px 0 0">Hawkes Net for your own games opens once your account has bought credits or a plan. <a href="${PORTAL}/app#credits">Get credits</a></p>`}
       <h3>API key</h3>${key}
+      <h3 id="sites">Your game's sites</h3>
+      <p class="note">No server? Pages on these sites join your rooms with no key and no ticket route: <code>lobby({ project: '${esc(me.project)}', liveHosts: [...] })</code>. One site a line, like <code>https://mygame.com</code>. Your players on <code>localhost</code> always may, in test rooms (<code>t-…</code>).</p>
+      ${me.sites && !me.sites.error ? `<textarea id="siteList" rows="3" spellcheck="false" placeholder="https://mygame.com&#10;https://mygame.itch.io" ${me.paid ? '' : 'disabled'}>${esc((me.sites.origins || []).join(String.fromCharCode(10)))}</textarea>
+      <div class="keybox"><button class="btn" type="button" id="saveSites" ${me.paid ? '' : 'disabled'}>Save sites</button><span class="note" id="sitesNote">${(me.sites.origins || []).length ? `${me.sites.origins.length} of ${me.sites.max || 20}` : 'None yet: only your server can let players in.'}</span></div>` : `<p class="note">Sites aren't available right now${me.sites?.error ? ` (${esc(me.sites.error)})` : ''}.</p>`}
       <h3>Last 30 days</h3>
       ${u ? `<div class="tiles"><div><b>${num(u.playerMinutes, 1)}</b><span>player-minutes</span></div><div><b>${num(u.relayGb, 3)}</b><span>GB through the relay</span></div><div><b>${num(u.p2pGb, 3)}</b><span>GB peer to peer (free)</span></div><div><b>$${num(u.cost, 2)}</b><span>what the relay cost us</span></div></div>` : `<p class="note">Usage isn't available right now${me.usage?.error ? ` (${esc(me.usage.error)})` : ''}.</p>`}
       <h3>Rooms open now <span class="note" id="refreshed"></span></h3>
@@ -222,6 +243,14 @@ void Update() {
       load();
     });
     $('copyKey')?.addEventListener('click', () => navigator.clipboard?.writeText(minted));
+    $('saveSites')?.addEventListener('click', async () => {
+      const origins = $('siteList').value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+      const r = await fetch(`${PORTAL}/v1/net/sites`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origins }) });
+      const j = await r.json().catch(() => ({}));
+      $('sitesNote').textContent = r.ok ? `Saved: ${(j.origins || []).length} site${(j.origins || []).length === 1 ? '' : 's'}` : (j.error || 'Could not save');
+      if (r.ok) editing = false;
+    });
+    $('siteList')?.addEventListener('input', () => { editing = true; });
   }
 
   async function load() {
@@ -239,7 +268,7 @@ void Update() {
     $('status').innerHTML = `<span class="dot ${up ? 'up' : 'down'}"></span>${up ? `up · ${num(players)} playing` : 'service unreachable'}`;
   }
 
-  load().then((signedIn) => { if (signedIn) setInterval(() => { if (!document.hidden) load(); }, 15_000); });
+  load().then((signedIn) => { if (signedIn) setInterval(() => { if (!document.hidden && !editing) load(); }, 15_000); });
   status();
   setInterval(() => { if (!document.hidden) status(); }, 30_000);
 })();

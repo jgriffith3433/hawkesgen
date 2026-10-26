@@ -9,6 +9,7 @@
 //   POST /v1/net/nodes/room        a relay node's room opened, moved or closed
 //   POST /v1/net/usage             a relay node's usage for the last minute
 //   POST /v1/net/keys/rotate       a new signing key (owner)
+//   GET|POST /v1/net/sites         a customer project's sites (its web game's public door), set by the portal
 //   GET  /sdk/hawkes-net.mjs, /sdk/hawkes-net-core.mjs (and @1): the client SDK, for pages that load it from here
 // Keys are Gen API keys; how one is checked is set by the server (useKeyCheck: the box asks Gen's /v1/net/whoami).
 import fs from 'node:fs';
@@ -67,10 +68,12 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
   try {
     // The SDK files, for pages that load them from here (games may also keep a copy: clients/js/sdk.json).
     // (hawkes-net.mjs imports ./hawkes-net-core.mjs, so both are also served under their own names.)
-    const sdk = /^\/sdk\/(net|net-core|hawkes-net|hawkes-net-core)(@1)?\.mjs$/.exec(route);
-    if (sdk && (method === 'GET' || method === 'HEAD')) {
-      const f = sdkFile(sdk[1] === 'net' || sdk[1] === 'hawkes-net' ? 'hawkes-net.mjs' : 'hawkes-net-core.mjs');
-      const headers = { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': sdk[2] ? 'public, max-age=3600, stale-while-revalidate=86400' : 'public, max-age=300', ETag: f.etag, 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff' };
+    // (hawkes-net.d.ts is the SDK's types, for TypeScript games.)
+    const sdk = /^\/sdk\/(net|net-core|hawkes-net|hawkes-net-core)(@1)?\.(mjs|d\.ts)$/.exec(route);
+    if (sdk && (method === 'GET' || method === 'HEAD') && (sdk[3] === 'mjs' || sdk[1] === 'hawkes-net' || sdk[1] === 'net')) {
+      const types = sdk[3] === 'd.ts';
+      const f = sdkFile(types ? 'hawkes-net.d.ts' : sdk[1] === 'net' || sdk[1] === 'hawkes-net' ? 'hawkes-net.mjs' : 'hawkes-net-core.mjs');
+      const headers = { 'Content-Type': types ? 'application/typescript; charset=utf-8' : 'text/javascript; charset=utf-8', 'Cache-Control': sdk[2] ? 'public, max-age=3600, stale-while-revalidate=86400' : 'public, max-age=300', ETag: f.etag, 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff' };
       if (req.headers['if-none-match'] === f.etag) return void res.writeHead(304, headers).end();
       res.writeHead(200, { ...headers, 'Content-Length': f.body.length });
       return void res.end(method === 'HEAD' ? undefined : f.body);
@@ -139,6 +142,13 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       const c = await checkKey(req);
       if (!c) return send(res, 401, { error: 'A Gen key is needed' });
       return send(res, 200, svc.projectRooms(c, await readJson(req)));
+    }
+    // A customer's sites (the public door for their web game): the portal sets them after its own checks.
+    if (route === '/v1/net/sites' && (method === 'GET' || method === 'POST')) {
+      const c = await checkKey(req);
+      if (!c) return send(res, 401, { error: 'A Gen key is needed' });
+      if (method === 'GET') return send(res, 200, svc.customerSites(c, String(new URL(req.url ?? '/', 'http://x').searchParams.get('project') ?? '')));
+      return send(res, 200, svc.setCustomerSites(c, await readJson(req)));
     }
     // The operator's view (an owner or admin key): every node and worker, rooms per project, what waits to reach Gen.
     if (route === '/v1/net/ops' && method === 'GET') {

@@ -9,7 +9,8 @@
     "hawkes-analytics.d.ts",
     "hawkes-analytics.d.mts",
     "hawkes-net.mjs",
-    "hawkes-net-core.mjs"
+    "hawkes-net-core.mjs",
+    "hawkes-net.d.ts"
   ],
   "consumers": {
     "doseofdestructionwebsite": {
