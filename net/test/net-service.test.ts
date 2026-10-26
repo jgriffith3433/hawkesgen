@@ -227,3 +227,12 @@ test("the portal's rooms have no keyless door, and localhost is a door only wher
   try { assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), false, 'on the box: anyone can say localhost'); }
   finally { process.env.NET_TRUST_LOCALHOST = '1'; }
 });
+
+test('a room is open in the directory as soon as its first player is in (an invitation asked a moment later)', async () => {
+  const a = await join('soon1', opts({ transport: 'auto' }));
+  try {
+    const info = await fetch(`${endpoint}/v1/net/room`, { method: 'POST', body: JSON.stringify({ project: 'netdemo', room: 'soon1' }) }).then((x) => x.json());
+    assert.equal(info.open, true);
+    assert.equal(info.players, 1);
+  } finally { await a.leave(); }
+});

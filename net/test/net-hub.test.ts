@@ -103,8 +103,9 @@ test('players play on the service, and their usage goes to Gen with the service\
     // (The directory hears the count from the node within a few seconds.)
     const room = await wait(async () => { const j = await (await post('/v1/net/room', { project: 'usr_00000000000000aa', room: 'match-1' }, asPortal('usr_00000000000000aa'))).json(); return j.players === 2 ? j : null; }, 15_000, 'the directory to count both');
     assert.equal(room.open, true);
+    await new Promise((r) => setTimeout(r, 1500)); // (usage counts player-seconds on the relay's one-second tick)
   } finally { await a.leave(); await b.leave(); }
-  await wait(() => usage.some((u) => u.rows.some((r: any) => r.project === 'usr_00000000000000aa' && r.transport === 'relay' && r.playerSeconds > 0)), 15_000, `usage at Gen (${logs.join('').slice(-300)})`);
+  await wait(() => usage.some((u) => u.rows.some((r: any) => r.project === 'usr_00000000000000aa' && r.transport === 'relay' && r.playerSeconds > 0)), 15_000, `usage at Gen: ${JSON.stringify(usage).slice(0, 600)} (${logs.join('').slice(-300)})`);
 });
 
 test('the demo page and the SDK are served by the service', async () => {

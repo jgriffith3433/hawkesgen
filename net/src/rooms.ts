@@ -135,6 +135,10 @@ export class Rooms {
     room.peers.set(peer.id, peer);
     this.stats.joins++;
     this.attach(room, peer, ws, v, now, false);
+    // The directory hears about a newcomer now, not at the next tick: an invitation asked a moment later sees the room open.
+    let n = 0;
+    for (const p of room.peers.values()) if (p.ws) n++; // (counted as the tick counts)
+    if (n !== room.reported) { room.reported = n; this.o.onRoom?.({ project: room.project, room: room.name, epoch: room.dirEpoch, event: 'count', transport: room.mode, players: n, at: now }); }
     // Grown past what one host's uplink should carry: everyone moves to the relay, on these same sockets.
     if (room.mode === 'p2p' && room.allowRelay && room.want === 'auto' && this.present(room) > room.cfg.p2pMax) this.migrate(room, 'room grew', now);
   }
