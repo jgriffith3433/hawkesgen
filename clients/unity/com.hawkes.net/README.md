@@ -60,6 +60,26 @@ A component: set `Project`, `Area`, `LiveHosts`, `Local` (your player) and `Remo
 sends your pose, and keeps one prefab per other player, moved smoothly a little behind their own clock (`Delay`).
 `Extra` rides with your pose; read `Remotes[id].Extra` on the others.
 
+## In the background
+
+Players hide tabs, minimise and cover windows all the time, and the browser stops a Unity game there. Hawkes Net keeps
+the room going (its web SDK's sends run on a clock browsers don't slow), shows the player as away to the others, and a
+host whose page is away hands the room to a present player, so whatever the host simulates keeps moving:
+
+```csharp
+lobby.PeerAway += (id, away) => avatars[id].SetDimmed(away);   // or room.OnPeerAway / room.Away
+room.OnHost += id => Debug.Log($"host {id} ({room.HostReason})"); // "host away" when handed over
+```
+
+A game that must keep running while hidden (a turn timer, a fight, a host's simulation others wait on):
+
+```csharp
+HawkesNet.RunInBackground = true; // also sets Application.runInBackground
+```
+
+Unity's main loop then runs about 60 times a second from Hawkes Net's background clock until the page is seen again.
+Presence games usually leave it off: the player is shown as away and the host role moves on.
+
 ## 3. The room: `HawkesNet.Join`
 
 ```csharp

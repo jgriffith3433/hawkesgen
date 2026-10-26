@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (2026-10-26)
+
+- **In the background** (a hidden tab, a minimised or covered window): the room stays at full speed (the web SDK's
+  background clock), the player shows as away to the others (`Room.Away`, `OnPeerAway`, `HawkesNetLobby.PeerAway`;
+  `IsAway`, `OnAway` for your own), and an away host hands the room to a present player (`HostReason` "host away").
+  `Room.SetAway(bool)` for a game paused in its own menu.
+- `HawkesNet.RunInBackground = true` keeps Unity running in the background (its main loop from Hawkes Net's background
+  clock, about 60 times a second; it also sets `Application.runInBackground`). Off by default.
+
 ## 0.3.0 (2026-10-26)
 
 - The relay by default (`HawkesNetOptions.transport` is `"relay"`): peer to peer (`"auto"`) only where the project

@@ -469,6 +469,68 @@ test('express in a peer to peer room: through the host (the signal route here; a
   } finally { await a.leave(); await b.leave(); await c.leave(); }
 });
 
+for (const transport of ['relay', 'auto'] as const) {
+  test(`away (${transport === 'relay' ? 'the relay' : 'peer to peer'}): everyone sees it, an away host hands the room to the first present player and doesn't take it back; a joiner hears who is away`, async () => {
+    const o = (name: string) => opts({ name, transport, config: { p2pMax: 4, maxPlayers: 8 } });
+    const room = `away-${transport}`;
+    const a = await join(room, o('Ada'));
+    const b = await join(room, o('Bo'));
+    const c = await join(room, o('Cy'));
+    const raw: any[] = [];
+    let d: any = null;
+    try {
+      await wait(() => a.peers.size === 2 && b.peers.size === 2 && c.peers.size === 2, 6000, 'three in the room');
+      assert.equal(a.isHost, true, 'the first in hosts');
+      const seen: any[] = [], hosts: any[] = [];
+      b.when('peer:away', (e: any) => seen.push([e.peer.id, e.away]));
+      c.when('host', (e: any) => hosts.push(e));
+      a.setAway(true);
+      await wait(() => seen.length === 1, 3000, 'B hears A is away');
+      assert.deepEqual(seen[0], [a.id, true]);
+      assert.equal(b.peers.get(a.id).away, true);
+      await wait(() => b.isHost && c.host === b.id && a.host === b.id, 3000, 'the host role moves to B');
+      assert.equal(hosts.at(-1).reason, 'host away');
+      // A joiner hears who is away in its hello.
+      d = await join(room, opts({ name: 'Di', transport, onRaw: (m: any) => raw.push(m), config: { p2pMax: 4, maxPlayers: 8 } }));
+      await wait(() => d.peers.has(a.id), 4000, 'D sees A');
+      assert.equal(d.peers.get(a.id).away, true, 'the joiner knows A is away');
+      assert.equal(d.host, b.id);
+      // Back: everyone sees it, and the host stays B.
+      a.setAway(false);
+      await wait(() => seen.length === 2, 3000, 'B hears A is back');
+      assert.deepEqual(seen[1], [a.id, false]);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(b.isHost, true, 'the host role is not taken back');
+      // Everyone away: the role moves along while someone is still present, then stays; the first back takes it.
+      for (const x of [a, b, d]) x.setAway(true);
+      await wait(() => [a, b, c, d].every((x) => x.host === c.id), 3000, 'C, the only one present, hosts');
+      c.setAway(true);
+      await new Promise((r) => setTimeout(r, 400));
+      assert.equal(a.host, c.id, 'nobody present to hand it to: C keeps it');
+      a.setAway(false);
+      await wait(() => [a, b, c, d].every((x) => x.host === a.id), 3000, 'the first back (A) hosts');
+      assert.ok(raw.some((m) => m.t === 'host' && m.c === a.id), 'an engine on raw messages hears the host change');
+      for (const x of [b, d]) x.setAway(false);
+      c.setAway(false);
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(b.host, a.id, 'the others coming back change nothing');
+    } finally { await a.leave(); await b.leave(); await c.leave(); await d?.leave(); }
+  });
+}
+
+test('background(): the game step keeps going where there are no animation frames, at about the asked rate, until stopped', async () => {
+  // @ts-ignore: plain JS SDK
+  const { background } = await import('../../clients/js/hawkes-net.mjs');
+  let n = 0;
+  const stop = background(() => n++, { hz: 50 });
+  await new Promise((r) => setTimeout(r, 500));
+  stop();
+  const ran = n;
+  assert.ok(ran >= 15 && ran <= 30, `about 25 steps in 0.5 s at 50 Hz (ran ${ran})`);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(n, ran, 'stopped');
+});
+
 test("records: a game's public store (a leaderboard's signed results): its sites write, anyone reads, localhost only test records, the newest per key and author", async () => {
   const hex = (n: number, c: string) => c.repeat(n);
   const ev = (o: any = {}) => ({ id: hex(64, 'a'), pubkey: hex(64, 'b'), sig: hex(128, 'c'), created_at: Math.floor(Date.now() / 1000), kind: 30078, tags: [['d', 'hawkes-dod/result/m1'], ['t', 'hawkes-dod/results/global']], content: '{"v":1}', ...o });

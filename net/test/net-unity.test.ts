@@ -24,6 +24,8 @@ const env = {
   lengthBytesUTF8: (s: string) => Buffer.byteLength(s),
   _malloc: () => heap.push(null) - 1,
   stringToUTF8: (s: string, p: number) => { heap[p] = s; },
+  // Unity's main loop as Emscripten keeps it (RunInBackground runs one iteration at a time).
+  Browser: { mainLoop: { iterations: 0, func() { this.iterations++; }, runIter(f: () => void) { f.call(this); } } },
 };
 const src = fs.readFileSync(new URL('../../clients/unity/com.hawkes.net/Runtime/Plugins/WebGL/HawkesNet.jslib', import.meta.url), 'utf8');
 new Function(...Object.keys(env), src)(...Object.values(env));
@@ -95,6 +97,34 @@ test('a Unity game joins through the bridge: ready, peers, messages as JSON both
   const left = await wait(() => got.find((e) => e.h === 2 && e.e === 'leave'), 5000, 'Bo hears Ada leave');
   assert.equal(left.peer, ready1.peer);
   lib.HawkesNet_Leave(2);
+});
+
+test("away through the bridge: a peer's page in the background, the host handed over, and the game's own SetAway", async () => {
+  lib.HawkesNet_Join(4, ptr('unity-away'), ptr(opts('Host')), ptr('HawkesNet'));
+  const r4 = await wait(() => got.find((e) => e.h === 4 && e.e === 'ready'), 5000, 'room 4 ready');
+  lib.HawkesNet_Join(5, ptr('unity-away'), ptr(opts('Other')), ptr('HawkesNet'));
+  const r5 = await wait(() => got.find((e) => e.h === 5 && e.e === 'ready'), 5000, 'room 5 ready');
+  assert.equal(r5.host, r4.peer, 'the first in hosts');
+  lib.HawkesNet_SetAway(4, 1);
+  const away = await wait(() => got.find((e) => e.h === 5 && e.e === 'away'), 5000, 'Other hears Host is away');
+  assert.deepEqual([away.peer, away.away], [r4.peer, true]);
+  const host = await wait(() => got.find((e) => e.h === 5 && e.e === 'host' && e.peer === r5.peer), 5000, 'the room handed to Other');
+  assert.equal(host.reason, 'host away');
+  assert.ok(got.find((e) => e.h === 4 && e.e === 'selfaway' && e.away === true), 'the game hears its own page is away');
+  lib.HawkesNet_Join(6, ptr('unity-away'), ptr(opts('Late')), ptr('HawkesNet'));
+  const r6 = await wait(() => got.find((e) => e.h === 6 && e.e === 'ready'), 5000, 'room 6 ready');
+  assert.equal(JSON.parse(r6.data).find((p: any) => p.peer === r4.peer)?.away, true, 'a joiner knows who is away');
+  lib.HawkesNet_Leave(4); lib.HawkesNet_Leave(5); lib.HawkesNet_Leave(6);
+});
+
+test("RunInBackground: Unity's main loop runs from Hawkes Net's background clock until it is turned off", async () => {
+  const loop = (env.Browser.mainLoop as any);
+  assert.equal(lib.HawkesNet_RunInBackground(1, ptr(sdkUrl)), 1, "Unity's main loop found");
+  await wait(() => loop.iterations > 10, 3000, 'iterations');
+  assert.equal(lib.HawkesNet_RunInBackground(0, ptr(sdkUrl)), 1);
+  const n = loop.iterations;
+  await new Promise((r) => setTimeout(r, 150));
+  assert.ok(loop.iterations - n <= 1, 'stopped');
 });
 
 test('a refused join reaches the game as an error event, never a throw', async () => {
