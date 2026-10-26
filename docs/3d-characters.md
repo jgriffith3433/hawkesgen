@@ -233,13 +233,13 @@ The first op is always `import`. The rest run in order, and any op can come more
 |---|---|---|
 | `import` | `file`, `height`, `facing`, `clips` (true), `names`, `map` | The character: GLB/GLTF, FBX or OBJ, with its skeleton and the clips in the file (unless `clips: false`). The object transforms are baked in, so 1 unit = 1 m (a Mixamo FBX comes in at 0.01 scale and turned 90°). It stands on the ground, centered, facing -Y. `facing: "auto"` reads the facing from the hips and shoulders; a number gives the current facing in degrees. `height` scales to that many meters. |
 | `clean` | `triangles` (25000), `merge` (0.0001 m), `normals` (true) | Merges vertices closer than `merge`, recalculates normals to face outward, and collapse-decimates to the triangle budget (it repeats the pass until the mesh fits, and warns if it still does not). Shape keys are dropped, with a warning. A copy of the uncleaned mesh is kept as the bake source. The result says how far the surface moved (`silhouette`: max and 99th percentile, in meters), and there is a warning when the 99th percentile is over 1% of the height. |
-| `bake` | `size` (2048, max 2048), `maps` (`["color", "normal"]`), `high`, `samples` (8), `margin` (16), `extrusion`, `distance`, `roughness` (0.8) | Joins the meshes into one, unwraps them with a new smart-UV map, and bakes base color and a tangent-space normal map from the high-poly. The high-poly is file `high`, else the copy `clean` kept, else the mesh as it was. The meshes get one material with the maps, packed into every export. |
+| `bake` | `size` (2048, max 2048), `maps` (`["color", "normal"]`), `high`, `samples` (8), `extrusion` (2% of the height), `distance` (5%), `roughness` (0.8), `angle` (66), `islandMargin` (0.01) | Joins the meshes into one, unwraps them (smart UV project at `angle` degrees, islands packed with `islandMargin` between them), and bakes base color and a tangent-space normal map from the high-poly. The high-poly is file `high`, else the copy `clean` kept, else the mesh as it was. Every texel no ray reached (a miss) and every texel between the islands then takes the color of the nearest baked ones (push-pull fill over the whole texture), so seams, mipmaps and JPEG never pull black into the model. The result says `misses` per map (the share of island texels no ray reached; over 2% warns: raise `distance`). `margin` is ignored (the fill replaces it). The meshes get one material with the maps, packed into every export. |
 | `report` | none | Scores the mesh 0 to 100 (clean from 80, usable from 60, otherwise messy): triangles, loose pieces, tiny floating shards, boundary and non-manifold edges, degenerate and thin triangles, left/right asymmetry. Put one before and one after the repair ops to see what changed. |
 | `fix` | `shards` (0.02), `holes` (12), `merge` (0.0001 m), `smooth` (0) | Repairs a generated mesh: merges doubles, removes degenerate faces and loose edges, deletes pieces smaller than `shards` of the biggest piece's area, fills holes up to `holes` edges, recalculates normals. Returns before and after metrics. |
 | `symmetrize` | `side` (`auto`, `+X`, `-X`), `center`, `merge` | Mirrors the denser half over the other so a lopsided generated figure is left/right the same. Static meshes only (before rigging). |
 | `retopo` | `faces` (8000), `mode` (`quad` or `voxel`), `symmetry`, `fix` (true), `seed` | Rebuilds the surface with clean quads (Quadriflow; voxel remesh and decimate as a fallback). The original is kept as the bake source, and the result reports the silhouette error against it. Fails on a rigged character: retopologise before `mesh.rig`. |
 | `project` | `views!` (`[{ file, view: front/left/back/right or degrees, weight }]`), `size` (2048), `sharpness` (2), `margin`, `rebuild_uv` | Paints the color texture from cutout pictures (a PNG per view, background removed) projected onto the mesh. Each texel takes its color from the views that face it, weighted by angle, with occlusion; texels no view sees keep the baked color; seams are dilated. Writes `<name>_color.png` and sets the material. Azimuth: 0 front (the camera at -Y), 90 the camera at +X (the `right` view: it sees the character's own left side), 180 back, 270 the `left` view (camera at -X). View names mean what they mean in `image.viewsheet` (below). Run it after `bake`. |
-| `lod` | `levels` (`[0.5, 0.25, 0.1]`), `name`, `compress`, `textures` | Writes a lower-detail GLB per ratio (`character_LOD1.glb`…). `compress` and `textures` work as in `export`. |
+| `lod` | `levels` (`[0.5, 0.25, 0.1]`), `sizes`, `rebake` (true), `name`, `compress`, `textures`, and the `bake` fields | Writes a lower-detail GLB per ratio (`character_LOD1.glb`…), skinned like the mesh. Each level is welded first (a GLB stores a vertex per UV island at every seam; decimating those pieces apart tore the old levels to shreds), decimated, and, when the mesh is textured, given its own UVs and its own bake from the full mesh (`sizes`: one texture size per level; default the mesh's texture size halved per level, at least 256). `rebake: false` keeps the old way (the full mesh's UVs on fewer triangles). The result says per level `welded`, `texture` and `misses`. `compress` and `textures` work as in `export`. |
 | `pack` | `size` (largest source, 64 to 4096), `ao` (a picture's file index) | Packs roughness, metallic and optional ambient occlusion into one ORM texture (R occlusion, G roughness, B metallic: glTF's layout), so a material samples fewer textures. A material whose roughness and metallic are plain numbers needs no texture and is left alone (reported under `skipped`). Run it before `export`. |
 | `collision` | `mode` (`hulls`, `hull`, `box`, `capsule`), `faces` (64 per hull, 8 to 256), `parts` (5 slabs along the height, 1 to 16), `name` | Physics proxies. `hulls` and `hull` write `<name>_collision.glb` with convex meshes named `UCX_<name>_NN` (Unreal reads them as collision; Unity and Godot use them as MeshCollider and ConvexPolygonShape3D). `box` and `capsule` also report their size (`capsule`: radius, height, center in the result and `character.json`). |
 | `attach` | `file`, `bone`, `offset` (m), `rotation` (degrees XYZ), `size` or `scale`, `origin` (`file`, `center`, `bottom` or `top`), `name` | A prop parented to a bone. `offset` and `rotation` are in the bone's own axes; Mixamo bones point along +Y. `origin` is the grip point: `bottom` for a bat held at the handle. `size` scales the prop's longest side to that many meters. It exports as a child of the bone. |
@@ -393,7 +393,7 @@ POST /v1/entities/phorigins/pierce/slots/concept/make
 
 ## mesh.rig
 
-`mesh.rig` (version 2, family `rig`) rigs the mesh before `blender.character` sees it. It is not a ComfyUI node and
+`mesh.rig` (version 3, family `rig`) rigs the mesh before `blender.character` sees it. It is not a ComfyUI node and
 it is not on the fleet image. The first job on a server installs two venvs under `/opt/hawkes-rig` (the Blender
 install pattern in `src/providers/rig/install.ts`) and refuses to start unless the disk has 30 GB free.
 
@@ -409,8 +409,22 @@ would spend the disk for a worse skin. The paid Auto-Rig Pro addon is not cloned
 Face is gated, so the 52-bone template Make-It-Animatable reads (`data/Mixamo/bones.fbx`) is generated on the
 server from the bone names and parents (`post/rig/make_template.py`). The attention mask only uses those parents.
 
-**Params:** `kind` (`humanoid` or `auto`), `keepTextures` (default true: copy the source materials back when the
-model dropped them and the vertex count still matches). `height` and `facing` are applied before the model runs.
+**Params:** `kind` (`humanoid` or `auto`), `keepTextures` (default true: the source's materials, every map, and UVs
+go back on the rigged mesh). `height` and `facing` are applied before the model runs.
+
+**What the finish step does with the model's file (version 3, 2026-10-26).** Make-It-Animatable's FBX comes into
+Blender lying along Y, and version 2 then scaled the lying thickness to `height` (about 3 m tall, on its back). Now:
+- the skeleton says which way is up: everything is turned so `Hips` to `Head` points +Z and the toes point to the
+  front (-Y), before the feet are planted and the height is fitted (the result's `turned` is the angle);
+- the textures: the models keep the faces in order but merge vertices their own way, so the source's materials (the
+  model kept at most the color, never the normal map) and UVs are copied loop by loop whenever the face and loop
+  counts match (version 2 compared vertex counts, which never match). When the model rebuilt the faces, our own
+  input mesh is laid back on the model's (the 24 axis turns, fitted by the bounds, the one whose points land on it)
+  and skinned with the model's weights by nearest surface, so its UVs and maps are untouched; a mesh the model
+  re-posed (Make-It-Animatable puts the arms in a T) does not land, and keeps the model's mesh with a warning;
+- meshes no bone moves (the glTF importer's bone shapes) are dropped.
+
+Test: `test/rig.test.ts` ("a rigger file lying on its side").
 
 **Outputs:** `rigged` (GLB, with a clip named Walk), `fbx`, `walk` (the preview), `preview` (its first frame). The
 walk is a one-second cycle repeated for `seconds` (default 4), played in place. A `character3d` rig files the GLB

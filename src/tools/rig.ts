@@ -169,7 +169,7 @@ export function rigScript(o: { fps: number; frames: number; turntable: boolean }
 
 export const meshRigTool: Tool = {
   id: 'mesh.rig',
-  version: 2,
+  version: 3,
   title: 'Rig and skin a mesh',
   description:
     'Rigs and skins a mesh from mesh.views3d (GLB, or FBX/OBJ). kind humanoid uses Make-It-Animatable, which builds a Mixamo skeleton ' +
@@ -244,7 +244,7 @@ export const meshRigTool: Tool = {
         'prep.json': JSON.stringify({ mode: 'prep', mesh: `${ws.dir}/in/mesh${ext}`, prepared, ...shared }, null, 1),
         'classify.json': JSON.stringify({ mode: 'classify', mesh: prepared, ...shared }, null, 1),
         'finish.json': JSON.stringify({
-          mode: 'finish', rigged: `${ws.dir}/out/rigged_in.fbx`, source: `${ws.dir}/in/mesh${ext}`,
+          mode: 'finish', rigged: `${ws.dir}/out/rigged_in.fbx`, source: `${ws.dir}/in/mesh${ext}`, prepared,
           keepTextures: p.keepTextures !== false, clips: remote, frames, ...shared,
         }, null, 1),
         'turn.json': JSON.stringify(turn, null, 1),

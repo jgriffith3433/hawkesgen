@@ -687,6 +687,155 @@ def join_meshes():
     return CHAR["meshes"][0]
 
 
+def _half(a):
+    h, w = a.shape[:2]
+    if h % 2 or w % 2:
+        a = np.pad(a, ((0, h % 2), (0, w % 2)) + ((0, 0),) * (a.ndim - 2), mode="edge")
+    return a[0::2, 0::2] + a[1::2, 0::2] + a[0::2, 1::2] + a[1::2, 1::2]
+
+
+def fill_gaps(rgb, known):
+    """Every texel no island covers, and every bake miss, takes the color of the nearest covered texels (push-pull over
+    a pyramid), so seams, mipmaps and JPEG never pull black into the model. Covered texels keep their color exactly."""
+    sums = [rgb * known[..., None]]
+    wts = [known.astype(np.float32)]
+    while max(wts[-1].shape) > 1:
+        sums.append(_half(sums[-1]))
+        wts.append(_half(wts[-1]))
+    col = sums[-1] / np.maximum(wts[-1], 1e-8)[..., None]
+    for s, wgt in zip(reversed(sums[:-1]), reversed(wts[:-1])):
+        h, w = wgt.shape
+        up = np.repeat(np.repeat(col, 2, 0), 2, 1)[:h, :w]
+        a = np.clip(wgt, 0, 1)[..., None]
+        col = s / np.maximum(wgt, 1e-8)[..., None] * a + up * (1 - a)
+    return col
+
+
+def uv_cover(me, size):
+    """Which texels of a size x size texture the active UV layer's triangles cover."""
+    me.calc_loop_triangles()
+    uvs = np.empty(len(me.loops) * 2, dtype=np.float32)
+    me.uv_layers.active.uv.foreach_get("vector", uvs)
+    uvs = uvs.reshape(-1, 2) * size
+    tri = np.empty(len(me.loop_triangles) * 3, dtype=np.int32)
+    me.loop_triangles.foreach_get("loops", tri)
+    cover = np.zeros((size, size), dtype=bool)
+    for p in uvs[tri.reshape(-1, 3)]:
+        x0, y0 = np.maximum(np.floor(p.min(axis=0)).astype(int), 0)
+        x1, y1 = np.minimum(np.ceil(p.max(axis=0)).astype(int), size - 1)
+        if x1 < x0 or y1 < y0:
+            continue
+        d = (p[1, 1] - p[2, 1]) * (p[0, 0] - p[2, 0]) + (p[2, 0] - p[1, 0]) * (p[0, 1] - p[2, 1])
+        if abs(d) < 1e-9:
+            continue
+        gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
+        a = ((p[1, 1] - p[2, 1]) * (gx - p[2, 0]) + (p[2, 0] - p[1, 0]) * (gy - p[2, 1])) / d
+        b = ((p[2, 1] - p[0, 1]) * (gx - p[2, 0]) + (p[0, 0] - p[2, 0]) * (gy - p[2, 1])) / d
+        cover[y0:y1 + 1, x0:x1 + 1] |= (a >= 0) & (b >= 0) & (a + b <= 1)
+    return cover
+
+
+def unwrap(low, o):
+    """New UVs for a baked mesh: smart project, then the islands packed tight with room between them."""
+    margin = float(o.get("islandMargin", 0.01))
+    for layer in list(low.data.uv_layers):
+        if layer.name == "baked":
+            low.data.uv_layers.remove(layer)
+    uv = low.data.uv_layers.new(name="baked")
+    low.data.uv_layers.active = uv
+    select([low], low)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=math.radians(float(o.get("angle", 66))), island_margin=margin, area_weight=0.0,
+                             correct_aspect=True, scale_to_bounds=False)
+    bpy.ops.uv.select_all(action="SELECT")
+    bpy.ops.uv.pack_islands(rotate=True, margin=margin, shape_method="CONCAVE")
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def bake_onto(low, high, size, maps, o, label=None):
+    """Unwrap `low` and bake the color (and normal) of the `high` meshes onto it, misses and gaps filled. The images go
+    into a new material on `low` (packed, and saved under textures/). Returns what it made, with the share of texels
+    inside the islands that no ray reached (filled from their neighbors)."""
+    unwrap(low, o)
+    label = label or low.name
+    mat = bpy.data.materials.new("baked" if label == low.name else f"baked_{label}")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+    low.data.materials.clear()
+    low.data.materials.append(mat)
+    imgs = {}
+    for m in maps:
+        img = bpy.data.images.new(f"{label}_{m}", size, size, alpha=True)
+        img.pixels.foreach_set(np.zeros(size * size * 4, dtype=np.float32))
+        if m == "normal":
+            img.colorspace_settings.name = "Non-Color"
+        node = nt.nodes.new("ShaderNodeTexImage")
+        node.image = img
+        imgs[m] = (img, node)
+    scene.render.engine = "CYCLES"
+    device = gpu_setup()
+    scene.cycles.samples = int(o.get("samples", 8))
+    bk = scene.render.bake
+    bk.use_selected_to_active = True
+    H = CHAR["height"] or 1.8
+    bk.cage_extrusion = float(o.get("extrusion", H * 0.02))
+    bk.max_ray_distance = float(o.get("distance", H * 0.05))
+    bk.margin = 0  # fill_gaps does it, over the whole texture
+    hidden = [x.hide_render for x in high]
+    for x in high:
+        x.hide_render = False
+        x.hide_set(False)
+    cover = uv_cover(low.data, size)
+    misses = {}
+    for m in maps:
+        img, node = imgs[m]
+        nt.nodes.active = node
+        say("step", f"baking {m} at {size}x{size} ({device})")
+        select(list(high) + [low], low)
+        if m == "color":
+            bk.use_pass_direct = False
+            bk.use_pass_indirect = False
+            bk.use_pass_color = True
+            bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"}, use_selected_to_active=True)
+        else:
+            bk.normal_space = "TANGENT"
+            bpy.ops.object.bake(type="NORMAL", use_selected_to_active=True)
+        px = np.empty(size * size * 4, dtype=np.float32)
+        img.pixels.foreach_get(px)
+        px = px.reshape(size, size, 4)
+        known = px[..., 3] > 0.5
+        misses[m] = round(float((cover & ~known).sum() / max(cover.sum(), 1)), 4)
+        px[..., :3] = fill_gaps(px[..., :3], known)
+        px[..., 3] = 1.0
+        img.pixels.foreach_set(px.reshape(-1))
+    for x, h in zip(high, hidden):
+        x.hide_render = h
+    if "color" in imgs:
+        nt.links.new(imgs["color"][1].outputs["Color"], bsdf.inputs["Base Color"])
+    if "normal" in imgs:
+        nm = nt.nodes.new("ShaderNodeNormalMap")
+        nt.links.new(imgs["normal"][1].outputs["Color"], nm.inputs["Color"])
+        nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+    bsdf.inputs["Metallic"].default_value = 0.0
+    bsdf.inputs["Roughness"].default_value = float(o.get("roughness", 0.8))
+    tex = os.path.join(OUT, "textures")
+    os.makedirs(tex, exist_ok=True)
+    for m, (img, _) in imgs.items():
+        img.alpha_mode = "NONE"
+        img.filepath_raw = os.path.join(tex, f"{label}_{m}.png")
+        img.file_format = "PNG"
+        img.save()
+        img.pack()
+    for layer in [u for u in low.data.uv_layers if u.name != "baked"]:
+        low.data.uv_layers.remove(layer)
+    worst = max(misses.values(), default=0)
+    if worst > 0.02:
+        warn(f"bake: {worst * 100:.1f}% of the texture missed the original surface (filled from around it); raise distance, or run project after bake")
+    return {"size": size, "maps": maps, "device": device, "misses": misses}
+
+
 def op_bake(o):
     need_char("bake")
     arm = CHAR["arm"]
@@ -710,77 +859,9 @@ def op_bake(o):
         high = CHAR["high"]
         source = "original" if CHAR["high"] else "self"
     low = join_meshes()
-
-    say("step", "unwrapping (smart UV project)")
-    uv = low.data.uv_layers.new(name="baked")
-    low.data.uv_layers.active = uv
-    select([low], low)
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.select_all(action="SELECT")
-    bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=float(o.get("islandMargin", 0.003)))
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-    mat = bpy.data.materials.new("baked")
-    mat.use_nodes = True
-    nt = mat.node_tree
-    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
-    low.data.materials.clear()
-    low.data.materials.append(mat)
-    imgs = {}
-    for m in maps:
-        img = bpy.data.images.new(f"{low.name}_{m}", size, size, alpha=False)
-        if m == "normal":
-            img.colorspace_settings.name = "Non-Color"
-        node = nt.nodes.new("ShaderNodeTexImage")
-        node.image = img
-        imgs[m] = (img, node)
-
-    scene.render.engine = "CYCLES"
-    device = gpu_setup()
-    scene.cycles.samples = int(o.get("samples", 8))
-    bk = scene.render.bake
-    bk.use_selected_to_active = True
-    H = CHAR["height"] or 1.8
-    bk.cage_extrusion = float(o.get("extrusion", H * 0.01))
-    bk.max_ray_distance = float(o.get("distance", H * 0.03))
-    bk.margin = int(o.get("margin", 16))
-    for x in high:
-        x.hide_render = False
-        x.hide_set(False)
-    for m in maps:
-        img, node = imgs[m]
-        nt.nodes.active = node
-        say("step", f"baking {m} at {size}x{size} ({device})")
-        select(list(high) + [low], low)
-        if m == "color":
-            bk.use_pass_direct = False
-            bk.use_pass_indirect = False
-            bk.use_pass_color = True
-            bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"}, use_selected_to_active=True)
-        else:
-            bk.normal_space = "TANGENT"
-            bpy.ops.object.bake(type="NORMAL", use_selected_to_active=True)
-    for x in high:
-        x.hide_render = True
-    if "color" in imgs:
-        nt.links.new(imgs["color"][1].outputs["Color"], bsdf.inputs["Base Color"])
-    if "normal" in imgs:
-        nm = nt.nodes.new("ShaderNodeNormalMap")
-        nt.links.new(imgs["normal"][1].outputs["Color"], nm.inputs["Color"])
-        nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
-    bsdf.inputs["Metallic"].default_value = 0.0
-    bsdf.inputs["Roughness"].default_value = float(o.get("roughness", 0.8))
-    tex = os.path.join(OUT, "textures")
-    os.makedirs(tex, exist_ok=True)
-    for m, (img, _) in imgs.items():
-        img.filepath_raw = os.path.join(tex, f"{low.name}_{m}.png")
-        img.file_format = "PNG"
-        img.save()
-        img.pack()
-    for layer in [u for u in low.data.uv_layers if u.name != "baked"]:
-        low.data.uv_layers.remove(layer)
+    got = bake_onto(low, high, size, maps, o)
     rest_pose(arm, False)
-    return {"op": "bake", "size": size, "maps": maps, "from": source, "device": device}
+    return {"op": "bake", **got, "from": source}
 
 
 # ---------------------------------------------------------------- props
@@ -2170,19 +2251,32 @@ def op_retopo(o):
         mod.use_collapse_triangulate = True
         bpy.ops.object.modifier_apply(modifier=mod.name)
     method = "quadriflow"
-    if o.get("mode", "quad") == "voxel":
-        method = "voxel"
-    else:
-        say("step", f"quad remesh to about {faces} faces")
+
+    def quads():
         try:
             res = bpy.ops.object.quadriflow_remesh(target_faces=faces, use_mesh_symmetry=bool(o.get("symmetry", False)),
                                                    use_preserve_sharp=False, use_preserve_boundary=False,
                                                    smooth_normals=True, seed=int(o.get("seed", 0)))
-            if "FINISHED" not in res or len(x.data.polygons) < faces * 0.3:
-                method = "voxel"
-        except Exception as e:  # not manifold, too thin: fall back rather than fail the job
-            warn(f"retopo: quad remesh failed ({str(e).strip()[:80]}); used a voxel remesh")
-            method = "voxel"
+            return "FINISHED" in res and len(x.data.polygons) >= faces * 0.3
+        except Exception as e:  # not manifold, too thin
+            say("step", f"quad remesh refused the mesh ({str(e).strip()[:80]})")
+            return False
+
+    if o.get("mode", "quad") == "voxel":
+        method = "voxel"
+    else:
+        say("step", f"quad remesh to about {faces} faces")
+        if not quads():
+            # Generated meshes are rarely manifold. A fine voxel remesh is (closed, one surface, consistent normals),
+            # keeps the shape to a few millimeters, and gives the quad remesh what it needs. A voxel surface left as
+            # it is unwraps into hundreds of small UV islands, so it is only the last resort.
+            H = CHAR["height"] or 1.8
+            say("step", "closing the surface (fine voxel remesh), then the quad remesh again")
+            x.data.remesh_voxel_size = H / 300
+            bpy.ops.object.voxel_remesh()
+            method = "voxel+quadriflow" if quads() else "voxel"
+            if method == "voxel":
+                warn("retopo: the quad remesh failed even on a closed surface; used a voxel remesh (more UV islands)")
     if method == "voxel":
         H = CHAR["height"] or 1.8
         say("step", "voxel remesh")
@@ -2205,15 +2299,53 @@ def op_retopo(o):
     return got
 
 
+def _color_size(obj):
+    """The biggest image on the mesh's materials, and whether it has a normal map (0, False without textures)."""
+    size, normal = 0, False
+    for mat in obj.data.materials:
+        if not (mat and mat.node_tree):
+            continue
+        for n in mat.node_tree.nodes:
+            if n.type == "TEX_IMAGE" and n.image:
+                size = max(size, *n.image.size)
+            if n.type == "NORMAL_MAP":
+                normal = True
+    return size, normal
+
+
+def weld(obj, H):
+    """Join the vertices a GLB splits at every UV seam (each corner keeps its own UV), so a decimate sees one surface
+    and doesn't tear the islands apart."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    before = len(bm.verts)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=H * 1e-5)
+    after = len(bm.verts)
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    return before - after
+
+
 def op_lod(o):
-    """Lower-detail copies of the mesh as separate GLBs (name_LOD1.glb ...), each a ratio of the current triangles."""
+    """Lower-detail copies of the mesh as separate GLBs (name_LOD1.glb ...), each a ratio of the current triangles.
+    A textured mesh's levels are welded, decimated, and each gets its own UVs and bake from the full mesh (rebake,
+    on by default), so no level samples a texture laid out for different triangles."""
     need_char("lod")
     levels = o.get("levels") or [0.5, 0.25, 0.1]
     if not isinstance(levels, list) or not all(isinstance(r, (int, float)) and 0.01 <= r < 1 for r in levels):
         fail("lod: levels is a list of ratios between 0.01 and 1, e.g. [0.5, 0.25, 0.1]")
+    sizes = o.get("sizes")
+    if sizes is not None and (not isinstance(sizes, list) or len(sizes) != len(levels) or not all(isinstance(s, int) and 64 <= s <= 4096 for s in sizes)):
+        fail("lod: sizes is one texture size per level (64 to 4096 px), e.g. [1024, 512]")
     stem = re.sub(r"[^\w.-]", "", str(o.get("name") or "character"))[:60] or "character"
     base = join_meshes()
     tris = triangles(base)
+    H = CHAR["height"] or 1.8
+    tex, normal = _color_size(base)
+    rebake = bool(o.get("rebake", True)) and tex > 0
+    if rebake:
+        rest_pose(CHAR["arm"])
     made = []
     for k, r in enumerate(levels, 1):
         copy = base.copy()
@@ -2221,20 +2353,35 @@ def op_lod(o):
         copy.name = f"{stem}_LOD{k}"
         scene.collection.objects.link(copy)
         select([copy], copy)
+        welded = weld(copy, H)
         mod = copy.modifiers.new("hb_lod", "DECIMATE")
-        mod.ratio = float(r)
+        mod.ratio = min(1.0, float(r) * tris / max(triangles(copy), 1))
         mod.use_collapse_triangulate = True
         bpy.ops.object.modifier_apply(modifier=mod.name)
+        level = {"level": k, "ratio": r, "triangles": triangles(copy), "welded": welded}
+        if rebake:
+            size = sizes[k - 1] if sizes else max(256, tex >> (k - 1))
+            got = bake_onto(copy, [base], size, ["color", "normal"] if normal else ["color"], o, label=copy.name)
+            level.update({"texture": size, "misses": got["misses"]})
         path = os.path.join(FILES_OUT, f"{stem}_LOD{k}.glb")
-        say("step", f"writing {stem}_LOD{k}.glb ({triangles(copy)} triangles)")
+        say("step", f"writing {stem}_LOD{k}.glb ({level['triangles']} triangles)")
         keep = ([CHAR["arm"]] if CHAR["arm"] else []) + [copy]
         select(keep, keep[0])
         gltf_export(path, export_format="GLB", use_selection=True, export_yup=True, export_skins=True,
                     export_animations=False, export_materials="EXPORT", export_apply=False, **glb_compression(o))
         info["outputs"].append({"file": os.path.basename(path), "title": f"LOD{k}", "ext": ".glb"})
-        made.append({"level": k, "ratio": r, "triangles": triangles(copy), "file": os.path.basename(path)})
+        made.append({**level, "file": os.path.basename(path)})
+        mats = list(copy.data.materials) if rebake else []
         remove([copy])
-    return {"op": "lod", "from": tris, "levels": made}
+        for m in mats:
+            for n in m.node_tree.nodes if m and m.node_tree else []:
+                if n.type == "TEX_IMAGE" and n.image:
+                    bpy.data.images.remove(n.image)
+            if m:
+                bpy.data.materials.remove(m)
+    if rebake:
+        rest_pose(CHAR["arm"], False)
+    return {"op": "lod", "from": tris, "levels": made, "rebaked": rebake}
 
 
 # View names as Gen uses them everywhere (image.viewsheet, the angles op): "left" is the camera moved to the viewer's left
@@ -2407,18 +2554,14 @@ def op_project(o):
     out = base.copy() if base is not None else np.full((size, size, 4), (0.5, 0.5, 0.5, 1.0), dtype=np.float32)
     seen = wsum > 1e-4
     out[ys[seen], xs[seen], :3] = (acc[seen] / wsum[seen][:, None]).astype(np.float32)
-    covered = np.zeros((size, size), dtype=bool)
-    covered[ys[seen], xs[seen]] = True
-    margin = int(o.get("margin", 8))
-    for _ in range(margin):
-        grow = np.zeros_like(covered)
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            src = np.roll(np.roll(covered, dy, 0), dx, 1)
-            new = src & ~covered & ~grow
-            if new.any():
-                out[new, :3] = np.roll(np.roll(out, dy, 0), dx, 1)[new, :3]
-                grow |= new
-        covered |= grow
+    # Outside the islands (and, with no bake under it, wherever no view reached) every texel takes the color of the
+    # nearest painted ones, so seams and mipmaps never pull in gray or black.
+    known = np.zeros((size, size), dtype=bool)
+    known[ys[seen], xs[seen]] = True
+    if base is not None:
+        known |= uv_cover(me, size)
+    out[..., :3] = fill_gaps(out[..., :3], known)
+    out[..., 3] = 1.0
     img = bpy.data.images.get(name)
     if img is None or img.size[0] != size:
         if img is not None:

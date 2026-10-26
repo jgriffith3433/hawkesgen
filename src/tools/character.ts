@@ -29,12 +29,12 @@ export const OPS: Record<string, string[]> = {
   symmetrize: ['side', 'center', 'merge'],
   retopo: ['faces', 'mode', 'symmetry', 'fix', 'seed'],
   project: ['views!', 'size', 'sharpness', 'margin', 'rebuild_uv'],
-  lod: ['levels', 'name', 'compress', 'textures', 'level'],
+  lod: ['levels', 'name', 'compress', 'textures', 'level', 'rebake', 'sizes', 'angle', 'islandMargin', 'samples', 'extrusion', 'distance', 'roughness'],
   report: [],
   pack: ['size', 'ao'],
   collision: ['mode', 'faces', 'parts', 'name'],
   budget: ['target', 'triangles', 'materials', 'bones', 'texture', 'strict'],
-  bake: ['size', 'maps', 'high', 'samples', 'margin', 'extrusion', 'distance', 'roughness', 'islandMargin'],
+  bake: ['size', 'maps', 'high', 'samples', 'margin', 'extrusion', 'distance', 'roughness', 'islandMargin', 'angle'],
   attach: ['file!', 'bone!', 'offset', 'rotation', 'size', 'scale', 'origin', 'name'],
   retarget: ['file!', 'name', 'action', 'from', 'map', 'inPlace', 'scale'],
   trim: ['clip!', 'start', 'end', 'as'],
@@ -259,7 +259,7 @@ const MIME_EXT: Record<string, string> = { glb: '.glb', fbx: '.fbx', blend: '.bl
 
 export const blenderCharacterTool: Tool = {
   id: 'blender.character',
-  version: 4,
+  version: 5,
   title: '3D character ops in Blender (repair, retopo, bake, multi-view texture, LODs, props, retarget, robots, FBX/GLB)',
   description:
     'Runs a chain of named Blender ops on one 3D character, on a GPU server: import (GLB/FBX/OBJ), report (mesh quality: shards, holes, ' +

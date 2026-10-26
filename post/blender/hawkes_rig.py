@@ -23,6 +23,7 @@ import time
 
 import bpy
 import mathutils
+import mathutils.kdtree
 import numpy as np
 
 V = mathutils.Vector
@@ -619,42 +620,191 @@ def fit_height(meshes, arm, height):
 
 
 def copy_textures(meshes, source):
-    """When the rigger dropped materials, copy them from the source if the vertex count still matches."""
+    """Put the source's materials (every map: the rigger keeps at most the color) and UVs back on the rigged mesh. The
+    riggers keep the faces in order but merge vertices their own way, so a mesh with the source's faces and loops takes
+    them loop by loop. Returns how many meshes took them."""
     if not source or not os.path.isfile(source):
-        return
+        return 0
     before = set(bpy.data.objects)
     srcs = [o for o in import_file(source) if o.type == "MESH"]
     if not srcs:
-        return
-    donor = srcs[0]
-
-    def has_image(mesh):
-        for mat in mesh.data.materials:
-            if mat and mat.node_tree and any(n.type == "TEX_IMAGE" and n.image for n in mat.node_tree.nodes):
-                return True
-        return False
-
+        return 0
+    donor = max(srcs, key=lambda o: len(o.data.polygons))
+    took = 0
     for mesh in meshes:
-        if len(mesh.data.vertices) != len(donor.data.vertices):
-            warn(f"textures were not copied onto {mesh.name}: {len(mesh.data.vertices)} vertices, the source has {len(donor.data.vertices)}")
-            continue
-        if has_image(mesh):
+        if len(mesh.data.polygons) != len(donor.data.polygons) or len(mesh.data.loops) != len(donor.data.loops):
+            warn(f"textures were not copied onto {mesh.name}: {len(mesh.data.polygons)} faces, the source has {len(donor.data.polygons)}")
             continue
         mesh.data.materials.clear()
         for mat in donor.data.materials:
             mesh.data.materials.append(mat)
+        idx = np.empty(len(donor.data.polygons), dtype=np.int32)
+        donor.data.polygons.foreach_get("material_index", idx)
+        mesh.data.polygons.foreach_set("material_index", idx)
+        for layer in list(mesh.data.uv_layers):
+            mesh.data.uv_layers.remove(layer)
         for src_uv in donor.data.uv_layers:
-            if len(src_uv.uv) != len(mesh.data.loops):
-                warn(f"textures on {mesh.name} kept their materials but not UVs (the loop count changed)")
-                continue
-            if src_uv.name not in mesh.data.uv_layers:
-                mesh.data.uv_layers.new(name=src_uv.name)
-            dst = mesh.data.uv_layers[src_uv.name].uv
-            for i in range(len(src_uv.uv)):
-                dst[i].vector = src_uv.uv[i].vector
+            uv = np.empty(len(donor.data.loops) * 2, dtype=np.float32)
+            src_uv.uv.foreach_get("vector", uv)
+            mesh.data.uv_layers.new(name=src_uv.name).uv.foreach_set("vector", uv)
+        took += 1
     for o in list(bpy.data.objects):
         if o not in before and o not in meshes:
             bpy.data.objects.remove(o, do_unlink=True)
+    return took
+
+
+def drop_extras(meshes, arm):
+    """Meshes in the rigger's file that no bone moves (helpers, bone shapes): they would ship as loose parts."""
+    keep = [o for o in meshes if o.vertex_groups and any(m.type == "ARMATURE" and m.object == arm for m in o.modifiers)]
+    # The glTF importer draws bones with a shape of its own (an icosphere): not the rigger's, so no warning.
+    shapes = {pb.custom_shape for pb in arm.pose.bones if pb.custom_shape} | {o for o in meshes if o.name.startswith("Icosphere") and not o.vertex_groups}
+    for o in meshes:
+        if o not in keep and o in shapes:
+            for pb in arm.pose.bones:
+                if pb.custom_shape == o:
+                    pb.custom_shape = None
+            bpy.data.objects.remove(o, do_unlink=True)
+        elif o not in keep:
+            warn(f"dropped {o.name} ({len(o.data.vertices)} vertices): the rigger added it and no bone moves it")
+            bpy.data.objects.remove(o, do_unlink=True)
+    return keep or meshes
+
+
+def axis_turns():
+    """The 24 rotations that take axes onto axes (every way a file's up and front can be swapped)."""
+    out = []
+    for perm in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        for sx in (1, -1):
+            for sy in (1, -1):
+                for sz in (1, -1):
+                    r = np.zeros((3, 3))
+                    for i, (p, s) in enumerate(zip(perm, (sx, sy, sz))):
+                        r[i, p] = s
+                    if np.linalg.det(r) > 0:
+                        out.append(r)
+    return out
+
+
+def register(co, ref):
+    """The turn, scale and move that lay the rigger's mesh (co) back onto the mesh it was given (ref). Riggers write
+    their own axes and units (Make-It-Animatable's FBX comes in lying along Y), so try every axis turn, fit the bounds,
+    and keep the one whose points land on the reference surface. Returns (4x4, mean miss as a share of the height)."""
+    rng = np.random.default_rng(0)
+    pick = co[rng.choice(len(co), min(len(co), 3000), replace=False)]
+    tree = mathutils.kdtree.KDTree(len(ref))
+    for i, p in enumerate(ref):
+        tree.insert(p, i)
+    tree.balance()
+    rlo, rhi = ref.min(0), ref.max(0)
+    rext, rmid = rhi - rlo, (rlo + rhi) / 2
+    best = None
+    for r in axis_turns():
+        p = pick @ r.T
+        lo, hi = p.min(0), p.max(0)
+        s = float(np.median(rext / np.maximum(hi - lo, 1e-9)))
+        t = rmid - s * (lo + hi) / 2
+        q = p * s + t
+        miss = float(np.mean([tree.find(V(x))[2] for x in q]))
+        if best is None or miss < best[1]:
+            best = (r, miss, s, t)
+    r, miss, s, t = best
+    m = M.Identity(4)
+    for i in range(3):
+        for k in range(3):
+            m[i][k] = r[i, k] * s
+        m[i][3] = t[i]
+    return m, miss / max(float(rext[2]), 1e-6)
+
+
+def stand_up_by_bones(meshes, arm):
+    """Turn everything so the hips-to-head line points up (+Z) and the toes point to the front (-Y). Riggers write their
+    own axes: Make-It-Animatable's FBX comes in lying along Y. Returns the turn in degrees (0 when it already stood)."""
+    def bone(name):
+        return next((b for b in arm.data.bones if b.name.endswith(name)), None)
+    hips, head = bone("Hips"), bone("Head")
+    if not hips or not head:
+        return 0.0
+    up = (head.head_local - hips.head_local).normalized()
+    rot = up.rotation_difference(V((0, 0, 1))).to_matrix().to_4x4()
+    toes = [(bone(f"{s}ToeBase"), bone(f"{s}Foot")) for s in ("Left", "Right")]
+    fwd = sum(((rot @ t.head_local) - (rot @ f.head_local) for t, f in toes if t and f), V((0, 0, 0)))
+    fwd.z = 0
+    if fwd.length > 1e-6:
+        yaw = math.atan2(-fwd.x, -fwd.y)  # the turn about Z that takes fwd onto -Y
+        rot = M.Rotation(yaw, 4, "Z") @ rot
+    angle = math.degrees(rot.to_quaternion().angle)
+    if angle < 1:
+        return 0.0
+    for o in meshes + [arm]:
+        o.matrix_world = rot @ o.matrix_world
+    select(meshes + [arm], arm)
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    return angle
+
+
+def onto_reference(meshes, arm, path):
+    """Lay the rigged result back onto the mesh the rigger was given, then skin that mesh (our own, with its UVs and
+    materials untouched) with the rigger's weights by nearest surface. The rigger's meshes, and any extras it added
+    (Make-It-Animatable leaves an icosphere), are dropped. Returns the new mesh list, or None when it can't."""
+    before = set(bpy.data.objects)
+    objs = import_file(path)
+    refs = [o for o in objs if o.type == "MESH"]
+    for o in objs:
+        if o not in refs:
+            bpy.data.objects.remove(o, do_unlink=True)
+    if not refs:
+        return None
+    select(refs, refs[0])
+    if len(refs) > 1:
+        bpy.ops.object.join()
+    ref = bpy.context.view_layer.objects.active
+    ref.name = "character"
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    donors = [o for o in meshes if o.vertex_groups]
+    if not donors:
+        bpy.data.objects.remove(ref, do_unlink=True)
+        return None
+    donor = max(donors, key=lambda o: len(o.data.vertices))
+    m, miss = register(verts(donor), verts(ref))
+    info["registered"] = {"miss": round(miss, 4)}
+    if miss > 0.02:
+        warn(f"the rigged mesh does not lie on the input mesh (mean miss {miss * 100:.1f}% of the height); kept the rigger's mesh")
+        bpy.data.objects.remove(ref, do_unlink=True)
+        return None
+    for o in meshes + [arm]:
+        o.matrix_world = m @ o.matrix_world
+    select(meshes + [arm], arm)
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+    ref.vertex_groups.clear()
+    for g in donor.vertex_groups:
+        ref.vertex_groups.new(name=g.name)
+    dt = ref.modifiers.new("weights", "DATA_TRANSFER")
+    dt.object = donor
+    dt.use_vert_data = True
+    dt.data_types_verts = {"VGROUP_WEIGHTS"}
+    dt.vert_mapping = "POLYINTERP_NEAREST"
+    dt.layers_vgroup_select_src = "ALL"
+    dt.layers_vgroup_select_dst = "NAME"
+    select([ref], ref)
+    bpy.ops.object.modifier_apply(modifier=dt.name)
+    bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=4)
+    bpy.ops.object.vertex_group_normalize_all(group_select_mode="ALL", lock_active=False)
+    for o in meshes:
+        bpy.data.objects.remove(o, do_unlink=True)
+    for o in list(bpy.data.objects):
+        if o not in before and o is not ref:
+            bpy.data.objects.remove(o, do_unlink=True)
+    ref.parent = arm
+    ref.matrix_parent_inverse = M()
+    am = ref.modifiers.new("Armature", "ARMATURE")
+    am.object = arm
+    empty = unweighted(ref)
+    if empty:
+        warn(f"{empty} of {len(ref.data.vertices)} vertices got no weight from the rigger; they follow the nearest bones")
+        nearest_weights(ref, arm)
+    info["weights"] = {"method": "transfer", "nearestVertices": empty}
+    return [ref]
 
 
 def add_walk(arm, frames):
@@ -764,8 +914,15 @@ def finish():
     """The model already rigged the mesh. Plant it, keep textures, add a walk, bake any extra clips, write FBX and GLB."""
     t0 = time.time()
     meshes, arm = rig_parts(SPEC["rigged"])
+    meshes = drop_extras(meshes, arm)
+    turned = stand_up_by_bones(meshes, arm)
+    if turned:
+        info["turned"] = round(turned, 1)
+        say("step", f"turned the rig {turned:.0f} degrees to stand it up facing the front")
     if SPEC.get("keepTextures", True) and SPEC.get("source"):
-        copy_textures(meshes, SPEC["source"])
+        if not copy_textures(meshes, SPEC["source"]) and SPEC.get("prepared") and os.path.isfile(SPEC["prepared"]):
+            # The rigger rebuilt the faces: skin our own mesh (its UVs and maps untouched) with the rigger's weights.
+            meshes = onto_reference(meshes, arm, SPEC["prepared"]) or meshes
     h = plant(meshes, arm)
     h = fit_height(meshes, arm, SPEC.get("height"))
     info["height"] = round(h, 3)

@@ -56,7 +56,7 @@ test('characterScript: the ops in Blender, then each preview shot rendered and e
   assert.match(s, /res\/preview-\$n\.mp4/);
   const tool = getTool('blender.character');
   assert.ok(tool && tool.family === 'blender' && tool.output === 'mesh' && tool.inputs.files.multiple);
-  assert.equal(tool!.version, 4);
+  assert.equal(tool!.version, 5);
 });
 
 test('checkOps: angles op (four stills for mesh judging)', () => {
@@ -312,6 +312,62 @@ test('blender.character robot: split, quadarm template, procedural clips, generi
     const fbx = JSON.parse(line!.slice(6));
     assert.ok(fbx.bones.includes('Body') && !fbx.bones.some((b: string) => b.startsWith('mixamorig:')), fbx.bones);
     assert.ok(fbx.skinned);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('blender.character bake and lod: gaps filled (no black between islands), each level welded, decimated and baked onto its own UVs, skin kept', { skip, timeout: 600_000 }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hb-')).replace(/\\/g, '/');
+  try {
+    fs.mkdirSync(`${dir}/in`);
+    const run = (script: string, args: string[]) => {
+      const r = spawnSync(blender!, ['-b', '--factory-startup', '-P', path.resolve(script), '--', ...args], { encoding: 'utf8' });
+      return r.stdout + r.stderr;
+    };
+    const log = run('test/fixtures/make_character.py', [`${dir}/in/0.fbx`]);
+    assert.ok(fs.existsSync(`${dir}/in/0.fbx`), log);
+    fs.copyFileSync('post/blender/hawkes_character.py', `${dir}/hawkes_character.py`);
+    fs.copyFileSync('post/blender/hawkes_robot.py', `${dir}/hawkes_robot.py`);
+    fs.copyFileSync('post/blender/hawkes_blender.py', `${dir}/hawkes_blender.py`);
+    const ops = [
+      { op: 'import', file: 0 },
+      { op: 'bake', size: 256, samples: 1, maps: ['color'] },
+      { op: 'export', format: 'glb' },
+      { op: 'lod', levels: [0.5, 0.2], sizes: [128, 64], samples: 1 },
+    ];
+    const ins = [`${dir}/in/0.fbx`];
+    checkOps(ops, ins);
+    fs.writeFileSync(`${dir}/spec.json`, JSON.stringify({ out: `${dir}/out`, files: ins, fps: 30, device: 'cpu', ops }));
+    const py = python!.includes('/') || python!.includes('\\') ? path.resolve(python!).replace(/\\/g, '/') : python!;
+    fs.writeFileSync(`${dir}/run.sh`, characterScript({ blender: blender!, python3: py, ffmpeg: ffmpeg! }));
+    const r = spawnSync(bash!, ['run.sh'], { cwd: dir, encoding: 'utf8' });
+    assert.equal(r.status, 0, (r.stdout + r.stderr).split('\n').filter((l) => !/^Fra:|INFO/.test(l)).slice(-30).join('\n'));
+    const info = JSON.parse(fs.readFileSync(`${dir}/res/character.json`, 'utf8'));
+    const bake = info.ops.find((o: any) => o.op === 'bake');
+    assert.ok(bake.misses.color < 0.02, `misses ${JSON.stringify(bake.misses)}`);
+    const lod = info.ops.find((o: any) => o.op === 'lod');
+    assert.equal(lod.rebaked, true);
+    assert.deepEqual(lod.levels.map((l: any) => l.texture), [128, 64]);
+    assert.ok(lod.levels[0].welded > 0, 'the FBX splits vertices at seams; the level welds them');
+    const check = (file: string) => {
+      const out = run('test/fixtures/check_texture.py', [file]);
+      const line = out.split('\n').find((l) => l.startsWith('CHECK '));
+      assert.ok(line, out.split('\n').slice(-20).join('\n'));
+      return JSON.parse(line!.slice(6));
+    };
+    // The test grid has a little black lettering; what matters is that the empty space between the islands is not black.
+    const near = check(`${dir}/res/character.glb`);
+    for (const [name, im] of Object.entries<any>(near.images)) assert.ok(im.black < 0.05, `${name}: ${(im.black * 100).toFixed(1)}% black`);
+    for (const [k, l] of lod.levels.entries()) {
+      const got = check(`${dir}/res/${l.file}`);
+      assert.ok(got.skinned, `${l.file} keeps the skin`);
+      assert.ok(Math.abs(got.triangles - l.triangles) <= 2, `${l.file}: ${got.triangles} triangles, said ${l.triangles}`);
+      const ims = Object.values<any>(got.images);
+      assert.equal(ims.length, 1, `${l.file} has its own one texture: ${JSON.stringify(got.images)}`);
+      assert.deepEqual(ims[0].size, [[128, 128], [64, 64]][k]);
+      assert.ok(ims[0].black < 0.05, `${l.file}: ${(ims[0].black * 100).toFixed(1)}% black`);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

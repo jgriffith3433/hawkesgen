@@ -31,7 +31,7 @@ test('rigScript and turntableSpec: the rig, then the orbit render of the first c
   assert.equal(t.shot.camera.amount, 360);
   assert.equal('animation' in turntableSpec({ ...{ out: 'o', glb: 'r.glb', frames: 9, fps: 24, size: 512, engine: 'cycles', samples: 8 }, clip: null }).shot.characters[0], false);
   const tool = getTool('mesh.rig');
-  assert.ok(tool && tool.family === 'rig' && tool.version === 2 && tool.output === 'mesh');
+  assert.ok(tool && tool.family === 'rig' && tool.version === 3 && tool.output === 'mesh');
   assert.deepEqual(tool!.params.kind.values, ['humanoid', 'auto']);
   assert.equal(tool!.params.keepTextures.default, true);
 });
@@ -96,6 +96,46 @@ test('mesh.rig script: an A-pose humanoid rigged, a clip baked on it by bone nam
 
     const probe = spawnSync(ffmpeg!.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1'), ['-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_frames,width,height', '-of', 'csv=p=0', `${dir}/res/turntable.mp4`], { encoding: 'utf8' });
     assert.equal(probe.stdout.trim(), '256,256,9');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mesh.rig finish: a rigger file lying on its side is stood up facing the front, at the height asked, with the source materials', { skip, timeout: 900_000 }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hl-')).replace(/\\/g, '/');
+  try {
+    fs.mkdirSync(`${dir}/in`);
+    const run = (script: string, args: string[]) => {
+      const r = spawnSync(blender!, ['-b', '--factory-startup', '--python-exit-code', '1', '-P', path.resolve(script), '--', ...args], { encoding: 'utf8' });
+      const lines = (r.stdout + r.stderr).split('\n').filter((l) => !/^Fra:|INFO/.test(l));
+      return { status: r.status, lines, log: lines.slice(-30).join('\n') };
+    };
+    let r = run('test/fixtures/make_humanoid.py', [`${dir}/in/mesh.glb`]);
+    assert.equal(r.status, 0, r.log);
+    fs.writeFileSync(`${dir}/rig.json`, JSON.stringify({ mesh: `${dir}/in/mesh.glb`, clips: [], out: `${dir}/first`, fps: 24, height: 1.8 }));
+    r = run('post/blender/hawkes_rig.py', [`${dir}/rig.json`]);
+    assert.equal(r.status, 0, r.log);
+    r = run('test/fixtures/make_lying.py', [`${dir}/first/rigged.glb`, `${dir}/in/mesh.glb`, `${dir}/in/lying.glb`, `${dir}/in/source.glb`]);
+    assert.equal(r.status, 0, r.log);
+    fs.writeFileSync(`${dir}/finish.json`, JSON.stringify({
+      mode: 'finish', rigged: `${dir}/in/lying.glb`, source: `${dir}/in/source.glb`, keepTextures: true, clips: [], frames: 9, out: `${dir}/out`, height: 1.8, fps: 24,
+    }));
+    r = run('post/blender/hawkes_rig.py', [`${dir}/finish.json`]);
+    assert.equal(r.status, 0, r.log);
+    const info = JSON.parse(fs.readFileSync(`${dir}/out/rig.json`, 'utf8'));
+    assert.ok(info.turned > 80, `turned ${info.turned}`);
+    assert.ok(Math.abs(info.height - 1.8) < 0.02, `height ${info.height}`);
+    assert.deepEqual(info.warnings, []);
+    r = run('test/fixtures/check_upright.py', [`${dir}/out/rigged.glb`]);
+    const line = r.lines.find((l) => l.startsWith('CHECK '));
+    assert.ok(line, r.log);
+    const got = JSON.parse(line!.slice(6));
+    assert.ok(got.up[2] > 0.95, `hips to head ${got.up}`);
+    assert.ok(got.forward[1] < -0.8, `toes point ${got.forward} (the front is -Y)`);
+    assert.ok(got.left[0] > 0.9, `left arm at ${got.left} (+X when facing -Y)`);
+    assert.ok(Math.abs(got.height - 1.8) < 0.02 && Math.abs(got.bottom) < 0.01, `height ${got.height}, feet at ${got.bottom}`);
+    assert.equal(got.meshes, 1);
+    assert.deepEqual(got.materials, ['painted']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
