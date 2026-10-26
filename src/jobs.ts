@@ -686,7 +686,7 @@ class Queue {
       const round = await autoStartRound(want, fleet, {
         status: () => fleetStatus(),
         start: (id) => startServer(id),
-        launch: () => launchServer({ idleMinutes: fleet.idleMinutes, type: 'auto' }),
+        launch: () => launchServer({ idleMinutes: fleet.idleMinutes, type: fleet.launchType || 'g6e.xlarge' }),
         imageAvailable,
       }, this.autoBackoff);
       this.autoRound = round;

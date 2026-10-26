@@ -64,6 +64,12 @@ export type Settings = {
     auto: boolean;
     /** With auto on, also launch new servers from the fleet image when no stopped one is left. Off unless J turns it on. */
     autoLaunch: boolean;
+    /**
+     * The instance type auto launch uses (J, 2026-10-26: "make sure it launches the right one"): g6e.xlarge (one L40S,
+     * 48 GB) by default, so it never falls back to a bigger, dearer machine with the same GPU (a g6e.4xlarge once took
+     * all of us-west-2's quota for one GPU). "auto" brings back the fallback through every type, cheapest first.
+     */
+    launchType: string;
     /** How long a server sits idle before it powers itself off. */
     idleMinutes: number;
     /** When a job's models don't fit, remove the server's least recently used non-core models. */
@@ -106,7 +112,7 @@ export type Settings = {
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
-  fleet: { servers: 4, auto: true, autoLaunch: false, idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
+  fleet: { servers: 4, auto: true, autoLaunch: false, launchType: 'g6e.xlarge', idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
   // pipeline: chains (asset.make, film) only wait on their steps; many at once keep a deep queue of each GPU model family,
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
@@ -129,6 +135,7 @@ function clean(s: Settings): Settings {
       servers: n(s.fleet?.servers, 1, FLEET_MAX, SETTINGS_DEFAULTS.fleet.servers),
       auto: s.fleet?.auto === true,
       autoLaunch: s.fleet?.autoLaunch === true,
+      launchType: /^(auto|g\d+e?\.\d*x?large)$/.test(String(s.fleet?.launchType ?? '')) ? String(s.fleet!.launchType) : SETTINGS_DEFAULTS.fleet.launchType,
       idleMinutes: n(s.fleet?.idleMinutes, 10, 240, SETTINGS_DEFAULTS.fleet.idleMinutes),
       autoPrune: s.fleet?.autoPrune !== false,
       disposable: s.fleet?.disposable !== false,
