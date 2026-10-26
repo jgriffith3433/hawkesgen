@@ -125,7 +125,7 @@ test('the front door is the dashboard; the demo page and the SDK are served by t
   const home = await fetch(`${hubUrl}/`, { redirect: 'manual' });
   assert.equal(home.status, 200);
   const html = await home.text();
-  assert.match(html, /Your projects/);
+  assert.match(html, /Sign in to Hawkes Net/, 'signed out: the sign-in page');
   assert.match(html, /\/v1\/net\/me/, 'it reads your Net from the portal');
   const page = await fetch(`${hubUrl}/demo`);
   assert.equal(page.status, 200);

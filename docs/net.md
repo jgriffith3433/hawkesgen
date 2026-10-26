@@ -124,6 +124,10 @@ projects and get an api key, download the sdk and plug it into your unity projec
 just the 1st project under my account." And: "make it so peer to peer isn't defaulted and API key and account at hawkesgen
 is required."
 
+- **net.hawkesgen.com is the product** (J, 2026-10-26: hawkesgen.com/net advertises it, `/net/docs` is gone): signed out it is a
+  sign-in page (Google with `next=/net/back`, or email and password posted to the portal's own login, signup and forgot routes,
+  which allow this origin), and every way in comes back to it; signed in: Projects (a getting-started guide and the engines
+  when there are none), Docs, Account (the API key, downloads), and a page per project.
 - **Accounts are hawkesgen.com's.** net.hawkesgen.com (the dashboard) reads and changes everything through the portal with
   the hawkesgen.com session; the portal asks the service with its key and names the account (`owner`: its Gen project,
   `usr_...`), whether it is an admin and its tier (`paid` or `free`). The service trusts a key for a pattern of accounts

@@ -68,7 +68,7 @@
   .tabs a.on { color: var(--ink); border-color: var(--accent); }
   .tabs a:hover { text-decoration: none; color: var(--ink); }
   label.f { display: block; margin: 14px 0 6px; font-weight: 600; font-size: 14px; }
-  input[type=text], input[type=number], textarea { width: 100%; max-width: 520px; font: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); }
+  input[type=text], input[type=number], input[type=email], input[type=password], textarea { width: 100%; max-width: 520px; font: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); }
   textarea { font: 13px/1.5 ui-monospace, monospace; resize: vertical; max-width: 640px; }
   .switch { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; max-width: 640px; }
   .switch input { margin-top: 4px; }
@@ -78,6 +78,33 @@
   .crumbs { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
   .msg { margin: 10px 0; font-size: 14px; }
   .hidden { display: none !important; }
+  .bar nav a.on { color: var(--ink); font-weight: 600; }
+  .menu { position: relative; }
+  .menu > button { display: inline-flex; gap: 8px; align-items: center; }
+  .menu .sheet { position: absolute; right: 0; top: calc(100% + 6px); min-width: 240px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.12); z-index: 5; }
+  .menu .sheet a, .menu .sheet button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 6px; color: var(--ink); background: none; border: 0; font: inherit; font-size: 14px; cursor: pointer; }
+  .menu .sheet a:hover, .menu .sheet button:hover { background: var(--bg); text-decoration: none; }
+  .menu .sheet .who-line { padding: 8px 10px 10px; border-bottom: 1px solid var(--line); margin-bottom: 6px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .login { max-width: 420px; margin: 40px auto 0; }
+  .login h1 { font-size: 26px; margin-bottom: 4px; }
+  .login .card { padding: 24px; }
+  .login label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+  .login input { max-width: none; }
+  .login .btn.wide { width: 100%; text-align: center; padding: 10px 14px; }
+  .login .or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; margin: 16px 0 4px; }
+  .login .or::before, .login .or::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
+  .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 0 0 14px; }
+  .seg button { font: inherit; font-size: 14px; padding: 8px; border: 0; background: var(--card); color: var(--muted); cursor: pointer; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .err { color: var(--bad); font-size: 14px; margin: 10px 0 0; }
+  .good { color: var(--ok); font-size: 14px; margin: 10px 0 0; }
+  .engines { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; margin: 12px 0; }
+  .engines .card { display: flex; flex-direction: column; gap: 6px; }
+  .engines h3 { margin: 0; }
+  .engines .card p { margin: 0; }
+  .soon { color: var(--accent); }
+  .start { border-left: 3px solid var(--accent); }
+  .start ol { margin: 8px 0 0; padding-left: 20px; } .start li { margin: 6px 0; }
   @media (max-width: 640px) { header.top { position: static; } h1 { font-size: 24px; } }
   footer { border-top: 1px solid var(--line); padding: 18px 0 30px; font-size: 13px; color: var(--muted); }
   footer .wrap { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
@@ -87,7 +114,7 @@
 <header class="top">
   <div class="wrap bar">
     <a class="brand" href="#">Hawkes Net <small>multiplayer for web games</small></a>
-    <nav aria-label="Sections"><a href="#">Projects</a><a href="#docs">Docs</a><a href="#limits">Pricing</a><a href="/demo">Demo</a></nav>
+    <nav aria-label="Sections" id="topnav" class="hidden"><a href="#" data-nav="projects">Projects</a><a href="#docs" data-nav="docs">Docs</a><a href="#account" data-nav="account">Account</a></nav>
     <div class="who"><span class="status" id="status"><span class="dot"></span>checking…</span><span id="who"></span></div>
   </div>
 </header>
@@ -96,10 +123,11 @@
   <!-- The app: the account and its projects (signed in), or how to start (signed out). -->
   <section id="app"><p class="note">Loading…</p></section>
 
-  <!-- The docs: shown on the projects view, not on a project's page. -->
-  <section id="docs">
-  <h2 id="quickstart">Quickstart</h2>
-  <p><span class="step">1</span><b>An account.</b> Sign in with your hawkesgen.com account (making one is free). <span class="step" style="margin-left:6px">2</span><b>A project.</b> Make one above: its id is what your game passes as <code>project</code>. <span class="step" style="margin-left:6px">3</span><b>The SDK.</b> One ES module for the web and Babylon, a package for Unity WebGL. Every room runs on our relay, and each project's page shows its players, rooms and tickets live.</p>
+  <!-- The docs (#docs, signed in). -->
+  <section id="docs" class="hidden">
+  <h1>Docs</h1>
+  <h2 id="quickstart" style="margin-top:18px">Quickstart</h2>
+  <p><span class="step">1</span><b>An account.</b> Your hawkesgen.com account (making one is free). <span class="step" style="margin-left:6px">2</span><b>A project.</b> Make one on your <a href="#">Projects</a> page: its id is what your game passes as <code>project</code>. <span class="step" style="margin-left:6px">3</span><b>The SDK.</b> One ES module for the web and Babylon, a package for Unity WebGL. Every room runs on our relay, and each project's page shows its players, rooms and tickets live.</p>
 
   <h3 id="noserver">A game with no server: shared rooms</h3>
 <pre><code>import { lobby } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
@@ -133,7 +161,7 @@ const net = await join('match-7', { ticket });</code></pre>
   <p class="note">Keep the key on your server. <code>sub</code> is your own id for the player: the same person reconnecting keeps their place, and the project's Rooms tab can put them out by it.</p>
 
   <h3 id="unity">Unity WebGL</h3>
-  <p>Download the package (<a href="/sdk/com.hawkes.net.tgz">com.hawkes.net.tgz</a>) and install it with Package Manager &gt; + &gt; <b>Add package from tarball</b>. The same lobby in C#:</p>
+  <p>Download the preview package (<a href="/sdk/com.hawkes.net.tgz">com.hawkes.net.tgz</a>) and install it with Package Manager &gt; + &gt; <b>Add package from tarball</b>; the Asset Store listing is <span class="soon">coming soon</span>. The same lobby in C#:</p>
 <pre><code>var lobby = new HawkesNetLobby(new HawkesNetOptions { project = "your-project", name = "Ada" }, "mygame.com");
 lobby.PeerJoined += (id, name) =&gt; Spawn(id, name);
 lobby.PoseChanged += (id, pose) =&gt; Move(id, pose.position, pose.yaw);
@@ -142,6 +170,9 @@ lobby.Join("level-1");
 
 void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code></pre>
   <p class="note">Or drop <code>HawkesNetAvatars</code> on a GameObject with a prefab per player (Package Manager &gt; Hawkes Net &gt; Samples &gt; Avatars). With a server: <code>ticketUrl</code> instead of <code>project</code>. WebGL builds only: the SDK runs in the page.</p>
+
+  <h3 id="babylon">Babylon.js</h3>
+  <p>A Babylon module of its own (meshes for players, interpolation tied to the scene's clock) is <span class="soon">coming soon</span>. Today the web SDK above works with Babylon as it is: move a mesh in <code>onPose</code>, send yours each frame in <code>scene.onBeforeRenderObservable</code>.</p>
 
   <h2 id="messages">Messages and avatars</h2>
   <table>
@@ -200,13 +231,21 @@ void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code
   function route() {
     const h = location.hash.replace(/^#/, '');
     const m = /^p\/([^/]+)(?:\/(\w+))?/.exec(h);
-    return m ? { view: 'project', id: decodeURIComponent(m[1]), tab: m[2] || 'overview' } : { view: 'projects', anchor: h };
+    if (m) return { view: 'project', id: decodeURIComponent(m[1]), tab: m[2] || 'overview' };
+    if (h === 'docs' || /^(quickstart|noserver|server|unity|babylon|messages|limits)$/.test(h)) return { view: 'docs', anchor: h };
+    if (h === 'account') return { view: 'account' };
+    return { view: 'projects' };
   }
   async function show() {
     clearInterval(timer);
     const r = route();
-    $('docs').classList.toggle('hidden', r.view === 'project');
+    $('docs').classList.toggle('hidden', !me || r.view !== 'docs');
+    $('app').classList.toggle('hidden', r.view === 'docs');
+    for (const a of document.querySelectorAll('#topnav a')) a.classList.toggle('on', a.dataset.nav === (r.view === 'project' ? 'projects' : r.view));
     if (!me) return;
+    // (After the browser's own jump to the anchor, which would put the heading under the sticky header.)
+    if (r.view === 'docs') { setTimeout(() => { if (r.anchor && r.anchor !== 'docs') document.getElementById(r.anchor)?.scrollIntoView(); else scrollTo(0, 0); }, 0); return; }
+    if (r.view === 'account') { renderAccount(); return; }
     if (r.view === 'project') {
       if (!detail || detail.id !== r.id) { detail = null; openRoom = null; $('app').innerHTML = '<p class="note">Loading the project…</p>'; await loadProject(r.id); }
       renderProject(r.tab);
@@ -214,34 +253,94 @@ void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code
       timer = setInterval(async () => { if (document.hidden || editing) return; const was = JSON.stringify(detail); await loadProject(r.id); if (JSON.stringify(detail) !== was) renderProject(route().tab, true); }, 10_000);
     } else {
       renderProjects();
-      if (r.anchor && r.anchor !== 'projects') document.getElementById(r.anchor)?.scrollIntoView();
       timer = setInterval(async () => { if (document.hidden) return; const was = JSON.stringify(me); await loadMe(); if (route().view === 'projects' && JSON.stringify(me) !== was && !document.activeElement?.closest?.('form')) renderProjects(); }, 15_000);
     }
   }
-  addEventListener('hashchange', () => { editing = false; show(); });
+  addEventListener('hashchange', () => { editing = false; $('menuSheet')?.classList.add('hidden'); $('menuBtn')?.setAttribute('aria-expanded', 'false'); if (me) show(); });
 
   // ------------------------------------------------------------------ the account
   async function loadMe() {
     const r = await api('GET', '/v1/net/me');
-    if (r.status === 401 || r.status === 0) { me = null; return r.status; }
     if (r.status !== 200) { me = null; return r.status; }
     me = r.data;
-    $('who').innerHTML = `${esc(me.email || me.project)} <span class="pill ${me.paid ? 'paid' : ''}">${me.admin ? 'admin' : me.paid ? 'paid' : 'free'}</span> <a class="note" href="${PORTAL}/app">hawkesgen.com account</a>`;
+    const plan = me.admin ? 'admin' : me.paid ? 'paid' : 'free';
+    $('topnav').classList.remove('hidden');
+    $('who').innerHTML = `<div class="menu"><button class="btn small" type="button" id="menuBtn" aria-haspopup="true" aria-expanded="false">${esc(me.email || me.project)} <span class="pill ${me.paid ? 'paid' : ''}">${plan}</span></button>
+      <div class="sheet hidden" id="menuSheet" role="menu"><div class="who-line">${esc(me.name || '')}${me.name ? '<br>' : ''}${esc(me.email || '')}<br>account <code>${esc(me.project)}</code></div>
+      <a href="#account" role="menuitem">Account and API key</a><a href="${PORTAL}/app" role="menuitem">hawkesgen.com</a>${me.paid ? '' : `<a href="${PORTAL}/app#credits" role="menuitem">Get credits</a>`}<button type="button" id="signOut" role="menuitem">Sign out</button></div></div>`;
+    const btn = $('menuBtn'), sheet = $('menuSheet');
+    btn.addEventListener('click', (e) => { e.stopPropagation(); const open = sheet.classList.toggle('hidden') === false; btn.setAttribute('aria-expanded', String(open)); });
+    document.addEventListener('click', (e) => { if (!sheet.contains(e.target)) { sheet.classList.add('hidden'); btn.setAttribute('aria-expanded', 'false'); } });
+    $('signOut').addEventListener('click', async () => { await api('POST', '/v1/users/logout', {}); me = null; detail = null; location.hash = ''; signedOut(); });
     return 200;
   }
 
-  function signedOut() {
-    $('who').innerHTML = `<a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Sign in</a>`;
+  function signedOut(message = '', good = false) {
+    clearInterval(timer);
+    $('topnav').classList.add('hidden');
+    $('docs').classList.add('hidden');
+    $('app').classList.remove('hidden');
+    $('who').innerHTML = `<a class="note" href="${PORTAL}/net">What is Hawkes Net?</a>`;
+    let mode = 'signin';
     $('app').innerHTML = `
-      <h1>Multiplayer for your web game.</h1>
-      <p class="lede">One call joins a room on our relay. Every project has its own page: players online, rooms, who is in them, tickets and usage, live. <a href="/demo">Try it in two tabs.</a></p>
-      <div class="card">
-        <h3 style="margin-top:0">Start with your hawkesgen.com account</h3>
-        <p>Your account opens Hawkes Net: make projects, get your API key, download the SDK for the web, Babylon or Unity.</p>
-        <div class="keybox"><a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Continue with Google</a>
-        <a class="btn" href="${PORTAL}/app">Sign in with email</a> <span class="note">(then come back here)</span></div>
-        <p class="note">No account yet? Making one on hawkesgen.com is free, and so is building and testing your game.</p>
+      <div class="login">
+        <h1>Sign in to Hawkes Net</h1>
+        <p class="note" style="margin-top:0">With your hawkesgen.com account. New here? Making one is free.</p>
+        <div class="card">
+          <a class="btn wide" href="${PORTAL}/auth/google?next=/net/back" id="google">Continue with Google</a>
+          <div class="or">or with email</div>
+          <div class="seg" role="tablist"><button type="button" data-mode="signin" class="on">Sign in</button><button type="button" data-mode="signup">Create account</button></div>
+          <form id="login">
+            <div id="nameRow" class="hidden"><label for="lName">Name or studio</label><input type="text" id="lName" autocomplete="organization" maxlength="60"></div>
+            <label for="lEmail">Email</label><input type="email" id="lEmail" autocomplete="email" required>
+            <div id="pwRow"><label for="lPw">Password <span class="note" id="pwHint" hidden>(8 characters or more)</span></label><input type="password" id="lPw" autocomplete="current-password" minlength="8" required></div>
+            <button class="btn primary wide" type="submit" id="lGo" style="margin-top:16px">Sign in</button>
+            <p class="note" style="margin:10px 0 0"><a href="#" id="forgot">Forgot your password?</a></p>
+            <p class="note hidden" id="terms" style="margin:10px 0 0">By creating an account you agree to the <a href="${PORTAL}/legal#terms" target="_blank" rel="noopener">terms</a> and <a href="${PORTAL}/legal#privacy" target="_blank" rel="noopener">privacy policy</a>.</p>
+            <p class="${good ? 'good' : 'err'} ${message ? '' : 'hidden'}" id="lMsg" role="alert">${esc(message)}</p>
+          </form>
+        </div>
+        <p class="note" style="text-align:center;margin-top:16px">Hawkes Net is multiplayer for web, Babylon and Unity WebGL games. <a href="${PORTAL}/net">See how it works</a>.</p>
       </div>`;
+    const say = (text, ok = false) => { const el = $('lMsg'); el.textContent = text; el.className = ok ? 'good' : 'err'; el.classList.toggle('hidden', !text); };
+    const setMode = (m) => {
+      mode = m;
+      for (const b of document.querySelectorAll('.seg button')) b.classList.toggle('on', b.dataset.mode === m);
+      $('nameRow').classList.toggle('hidden', m !== 'signup');
+      $('pwRow').classList.toggle('hidden', m === 'forgot');
+      $('lPw').required = m !== 'forgot';
+      $('pwHint').hidden = m !== 'signup';
+      $('terms').classList.toggle('hidden', m !== 'signup');
+      $('forgot').parentElement.classList.toggle('hidden', m !== 'signin');
+      $('lPw').autocomplete = m === 'signup' ? 'new-password' : 'current-password';
+      $('lGo').textContent = m === 'signup' ? 'Create account' : m === 'forgot' ? 'Email me a reset link' : 'Sign in';
+      say('');
+    };
+    for (const b of document.querySelectorAll('.seg button')) b.addEventListener('click', () => setMode(b.dataset.mode));
+    $('forgot').addEventListener('click', (e) => { e.preventDefault(); setMode('forgot'); $('lEmail').focus(); });
+    $('login').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const go = $('lGo');
+      go.disabled = true;
+      try {
+        const email = $('lEmail').value.trim();
+        if (mode === 'forgot') {
+          const r = await api('POST', '/v1/users/forgot', { email, back: 'net' });
+          if (r.status !== 200) return say(r.data.error || 'That did not work. Try again.');
+          setMode('signin');
+          return say(r.data.mail === false ? 'Email is off here: ask support@hawkesgen.com for a reset link.' : 'If there is an account for that email, a reset link is on its way. It brings you back here.', true);
+        }
+        const body = { email, password: $('lPw').value };
+        if (mode === 'signup') body.name = $('lName').value.trim();
+        const r = await api('POST', mode === 'signup' ? '/v1/users/signup' : '/v1/users/login', body);
+        if (r.status !== 200) return say(r.data.error || 'That did not work. Try again.');
+        if (r.data.apiKey) minted = r.data.apiKey;
+        const st = await loadMe();
+        if (st !== 200) return say('Signed in, but this browser blocks the cookie for hawkesgen.com here. Allow it, or continue with Google.');
+        show();
+      } finally { go.disabled = false; }
+    });
+    ($('lEmail')).focus();
   }
 
   function keyBlock() {
@@ -272,23 +371,25 @@ void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code
     const list = me.projects && !me.projects.error ? me.projects : null;
     const mine = list ? list.projects : [];
     const unowned = list ? list.unowned || [] : [];
+    const first = list && !mine.length;
     $('app').innerHTML = `
-      <div class="row"><h1>Your projects</h1><span class="note">${esc(me.email || '')}</span></div>
-      ${me.paid ? '' : `<p class="warn">A free account builds and tests on localhost (test rooms, small limits). Your game's own sites and server tickets open once your account has bought credits or a plan. <a href="${PORTAL}/app#credits">Get credits</a></p>`}
-      ${list ? (mine.length ? `<div class="grid">${mine.map(card).join('')}</div>` : '<p>No projects yet. Make your first one: its id is what your game passes as <code>project</code>.</p>') : `<p class="bad">Projects aren't available right now${me.projects?.error ? ` (${esc(me.projects.error)})` : ''}.</p>`}
-      <div class="card" style="margin-top:12px">
+      <div class="row"><h1>Projects</h1>${mine.length ? '<button class="btn primary" type="button" id="newBtn">New project</button>' : ''}</div>
+      ${me.paid ? '' : `<p class="note warn">Free account: build and test on localhost (test rooms, small limits). Your game's own sites and server tickets open with credits or a plan. <a href="${PORTAL}/app#credits">Get credits</a></p>`}
+      ${!list ? `<p class="bad">Projects aren't available right now${me.projects?.error ? ` (${esc(me.projects.error)})` : ''}.</p>` : ''}
+      ${first ? gettingStarted() : ''}
+      ${mine.length ? `<div class="grid">${mine.map(card).join('')}</div>` : ''}
+      <div class="card hidden" id="newCard" style="margin-top:12px">
         <h3 style="margin-top:0">New project</h3>
-        <form id="newProject" class="keybox"><input type="text" id="newName" placeholder="My game" maxlength="60" style="max-width:320px" required><button class="btn primary" type="submit">Make it</button><span class="note" id="newNote"></span></form>
+        <form class="newProject keybox"><input type="text" class="newName" placeholder="My game" maxlength="60" style="max-width:320px" required><button class="btn primary" type="submit">Make it</button><span class="note newNote"></span></form>
       </div>
       ${unowned.length ? `<h2>Hawkes games nobody has taken</h2><p class="note">You are an admin: take these into your account to see and run them here.</p>
-        <div class="grid">${unowned.map((p) => `<div class="card"><div class="row"><h3 style="margin:0">${esc(p.name)}</h3><button class="btn small primary" type="button" data-claim="${esc(p.id)}">Take into my account</button></div><code>${esc(p.id)}</code><div class="nums note" style="margin-top:8px">${num(p.now?.players)} online · ${num(p.now?.rooms)} rooms</div></div>`).join('')}</div>` : ''}
-      <h2 id="account">Account</h2>
-      <div class="card"><div class="row"><div><b>${esc(me.name || me.email || me.project)}</b> <span class="note">account <code>${esc(me.project)}</code></span></div><span class="note">Relay <code>${esc(me.service)}</code></span></div>
-      <h3>API key</h3>${keyBlock()}</div>`;
-    $('newProject').addEventListener('submit', async (e) => {
+        <div class="grid">${unowned.map((p) => `<div class="card"><div class="row"><h3 style="margin:0">${esc(p.name)}</h3><button class="btn small primary" type="button" data-claim="${esc(p.id)}">Take into my account</button></div><code>${esc(p.id)}</code><div class="nums note" style="margin-top:8px">${num(p.now?.players)} online · ${num(p.now?.rooms)} rooms</div></div>`).join('')}</div>` : ''}`;
+    $('newBtn')?.addEventListener('click', () => { $('newCard').classList.toggle('hidden'); document.querySelector('#newCard .newName')?.focus(); });
+    for (const form of document.querySelectorAll('.newProject')) form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const r = await api('POST', '/v1/net/projects', { name: $('newName').value });
-      if (r.status !== 200) { $('newNote').textContent = r.data.error || 'Could not make it'; return; }
+      const note = form.querySelector('.newNote');
+      const r = await api('POST', '/v1/net/projects', { name: form.querySelector('.newName').value });
+      if (r.status !== 200) { note.textContent = r.data.error || 'Could not make it'; return; }
       await loadMe(); location.hash = `#p/${encodeURIComponent(r.data.id)}/connect`;
     });
     for (const b of document.querySelectorAll('[data-claim]')) b.addEventListener('click', async () => {
@@ -297,6 +398,46 @@ void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code
       if (r.status !== 200) { b.disabled = false; return alert(r.data.error || 'Could not take it'); }
       await loadMe(); renderProjects();
     });
+  }
+
+  /** Engines, for the first project and every project's Connect tab. */
+  function engines(id = 'your-project') {
+    return `<div class="engines">
+      <div class="card"><span class="pill on" style="align-self:flex-start">available</span><h3>Web</h3><p class="note">One ES module, any engine or none: three.js, PixiJS, Phaser, a canvas.</p><code>import { lobby } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';</code><a href="#noserver">The quickstart</a></div>
+      <div class="card"><span class="pill" style="align-self:flex-start">preview</span><h3>Unity WebGL</h3><p class="note">The package with an Avatars sample; the Asset Store listing is <span class="soon">coming soon</span>.</p><a class="btn small" href="/sdk/com.hawkes.net.tgz" style="align-self:flex-start">Download the package</a><a href="#unity">How to install it</a></div>
+      <div class="card"><span class="pill" style="align-self:flex-start">coming soon</span><h3>Babylon.js</h3><p class="note">A module of its own is <span class="soon">coming soon</span>. The web SDK works with Babylon today.</p><a href="#babylon">Use it with Babylon now</a></div>
+    </div>`;
+  }
+
+  function gettingStarted() {
+    return `<div class="card start">
+      <h2 style="margin-top:0">Put your first game online</h2>
+      <ol>
+        <li><b>Name your project.</b> Its id is what your game passes as <code>project</code>.
+          <form class="newProject keybox"><input type="text" class="newName" placeholder="My game" maxlength="60" style="max-width:320px" required><button class="btn primary" type="submit">Make my first project</button><span class="note newNote"></span></form></li>
+        <li><b>Add the SDK</b> for your engine:</li>
+      </ol>
+      ${engines()}
+      <ol start="3">
+        <li><b>Play it with a friend.</b> Run your game on <code>localhost</code> and open it in two tabs: your machine always joins the project's test rooms. You'll see both players on the project's Rooms tab.</li>
+        <li><b>Put it online.</b> List your game's sites in the project's Settings (with credits or a plan), or have your server ask for tickets with your API key.</li>
+      </ol>
+    </div>`;
+  }
+
+  function renderAccount() {
+    $('app').innerHTML = `
+      <h1>Account</h1>
+      <div class="card"><div class="row"><div><b>${esc(me.name || me.email || me.project)}</b><br><span class="note">${esc(me.email || '')} · account <code>${esc(me.project)}</code></span></div>
+        <span class="pill ${me.paid ? 'paid' : ''}">${me.admin ? 'admin' : me.paid ? 'paid' : 'free'}</span></div>
+        ${me.paid ? '<p class="note">Your projects can list their sites and take tickets from your servers.</p>' : `<p class="note warn">Free account: build and test on localhost. <a href="${PORTAL}/app#credits">Get credits</a> to put your games online.</p>`}
+        <p class="note">Your account is your hawkesgen.com account: <a href="${PORTAL}/app">manage it there</a>.</p></div>
+      <h2>API key</h2>
+      <div class="card">${keyBlock()}<p class="note">Your servers use it to ask for tickets (<code>POST https://hawkesgen.com/v1/net/rooms/ticket</code>) in any of your projects. Keep it on your server.</p></div>
+      <h2>Downloads</h2>
+      <div class="card"><ul style="margin:0">
+        <li><a href="/sdk/hawkes-net@1.mjs">hawkes-net.mjs</a> and <a href="/sdk/hawkes-net-core.mjs">hawkes-net-core.mjs</a> (keep them side by side), <a href="/sdk/hawkes-net@1.d.ts">hawkes-net.d.ts</a></li>
+        <li><a href="/sdk/com.hawkes.net.tgz">com.hawkes.net.tgz</a>: Unity WebGL (preview)</li></ul></div>`;
     wireKey();
   }
 
@@ -318,12 +459,12 @@ void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code
   function renderProject(tab, quiet = false) {
     const d = detail;
     if (!d) return;
-    if (d.error) { $('app').innerHTML = `<div class="crumbs"><a href="#">Your projects</a></div><p class="bad">${esc(d.error)}</p>`; return; }
+    if (d.error) { $('app').innerHTML = `<div class="crumbs"><a href="#">Projects</a></div><p class="bad">${esc(d.error)}</p>`; return; }
     const tabs = [['overview', 'Overview'], ['rooms', `Rooms (${d.rooms.filter((r) => r.players > 0).length})`], ['tickets', 'Tickets'], ['settings', 'Settings'], ['connect', 'Connect']];
     const base = `#p/${encodeURIComponent(d.id)}`;
     if (quiet && tab === 'settings') return; // (never redraw a form under someone)
     $('app').innerHTML = `
-      <div class="crumbs"><a href="#">Your projects</a> / ${esc(d.name)}</div>
+      <div class="crumbs"><a href="#">Projects</a> / ${esc(d.name)}</div>
       <div class="row"><h1>${esc(d.name)}</h1><div>${d.hawkes ? '<span class="pill hawkes">Hawkes game</span> ' : ''}<span class="pill ${d.tier === 'free' ? '' : 'paid'}">${d.tier === 'free' ? 'free tier' : d.tier === 'hawkes' ? 'Hawkes limits' : 'paid'}</span> <span class="pill ${d.p2p ? 'p2p' : 'relay'}">${d.p2p ? 'relay + peer to peer' : 'relay'}</span></div></div>
       <p class="note">Project id <code>${esc(d.id)}</code> · ${d.sites.length ? `${d.sites.length} site${d.sites.length === 1 ? '' : 's'}` : 'no sites (localhost and servers only)'} · updated ${new Date().toLocaleTimeString()}</p>
       <nav class="tabs">${tabs.map(([k, label]) => `<a href="${base}/${k}" class="${tab === k ? 'on' : ''}">${label}</a>`).join('')}</nav>
@@ -439,6 +580,7 @@ void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code
     const host = d.sites[0] ? new URL(d.sites[0]).hostname : 'mygame.com';
     $('tab').innerHTML = `
       <p>Your game passes <code>${esc(d.id)}</code> as its project. ${d.sites.length ? `Pages on ${esc(d.sites.join(', '))} join with no key.` : 'Until you list its sites (Settings), it joins from localhost in test rooms, or through your server.'}</p>
+      ${engines(d.id)}
       <h3>Web and Babylon</h3>
 <pre><code>import { lobby } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
 
@@ -446,8 +588,8 @@ const lob = lobby({ project: '${esc(d.id)}', liveHosts: ['${esc(host)}'], name: 
 lob.onPose((peer, s) =&gt; moveAvatar(peer, s.p, s.y));
 lob.join('lobby');
 // every frame: lob.pose([x, y, z], yaw);</code></pre>
-      <h3>Unity WebGL</h3>
-      <p><a class="btn" href="/sdk/com.hawkes.net.tgz">Download com.hawkes.net.tgz</a> <span class="note">Package Manager &gt; + &gt; Add package from tarball</span></p>
+      <h3>Unity WebGL <span class="pill">preview</span></h3>
+      <p><a class="btn" href="/sdk/com.hawkes.net.tgz">Download com.hawkes.net.tgz</a> <span class="note">Package Manager &gt; + &gt; Add package from tarball · Asset Store <span class="soon">coming soon</span></span></p>
 <pre><code>var lobby = new HawkesNetLobby(new HawkesNetOptions { project = "${esc(d.id)}", name = playerName }, "${esc(host)}");
 lobby.Join("lobby");</code></pre>
       <h3>Your server (tickets with your key)</h3>
@@ -460,9 +602,8 @@ lobby.Join("lobby");</code></pre>
         <li><a href="/sdk/com.hawkes.net.tgz">com.hawkes.net.tgz</a>: the Unity package with the Avatars sample</li>
       </ul>
       <h3>API key</h3>${keyBlock()}
-      <p class="note">More in the <a href="#docs" id="toDocs">docs</a>.</p>`;
+      <p class="note">More in the <a href="#docs">docs</a>.</p>`;
     wireKey();
-    $('toDocs').addEventListener('click', (e) => { e.preventDefault(); location.hash = '#docs'; });
   }
 
   // ------------------------------------------------------------------ the service
@@ -474,11 +615,13 @@ lobby.Join("lobby");</code></pre>
   }
 
   (async () => {
+    // Back from Google with a problem (or cancelled): said on the sign-in, and the address cleaned.
+    const q = new URLSearchParams(location.search);
+    const problem = q.get('signin_error') || (q.get('signin') === 'cancelled' ? 'Google sign-in was cancelled.' : '');
+    if (problem) { q.delete('signin_error'); q.delete('signin'); history.replaceState(null, '', location.pathname + (q.toString() ? `?${q}` : '') + location.hash); }
     const st = await loadMe();
     if (st !== 200) {
-      signedOut();
-      if (st !== 401 && st !== 0) $('app').insertAdjacentHTML('beforeend', '<p class="note">Could not load your Hawkes Net right now.</p>');
-      $('docs').classList.remove('hidden');
+      signedOut(problem || (st !== 401 && st !== 0 ? 'Could not reach hawkesgen.com right now. Try again in a moment.' : ''));
       return;
     }
     show();
