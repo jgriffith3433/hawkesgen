@@ -33,7 +33,7 @@ export type Payload = {
 type Peer = {
   id: string; ord: number; name: string | null; role: string; sub: string; color: string;
   ws: Socket | null; v: 2 | 3; conn: any | null; away: ReturnType<typeof setTimeout> | null;
-  sig: { at: number; n: number; bytes: number }; linksFailed: number; bytesIn: number; bytesOut: number;
+  sig: { at: number; n: number; bytes: number }; linksFailed: number; bytesIn: number; bytesOut: number; joined: number;
 };
 export type Room = {
   key: string; project: string; name: string; mode: 'p2p' | 'relay'; want: 'auto' | 'p2p' | 'relay'; allowRelay: boolean;
@@ -130,7 +130,7 @@ export class Rooms {
     }
     const peer: Peer = {
       id: t.peer, ord: t.ord, name: t.nm ? String(t.nm).slice(0, 40) : `Player ${t.ord}`, role: t.role, sub: t.sub,
-      color: COLORS[(t.ord - 1) % COLORS.length], ws: null, v, conn: null, away: null, sig: { at: 0, n: 0, bytes: 0 }, linksFailed: 0, bytesIn: 0, bytesOut: 0,
+      color: COLORS[(t.ord - 1) % COLORS.length], ws: null, v, conn: null, away: null, sig: { at: 0, n: 0, bytes: 0 }, linksFailed: 0, bytesIn: 0, bytesOut: 0, joined: now,
     };
     room.peers.set(peer.id, peer);
     this.stats.joins++;
@@ -329,17 +329,22 @@ export class Rooms {
 
   // ------------------------------------------------------------------ server-side sends (Gen's publish)
   /** A publish token from Gen (hp1, signed with Gen's service key) and what it carries: world edits or an event. */
-  publish(token: string, body: { ops?: unknown[]; by?: string; fx?: string | null; event?: { name: string; data: unknown }; except?: string | null; kick?: { sub: string | null } }) {
+  publish(token: string, body: { ops?: unknown[]; by?: string; fx?: string | null; event?: { name: string; data: unknown }; except?: string | null; kick?: { sub: string | null; peer?: string | null }; peek?: boolean }) {
     const checked = verifyToken<{ kid: string; exp: number; prj: string; room: string; jti: string }>(PUBLISH_PREFIX, token, this.keys);
     if (!checked.ok) return { ok: false, status: 401, error: `Publish refused: ${checked.why}` };
     const p = checked.payload;
     if (!this.seen.first(`pub:${p.jti}`, p.exp)) return { ok: false, status: 401, error: 'Publish token already used' };
     const room = this.rooms.get(`${p.prj}/${p.room}`);
-    if (!room) return { ok: true, delivered: 0 };
-    // Put people out: everyone, or everyone joined as one `sub` (the portal: a removed member, a world an admin closed).
+    if (!room) return { ok: true, delivered: 0, players: [] };
+    // Who is here (the project's dashboard): nothing is sent to the room.
+    if (body.peek) {
+      const players = [...room.peers.values()].sort((a, b) => a.ord - b.ord).map((x) => ({ peer: x.id, name: x.name, ord: x.ord, role: x.role, sub: x.sub, joined: x.joined, connected: Boolean(x.ws), bytesIn: x.bytesIn, bytesOut: x.bytesOut }));
+      return { ok: true, delivered: 0, transport: room.mode, host: room.host ?? (players[0]?.peer ?? null), players };
+    }
+    // Put people out: everyone, everyone joined as one `sub` (the portal: a removed member, a world an admin closed), or one peer.
     if (body.kick) {
       let kicked = 0;
-      for (const peer of [...room.peers.values()]) if (!body.kick.sub || peer.sub === body.kick.sub) { this.leave(room, peer, 'kicked'); kicked++; }
+      for (const peer of [...room.peers.values()]) if ((body.kick.peer ? peer.id === body.kick.peer : !body.kick.sub || peer.sub === body.kick.sub)) { this.leave(room, peer, 'kicked'); kicked++; }
       return { ok: true, delivered: 0, kicked };
     }
     const n = [...room.peers.values()].filter((x) => x.ws).length;

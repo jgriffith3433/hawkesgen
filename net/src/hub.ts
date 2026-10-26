@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { IncomingMessage } from 'node:http';
 import * as svc from './service.ts';
+import * as projects from './projects.ts';
 import * as api from './api.ts';
 import { refuse } from './ws.ts';
 import type { Client } from './store.ts';
@@ -105,6 +106,7 @@ export async function startHub(o: HubOptions = {}) {
   usageTimer.unref();
 
   const node = await svc.startNode();
+  projects.startSampler(); // players online a minute, per project (the dashboard's line)
   const demo = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'demo.html');
   const dashboard = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public', 'dashboard.html');
   const server = http.createServer((req, res) => {
@@ -146,6 +148,7 @@ export async function startHub(o: HubOptions = {}) {
     clearInterval(usageTimer);
     server.close();
     server.closeAllConnections();
+    projects.stopSampler();
     await svc.stopNode(); // drains the rooms and reports their last usage
     await flushUsage().catch(() => {});
   })());

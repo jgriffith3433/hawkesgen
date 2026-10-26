@@ -1,6 +1,6 @@
 {
   "name": "com.hawkes.net",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "displayName": "Hawkes Net",
   "description": "Multiplayer for Unity WebGL games on Hawkes Net (https://net.hawkesgen.com). HawkesNetLobby puts players in shared rooms by area (live and test rooms, shards when full, rejoining); HawkesNetAvatars draws everyone from a prefab; HawkesNet.Join gives a room with messages (once and in order, or newest-wins), poses, peers, the host and the shared clock. Peer to peer for small rooms, the relay for big ones, moved between them without reconnecting. Runs Hawkes Net's web SDK in the page; in the Editor a join reports that it needs a WebGL build.",
   "unity": "2021.3",
@@ -8,8 +8,8 @@
     "name": "Hawkes Gen",
     "url": "https://net.hawkesgen.com"
   },
-  "documentationUrl": "https://net.hawkesgen.com/#unity",
-  "changelogUrl": "https://net.hawkesgen.com/#unity",
+  "documentationUrl": "https://net.hawkesgen.com/#docs",
+  "changelogUrl": "https://net.hawkesgen.com/#docs",
   "keywords": [
     "multiplayer",
     "networking",

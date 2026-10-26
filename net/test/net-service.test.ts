@@ -87,8 +87,9 @@ test('a relay room: messages once and in order, avatars, things only from their 
 
 test("'auto': peer to peer on the signal route, then the relay when a third joins; nothing reliable lost or repeated", async () => {
   const cfg = { config: { p2pMax: 2, maxPlayers: 8 } };
-  const a = await join('auto1', opts({ name: 'Host', ...cfg }));
-  const b = await join('auto1', opts({ name: 'Two', ...cfg }));
+  // (Peer to peer is asked for: the relay is the default, and netdemo is a project that allows it.)
+  const a = await join('auto1', opts({ name: 'Host', transport: 'auto', ...cfg }));
+  const b = await join('auto1', opts({ name: 'Two', transport: 'auto', ...cfg }));
   const got: number[] = [];
   b.on('n', (d: number) => got.push(d));
   const moved: any[] = [];
@@ -190,13 +191,17 @@ test("publish to every room under a prefix, and ask whether a room is open", asy
   } finally { await a.leave(); await b.leave(); }
 });
 
-test("the portal's key, narrowed to one customer, issues tickets in that customer's project and no other", async () => {
+test("the portal's key, narrowed to one customer, issues tickets in that customer's projects and no other", async () => {
   const key = addKey('portal', ['usr_*']);
+  const make = (owner: string, id: string) => fetch(`${endpoint}/v1/net/projects`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ owner, id, name: id, tier: 'paid' }) });
+  assert.equal((await make('usr_00000000000000aa', 'aa-arena')).status, 200);
+  assert.equal((await make('usr_00000000000000bb', 'bb-arena')).status, 200);
   const ask = (project: string, only?: string) => fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...(only ? { 'X-Hawkesgen-Project': only } : {}) }, body: JSON.stringify({ project, room: 'lobby', sub: 's', client: { protocols: [3] } }) });
-  const ok = await ask('usr_00000000000000aa', 'usr_00000000000000aa');
+  const ok = await ask('aa-arena', 'usr_00000000000000aa');
   assert.equal(ok.status, 200);
   assert.match((await ok.json()).ticket, /^hn1\./);
-  assert.equal((await ask('usr_00000000000000bb', 'usr_00000000000000aa')).status, 403, "another customer's project");
+  assert.equal((await ask('bb-arena', 'usr_00000000000000aa')).status, 403, "another customer's project");
+  assert.equal((await ask('usr_00000000000000aa', 'usr_00000000000000aa')).status, 404, 'no anonymous projects');
   assert.equal((await ask('netdemo')).status, 403, 'a project the key has no part in');
 });
 
@@ -258,42 +263,97 @@ test("a developer's own rooms, and the operator view for owner and admin keys on
   } finally { await a.leave(); }
 });
 
-test("a customer's web game: the portal opens its account's door for its sites; its own key can't, and Hawkes's projects are never touched", async () => {
-  const portal = addKey('portal-sites', ['usr_*']);
-  const mine = addKey('acme', ['usr_acme']);
-  const put = (key: string, body: any) => fetch(`${endpoint}/v1/net/sites`, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const door = (origin: string, room = 'lobby', project = 'usr_acme') => fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ project, room, client: { protocols: [3] } }) });
+test("projects belong to accounts: made, listed, changed and read only by their account; the door opens for their sites; Hawkes's games are an admin's to take", async () => {
+  const portal = addKey('portal-projects', ['usr_*']);
+  const call = (method: string, path: string, body?: any) => fetch(`${endpoint}${path}`, { method, headers: { Authorization: `Bearer ${portal}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const as = (owner: string, extra: any = {}) => ({ owner, tier: 'paid', ...extra });
+  const door = (origin: string, project: string, room = 'lobby') => fetch(`${endpoint}/v1/net/ticket`, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body: JSON.stringify({ project, room, client: { protocols: [3] } }) });
+  const acme = 'usr_00000000000000a1', other = 'usr_00000000000000a2', admin = 'usr_00000000000000ad';
 
-  assert.equal((await door('https://acme.games')).status, 403, 'no door before the sites are set');
-  assert.equal((await put(mine, { project: 'usr_acme', origins: ['https://acme.games'] })).status, 403, "the customer's own key can't open it");
-  assert.equal((await put(portal, { project: 'sickofit', origins: ['https://acme.games'] })).status, 403, "Hawkes's own projects are the file's");
-  assert.equal((await put(portal, { project: 'usr_acme', origins: ['https://acme.games/play'] })).status, 400, 'a site, not a page');
-  assert.equal((await put(portal, { project: 'usr_acme', origins: ['http://acme.games'] })).status, 400, 'https only');
-  assert.equal((await put(portal, { project: 'usr_acme', origins: Array.from({ length: 21 }, (_, i) => `https://s${i}.acme.games`) })).status, 400, 'at most 20');
+  // Made by its account, its id from its name; nobody may make one without an account.
+  const made = await (await call('POST', '/v1/net/projects', as(acme, { name: 'Acme Arena' }))).json();
+  assert.equal(made.id, 'acme-arena');
+  assert.equal(made.owner, acme);
+  assert.equal(made.p2p, false, 'peer to peer is off until the account turns it on');
+  assert.equal((await call('POST', '/v1/net/projects', as(acme, { name: 'Acme Arena' })).then((r) => r.json())).id, 'acme-arena-2', 'a name taken: the next id');
+  assert.equal((await call('POST', '/v1/net/projects', as(acme, { name: 'X', id: 'sickofit' }))).status, 409, "a Hawkes game's id is taken");
+  assert.equal((await call('POST', '/v1/net/projects', { name: 'Nobody' })).status, 400, 'no account, no project');
+  const mineKey = addKey('acme-own', [acme]);
+  assert.equal((await fetch(`${endpoint}/v1/net/projects`, { headers: { Authorization: `Bearer ${mineKey}` } }).then((r) => r.json())).projects.length, 2, "a key for one account sees that account's");
 
-  const set = await (await put(portal, { project: 'usr_acme', name: 'Acme Arena', origins: ['acme.games', 'https://WWW.acme.games/', 'https://acme.itch.io'] })).json();
-  assert.deepEqual(set.origins, ['https://acme.games', 'https://www.acme.games', 'https://acme.itch.io'], 'cleaned: https, lower case, no slash');
-  assert.equal((await door('https://acme.games')).status, 200, 'a page on its site gets a player ticket');
-  assert.equal((await door('https://www.acme.games')).status, 200);
-  assert.equal((await door('https://evil.example')).status, 403, 'other sites still not');
-  assert.equal((await door('https://acme.games', 'lobby', 'usr_other')).status, 403, "only its own project's rooms");
-  assert.equal((await door('https://acme.games', 'lobby', 'sickofit')).status, 403);
+  // Listed for its account only.
+  const list = await (await call('GET', `/v1/net/projects?owner=${acme}&tier=paid`)).json();
+  assert.deepEqual(list.projects.map((p: any) => p.id), ['acme-arena', 'acme-arena-2']);
+  assert.equal(list.unowned.length, 0, 'Hawkes games are shown to admins only');
+  assert.equal((await (await call('GET', `/v1/net/projects?owner=${other}`)).json()).projects.length, 0);
+  assert.equal((await call('GET', `/v1/net/projects/acme-arena?owner=${other}`)).status, 404, "another account can't read it");
+  assert.equal((await call('POST', '/v1/net/projects/acme-arena', as(other, { name: 'Mine now' }))).status, 404, "nor change it");
 
+  // Its sites open the door; localhost joins its test rooms only; peer to peer and the room's size are its settings.
+  assert.equal((await door('https://acme.games', 'acme-arena')).status, 403, 'no sites yet');
+  assert.equal((await call('POST', '/v1/net/projects/acme-arena', as(acme, { sites: ['https://acme.games/x'] }))).status, 400, 'a site, not a page');
+  const set = await (await call('POST', '/v1/net/projects/acme-arena', as(acme, { sites: ['acme.games', 'https://WWW.acme.games/'], p2p: true, maxPlayers: 12 }))).json();
+  assert.deepEqual(set.sites, ['https://acme.games', 'https://www.acme.games']);
+  assert.equal(set.p2p, true);
+  assert.equal(set.maxPlayers, 12);
+  assert.equal((await door('https://acme.games', 'acme-arena')).status, 200);
+  assert.equal((await door('https://evil.example', 'acme-arena')).status, 403);
+  assert.equal((await door('https://acme.games', 'acme-arena-2')).status, 403, "only the project whose sites they are");
   const { originAllowed, netProject } = await import('../src/registry.ts');
   process.env.NET_TRUST_LOCALHOST = '0';
   try {
-    assert.equal(originAllowed(netProject('usr_acme'), 'http://localhost:5173', 't-lobby'), true, 'its developers test on localhost in test rooms');
-    assert.equal(originAllowed(netProject('usr_acme'), 'http://localhost:5173', 'lobby'), false, 'never its live rooms');
+    assert.equal(originAllowed(netProject('acme-arena-2'), 'http://localhost:5173', 't-lobby'), true, 'a project with no sites yet still tests on localhost');
+    assert.equal(originAllowed(netProject('acme-arena-2'), 'http://localhost:5173', 'lobby'), false, 'never its live rooms');
+    assert.equal(originAllowed(netProject('nobodys-game'), 'http://localhost:5173', 't-lobby'), false, 'no project, no door');
   } finally { process.env.NET_TRUST_LOCALHOST = '1'; }
-  assert.equal((await fetch(`${endpoint}/v1/net/counts?project=usr_acme&rooms=lobby`)).status, 200, 'its public counts work too');
 
-  const listed = await (await fetch(`${endpoint}/v1/net/sites`, { headers: { Authorization: `Bearer ${mine}` } })).json();
-  assert.deepEqual(listed.sites.map((x: any) => [x.project, x.name]), [['usr_acme', 'Acme Arena']], 'the customer sees its own');
-  const other = addKey('other', ['usr_other']);
-  assert.equal((await (await fetch(`${endpoint}/v1/net/sites`, { headers: { Authorization: `Bearer ${other}` } })).json()).sites.length, 0, "and nobody else's");
+  // The tier sets the limits: a free account builds and tests, a paid one runs a game.
+  assert.equal(netProject('acme-arena-2').limits.playersPerRoom, 64);
+  await call('GET', `/v1/net/projects?owner=${acme}&tier=free`);
+  assert.equal(netProject('acme-arena-2').limits.playersPerRoom, 8, 'free: small rooms');
+  assert.equal((await call('POST', '/v1/net/projects/acme-arena-2', as(acme, { tier: 'free', maxPlayers: 20 }))).status, 400, "a room bigger than the plan's");
+  await call('GET', `/v1/net/projects?owner=${acme}&tier=paid`);
 
-  assert.equal((await put(portal, { project: 'usr_acme', origins: [] })).status, 200);
-  assert.equal((await door('https://acme.games')).status, 403, 'no sites: the door closes');
+  // A ticket shows in its log and its day; the page lists its rooms and who is in them, and can put someone out.
+  const a = await join('arena-1', opts({ project: 'acme-arena', name: 'Ada', sub: 'u-ada' }));
+  const b = await join('arena-1', opts({ project: 'acme-arena', name: 'Bo', sub: 'u-bo' }));
+  try {
+    const page = await wait(async () => { const j = await (await call('GET', `/v1/net/projects/acme-arena?owner=${acme}`)).json(); return j.now?.players === 2 ? j : null; }, 6000, 'two players on the page');
+    assert.ok(page.tickets.filter((t: any) => t.ok && t.room === 'arena-1').length >= 2, 'the tickets are logged');
+    assert.ok(page.tickets.some((t: any) => !t.ok && /own sites/.test(t.why ?? '')), 'and the refused ones, with why');
+    assert.ok(page.today.tickets >= 3 && page.today.refused >= 1, "the day's counts");
+    assert.equal(page.rooms[0].room, 'arena-1');
+    assert.equal(page.rooms[0].transport, 'relay', 'the relay: no peer to peer asked for');
+    const who = await (await call('GET', `/v1/net/projects/acme-arena/rooms/arena-1?owner=${acme}`)).json();
+    assert.deepEqual(who.players.map((p: any) => [p.name, p.sub, p.connected]), [['Ada', 'u-ada', true], ['Bo', 'u-bo', true]]);
+    assert.equal((await call('GET', `/v1/net/projects/acme-arena/rooms/arena-1?owner=${other}`)).status, 404);
+    const out = await (await call('POST', '/v1/net/projects/acme-arena/rooms/arena-1/kick', as(acme, { sub: 'u-bo' }))).json();
+    assert.equal(out.kicked, 1);
+    await wait(() => b.status === 'closed', 3000, 'Bo put out');
+    const { sampleOnline } = await import('../src/projects.ts');
+    sampleOnline();
+    const after = await (await call('GET', `/v1/net/projects/acme-arena?owner=${acme}`)).json();
+    assert.ok(after.online.some((o: any) => o.players >= 1), 'the players-online line has the minute');
+  } finally { await a.leave(); await b.leave(); }
+
+  // Hawkes's games: shown to an admin to take, then theirs (their file settings under it); a customer can't take one.
+  const adminList = await (await call('GET', `/v1/net/projects?owner=${admin}&admin=true`)).json();
+  assert.ok(adminList.unowned.some((p: any) => p.id === 'sickofit' && p.claimable && p.hawkes));
+  assert.equal((await call('POST', '/v1/net/projects/sickofit/claim', as(acme))).status, 403, 'only an admin');
+  const took = await (await call('POST', '/v1/net/projects/sickofit/claim', as(admin, { admin: true }))).json();
+  assert.equal(took.owner, admin);
+  assert.ok(took.sites.includes('https://sickofitgame.com'), "its sites from the file");
+  assert.equal(took.p2p, false);
+  assert.equal(netProject('sickofit').limits.playersPerRoom, 1000, "the file's limits stay");
+  const now = await (await call('GET', `/v1/net/projects?owner=${admin}&admin=true`)).json();
+  assert.ok(now.projects.some((p: any) => p.id === 'sickofit') && !now.unowned.some((p: any) => p.id === 'sickofit'), 'now in the account');
+  assert.equal((await door('https://sickofitgame.com', 'sickofit')).status, 200, 'its game still plays');
+
+  // A project goes; a Hawkes game is let go (back to nobody's).
+  assert.equal((await call('DELETE', `/v1/net/projects/acme-arena-2?owner=${acme}`)).status, 200);
+  assert.equal(netProject('acme-arena-2').listed, false);
+  assert.equal((await (await call('DELETE', `/v1/net/projects/sickofit?owner=${admin}&admin=true`)).json()).released, true);
+  assert.equal(netProject('sickofit').owner, null);
 });
 
 test('the lobby (the standard layer for web games): room names by where the page runs, the next shard when full, handlers kept across rooms', async () => {

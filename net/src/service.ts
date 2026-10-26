@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { IncomingMessage } from 'node:http';
 import { db, DATA_DIR, env, canProject, NetError, type Client } from './store.ts';
-import { netProject, originAllowed, roomConfig, listedProjects, useCustomerSites, type NetProject } from './registry.ts';
+import { netProject, originAllowed, roomConfig, type NetProject } from './registry.ts';
+import { logTicket, addUsage, readable, type Actor } from './projects.ts';
 import { newKeyPair, exportPrivate, exportPublic, importPrivate, importPublic, signToken, TICKET_PREFIX, PUBLISH_PREFIX, type KeyPair } from './tickets.ts';
 import { NetNode, type GenLink, type NodeRecord } from './node.ts';
 import { VERSION as NET_VERSION, PROTOCOL } from '../../clients/js/hawkes-net-core.mjs';
@@ -23,9 +24,6 @@ CREATE TABLE IF NOT EXISTS net_rooms (
   PRIMARY KEY (project, room)
 );
 CREATE INDEX IF NOT EXISTS net_rooms_node ON net_rooms (node);
-CREATE TABLE IF NOT EXISTS net_sites (
-  project TEXT PRIMARY KEY, name TEXT NOT NULL, origins TEXT NOT NULL, by TEXT, updated_at INTEGER NOT NULL
-);
 `);
 
 const BEAT_STALE_MS = 35_000;
@@ -111,6 +109,7 @@ export function sendUsageTo(fn: ((rep: { node: string; rows: any[] }) => void) |
 /** A node's usage report (player-seconds and bytes per project and transport, the last minute). */
 export function recordNetUsage(rep: { node: string; rows: any[] }) {
   const rows = Array.isArray(rep?.rows) ? rep.rows.slice(0, 500) : [];
+  if (rows.length) { try { addUsage(rows); } catch (e: any) { console.error('[net] usage days:', e.message); } }
   if (usageSink && rows.length) usageSink({ node: String(rep.node ?? ''), rows });
   return { ok: true, rows: rows.length };
 }
@@ -129,67 +128,11 @@ const ROOM_RE = /^[a-z0-9][a-z0-9/_.-]{0,63}$/i;
 /** May this key make tickets for this Hawkes Net project? Its own project, or a key-project pattern the entry lists. */
 export function keyMayIssue(c: Client, p: NetProject) {
   if (c.role === 'owner' || c.projects.includes('*') || canProject(c, p.id)) return true;
+  // The account that owns it: the portal's key narrowed to that account (a customer's server asking through hawkesgen.com).
+  if (p.owner && c.projects.includes(p.owner)) return true;
   // A key whose own projects entry is the pattern (the portal's key: usr_*) may; the same key narrowed to one customer
   // (X-Hawkesgen-Project: usr_x) may not act for the whole project.
   return c.projects.some((cp) => p.keyProjects.includes(cp));
-}
-
-// ------------------------------------------------------------------ customers' sites
-// A customer's web game with no server of its own (a static page, a game on itch.io) can't hold a key, so it asks at the
-// public door like a Hawkes game: its account's project (usr_...) lists the sites whose pages may. Set through
-// hawkesgen.com (POST /v1/net/sites with the portal's key, which checked the account), never by the customer's own key.
-const ORIGIN_RE = /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/;
-export const MAX_SITES = 20;
-const siteCache = new Map<string, { at: number; v: { name: string; origins: string[] } | null }>();
-function siteRow(project: string) {
-  const c = siteCache.get(project);
-  if (c && Date.now() - c.at < 10_000) return c.v;
-  const row = db.prepare('SELECT name, origins FROM net_sites WHERE project = ?').get(project) as { name: string; origins: string } | undefined;
-  const v = row ? { name: row.name, origins: JSON.parse(row.origins) as string[] } : null;
-  if (siteCache.size > 10_000) siteCache.clear();
-  siteCache.set(project, { at: Date.now(), v });
-  return v;
-}
-useCustomerSites(siteRow);
-
-/** May this key set a customer project's sites? An owner or admin key, or a key for a pattern of customers that covers
- *  it (the portal's usr_*). A customer's own key may not: the portal decides who may open a door (a paying account). */
-function maySetSites(c: Client, project: string) {
-  if (c.role === 'owner' || c.role === 'admin' || c.projects.includes('*')) return true;
-  return c.projects.some((p) => p.endsWith('*') && project.startsWith(p.slice(0, -1)));
-}
-
-/** Customers' sites this key may see (?project= one of them). */
-export function customerSites(c: Client, project = '') {
-  const rows = (project
-    ? db.prepare('SELECT * FROM net_sites WHERE project = ?').all(project)
-    : db.prepare('SELECT * FROM net_sites ORDER BY project LIMIT 500').all()) as { project: string; name: string; origins: string; updated_at: number }[];
-  return { sites: rows.filter((r) => canProject(c, r.project)).map((r) => ({ project: r.project, name: r.name, origins: JSON.parse(r.origins), updatedAt: r.updated_at })), max: MAX_SITES };
-}
-
-/** Sets a customer project's sites ({ project, name, origins }; no origins: the door closes). */
-export function setCustomerSites(c: Client, body: any) {
-  const project = String(body?.project ?? '');
-  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(project)) throw new NetError("project is the account's project id");
-  if (listedProjects().includes(project)) throw new NetError(`${project} is one of Hawkes's own projects (net/projects.json)`, { status: 403 });
-  if (!maySetSites(c, project)) throw new NetError("Set your game's sites on hawkesgen.com (the Hawkes Net dashboard)", { status: 403 });
-  const list: unknown[] = Array.isArray(body?.origins) ? body.origins : [];
-  if (list.length > MAX_SITES) throw new NetError(`At most ${MAX_SITES} sites`);
-  const origins: string[] = [];
-  for (const raw of list) {
-    let o = String(raw ?? '').trim().toLowerCase().replace(/\/+$/, '');
-    if (!/^[a-z]+:\/\//.test(o)) o = `https://${o}`;
-    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o)) throw new NetError('localhost needs no entry: it may always join the test rooms (t-...)');
-    if (!ORIGIN_RE.test(o)) throw new NetError(`${String(raw)} is not a site: https://your-game.com (no path)`);
-    if (!origins.includes(o)) origins.push(o);
-  }
-  const name = String(body?.name ?? '').replace(/[^\p{L}\p{N} _.'&-]/gu, '').trim().slice(0, 60) || project;
-  if (!origins.length) db.prepare('DELETE FROM net_sites WHERE project = ?').run(project);
-  else db.prepare(`INSERT INTO net_sites (project, name, origins, by, updated_at) VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(project) DO UPDATE SET name = excluded.name, origins = excluded.origins, by = excluded.by, updated_at = excluded.updated_at`)
-    .run(project, name, JSON.stringify(origins), c.id, Date.now());
-  siteCache.delete(project);
-  return { project, name, origins, max: MAX_SITES };
 }
 
 // The public door (no key, by Origin): per address and per project, in memory.
@@ -205,10 +148,26 @@ function doorLimit(key: string, max: number, ms = 60_000) {
 
 export type TicketAuth = { client: Client | null; origin: string; ip: string | null; host: string | null; proto: string };
 
+/** A join ticket, and a line in the project's ticket log (made or refused, and why: the dashboard's Tickets). */
 export function issueTicket(body: any, auth: TicketAuth) {
+  const line = { project: String(body?.project ?? '').slice(0, 64), room: String(body?.room ?? '').slice(0, 64), role: String(body?.role ?? 'player').slice(0, 12), via: auth.client ? 'key' : 'site', origin: auth.origin.slice(0, 120), ip: auth.ip };
+  try {
+    const t = makeTicket(body, auth);
+    logTicket({ ...line, ok: true, peer: t.peer });
+    return t;
+  } catch (e: any) {
+    if (e instanceof NetError) logTicket({ ...line, ok: false, why: e.message.slice(0, 200), status: e.status });
+    throw e;
+  }
+}
+
+function makeTicket(body: any, auth: TicketAuth) {
   const project = String(body?.project ?? '');
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(project)) throw new NetError('project is the Hawkes Net project id');
   const p = netProject(project);
+  // No anonymous projects: one made on net.hawkesgen.com (or one of Hawkes's games). An owner key (tests, bots) may.
+  const root = auth.client && (auth.client.role === 'owner' || auth.client.projects.includes('*'));
+  if (!p.listed && !root) throw new NetError(`No Hawkes Net project "${project}": make one on net.hawkesgen.com`, { status: 404 });
   const room = String(body?.room ?? '');
   if (!ROOM_RE.test(room)) throw new NetError('room is 1 to 64 of letters, digits and / _ . -');
   let role = ['player', 'spectator', 'bot', 'test'].includes(body?.role) ? body.role : 'player';
@@ -250,7 +209,7 @@ export function issueTicket(body: any, auth: TicketAuth) {
       if (!node) throw new NetError('No Hawkes Net node is up right now; try again in a minute', { status: 503 });
       const cfg = roomConfig(p, body?.config);
       if (!row) {
-        db.prepare('INSERT INTO net_rooms (project, room, node, epoch, next_ord, transport, config, players, opened_at, seen_at) VALUES (?, ?, ?, 1, 1, ?, ?, 0, ?, ?)').run(project, room, node.id, choice === 'relay' ? 'relay' : 'p2p', JSON.stringify(cfg), now, now);
+        db.prepare('INSERT INTO net_rooms (project, room, node, epoch, next_ord, transport, config, players, opened_at, seen_at) VALUES (?, ?, ?, 1, 1, ?, ?, 0, ?, ?)').run(project, room, node.id, choice === 'relay' || !tr.includes('p2p') ? 'relay' : 'p2p', JSON.stringify(cfg), now, now);
       } else db.prepare('UPDATE net_rooms SET node = ?, epoch = epoch + 1, seen_at = ? WHERE project = ? AND room = ?').run(node.id, now, project, room);
       row = db.prepare('SELECT * FROM net_rooms WHERE project = ? AND room = ?').get(project, room) as RoomRow;
     }
@@ -313,6 +272,39 @@ export async function publish(client: Client, body: any) {
   if (!node.admin_url) return { delivered: 0, open: true, error: 'This node takes no publishes' };
   const r = await fetch(`${node.admin_url.replace(/\/+$/, '')}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(msg), signal: AbortSignal.timeout(5000) }).catch(() => null);
   if (!r) return { delivered: 0, open: true, error: 'Node not answering' };
+  return { open: true, ...(await r.json().catch(() => ({}))) };
+}
+
+/** Who is in a room now (a project's own dashboard): each player's id, name, join order, role, your game's id for them
+ *  (sub), when they joined, connected or within their grace, and bytes each way. Asked of the room's node with a signed token. */
+export async function roomPlayers(a: Actor, project: string, room: string) {
+  readable(a, project);
+  if (!ROOM_RE.test(room)) throw new NetError('Bad room');
+  const r: any = await toRoomNode(project, room, { peek: true });
+  return { project, room, open: Boolean(r.open), transport: r.transport ?? null, host: r.host ?? null, players: Array.isArray(r.players) ? r.players : [] };
+}
+/** Puts a player out of a room (by your game's id for them, `sub`, or the peer id); they can come back with a new ticket
+ *  unless your game stops giving them one. */
+export async function kickPlayer(a: Actor, project: string, room: string, body: any) {
+  readable(a, project);
+  if (!ROOM_RE.test(room)) throw new NetError('Bad room');
+  const sub = typeof body?.sub === 'string' && body.sub ? body.sub.slice(0, 64) : null;
+  const peer = typeof body?.peer === 'string' && /^p\d{1,9}$/.test(body.peer) ? body.peer : null;
+  if (!sub && !peer) throw new NetError('sub or peer: who to put out');
+  const r: any = await toRoomNode(project, room, { kick: { sub, peer } });
+  return { project, room, kicked: Number(r.kicked) || 0 };
+}
+async function toRoomNode(project: string, room: string, msg: any) {
+  const row = db.prepare('SELECT node FROM net_rooms WHERE project = ? AND room = ?').get(project, room) as { node: string | null } | undefined;
+  const node = row ? nodeById(row.node) : null;
+  if (!row || !node || !live(node)) return { open: false, players: [], kicked: 0 };
+  const k = keys().pair;
+  const iat = Math.floor(Date.now() / 1000);
+  const token = signToken(PUBLISH_PREFIX, { v: 1, kid: k.kid, prj: project, room, iat, exp: iat + 30, jti: crypto.randomBytes(9).toString('base64url') }, k.privateKey);
+  if (node.embedded && embedded) return { open: true, ...(await embedded.publish(token, msg)) };
+  if (!node.admin_url) return { open: true, players: [], error: 'This node takes no requests' };
+  const r = await fetch(`${node.admin_url.replace(/\/+$/, '')}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(msg), signal: AbortSignal.timeout(5000) }).catch(() => null);
+  if (!r) return { open: true, players: [], error: 'Node not answering' };
   return { open: true, ...(await r.json().catch(() => ({}))) };
 }
 

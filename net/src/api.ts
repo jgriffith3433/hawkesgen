@@ -9,8 +9,10 @@
 //   POST /v1/net/nodes/room        a relay node's room opened, moved or closed
 //   POST /v1/net/usage             a relay node's usage for the last minute
 //   POST /v1/net/keys/rotate       a new signing key (owner)
-//   GET|POST /v1/net/sites         a customer project's sites (its web game's public door), set by the portal
+//   GET|POST /v1/net/projects      an account's projects (list, make); /projects/<id> (GET, POST settings, DELETE),
+//                                  /<id>/claim (an admin takes a Hawkes game), /<id>/rooms/<room> (who is in it), /kick
 //   GET  /sdk/hawkes-net.mjs, /sdk/hawkes-net-core.mjs (and @1): the client SDK, for pages that load it from here
+//   GET  /sdk/com.hawkes.net.tgz   the Unity package (Package Manager > Add package from tarball)
 // Keys are Gen API keys; how one is checked is set by the server (useKeyCheck: the box asks Gen's /v1/net/whoami).
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +22,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { canProject, NetError, type Client } from './store.ts';
 import { netProject, originAllowed } from './registry.ts';
 import * as svc from './service.ts';
+import * as projects from './projects.ts';
+import { packageTarball } from './tarball.ts';
 
 const SDK_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'clients', 'js');
 const send = (res: ServerResponse, status: number, body: unknown) => {
@@ -79,6 +83,14 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       return void res.end(method === 'HEAD' ? undefined : f.body);
     }
 
+    // The Unity package (Package Manager > Add package from tarball), made from clients/unity/com.hawkes.net.
+    if ((route === '/sdk/com.hawkes.net.tgz' || /^\/sdk\/com\.hawkes\.net-[0-9.]+\.tgz$/.test(route)) && (method === 'GET' || method === 'HEAD')) {
+      const t = packageTarball(path.join(SDK_DIR, '..', 'unity', 'com.hawkes.net'));
+      const headers = { 'Content-Type': 'application/gzip', 'Content-Disposition': `attachment; filename="com.hawkes.net-${t.version}.tgz"`, 'Cache-Control': 'public, max-age=300', ETag: t.etag, 'Access-Control-Allow-Origin': '*', 'X-Hawkes-Net-Unity': t.version };
+      if (req.headers['if-none-match'] === t.etag) return void res.writeHead(304, headers).end();
+      res.writeHead(200, { ...headers, 'Content-Length': t.body.length });
+      return void res.end(method === 'HEAD' ? undefined : t.body);
+    }
     if (route === '/v1/net/ticket') {
       // CORS for the public door: the project's own sites (checked again on the request, by project) and localhost.
       const origin = String(req.headers.origin ?? '');
@@ -98,7 +110,6 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       // A browser page with no key goes through the public door (its origin); everything else needs a key.
       const viaDoor = !hasKey && Boolean(origin);
       const auth = svc.ticketAuth(req, viaDoor ? null : client);
-      if (viaDoor && !originAllowed(netProject(String(body.project ?? '')), origin, String(body.room ?? ''))) return send(res, 403, { error: 'This site may not ask for tickets for that project' });
       if (!viaDoor && !client) return send(res, 401, { error: 'A Gen API key, or a page on the project\'s own site' });
       return send(res, 200, svc.issueTicket(body, auth));
     }
@@ -143,12 +154,28 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       if (!c) return send(res, 401, { error: 'A Gen key is needed' });
       return send(res, 200, svc.projectRooms(c, await readJson(req)));
     }
-    // A customer's sites (the public door for their web game): the portal sets them after its own checks.
-    if (route === '/v1/net/sites' && (method === 'GET' || method === 'POST')) {
+    // Projects (docs/net.md "Projects and accounts"): an account's own, through the portal's key (owner, admin and tier
+    // name the signed-in account), or an owner/admin key. ?owner=&admin=&tier= on reads, the same fields in a body.
+    const pm = /^\/v1\/net\/projects(?:\/([a-z0-9][a-z0-9._-]{0,63})(?:\/(claim|rooms)(?:\/(.+?)(?:\/(kick))?)?)?)?$/i.exec(route);
+    if (pm) {
       const c = await checkKey(req);
-      if (!c) return send(res, 401, { error: 'A Gen key is needed' });
-      if (method === 'GET') return send(res, 200, svc.customerSites(c, String(new URL(req.url ?? '/', 'http://x').searchParams.get('project') ?? '')));
-      return send(res, 200, svc.setCustomerSites(c, await readJson(req)));
+      if (!c) return send(res, 401, { error: 'A key is needed' });
+      const q = new URL(req.url ?? '/', 'http://x').searchParams;
+      const body = method === 'POST' ? await readJson(req) : {};
+      const pick = (k: string) => body?.[k] ?? q.get(k);
+      const a = projects.actor(c, pick('owner'), pick('admin'));
+      projects.touchTier(a.owner, pick('tier'));
+      const [, id, part, roomRaw, kick] = pm;
+      const room = roomRaw ? decodeURIComponent(roomRaw) : '';
+      if (!id && method === 'GET') return send(res, 200, projects.listProjects(a, q.get('all') === '1'));
+      if (!id && method === 'POST') return send(res, 200, projects.createProject(a, body));
+      if (id && !part && method === 'GET') return send(res, 200, projects.projectDetail(a, id));
+      if (id && !part && method === 'POST') return send(res, 200, projects.updateProject(a, id, body));
+      if (id && !part && method === 'DELETE') return send(res, 200, projects.deleteProject(a, id));
+      if (id && part === 'claim' && method === 'POST') return send(res, 200, projects.claimProject(a, id));
+      if (id && part === 'rooms' && room && !kick && method === 'GET') return send(res, 200, await svc.roomPlayers(a, id, room));
+      if (id && part === 'rooms' && room && kick && method === 'POST') return send(res, 200, await svc.kickPlayer(a, id, room, body));
+      return send(res, 405, { error: 'Not a projects route' });
     }
     // The operator's view (an owner or admin key): every node and worker, rooms per project, what waits to reach Gen.
     if (route === '/v1/net/ops' && method === 'GET') {

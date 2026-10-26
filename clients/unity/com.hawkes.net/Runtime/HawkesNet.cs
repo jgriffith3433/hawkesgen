@@ -20,8 +20,9 @@ namespace Hawkes
         /// <summary>A Hawkes Net project that hands out tickets to pages on its own sites (no key).</summary>
         public string project = "";
         public string name = "";
-        /// <summary>"auto" (peer to peer while small, then the relay), "p2p" or "relay".</summary>
-        public string transport = "auto";
+        /// <summary>"relay" (the default), or "auto" (peer to peer while small, then the relay) where the project allows
+        /// peer to peer (a setting on net.hawkesgen.com, off by default).</summary>
+        public string transport = "relay";
         /// <summary>"player" or "spectator".</summary>
         public string role = "player";
         /// <summary>The Hawkes Net service, when not https://net.hawkesgen.com.</summary>

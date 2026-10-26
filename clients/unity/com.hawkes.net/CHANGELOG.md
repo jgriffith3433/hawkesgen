@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 (2026-10-26)
+
+- The relay by default (`HawkesNetOptions.transport` is `"relay"`): peer to peer (`"auto"`) only where the project
+  turns it on (net.hawkesgen.com > your project > Settings).
+- Every project belongs to a hawkesgen.com account: make it on net.hawkesgen.com, pass its id as `project`. Download
+  this package there (Add package from tarball).
+
 ## 0.2.1 (2026-10-26)
 
 - A game with no server of its own joins with its account's project (`usr_...`) once its sites are listed on

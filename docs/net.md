@@ -14,7 +14,7 @@ section says so and wins. Exact shapes: `net/src/types.ts` (the design's types) 
 | The service | `net/src/service.ts`, `api.ts`, `registry.ts`, `store.ts`, `net/projects.json` | Tickets (`POST /v1/net/ticket`: a Gen key, or the public door by origin), the directory (`net_nodes`, `net_rooms` in the service's own `net.db`), node heartbeats, room events, usage handed to Gen, publish to a room or every room under `prefix/*` (and kicks), room info, status, the SDK files at `/sdk/hawkes-net@1.mjs`. Settings are `NET_*` environment variables (`store.ts`). |
 | Client SDK | `clients/js/hawkes-net.mjs` (types: `hawkes-net.d.ts`, served at `/sdk/hawkes-net@1.d.ts`) | `lobby({ project, liveHosts, ... })`: the standard layer for web and Babylon games (below), the same as Unity's `HawkesNetLobby`. `join(room, { project, transport, ticket, ... })`: relay (WebSocket), p2p (WebRTC host-star: the host runs the core in its page; players start on the signal route and move onto their link; one stream, one carrier), `auto` (p2p, then the relay without the game noticing), reconnect with resume, exactly-once reliable messages across reconnects and moves, the shared clock (eased, never jumps), `send/on`, `pose/onPose`, `sync.*` (the portal's H.sync: state, action, track, push, onThing, thing, claim, hold, release, mine, holder, clear, onHost), `raw` (an engine with its own logic: hawkesgen.com's `play/net.js`), stats, sleep handling, `pagehide` leave. |
 | Unity WebGL | `clients/unity/com.hawkes.net` (0.2.0) | The standard Unity layer (below, "Unity: the standard layer"): `HawkesNetLobby` (shared rooms by area, live/beta/playtest names, shards, rejoining, one status), `HawkesNetAvatars` (drop-in avatars), and the room itself, `HawkesNet.Join(room, options)`: `OnReady`, `On(kind, (data, from))` / `On<T>`, `Send` (JSON) and `SendText` (the game's own text, arriving as sent), `Pose(position, yawDegrees, extra)` and `OnPose`/`Poses` (changed poses read once a frame, with their extra values and time), `Peers`, `PeerOrder`, `Order`, `Host`, `Transport`, `OnStatus`, `OnProblem`, `Migrate`, `Leave`, and `HawkesNet.Count(project, rooms, done)` (public counts). The web SDK runs in the page (`HawkesNet.jslib` imports it from `/sdk/hawkes-net@1.mjs`); in the Editor `Join` reports `webgl-only`. Test `net/test/net-unity.test.ts` runs the jslib against the real SDK and service. Adopted by Sick Of It (its ghosts, on `HawkesNetLobby`) and Yooba Land (its whole MMO). 0.2.1 adds the Avatars sample, a changelog and the outside developer's readme (Asset Store shape). |
-| **Customers' sites** | `net/src/service.ts` (`net_sites`, `setCustomerSites`), `registry.ts` (`useCustomerSites`), `GET/POST /v1/net/sites`; the portal's `/v1/net/sites` (hawkesgenwebsite `src/hnet.ts`); the dashboard's "Your game's sites" | A customer's web game with no server (a static page, itch.io) joins like a Hawkes game: its account's project (`usr_...`) lists up to 20 https sites whose pages get player tickets at the public door, and localhost may join its test rooms. The service takes a site list only from a key for a pattern of customers (the portal's `usr_*`) or an owner/admin key, never the customer's own key: the portal decides who may open a door (paid accounts; the relay's bytes are theirs). Hawkes's own projects stay in `projects.json`. |
+| **Projects and accounts** | `net/src/projects.ts` (`net_projects`, `net_tickets`, `net_days`, `net_online`), `registry.ts` (`useProjectRows`), `GET/POST/DELETE /v1/net/projects[/<id>[/claim|/rooms/<room>[/kick]]]`; the portal's `/v1/net/projects` (hawkesgenwebsite `src/hnet.ts`); the dashboard `net/public/dashboard.html` | Every project belongs to a hawkesgen.com account (below, "Projects and accounts"). Nothing is anonymous: no project, no ticket. Each project's page: players online now and over the day, rooms and who is in them (put a player out), the ticket log (made and refused, and why), 30 days of usage. The Unity package downloads from `/sdk/com.hawkes.net.tgz` (`net/src/tarball.ts`). |
 | Demo page | `net/public/demo.html` (`https://net.hawkesgen.com/demo`; the root `/` is the developer dashboard, `net/public/dashboard.html`: docs, and with a hawkesgen.com sign-in your key, rooms and usage, read from the portal, which allows that origin on `/v1/net/me` and `/v1/users/api-key`) | Dots in a room: invite link, bots in the same page, "move to the relay", live transport, host, routes, round trip and bandwidth. |
 | Tools | `net/tools/net-load.mjs`, `net/tools/net-dev.mjs` | The load test (below; `--url` tests a real service from outside) and the service on this PC with a scratch data folder. |
 | Tests | `net/test/` (`npm run test:net`; also in `npm test`): `net-core`, `net-node`, `net-service`, `net-hub`, `net-unity`; Gen's bridge `test/netbridge.test.ts` | Rules from the portal's relay on both protocols, codec bounds, the measured scene's bytes, flush time, a relay room over real sockets (and with worker processes), refused tickets, resume, p2p signalling and the move to the relay with nothing reliable lost, publish, full rooms, raw mode, usage rows. |
@@ -77,7 +77,7 @@ net.pose([x, y, z], yaw);                     // my avatar; others get it throug
 const t = net.sync.track({ pos: [0, 1, 2] }); // smooth playback of others' snapshots
 ```
 
-- **Tickets.** A page on one of the project's `origins` (net/projects.json) gets player tickets with no key (the public
+- **Tickets.** (Projects and accounts: below.) A page on one of the project's sites gets player tickets with no key (the public
   door; per-address limits). A game server, a bot or a test gets them with a Gen key (`Authorization: Bearer hg_...`),
   any role. A game with its own server can mint tickets there and pass `ticket` to `join` (a string, or a function that
   returns Gen's answer, called again on reconnects).
@@ -117,20 +117,42 @@ Package `clients/unity/com.hawkes.net` (its README has the code):
 5. **Ship a copy.** A game built on the cloud build server embeds the package in its own `Packages/` (the server has no Gen
    checkout of its own branch): copy it again when this one changes.
 
-### For customers (J, 2026-10-26: "a solution for potential clients to use our SDK for web games")
+### Projects and accounts (J, 2026-10-26)
 
-The same SDK and Unity package, on the customer's own project (their hawkesgen.com account's, `usr_...`):
+J: "You create the account at hawkesgen.com and you get access to the Hawkes Net portal too and you can create your own
+projects and get an api key, download the sdk and plug it into your unity project or babylon project. hawkesgen.com game is
+just the 1st project under my account." And: "make it so peer to peer isn't defaulted and API key and account at hawkesgen
+is required."
 
-- **No server:** list the game's sites on net.hawkesgen.com ("Your game's sites"), then `lobby({ project: 'usr_...',
-  liveHosts })` (JS) or `new HawkesNetLobby(new HawkesNetOptions { project = "usr_..." }, hosts)` (Unity). Localhost joins
-  the test rooms.
-- **A server:** `POST https://hawkesgen.com/v1/net/rooms/ticket` with their key, the ticket to the page (`ticket` / `ticketUrl`).
-- Both are for paid accounts (the relay costs us per byte; usage shows on the dashboard). Rooms of up to 64 (the defaults).
-
-**Toward the Unity Asset Store** (the package is shaped for it: samples, changelog, readme for outsiders). Still open:
-the license and price (J's call), an Editor/standalone transport (today a join needs a WebGL build: buyers will want Play
-mode; that is a C# client of protocol 3 over a WebSocket), the store listing's art and a demo build, and a public source
-for the package (it lives in this private repo; the store takes an exported `.unitypackage`, as `hawkesgen-unity` did).
+- **Accounts are hawkesgen.com's.** net.hawkesgen.com (the dashboard) reads and changes everything through the portal with
+  the hawkesgen.com session; the portal asks the service with its key and names the account (`owner`: its Gen project,
+  `usr_...`), whether it is an admin and its tier (`paid` or `free`). The service trusts a key for a pattern of accounts
+  (the portal's `usr_*`) to name one of them, a key for one account to act for that account, and owner/admin Gen keys for
+  anyone (`projects.ts actor`).
+- **Projects** (`net_projects`: id, owner, name, sites, peer to peer on or off, room size, tier). An account makes up to 20;
+  the id (3 to 40 of `a-z0-9-`, from the name) is what the game passes as `project`. Settings: the sites whose pages join
+  with no key (up to 20 https sites; paid accounts), peer to peer (off by default), players in a room (up to the plan's).
+- **Hawkes's own games** (`net/projects.json`: Hawkes Gen Portal `hawkesgenwebsite`, Sick Of It `sickofit`, Yooba Land
+  `yoobaland`, Dose Of Destruction, the demo) keep their room shapes and limits in the file; an admin takes one into their
+  account from the dashboard ("Hawkes games nobody has taken"), and the row then sits over the file (its sites and peer to
+  peer can be changed there; let go, it is nobody's again).
+- **Tiers:** a free account's projects build and test: localhost in test rooms, 3 rooms, 16 players, 8 a room
+  (`FREE_LIMITS`). A paid account (credits or a plan) gets its sites, server tickets and the defaults (64 a room, 200 rooms,
+  2,000 players). Hawkes's games keep their file limits. The portal tells the service the tier on every call.
+- **Tickets:** a page on a project's sites (no key), localhost for a project's test rooms (`t-...`), or a key that may act
+  for the project (the account's servers through `POST https://hawkesgen.com/v1/net/rooms/ticket` with `project`; the portal
+  narrows its key to the account and the service checks the project is the account's). Every ticket, made or refused, is in
+  the project's log for 7 days and counted in its day.
+- **The relay by default.** Projects allow only the relay unless the account turns peer to peer on; the SDK (`join`,
+  `lobby`) and the Unity package ask for `relay` unless the game asks for `auto`. The portal's own games and the demo are on
+  the relay. Every room then shows on its project's page with its players.
+- **Numbers** (`projects.ts`): players online a minute per project (`net_online`, the box samples it, 8 days), a row per
+  project and UTC day (`net_days`: tickets, refused, player-seconds, test-room player-seconds, relay and p2p bytes, peak
+  players; fed by the nodes' usage and the tickets). Gen's usage table still gets every node report (billing later sums a
+  project's rows by its owner).
+- **Toward the Unity Asset Store:** the package has a sample, a changelog and an outside developer's readme, and downloads as a
+  tarball. Still open: the license and price (J's call), an Editor/standalone transport (a C# client of protocol 3 over a
+  WebSocket: buyers will want Play mode), the listing's art and a demo build.
 
 ### Running a relay box
 

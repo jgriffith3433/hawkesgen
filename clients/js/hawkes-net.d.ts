@@ -22,6 +22,7 @@ export interface JoinOptions {
   project?: string;
   /** A ticket from your server, or a function that asks your server for one (called again on reconnects and moves). */
   ticket?: string | (() => Promise<Ticket> | Ticket);
+  /** 'relay' (default); 'auto' (peer to peer while small) or 'p2p' only where the project allows peer to peer. */
   transport?: 'auto' | 'p2p' | 'relay';
   name?: string;
   /** Your id for this player: the same person reconnecting keeps their place. */

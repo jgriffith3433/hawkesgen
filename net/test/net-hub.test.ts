@@ -72,26 +72,39 @@ const wait = async (pred: () => any, ms = 5000, what = 'condition') => {
 };
 const post = (p: string, body: any, headers: Record<string, string> = {}) => fetch(`${hubUrl}${p}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
 const asPortal = (project: string) => ({ Authorization: 'Bearer hg_portal', 'X-Hawkesgen-Project': project });
+// Customers' projects, made the way the portal makes them (its key, the account it acts for).
+const made = new Set<string>();
+async function project(owner: string, id: string) {
+  if (made.has(id)) return id;
+  const r = await post('/v1/net/projects', { owner, name: id, id, tier: 'paid' }, { Authorization: 'Bearer hg_portal' });
+  if (r.status !== 200) throw new Error(`making ${id}: ${r.status} ${await r.text()}`);
+  made.add(id);
+  return id;
+}
 
-test('keys are checked with Gen (and kept a minute): the portal narrowed to a customer gets tickets there; other keys, other projects and no key do not', async () => {
-  const ok = await post('/v1/net/ticket', { project: 'usr_00000000000000aa', room: 'lobby', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'));
+test('keys are checked with Gen (and kept a minute): the portal narrowed to a customer gets tickets in its projects; other keys, other projects and no key do not', async () => {
+  await project('usr_00000000000000aa', 'aa-game');
+  await project('usr_00000000000000bb', 'bb-game');
+  const ok = await post('/v1/net/ticket', { project: 'aa-game', room: 'lobby', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'));
   assert.equal(ok.status, 200, await ok.clone().text());
   const t = await ok.json();
   assert.match(t.ticket, /^hn1\./);
   assert.equal(t.relayUrl, `ws://127.0.0.1:${port}/v1/net/ws`, 'the relay on this box');
   const before = whoamiCalls;
-  assert.equal((await post('/v1/net/ticket', { project: 'usr_00000000000000aa', room: 'lobby', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'))).status, 200);
+  assert.equal((await post('/v1/net/ticket', { project: 'aa-game', room: 'lobby', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'))).status, 200);
   assert.equal(whoamiCalls, before, 'the second ticket asked Gen nothing');
-  assert.equal((await post('/v1/net/ticket', { project: 'usr_00000000000000bb', room: 'lobby', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'))).status, 403);
-  assert.equal((await post('/v1/net/ticket', { project: 'usr_00000000000000aa', room: 'lobby', client: { protocols: [3] } }, { Authorization: 'Bearer hg_other' })).status, 403);
-  assert.equal((await post('/v1/net/ticket', { project: 'usr_00000000000000aa', room: 'lobby', client: { protocols: [3] } }, { Authorization: 'Bearer hg_nope' })).status, 401);
+  assert.equal((await post('/v1/net/ticket', { project: 'bb-game', room: 'lobby', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'))).status, 403, "another account's project");
+  assert.equal((await post('/v1/net/ticket', { project: 'usr_00000000000000aa', room: 'lobby', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'))).status, 404, 'no project of that name: nothing anonymous');
+  assert.equal((await post('/v1/net/ticket', { project: 'aa-game', room: 'lobby', client: { protocols: [3] } }, { Authorization: 'Bearer hg_other' })).status, 403);
+  assert.equal((await post('/v1/net/ticket', { project: 'aa-game', room: 'lobby', client: { protocols: [3] } }, { Authorization: 'Bearer hg_nope' })).status, 401);
   assert.equal((await post('/v1/net/ticket', { project: 'netdemo', room: 'x', client: { protocols: [3] } })).status, 401, 'no key, no origin: nothing (no local owner on a box)');
   assert.equal((await post('/v1/net/ticket', { project: 'netdemo', room: 'x', client: { protocols: [3] } }, { Origin: 'http://localhost:5173' })).status, 403, 'localhost is no door on a box');
   assert.equal((await post('/v1/net/ticket', { project: 'netdemo', room: 'x', client: { protocols: [3] } }, { Origin: 'https://net.hawkesgen.com' })).status, 200, 'the demo page on the box');
 });
 
 test('players play on the service, and their usage goes to Gen with the service\'s key', async () => {
-  const ticket = (name: string) => async () => (await post('/v1/net/ticket', { project: 'usr_00000000000000aa', room: 'match-1', name, transport: 'relay', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'))).json();
+  await project('usr_00000000000000aa', 'aa-game');
+  const ticket = (name: string) => async () => (await post('/v1/net/ticket', { project: 'aa-game', room: 'match-1', name, transport: 'relay', client: { protocols: [3] } }, asPortal('usr_00000000000000aa'))).json();
   const a = await join('match-1', { ticket: ticket('Ada'), transport: 'relay', leaveOnHide: false, log: false });
   const b = await join('match-1', { ticket: ticket('Bo'), transport: 'relay', leaveOnHide: false, log: false });
   try {
@@ -101,18 +114,18 @@ test('players play on the service, and their usage goes to Gen with the service\
     await wait(() => got.length, 5000, 'the message');
     assert.deepEqual(got[0], { n: 1 });
     // (The directory hears the count from the node within a few seconds.)
-    const room = await wait(async () => { const j = await (await post('/v1/net/room', { project: 'usr_00000000000000aa', room: 'match-1' }, asPortal('usr_00000000000000aa'))).json(); return j.players === 2 ? j : null; }, 15_000, 'the directory to count both');
+    const room = await wait(async () => { const j = await (await post('/v1/net/room', { project: 'aa-game', room: 'match-1' }, asPortal('usr_00000000000000aa'))).json(); return j.players === 2 ? j : null; }, 15_000, 'the directory to count both');
     assert.equal(room.open, true);
     await new Promise((r) => setTimeout(r, 1500)); // (usage counts player-seconds on the relay's one-second tick)
   } finally { await a.leave(); await b.leave(); }
-  await wait(() => usage.some((u) => u.rows.some((r: any) => r.project === 'usr_00000000000000aa' && r.transport === 'relay' && r.playerSeconds > 0)), 15_000, `usage at Gen: ${JSON.stringify(usage).slice(0, 600)} (${logs.join('').slice(-300)})`);
+  await wait(() => usage.some((u) => u.rows.some((r: any) => r.project === 'aa-game' && r.transport === 'relay' && r.playerSeconds > 0)), 15_000, `usage at Gen: ${JSON.stringify(usage).slice(0, 600)} (${logs.join('').slice(-300)})`);
 });
 
 test('the front door is the dashboard; the demo page and the SDK are served by the service', async () => {
   const home = await fetch(`${hubUrl}/`, { redirect: 'manual' });
   assert.equal(home.status, 200);
   const html = await home.text();
-  assert.match(html, /Your Hawkes Net/);
+  assert.match(html, /Your projects/);
   assert.match(html, /\/v1\/net\/me/, 'it reads your Net from the portal');
   const page = await fetch(`${hubUrl}/demo`);
   assert.equal(page.status, 200);

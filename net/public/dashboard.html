@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hawkes Net</title>
-<meta name="description" content="Multiplayer for web games: your key, your rooms and usage, and the docs. Signed in with your hawkesgen.com account.">
+<meta name="description" content="Multiplayer for web games. Your hawkesgen.com account, your projects, their players, rooms and tickets live, the SDK for the web, Babylon and Unity, and the docs.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='9' cy='16' r='5' fill='%232f6fed'/%3E%3Ccircle cx='23' cy='9' r='4' fill='%2316a34a'/%3E%3Ccircle cx='23' cy='23' r='4' fill='%2316a34a'/%3E%3Cpath d='M13 14l6-4M13 18l6 4' stroke='%232f6fed' stroke-width='2'/%3E%3C/svg%3E">
 <style>
   :root { --bg: #f6f7f9; --card: #fff; --ink: #14161b; --muted: #5d6470; --line: #e3e6ea; --accent: #2f6fed; --ok: #16a34a; --warn: #b45309; --bad: #dc2626; --code: #0f1115; --code-ink: #e8eaf0; }
@@ -23,34 +23,62 @@
   .brand small { color: var(--muted); font-weight: 400; }
   .bar nav { display: flex; gap: 14px; flex-wrap: wrap; font-size: 14px; }
   .bar nav a { color: var(--muted); } .bar nav a:hover { color: var(--ink); }
-  .who { margin-left: auto; font-size: 14px; color: var(--muted); display: flex; gap: 10px; align-items: center; }
+  .who { margin-left: auto; font-size: 14px; color: var(--muted); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .status { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); } .dot.up { background: var(--ok); } .dot.down { background: var(--bad); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; } .dot.up { background: var(--ok); } .dot.down { background: var(--bad); }
   main { padding: 28px 0 60px; }
   h1 { font-size: 30px; line-height: 1.15; margin: 0 0 6px; letter-spacing: -0.01em; }
   h2 { font-size: 22px; margin: 40px 0 10px; scroll-margin-top: 72px; }
   h3 { font-size: 16px; margin: 22px 0 8px; }
-  p, li { color: var(--muted); max-width: 48em; } p b, li b { color: var(--ink); }
+  p, li { color: var(--muted); max-width: 52em; } p b, li b { color: var(--ink); }
   .lede { font-size: 17px; margin: 0 0 18px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
   .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
   .btn { display: inline-block; font: inherit; font-size: 14px; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 7px 14px; cursor: pointer; }
   .btn:hover { text-decoration: none; border-color: var(--muted); }
   .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+  .btn.small { font-size: 13px; padding: 4px 10px; }
+  .btn:disabled { opacity: .5; cursor: default; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
-  .tiles div { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .tiles div { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--card); }
   .tiles b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
   .tiles span { color: var(--muted); font-size: 13px; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0 14px; display: block; overflow-x: auto; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  td.wrapok { white-space: normal; }
   th { color: var(--muted); font-weight: 500; }
+  tr.click { cursor: pointer; } tr.click:hover td { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  tr.sel td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .note { font-size: 13px; color: var(--muted); }
-  .warn { color: var(--warn); }
-  .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
-  .pill.relay { color: var(--accent); border-color: var(--accent); } .pill.p2p { color: var(--ok); border-color: var(--ok); }
+  .warn { color: var(--warn); } .bad { color: var(--bad); } .ok { color: var(--ok); }
+  .pill { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill.relay, .pill.paid { color: var(--accent); border-color: var(--accent); } .pill.p2p, .pill.on { color: var(--ok); border-color: var(--ok); }
+  .pill.hawkes { color: var(--warn); border-color: var(--warn); }
   .keybox { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-  #siteList { width: 100%; box-sizing: border-box; font: 13px/1.5 ui-monospace, monospace; padding: 8px 10px; border: 1px solid var(--line, #ccd); border-radius: 8px; background: inherit; color: inherit; resize: vertical; }
   .step { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 13px; font-weight: 600; margin-right: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin: 12px 0; }
+  .proj { display: block; color: var(--ink); }
+  .proj:hover { text-decoration: none; border-color: var(--accent); }
+  .proj h3 { margin: 0 0 2px; font-size: 17px; }
+  .proj .nums { display: flex; gap: 14px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .proj .nums b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 18px 0 16px; overflow-x: auto; overflow-y: hidden; padding-bottom: 1px; }
+  .tabs a { padding: 8px 14px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+  .tabs a.on { color: var(--ink); border-color: var(--accent); }
+  .tabs a:hover { text-decoration: none; color: var(--ink); }
+  label.f { display: block; margin: 14px 0 6px; font-weight: 600; font-size: 14px; }
+  input[type=text], input[type=number], textarea { width: 100%; max-width: 520px; font: inherit; font-size: 14px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); }
+  textarea { font: 13px/1.5 ui-monospace, monospace; resize: vertical; max-width: 640px; }
+  .switch { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; max-width: 640px; }
+  .switch input { margin-top: 4px; }
+  .chart { width: 100%; height: 150px; display: block; }
+  .chart .area { fill: color-mix(in srgb, var(--accent) 18%, transparent); } .chart .line { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+  .chart .axis { stroke: var(--line); } .chart text { fill: var(--muted); font-size: 11px; }
+  .crumbs { font-size: 14px; color: var(--muted); margin-bottom: 6px; }
+  .msg { margin: 10px 0; font-size: 14px; }
+  .hidden { display: none !important; }
+  @media (max-width: 640px) { header.top { position: static; } h1 { font-size: 24px; } }
   footer { border-top: 1px solid var(--line); padding: 18px 0 30px; font-size: 13px; color: var(--muted); }
   footer .wrap { display: flex; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
 </style>
@@ -58,26 +86,25 @@
 <body>
 <header class="top">
   <div class="wrap bar">
-    <a class="brand" href="/">Hawkes Net <small>multiplayer for web games</small></a>
-    <nav aria-label="Sections"><a href="#yours">Your Net</a><a href="#quickstart">Quickstart</a><a href="#reference">Reference</a><a href="#limits">Pricing</a><a href="/demo">Demo</a></nav>
+    <a class="brand" href="#">Hawkes Net <small>multiplayer for web games</small></a>
+    <nav aria-label="Sections"><a href="#">Projects</a><a href="#docs">Docs</a><a href="#limits">Pricing</a><a href="/demo">Demo</a></nav>
     <div class="who"><span class="status" id="status"><span class="dot"></span>checking…</span><span id="who"></span></div>
   </div>
 </header>
 
 <main class="wrap">
-  <h1>Multiplayer for your web game.</h1>
-  <p class="lede">One call joins a room. Small rooms go peer to peer; past eight players the room moves to our relay and nobody reconnects. <a href="/demo">Try it in two tabs.</a></p>
+  <!-- The app: the account and its projects (signed in), or how to start (signed out). -->
+  <section id="app"><p class="note">Loading…</p></section>
 
-  <h2 id="yours" style="margin-top:20px">Your Hawkes Net</h2>
-  <div class="card" id="mine"><p class="note">Loading…</p></div>
-
+  <!-- The docs: shown on the projects view, not on a project's page. -->
+  <section id="docs">
   <h2 id="quickstart">Quickstart</h2>
-  <p>Two ways in. <b>A game with no server</b> (a static page, itch.io): list its sites above and every page there joins with your project's id. <b>A game with a server</b> (logins, matchmaking): your server hands out tickets, below.</p>
+  <p><span class="step">1</span><b>An account.</b> Sign in with your hawkesgen.com account (making one is free). <span class="step" style="margin-left:6px">2</span><b>A project.</b> Make one above: its id is what your game passes as <code>project</code>. <span class="step" style="margin-left:6px">3</span><b>The SDK.</b> One ES module for the web and Babylon, a package for Unity WebGL. Every room runs on our relay, and each project's page shows its players, rooms and tickets live.</p>
 
-  <h3 id="noserver"><span class="step">0</span>No server: shared rooms</h3>
+  <h3 id="noserver">A game with no server: shared rooms</h3>
 <pre><code>import { lobby } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
 
-const lob = lobby({ project: 'usr_…', liveHosts: ['mygame.com'], name: 'Ada' }); // your project, above
+const lob = lobby({ project: 'your-project', liveHosts: ['mygame.com'], name: 'Ada' });
 lob.on('chat', (text, from) =&gt; show(from.name, text));
 lob.onPose((peer, s) =&gt; moveAvatar(peer, s.p, s.y));
 lob.when('status', ({ status }) =&gt; hud(status));   // connecting, online, reconnecting, offline, full
@@ -85,182 +112,360 @@ lob.join('level-1');                                // everyone in level 1 plays
 
 lob.pose([x, y, z], yaw);                           // every frame
 lob.send('chat', 'hello');</code></pre>
-  <p class="note">A lobby is one shared room per area, kept joined: past the room's size it moves to <code>level-1.2</code>, and it joins again by itself after a dropped connection. On a site in <code>liveHosts</code> the rooms are your live ones; anywhere else (your beta, localhost) they are test rooms named <code>t-…</code>, free and apart from your players. <code>?room=abc</code> on the page puts it in its own test room (two of your browsers, one private room).</p>
+  <p class="note">List your game's sites in the project's Settings: pages there join with no key. <b>Localhost always may</b>, in test rooms (<code>t-…</code>): free and apart from your players. A lobby is one shared room per area, kept joined: past a room's size it moves on to <code>level-1.2</code>, and it joins again by itself after a dropped connection. <code>?room=abc</code> on the page puts it in its own test room.</p>
 
-  <p>With a server: your players' pages hold no secrets, so a page never asks for a room directly. Your server asks hawkesgen.com for a <b>ticket</b> with your API key (above), hands it to the page, and the page joins with it. A ticket is good for one join, for 90 seconds; the SDK asks your route again when it needs another (reconnecting, moving to the relay).</p>
-
-  <h3 id="server"><span class="step">1</span>Your ticket route</h3>
-  <p>Any server will do. Decide who may join which room (your logins, your matchmaking), then forward the request with your key. Rooms are yours alone: nobody else's game can join them.</p>
+  <h3 id="server">A game with a server: tickets</h3>
+  <p>Decide who may join which room (your logins, your matchmaking), then ask for a ticket with your API key and hand it to the page.</p>
 <pre><code>// Node (Express); the same in any language: one HTTPS POST with your key.
 app.post('/ticket', async (req, res) =&gt; {
   const r = await fetch('https://hawkesgen.com/v1/net/rooms/ticket', {
     method: 'POST',
     headers: { Authorization: `Bearer ${process.env.HAWKESGEN_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ room: req.body.room, name: req.user.name, sub: req.user.id }),
+    body: JSON.stringify({ project: 'your-project', room: req.body.room, name: req.user.name, sub: req.user.id }),
   });
   res.status(r.status).json(await r.json());
-});</code></pre>
-  <p class="note">Keep the key on your server. <code>sub</code> is your own id for the player (the same person reconnecting keeps their place).</p>
+});
 
-  <h3 id="page"><span class="step">2</span>Join in the page</h3>
-<pre><code>import { join } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
+// The page
+import { join } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
+const ticket = () =&gt; fetch('/ticket', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ room: 'match-7' }) }).then((r) =&gt; r.json());
+const net = await join('match-7', { ticket });</code></pre>
+  <p class="note">Keep the key on your server. <code>sub</code> is your own id for the player: the same person reconnecting keeps their place, and the project's Rooms tab can put them out by it.</p>
 
-const ticket = () =&gt; fetch('/ticket', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ room: 'lobby' }),
-}).then((r) =&gt; r.json());
+  <h3 id="unity">Unity WebGL</h3>
+  <p>Download the package (<a href="/sdk/com.hawkes.net.tgz">com.hawkes.net.tgz</a>) and install it with Package Manager &gt; + &gt; <b>Add package from tarball</b>. The same lobby in C#:</p>
+<pre><code>var lobby = new HawkesNetLobby(new HawkesNetOptions { project = "your-project", name = "Ada" }, "mygame.com");
+lobby.PeerJoined += (id, name) =&gt; Spawn(id, name);
+lobby.PoseChanged += (id, pose) =&gt; Move(id, pose.position, pose.yaw);
+lobby.Message += (kind, data, from) =&gt; { if (kind == "chat") Show(from, data); };
+lobby.Join("level-1");
 
-const net = await join('lobby', { ticket });
-
-net.on('chat', (text, from) =&gt; show(from.name, text));
-net.send('chat', 'hello');                        // reliable: once, in order
-
-net.pose([x, y, z], yaw);                          // your avatar, as often as you like
-net.onPose((peer, s) =&gt; moveAvatar(peer, s.p, s.y));
-
-net.when('peer:join', (p) =&gt; addAvatar(p.id, p.name));
-net.when('peer:leave', ({ peer }) =&gt; removeAvatar(peer.id));</code></pre>
-  <p class="note">One ES module, no build step, no dependencies. Prefer a copy? Save <a href="/sdk/hawkes-net@1.mjs">hawkes-net.mjs</a> and <a href="/sdk/hawkes-net-core.mjs">hawkes-net-core.mjs</a> side by side and import your copy.</p>
-
-  <h3 id="unity"><span class="step">3</span>Unity WebGL</h3>
-  <p>The <code>com.hawkes.net</code> package runs the same SDK in the page and gives you a C# room. No server: <code>new HawkesNetLobby(new HawkesNetOptions { project = "usr_…" }, "mygame.com")</code> and <code>lobby.Join("level-1")</code>, the same lobby as above (<code>HawkesNetAvatars</code> drops it on a GameObject with a prefab per player). With a server: point <code>ticketUrl</code> at your route from step 1.</p>
-<pre><code>var room = HawkesNet.Join("lobby", new HawkesNetOptions { ticketUrl = "https://mygame.example/ticket", name = "Ada" });
-room.OnReady += r =&gt; Debug.Log($"in {r.Name} over {r.Transport}");
-room.On&lt;Chat&gt;("chat", (msg, from) =&gt; Show(room.Peers[from], msg.text));
-room.Send("chat", new Chat { text = "hello" });
-
-void Update() {
-    room.Pose(player.position, player.eulerAngles.y);
-    foreach (var kv in room.Poses) MoveAvatar(kv.Key, kv.Value.position, kv.Value.yaw);
-}</code></pre>
-  <p class="note">WebGL builds only. Ask us for the package while it waits for its Asset Store listing.</p>
-
-  <h2 id="rooms">Rooms and transports</h2>
-  <p>A room is any name you choose (letters, digits and <code>/ _ . -</code>, up to 64). The first ticket for a name opens it. <code>transport</code> on the ticket picks how it travels:</p>
-  <table>
-    <tr><th>transport</th><th>What happens</th><th>Use it for</th></tr>
-    <tr><td><code>auto</code> (default)</td><td>Peer to peer while small (one player hosts, the others link to them). Past <code>p2pMax</code> players, when the host leaves, or when links fail, the room moves to our relay on the same connections.</td><td>Friends' rooms, invites, small matches</td></tr>
-    <tr><td><code>relay</code></td><td>Through our relay from the start. Interest by distance and a byte budget per player keep it light.</td><td>Public rooms, big worlds, anything with more than a handful</td></tr>
-    <tr><td><code>p2p</code></td><td>Peer to peer only; the room is full at <code>p2pMax</code>.</td><td>Two to eight players who never need the relay</td></tr>
-  </table>
-  <p>Peer-to-peer traffic never touches our servers. <code>net.transport</code> says where a room is now, and <code>net.when('transport', …)</code> tells you when it moves (you don't need to do anything).</p>
+void Update() { lobby.Room?.Pose(player.position, player.eulerAngles.y); }</code></pre>
+  <p class="note">Or drop <code>HawkesNetAvatars</code> on a GameObject with a prefab per player (Package Manager &gt; Hawkes Net &gt; Samples &gt; Avatars). With a server: <code>ticketUrl</code> instead of <code>project</code>. WebGL builds only: the SDK runs in the page.</p>
 
   <h2 id="messages">Messages and avatars</h2>
   <table>
     <tr><th>Call</th><th>What it does</th></tr>
-    <tr><td><code>net.send(kind, data, opt?)</code></td><td>To everyone. Reliable by default (once, in order, across reconnects and moves). <code>{ reliable: false }</code> may drop; <code>{ to: peerId }</code> sends to one; <code>{ self: true }</code> includes you.</td></tr>
-    <tr><td><code>net.on(kind, (data, from, meta) =&gt; …)</code></td><td>Messages of one kind; <code>'*'</code> for all.</td></tr>
-    <tr><td><code>net.pose([x, y, z], yaw, extra?)</code></td><td>Your avatar. Call it every frame; the newest goes out about 15 times a second, compressed.</td></tr>
-    <tr><td><code>net.onPose((peer, state, at) =&gt; …)</code></td><td>Everyone else's avatar: <code>state.p</code>, <code>state.y</code> and your extras.</td></tr>
-    <tr><td><code>net.when(event, fn)</code></td><td><code>status</code>, <code>ready</code>, <code>peer:join</code>, <code>peer:leave</code>, <code>host</code>, <code>transport</code>, <code>problem</code>.</td></tr>
-    <tr><td><code>net.now()</code></td><td>The room's shared clock, in milliseconds.</td></tr>
-    <tr><td><code>net.leave()</code></td><td>Out of the room (closing the tab does it too).</td></tr>
+    <tr><td><code>net.send(kind, data, opt?)</code></td><td class="wrapok">To everyone. Reliable by default (once, in order, across reconnects). <code>{ reliable: false }</code> may drop; <code>{ to: peerId }</code> sends to one; <code>{ self: true }</code> includes you.</td></tr>
+    <tr><td><code>net.on(kind, (data, from, meta) =&gt; …)</code></td><td class="wrapok">Messages of one kind; <code>'*'</code> for all.</td></tr>
+    <tr><td><code>net.pose([x, y, z], yaw, extra?)</code></td><td class="wrapok">Your avatar. Call it every frame; the relay sends near players often and far ones less.</td></tr>
+    <tr><td><code>net.onPose((peer, state, at) =&gt; …)</code></td><td class="wrapok">Everyone else's avatar: <code>state.p</code>, <code>state.y</code> and your extras.</td></tr>
+    <tr><td><code>net.when(event, fn)</code></td><td class="wrapok"><code>status</code>, <code>ready</code>, <code>peer:join</code>, <code>peer:leave</code>, <code>host</code>, <code>problem</code>.</td></tr>
+    <tr><td><code>net.now()</code></td><td class="wrapok">The room's shared clock, in milliseconds.</td></tr>
+    <tr><td><code>net.sync</code></td><td class="wrapok">Shared things: <code>push</code> what you simulate, <code>onThing</code> others', <code>claim</code>/<code>hold</code>/<code>release</code> ownership, <code>state</code> for shared documents.</td></tr>
   </table>
-
-  <h2 id="state">Shared state</h2>
-  <p><code>net.sync</code> keeps things in step: one player simulates each moving thing (its owner, or the host), and everyone else sees it smoothly.</p>
-  <table>
-    <tr><td><code>net.sync.push(id, [x, y, z, rx, ry, rz, vx, vy, vz])</code></td><td>A thing you simulate</td></tr>
-    <tr><td><code>net.sync.onThing((id, at, values, from) =&gt; …)</code></td><td>Things others simulate</td></tr>
-    <tr><td><code>net.sync.claim(id)</code> / <code>hold(id)</code> / <code>release(id)</code></td><td>Take a thing over (a grab, a car you drive); a held thing stays yours</td></tr>
-    <tr><td><code>net.sync.state(name, data)</code></td><td>A shared document (a score, a door); joiners get its newest copy</td></tr>
-  </table>
-
-  <h2 id="reference">Reference: <code>POST https://hawkesgen.com/v1/net/rooms/ticket</code></h2>
-  <p>With <code>Authorization: Bearer hg_…</code> (your key). JSON body:</p>
-  <table>
-    <tr><th>Field</th><th></th></tr>
-    <tr><td><code>room</code></td><td>Required. The room's name.</td></tr>
-    <tr><td><code>name</code></td><td>Shown to the others (24 characters).</td></tr>
-    <tr><td><code>sub</code></td><td>Your id for this player (64 characters).</td></tr>
-    <tr><td><code>transport</code></td><td><code>auto</code> (default), <code>relay</code> or <code>p2p</code>.</td></tr>
-    <tr><td><code>role</code></td><td><code>player</code> (default) or <code>spectator</code> (watches; doesn't count toward the room's size).</td></tr>
-    <tr><td><code>config</code></td><td>The room's shape when this ticket opens it: <code>maxPlayers</code> (up to 64), <code>p2pMax</code> (up to 8), <code>profile</code> (<code>light</code>, <code>medium</code>, <code>heavy</code>: how much a room sends), <code>sendHz</code>.</td></tr>
-  </table>
-  <p>The answer is what <code>join()</code> takes from your <code>ticket</code> function as it is: <code>ticket</code>, <code>peer</code>, <code>relayUrl</code>, <code>transports</code>, <code>expiresAt</code>, …. Errors: <code>401</code> no key or a wrong one, <code>402</code> your account can't use Hawkes Net yet (below), <code>409</code> the room is full, <code>429</code> too many rooms or tickets.</p>
+  <p class="note">Types: <a href="/sdk/hawkes-net@1.d.ts">hawkes-net.d.ts</a>. Prefer a copy of the SDK? Save <a href="/sdk/hawkes-net@1.mjs">hawkes-net.mjs</a> and <a href="/sdk/hawkes-net-core.mjs">hawkes-net-core.mjs</a> side by side.</p>
 
   <h2 id="limits">Limits and pricing</h2>
   <ul>
-    <li>Up to 64 players a room; up to 8 peer to peer before the relay.</li>
-    <li>Hawkes Net for your own games is open to accounts that have bought credits or a plan on hawkesgen.com.</li>
-    <li>While we set prices, using it costs no credits. Your usage is counted above (player-minutes and relay data) so you'll see what you'd pay before you pay anything.</li>
+    <li><b>Free account:</b> projects, the dashboard and the SDK; your game on localhost in test rooms; up to 3 rooms, 16 players and 8 a room per project.</li>
+    <li><b>Paid account</b> (credits or a plan on hawkesgen.com): your own sites and server tickets; up to 64 players a room, 200 rooms, 2,000 players a project.</li>
+    <li>Every room runs on our relay. Peer to peer (players linked to a host) is a project setting, off unless you turn it on.</li>
+    <li>While we set prices, using it costs no credits. Each project's page counts player-minutes and relay data, so you see what you'd pay before you pay anything.</li>
   </ul>
+  </section>
 </main>
 
 <footer><div class="wrap"><span>Hawkes Net, part of <a href="https://hawkesgen.com/">Hawkes Gen</a></span><span><a href="https://hawkesgen.com/legal#terms">Terms</a> · <a href="https://hawkesgen.com/legal#privacy">Privacy</a> · <a href="mailto:support@hawkesgen.com">support@hawkesgen.com</a></span></div></footer>
 
 <script>
-// The dashboard of net.hawkesgen.com. Your account lives on hawkesgen.com: this page reads your Net data there with your
-// hawkesgen.com session (same site, so the cookie goes; the portal allows only this origin), and the service's own status here.
+// The dashboard of net.hawkesgen.com. Your account lives on hawkesgen.com: this page reads and changes your projects
+// there with your hawkesgen.com session (same site, so the cookie goes; the portal allows only this origin), and the
+// portal asks the Hawkes Net service for you. The service's own status is read here. Views: #projects (or nothing), #p/<id>
+// (a project: #p/<id>/rooms, /tickets, /settings, /connect).
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const num = (n, d = 0) => Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: d });
-  const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
+  const ago = (t) => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? `${Math.round(s)} s` : s < 3600 ? `${Math.round(s / 60)} min` : s < 86400 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} d`; };
+  const time = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const kb = (b) => (b > 1e6 ? `${num(b / 1e6, 1)} MB` : `${num(b / 1e3, 1)} KB`);
   // The portal: hawkesgen.com, or ?portal= on a test copy of this page (not on the real one).
   const asked = new URLSearchParams(location.search).get('portal');
   const PORTAL = location.hostname !== 'net.hawkesgen.com' && asked ? asked.replace(/\/+$/, '') : 'https://hawkesgen.com';
-  let minted = null;
-  let editing = false; // the sites box is being typed in: the refresh waits
+  const api = async (method, path, body) => {
+    const r = await fetch(`${PORTAL}${path}`, { method, credentials: 'include', headers: body !== undefined ? { 'Content-Type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined }).catch(() => null);
+    if (!r) return { status: 0, data: { error: 'hawkesgen.com is not answering' } };
+    return { status: r.status, data: await r.json().catch(() => ({})) };
+  };
+
+  let me = null;            // GET /v1/net/me
+  let minted = null;        // a key just made (shown once)
+  let detail = null;        // the project page's data
+  let openRoom = null;      // the room whose players are shown
+  let editing = false;      // the settings form is being typed in: refreshes wait
+  let timer = null;
+
+  // ------------------------------------------------------------------ routing
+  function route() {
+    const h = location.hash.replace(/^#/, '');
+    const m = /^p\/([^/]+)(?:\/(\w+))?/.exec(h);
+    return m ? { view: 'project', id: decodeURIComponent(m[1]), tab: m[2] || 'overview' } : { view: 'projects', anchor: h };
+  }
+  async function show() {
+    clearInterval(timer);
+    const r = route();
+    $('docs').classList.toggle('hidden', r.view === 'project');
+    if (!me) return;
+    if (r.view === 'project') {
+      if (!detail || detail.id !== r.id) { detail = null; openRoom = null; $('app').innerHTML = '<p class="note">Loading the project…</p>'; await loadProject(r.id); }
+      renderProject(r.tab);
+      // Redrawn only when something changed, so a click or a selection isn't lost under it.
+      timer = setInterval(async () => { if (document.hidden || editing) return; const was = JSON.stringify(detail); await loadProject(r.id); if (JSON.stringify(detail) !== was) renderProject(route().tab, true); }, 10_000);
+    } else {
+      renderProjects();
+      if (r.anchor && r.anchor !== 'projects') document.getElementById(r.anchor)?.scrollIntoView();
+      timer = setInterval(async () => { if (document.hidden) return; const was = JSON.stringify(me); await loadMe(); if (route().view === 'projects' && JSON.stringify(me) !== was && !document.activeElement?.closest?.('form')) renderProjects(); }, 15_000);
+    }
+  }
+  addEventListener('hashchange', () => { editing = false; show(); });
+
+  // ------------------------------------------------------------------ the account
+  async function loadMe() {
+    const r = await api('GET', '/v1/net/me');
+    if (r.status === 401 || r.status === 0) { me = null; return r.status; }
+    if (r.status !== 200) { me = null; return r.status; }
+    me = r.data;
+    $('who').innerHTML = `${esc(me.email || me.project)} <span class="pill ${me.paid ? 'paid' : ''}">${me.admin ? 'admin' : me.paid ? 'paid' : 'free'}</span> <a class="note" href="${PORTAL}/app">hawkesgen.com account</a>`;
+    return 200;
+  }
 
   function signedOut() {
     $('who').innerHTML = `<a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Sign in</a>`;
-    $('mine').innerHTML = `
-      <p style="margin-top:0">Sign in with your <b>hawkesgen.com</b> account to get your API key and see your rooms and usage.</p>
-      <div class="keybox"><a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Continue with Google</a>
-      <a class="btn" href="${PORTAL}/app">Sign in with email</a> <span class="note">(then come back here)</span></div>
-      <p class="note">No account yet? Making one on hawkesgen.com is free.</p>`;
+    $('app').innerHTML = `
+      <h1>Multiplayer for your web game.</h1>
+      <p class="lede">One call joins a room on our relay. Every project has its own page: players online, rooms, who is in them, tickets and usage, live. <a href="/demo">Try it in two tabs.</a></p>
+      <div class="card">
+        <h3 style="margin-top:0">Start with your hawkesgen.com account</h3>
+        <p>Your account opens Hawkes Net: make projects, get your API key, download the SDK for the web, Babylon or Unity.</p>
+        <div class="keybox"><a class="btn primary" href="${PORTAL}/auth/google?next=/net/back">Continue with Google</a>
+        <a class="btn" href="${PORTAL}/app">Sign in with email</a> <span class="note">(then come back here)</span></div>
+        <p class="note">No account yet? Making one on hawkesgen.com is free, and so is building and testing your game.</p>
+      </div>`;
   }
 
-  function render(me) {
-    $('who').innerHTML = `<code>${esc(me.project)}</code> <a class="note" href="${PORTAL}/app">hawkesgen.com account</a>`;
-    const rooms = me.rooms && !me.rooms.error ? me.rooms.rooms : null;
-    const u = me.usage && !me.usage.error ? me.usage.total : null;
-    const key = minted
-      ? `<div class="keybox"><code id="newKey">${esc(minted)}</code><button class="btn" type="button" id="copyKey">Copy</button></div><p class="note warn">Copy it now: it is shown once. Your previous key stopped working.</p>`
-      : me.key
-        ? `<p class="note">Your key starts <code>${esc(me.key.prefix)}…</code>, made ${new Date(me.key.created).toLocaleDateString()}${me.key.lastUsed ? `, last used ${ago(me.key.lastUsed)} ago` : ', not used yet'}. Lost it? A new one replaces it.</p><button class="btn" type="button" id="mint">Make a new key</button>`
-        : `<p class="note">You have no API key yet.</p><button class="btn primary" type="button" id="mint">Make my API key</button>`;
-    $('mine').innerHTML = `
-      <div class="row"><div><b>Project</b> <code>${esc(me.project)}</code></div><div class="note">Relay <code>${esc(me.service)}</code></div></div>
-      ${me.paid ? '' : `<p class="warn" style="margin:12px 0 0">Hawkes Net for your own games opens once your account has bought credits or a plan. <a href="${PORTAL}/app#credits">Get credits</a></p>`}
-      <h3>API key</h3>${key}
-      <h3 id="sites">Your game's sites</h3>
-      <p class="note">No server? Pages on these sites join your rooms with no key and no ticket route: <code>lobby({ project: '${esc(me.project)}', liveHosts: [...] })</code>. One site a line, like <code>https://mygame.com</code>. Your players on <code>localhost</code> always may, in test rooms (<code>t-…</code>).</p>
-      ${me.sites && !me.sites.error ? `<textarea id="siteList" rows="3" spellcheck="false" placeholder="https://mygame.com&#10;https://mygame.itch.io" ${me.paid ? '' : 'disabled'}>${esc((me.sites.origins || []).join(String.fromCharCode(10)))}</textarea>
-      <div class="keybox"><button class="btn" type="button" id="saveSites" ${me.paid ? '' : 'disabled'}>Save sites</button><span class="note" id="sitesNote">${(me.sites.origins || []).length ? `${me.sites.origins.length} of ${me.sites.max || 20}` : 'None yet: only your server can let players in.'}</span></div>` : `<p class="note">Sites aren't available right now${me.sites?.error ? ` (${esc(me.sites.error)})` : ''}.</p>`}
-      <h3>Last 30 days</h3>
-      ${u ? `<div class="tiles"><div><b>${num(u.playerMinutes, 1)}</b><span>player-minutes</span></div><div><b>${num(u.relayGb, 3)}</b><span>GB through the relay</span></div><div><b>${num(u.p2pGb, 3)}</b><span>GB peer to peer (free)</span></div><div><b>$${num(u.cost, 2)}</b><span>what the relay cost us</span></div></div>` : `<p class="note">Usage isn't available right now${me.usage?.error ? ` (${esc(me.usage.error)})` : ''}.</p>`}
-      <h3>Rooms open now <span class="note" id="refreshed"></span></h3>
-      ${rooms ? (rooms.length ? `<table><tr><th>Room</th><th>Players</th><th>Transport</th><th>Open for</th></tr>${rooms.map((r) => `<tr><td><code>${esc(r.room)}</code></td><td>${r.players}</td><td><span class="pill ${r.transport === 'relay' ? 'relay' : 'p2p'}">${r.transport === 'relay' ? 'relay' : 'peer to peer'}</span></td><td>${ago(r.openedAt)}</td></tr>`).join('')}</table>` : '<p class="note">None right now. Rooms show here while players are in them.</p>') : `<p class="note">Rooms aren't available right now${me.rooms?.error ? ` (${esc(me.rooms.error)})` : ''}.</p>`}`;
-    $('refreshed').textContent = `· updated ${new Date().toLocaleTimeString()}`;
+  function keyBlock() {
+    if (minted) return `<div class="keybox"><code>${esc(minted)}</code><button class="btn small" type="button" id="copyKey">Copy</button></div><p class="note warn">Copy it now: it is shown once. Your previous key stopped working.</p>`;
+    if (me.key) return `<p class="note">Your key starts <code>${esc(me.key.prefix)}…</code>, made ${new Date(me.key.created).toLocaleDateString()}${me.key.lastUsed ? `, last used ${ago(me.key.lastUsed)} ago` : ', not used yet'}. Your servers use it for tickets in any of your projects. <button class="btn small" type="button" id="mint">Make a new key</button></p>`;
+    return `<p class="note">No API key yet: your servers need one to ask for tickets. <button class="btn small primary" type="button" id="mint">Make my API key</button></p>`;
+  }
+  function wireKey() {
     $('mint')?.addEventListener('click', async () => {
       if (me.key && !confirm('Make a new key? Your current key stops working at once, everywhere you use it (your servers, MCP clients, the Unity package).')) return;
-      const r = await fetch(`${PORTAL}/v1/users/api-key`, { method: 'POST', credentials: 'include' });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.apiKey) return alert(j.error || 'Could not make a key');
-      minted = j.apiKey;
-      load();
+      const r = await api('POST', '/v1/users/api-key');
+      if (r.status !== 200 || !r.data.apiKey) return alert(r.data.error || 'Could not make a key');
+      minted = r.data.apiKey;
+      await loadMe(); show();
     });
     $('copyKey')?.addEventListener('click', () => navigator.clipboard?.writeText(minted));
-    $('saveSites')?.addEventListener('click', async () => {
-      const origins = $('siteList').value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
-      const r = await fetch(`${PORTAL}/v1/net/sites`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ origins }) });
-      const j = await r.json().catch(() => ({}));
-      $('sitesNote').textContent = r.ok ? `Saved: ${(j.origins || []).length} site${(j.origins || []).length === 1 ? '' : 's'}` : (j.error || 'Could not save');
-      if (r.ok) editing = false;
+  }
+
+  // ------------------------------------------------------------------ projects
+  function card(p) {
+    return `<a class="card proj" href="#p/${encodeURIComponent(p.id)}">
+      <div class="row"><h3>${esc(p.name)}</h3>${p.hawkes ? '<span class="pill hawkes">Hawkes game</span>' : ''}</div>
+      <code>${esc(p.id)}</code>
+      <div class="nums"><span><b>${num(p.now?.players)}</b> online</span><span><b>${num(p.now?.rooms)}</b> rooms</span><span><b>${num(p.today?.tickets)}</b> tickets today</span></div>
+    </a>`;
+  }
+  function renderProjects() {
+    const list = me.projects && !me.projects.error ? me.projects : null;
+    const mine = list ? list.projects : [];
+    const unowned = list ? list.unowned || [] : [];
+    $('app').innerHTML = `
+      <div class="row"><h1>Your projects</h1><span class="note">${esc(me.email || '')}</span></div>
+      ${me.paid ? '' : `<p class="warn">A free account builds and tests on localhost (test rooms, small limits). Your game's own sites and server tickets open once your account has bought credits or a plan. <a href="${PORTAL}/app#credits">Get credits</a></p>`}
+      ${list ? (mine.length ? `<div class="grid">${mine.map(card).join('')}</div>` : '<p>No projects yet. Make your first one: its id is what your game passes as <code>project</code>.</p>') : `<p class="bad">Projects aren't available right now${me.projects?.error ? ` (${esc(me.projects.error)})` : ''}.</p>`}
+      <div class="card" style="margin-top:12px">
+        <h3 style="margin-top:0">New project</h3>
+        <form id="newProject" class="keybox"><input type="text" id="newName" placeholder="My game" maxlength="60" style="max-width:320px" required><button class="btn primary" type="submit">Make it</button><span class="note" id="newNote"></span></form>
+      </div>
+      ${unowned.length ? `<h2>Hawkes games nobody has taken</h2><p class="note">You are an admin: take these into your account to see and run them here.</p>
+        <div class="grid">${unowned.map((p) => `<div class="card"><div class="row"><h3 style="margin:0">${esc(p.name)}</h3><button class="btn small primary" type="button" data-claim="${esc(p.id)}">Take into my account</button></div><code>${esc(p.id)}</code><div class="nums note" style="margin-top:8px">${num(p.now?.players)} online · ${num(p.now?.rooms)} rooms</div></div>`).join('')}</div>` : ''}
+      <h2 id="account">Account</h2>
+      <div class="card"><div class="row"><div><b>${esc(me.name || me.email || me.project)}</b> <span class="note">account <code>${esc(me.project)}</code></span></div><span class="note">Relay <code>${esc(me.service)}</code></span></div>
+      <h3>API key</h3>${keyBlock()}</div>`;
+    $('newProject').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const r = await api('POST', '/v1/net/projects', { name: $('newName').value });
+      if (r.status !== 200) { $('newNote').textContent = r.data.error || 'Could not make it'; return; }
+      await loadMe(); location.hash = `#p/${encodeURIComponent(r.data.id)}/connect`;
     });
-    $('siteList')?.addEventListener('input', () => { editing = true; });
+    for (const b of document.querySelectorAll('[data-claim]')) b.addEventListener('click', async () => {
+      b.disabled = true;
+      const r = await api('POST', `/v1/net/projects/${encodeURIComponent(b.dataset.claim)}/claim`, {});
+      if (r.status !== 200) { b.disabled = false; return alert(r.data.error || 'Could not take it'); }
+      await loadMe(); renderProjects();
+    });
+    wireKey();
   }
 
-  async function load() {
-    const r = await fetch(`${PORTAL}/v1/net/me`, { credentials: 'include' }).catch(() => null);
-    if (!r || r.status === 401) { signedOut(); return false; }
-    if (!r.ok) { $('mine').innerHTML = '<p class="note">Could not load your Hawkes Net right now.</p>'; return true; }
-    render(await r.json());
-    return true;
+  // ------------------------------------------------------------------ a project
+  async function loadProject(id) {
+    const r = await api('GET', `/v1/net/projects/${encodeURIComponent(id)}`);
+    detail = r.status === 200 ? r.data : { id, error: r.data.error || `hawkesgen.com answered ${r.status}` };
+  }
+  function chart(online) {
+    if (!online?.length) return '';
+    const W = 600, H = 130, max = Math.max(1, ...online.map((o) => o.players));
+    const x = (i) => (i / (online.length - 1)) * W, y = (v) => H - 14 - (v / max) * (H - 30);
+    const pts = online.map((o, i) => `${x(i).toFixed(1)},${y(o.players).toFixed(1)}`).join(' ');
+    return `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Players online, the last 24 hours">
+      <line class="axis" x1="0" y1="${H - 14}" x2="${W}" y2="${H - 14}"/>
+      <polygon class="area" points="0,${H - 14} ${pts} ${W},${H - 14}"/><polyline class="line" points="${pts}"/>
+      <text x="2" y="12">${num(max)}</text><text x="2" y="${H - 2}">24 h ago</text><text x="${W - 2}" y="${H - 2}" text-anchor="end">now</text></svg>`;
+  }
+  function renderProject(tab, quiet = false) {
+    const d = detail;
+    if (!d) return;
+    if (d.error) { $('app').innerHTML = `<div class="crumbs"><a href="#">Your projects</a></div><p class="bad">${esc(d.error)}</p>`; return; }
+    const tabs = [['overview', 'Overview'], ['rooms', `Rooms (${d.rooms.filter((r) => r.players > 0).length})`], ['tickets', 'Tickets'], ['settings', 'Settings'], ['connect', 'Connect']];
+    const base = `#p/${encodeURIComponent(d.id)}`;
+    if (quiet && tab === 'settings') return; // (never redraw a form under someone)
+    $('app').innerHTML = `
+      <div class="crumbs"><a href="#">Your projects</a> / ${esc(d.name)}</div>
+      <div class="row"><h1>${esc(d.name)}</h1><div>${d.hawkes ? '<span class="pill hawkes">Hawkes game</span> ' : ''}<span class="pill ${d.tier === 'free' ? '' : 'paid'}">${d.tier === 'free' ? 'free tier' : d.tier === 'hawkes' ? 'Hawkes limits' : 'paid'}</span> <span class="pill ${d.p2p ? 'p2p' : 'relay'}">${d.p2p ? 'relay + peer to peer' : 'relay'}</span></div></div>
+      <p class="note">Project id <code>${esc(d.id)}</code> · ${d.sites.length ? `${d.sites.length} site${d.sites.length === 1 ? '' : 's'}` : 'no sites (localhost and servers only)'} · updated ${new Date().toLocaleTimeString()}</p>
+      <nav class="tabs">${tabs.map(([k, label]) => `<a href="${base}/${k}" class="${tab === k ? 'on' : ''}">${label}</a>`).join('')}</nav>
+      <div id="tab"></div>`;
+    ({ overview, rooms, tickets, settings, connect }[tab] || overview)(d);
   }
 
+  function overview(d) {
+    const t = d.today, n = d.now;
+    const days = d.days || [];
+    $('tab').innerHTML = `
+      <div class="tiles">
+        <div><b>${num(n.players)}</b><span>players online now</span></div>
+        <div><b>${num(n.rooms)}</b><span>rooms with players</span></div>
+        <div><b>${num(d.peakDay)}</b><span>most at once, 24 h</span></div>
+        <div><b>${num(t.tickets)}</b><span>tickets today</span></div>
+        <div><b class="${t.refused ? 'warn' : ''}">${num(t.refused)}</b><span>refused today</span></div>
+        <div><b>${num(t.playerMinutes, 1)}</b><span>player-minutes today</span></div>
+        <div><b>${num(t.relayGb * 1000, 1)}</b><span>MB through the relay today</span></div>
+      </div>
+      <h3>Players online, the last 24 hours</h3>
+      <div class="card">${chart(d.online)}</div>
+      <h3>The last 30 days</h3>
+      ${days.length ? `<table><tr><th>Day (UTC)</th><th>Peak players</th><th>Player-minutes</th><th>Test rooms</th><th>Relay</th><th>Tickets</th><th>Refused</th></tr>
+        ${days.map((x) => `<tr><td>${esc(x.day)}</td><td>${num(x.peakPlayers)}</td><td>${num(x.playerMinutes, 1)}</td><td>${num(x.testPlayerMinutes, 1)} min</td><td>${num(x.relayGb * 1000, 1)} MB</td><td>${num(x.tickets)}</td><td class="${x.refused ? 'warn' : ''}">${num(x.refused)}</td></tr>`).join('')}</table>`
+        : '<p class="note">Nothing yet: numbers start with the first ticket.</p>'}
+      <p class="note">Limits on this plan: ${num(d.limits.rooms)} rooms, ${num(d.limits.players)} players, ${num(d.limits.playersPerRoom)} a room. Test rooms (<code>${esc(d.testPrefix)}…</code>) are free and counted apart.</p>`;
+  }
+
+  function rooms(d) {
+    const list = d.rooms;
+    $('tab').innerHTML = `
+      ${list.length ? `<table><tr><th>Room</th><th>Players</th><th>Transport</th><th>Open for</th><th></th></tr>
+        ${list.map((r) => `<tr class="click ${openRoom === r.room ? 'sel' : ''}" data-room="${esc(r.room)}"><td><code>${esc(r.room)}</code> ${r.test ? '<span class="pill">test</span>' : ''}</td><td>${num(r.players)}${r.maxPlayers ? ` / ${num(r.maxPlayers)}` : ''}</td><td><span class="pill ${r.transport === 'relay' ? 'relay' : 'p2p'}">${r.transport === 'relay' ? 'relay' : 'peer to peer'}</span></td><td>${ago(r.openedAt)}</td><td><a href="#" data-open="${esc(r.room)}">who's here</a></td></tr>`).join('')}</table>`
+        : '<p class="note">No rooms right now. A room shows here from its first ticket, and while players are in it.</p>'}
+      <div id="roomWho"></div>`;
+    const open = (room) => { openRoom = room; showWho(d, room); for (const tr of document.querySelectorAll('tr[data-room]')) tr.classList.toggle('sel', tr.dataset.room === room); };
+    for (const tr of document.querySelectorAll('tr[data-room]')) tr.addEventListener('click', (e) => { e.preventDefault(); open(tr.dataset.room); });
+    if (openRoom && list.some((r) => r.room === openRoom)) showWho(d, openRoom);
+  }
+  async function showWho(d, room) {
+    const box = $('roomWho');
+    if (!box) return;
+    if (!box.innerHTML) box.innerHTML = '<p class="note">Asking the relay…</p>';
+    const r = await api('GET', `/v1/net/projects/${encodeURIComponent(d.id)}/rooms/${encodeURIComponent(room)}`);
+    if (route().tab !== 'rooms' || openRoom !== room || !$('roomWho')) return;
+    if (r.status !== 200) { $('roomWho').innerHTML = `<p class="bad">${esc(r.data.error || 'Could not ask the relay')}</p>`; return; }
+    const ps = r.data.players || [];
+    $('roomWho').innerHTML = `<h3>In <code>${esc(room)}</code> now</h3>
+      ${ps.length ? `<table><tr><th>Name</th><th>Peer</th><th>Your id (sub)</th><th>Role</th><th>Joined</th><th>Connection</th><th>Sent to them</th><th>From them</th><th></th></tr>
+        ${ps.map((p) => `<tr><td>${esc(p.name)}${r.data.host === p.peer ? ' <span class="pill">host</span>' : ''}</td><td><code>${esc(p.peer)}</code></td><td><code>${esc(p.sub)}</code></td><td>${esc(p.role)}</td><td>${ago(p.joined)} ago</td><td>${p.connected ? '<span class="ok">connected</span>' : '<span class="warn">coming back</span>'}</td><td>${kb(p.bytesOut)}</td><td>${kb(p.bytesIn)}</td>
+        <td><button class="btn small danger" type="button" data-kick="${esc(p.peer)}" data-name="${esc(p.name)}">Put out</button></td></tr>`).join('')}</table>`
+        : '<p class="note">Nobody in it right now.</p>'}`;
+    for (const b of document.querySelectorAll('[data-kick]')) b.addEventListener('click', async () => {
+      if (!confirm(`Put ${b.dataset.name} out of ${room}? They can come back with a new ticket unless your game stops giving them one.`)) return;
+      b.disabled = true;
+      const k = await api('POST', `/v1/net/projects/${encodeURIComponent(d.id)}/rooms/${encodeURIComponent(room)}/kick`, { peer: b.dataset.kick });
+      if (k.status !== 200) { b.disabled = false; return alert(k.data.error || 'Could not'); }
+      setTimeout(() => showWho(d, room), 600);
+    });
+  }
+
+  function tickets(d) {
+    const list = d.tickets || [];
+    $('tab').innerHTML = `
+      ${d.refusedWhy?.length ? `<h3>Refused in the last 24 hours</h3><table><tr><th>Why</th><th>How many</th></tr>${d.refusedWhy.map((w) => `<tr><td class="wrapok">${esc(w.why)}</td><td>${num(w.n)}</td></tr>`).join('')}</table>` : ''}
+      <h3>The newest tickets</h3>
+      ${list.length ? `<table><tr><th>When</th><th></th><th>Room</th><th>Role</th><th>From</th><th>Peer</th><th>Why refused</th></tr>
+        ${list.map((t) => `<tr><td>${time(t.at)}</td><td>${t.ok ? '<span class="ok">made</span>' : `<span class="bad">refused${t.status ? ` ${t.status}` : ''}</span>`}</td><td><code>${esc(t.room)}</code></td><td>${esc(t.role)}</td><td>${t.via === 'key' ? 'your server (key)' : esc(t.origin || 'a page')}</td><td>${t.peer ? `<code>${esc(t.peer)}</code>` : ''}</td><td class="wrapok">${esc(t.why || '')}</td></tr>`).join('')}</table>`
+        : '<p class="note">No tickets yet. Every join asks for one: from a page on your sites (or localhost), or from your server with your key.</p>'}
+      <p class="note">A ticket is good for one join, for 90 seconds. Kept for 7 days.</p>`;
+  }
+
+  function settings(d) {
+    $('tab').innerHTML = `
+      <form id="settings" class="card">
+        <label class="f" for="sName">Name</label>
+        <input type="text" id="sName" maxlength="60" value="${esc(d.name)}">
+        <label class="f" for="sSites">Your game's sites</label>
+        <p class="note" style="margin-top:0">Pages on these join with no key. One a line, like <code>https://mygame.com</code>. Localhost needs no entry (test rooms only).${d.sitesFromFile ? ' These come from the game\'s file; saving puts your list over it.' : ''}</p>
+        <textarea id="sSites" rows="4" spellcheck="false" placeholder="https://mygame.com&#10;https://mygame.itch.io" ${me.paid ? '' : 'disabled'}>${esc((d.sites || []).join('\n'))}</textarea>
+        ${me.paid ? '' : `<p class="note warn">Sites open once your account has bought credits or a plan.</p>`}
+        <label class="f" for="sMax">Players in a room</label>
+        <input type="number" id="sMax" min="1" max="${d.limits.playersPerRoom}" value="${d.maxPlayers}" style="max-width:120px"> <span class="note">up to ${num(d.limits.playersPerRoom)} on this plan; a game can ask for fewer</span>
+        <label class="f">Transport</label>
+        <div class="switch"><input type="checkbox" id="sP2p" ${d.p2p ? 'checked' : ''}><label for="sP2p"><b>Allow peer to peer</b><br><span class="note">Off: every room runs on our relay, and shows here with its players. On: a game that asks for <code>transport: 'auto'</code> starts small rooms with players linked to one host and moves to the relay when they grow. Only for small rooms of friends.</span></label></div>
+        <div class="keybox"><button class="btn primary" type="submit">Save</button><span class="note" id="sNote"></span></div>
+      </form>
+      <h3>${d.hawkes ? 'Let it go' : 'Delete'}</h3>
+      <p class="note">${d.hawkes ? 'It goes back to nobody\'s account, with its settings from its file; the game keeps playing.' : 'Its rooms close as their players leave, and its tickets are refused from then on.'}</p>
+      <button class="btn danger" type="button" id="sDelete">${d.hawkes ? 'Let it go' : 'Delete this project'}</button>`;
+    for (const el of document.querySelectorAll('#settings input, #settings textarea')) el.addEventListener('input', () => { editing = true; });
+    $('settings').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const body = { name: $('sName').value, p2p: $('sP2p').checked, maxPlayers: Number($('sMax').value) };
+      if (me.paid) body.sites = $('sSites').value.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+      const r = await api('POST', `/v1/net/projects/${encodeURIComponent(d.id)}`, body);
+      if (r.status !== 200) { $('sNote').textContent = r.data.error || 'Could not save'; return; }
+      editing = false;
+      await loadProject(d.id);
+      renderProject('settings');
+      $('sNote').textContent = 'Saved.';
+    });
+    $('sDelete').addEventListener('click', async () => {
+      if (!confirm(d.hawkes ? `Let ${d.name} go from your account?` : `Delete ${d.name}? Its id stops working for every player.`)) return;
+      const r = await api('DELETE', `/v1/net/projects/${encodeURIComponent(d.id)}`);
+      if (r.status !== 200) return alert(r.data.error || 'Could not');
+      detail = null; await loadMe(); location.hash = '#';
+    });
+  }
+
+  function connect(d) {
+    const host = d.sites[0] ? new URL(d.sites[0]).hostname : 'mygame.com';
+    $('tab').innerHTML = `
+      <p>Your game passes <code>${esc(d.id)}</code> as its project. ${d.sites.length ? `Pages on ${esc(d.sites.join(', '))} join with no key.` : 'Until you list its sites (Settings), it joins from localhost in test rooms, or through your server.'}</p>
+      <h3>Web and Babylon</h3>
+<pre><code>import { lobby } from 'https://net.hawkesgen.com/sdk/hawkes-net@1.mjs';
+
+const lob = lobby({ project: '${esc(d.id)}', liveHosts: ['${esc(host)}'], name: playerName });
+lob.onPose((peer, s) =&gt; moveAvatar(peer, s.p, s.y));
+lob.join('lobby');
+// every frame: lob.pose([x, y, z], yaw);</code></pre>
+      <h3>Unity WebGL</h3>
+      <p><a class="btn" href="/sdk/com.hawkes.net.tgz">Download com.hawkes.net.tgz</a> <span class="note">Package Manager &gt; + &gt; Add package from tarball</span></p>
+<pre><code>var lobby = new HawkesNetLobby(new HawkesNetOptions { project = "${esc(d.id)}", name = playerName }, "${esc(host)}");
+lobby.Join("lobby");</code></pre>
+      <h3>Your server (tickets with your key)</h3>
+<pre><code>curl -X POST https://hawkesgen.com/v1/net/rooms/ticket \\
+  -H "Authorization: Bearer $HAWKESGEN_KEY" -H "Content-Type: application/json" \\
+  -d '{"project":"${esc(d.id)}","room":"match-1","name":"Ada","sub":"player-42"}'</code></pre>
+      <h3>Downloads</h3>
+      <ul>
+        <li><a href="/sdk/hawkes-net@1.mjs">hawkes-net.mjs</a> and <a href="/sdk/hawkes-net-core.mjs">hawkes-net-core.mjs</a> (keep them side by side), <a href="/sdk/hawkes-net@1.d.ts">hawkes-net.d.ts</a> (TypeScript)</li>
+        <li><a href="/sdk/com.hawkes.net.tgz">com.hawkes.net.tgz</a>: the Unity package with the Avatars sample</li>
+      </ul>
+      <h3>API key</h3>${keyBlock()}
+      <p class="note">More in the <a href="#docs" id="toDocs">docs</a>.</p>`;
+    wireKey();
+    $('toDocs').addEventListener('click', (e) => { e.preventDefault(); location.hash = '#docs'; });
+  }
+
+  // ------------------------------------------------------------------ the service
   async function status() {
     const s = await fetch('/v1/net/status').then((r) => r.json()).catch(() => null);
     const up = s && s.up;
@@ -268,7 +473,16 @@ void Update() {
     $('status').innerHTML = `<span class="dot ${up ? 'up' : 'down'}"></span>${up ? `up · ${num(players)} playing` : 'service unreachable'}`;
   }
 
-  load().then((signedIn) => { if (signedIn) setInterval(() => { if (!document.hidden && !editing) load(); }, 15_000); });
+  (async () => {
+    const st = await loadMe();
+    if (st !== 200) {
+      signedOut();
+      if (st !== 401 && st !== 0) $('app').insertAdjacentHTML('beforeend', '<p class="note">Could not load your Hawkes Net right now.</p>');
+      $('docs').classList.remove('hidden');
+      return;
+    }
+    show();
+  })();
   status();
   setInterval(() => { if (!document.hidden) status(); }, 30_000);
 })();
