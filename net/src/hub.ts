@@ -113,8 +113,13 @@ export async function startHub(o: HubOptions = {}) {
       res.writeHead(st.up ? 200 : 503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       return void res.end(JSON.stringify({ ok: st.up, service: 'hawkes-net', version: st.version, usageWaiting: outbox.length }));
     }
+    // The front door is the developer dashboard on the portal (docs, your key, your rooms and usage): accounts live there.
+    if (route === '/') {
+      res.writeHead(302, { Location: process.env.NET_HOME_URL || 'https://hawkesgen.com/net/docs', 'Cache-Control': 'public, max-age=300' });
+      return void res.end();
+    }
     // The demo: dots in a room, peer to peer, then the relay (open it in two tabs).
-    if (route === '/' || route === '/demo') {
+    if (route === '/demo') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff' });
       return void res.end(fs.readFileSync(demo));
     }

@@ -108,8 +108,11 @@ test('players play on the service, and their usage goes to Gen with the service\
   await wait(() => usage.some((u) => u.rows.some((r: any) => r.project === 'usr_00000000000000aa' && r.transport === 'relay' && r.playerSeconds > 0)), 15_000, `usage at Gen: ${JSON.stringify(usage).slice(0, 600)} (${logs.join('').slice(-300)})`);
 });
 
-test('the demo page and the SDK are served by the service', async () => {
-  const page = await fetch(`${hubUrl}/`);
+test('the front door goes to the dashboard; the demo page and the SDK are served by the service', async () => {
+  const home = await fetch(`${hubUrl}/`, { redirect: 'manual' });
+  assert.equal(home.status, 302);
+  assert.equal(home.headers.get('location'), 'https://hawkesgen.com/net/docs');
+  const page = await fetch(`${hubUrl}/demo`);
   assert.equal(page.status, 200);
   assert.match(await page.text(), /hawkes-net/i);
   const sdk = await fetch(`${hubUrl}/sdk/hawkes-net@1.mjs`);
