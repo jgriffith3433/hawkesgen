@@ -1242,6 +1242,32 @@ export async function makeRoom(instanceId: string, needFree: number, onProgress:
   return after.free;
 }
 
+const diskCache = new Map<string, { at: number; free: number }>();
+
+/**
+ * A server's free disk in bytes (over SSH, cached for a minute; `force` asks again), or null when it can't be read.
+ * The same call removes Blender job folders in /var/tmp/hawkes-blender older than 3 hours (a render is stopped after
+ * 90 minutes, so those are leftovers of jobs that never cleaned up), so a server that fills up with them heals.
+ */
+export async function serverFreeDisk(instanceId: string, { force = false } = {}): Promise<number | null> {
+  const hit = diskCache.get(instanceId);
+  if (!force && hit && Date.now() - hit.at < 60_000) return hit.free;
+  try {
+    const out = await sshRun(`find /var/tmp/hawkes-blender -mindepth 1 -maxdepth 1 -mmin +180 -exec rm -rf {} + 2>/dev/null; df --output=avail -B1 / | tail -1`, instanceId, { timeoutMs: 30_000 });
+    const free = Number(out.trim().split('\n').pop());
+    if (!Number.isFinite(free)) return null;
+    diskCache.set(instanceId, { at: Date.now(), free });
+    return free;
+  } catch {
+    return null;
+  }
+}
+
+/** Marks a server's disk as full now (a job just failed on it), so placement skips it until the next real check. */
+export function markDiskFull(instanceId: string) {
+  diskCache.set(instanceId, { at: Date.now(), free: 0 });
+}
+
 /** Deletes model files from a server (re-downloaded when a job needs them again). Never the core models in server/models.json. */
 export async function pruneModels(instanceId: string, files: string[]) {
   const core = new Set(loadManifest().models.map((m) => `${m.dir}/${m.file}`));

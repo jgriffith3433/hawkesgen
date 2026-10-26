@@ -29,9 +29,10 @@ import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { expandMotionRequest, motionFile } from './motions.ts';
 import { ensureInputs } from './storage.ts';
 import { autoStartRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, type Backoff } from './autostart.ts';
-import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, type Endpoint } from './providers/comfy/fleet.ts';
+import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, serverFreeDisk, markDiskFull, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
+import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
 import { getUserForClient } from './users.ts';
 import { quoteJobCredits, reserveJobCredits, refundJobCredits, isInternalOnlyTool } from './billing.ts';
@@ -492,6 +493,8 @@ class Queue {
   aborts = new Map<string, AbortController>();
   /** Server id -> the model family it last loaded. */
   families = new Map<string, string>();
+  /** Job id -> servers it failed on with a full disk (it is retried once elsewhere). */
+  diskAvoid = new Map<string, Set<string>>();
   /** Server id -> content hash -> uploaded name. */
   uploads = new Map<string, Map<string, string>>();
   pumping = false;
@@ -624,6 +627,16 @@ class Queue {
     const exemptOf = exemptCheck();
     const byId = new Map(gpu.map((j) => [j.id, j]));
     const fair = () => fairOrder(gpu.filter((j) => !taken.has(j.id)).map((j) => ({ id: j.id, project: j.project, family: j.family, priority: j.priority, created: j.created, exempt: exemptOf(j) })), running, share).filter((j) => j.ok);
+    // Disk-heavy jobs (renders, rigs) skip a server with under 10 GB free, and one they already failed on with a full disk.
+    const free_ = new Map<string, number>();
+    if (gpu.some(isDiskHeavy)) {
+      await Promise.all(endpoints.map(async (ep) => {
+        const f = await serverFreeDisk(ep.id);
+        if (f !== null) free_.set(ep.id, f);
+      }));
+    }
+    const avoidOf = (j: { id: string }) => this.diskAvoid.get(j.id) ?? new Set<string>();
+    const fits = (j: { id: string; tool: string; family?: string | null }, ep: Endpoint) => mayPlace(j, ep.id, free_, avoidOf(j));
     const take = (f: { id: string }, ep: Endpoint) => {
       const j = byId.get(f.id)!;
       taken.add(j.id);
@@ -634,7 +647,7 @@ class Queue {
     // from the projects whose turn it is (the head's priority and turn), so grouping by model never costs a project its turn.
     for (const ep of [...free]) {
       const fam = this.families.get(ep.id);
-      const next = sameTurn(fair()).find((j) => j.family === fam);
+      const next = sameTurn(fair()).find((j) => j.family === fam && fits(byId.get(j.id)!, ep));
       if (!next) continue;
       free = free.filter((x) => x !== ep);
       take(next, ep);
@@ -642,7 +655,7 @@ class Queue {
     // A server that has to switch models (a load costs minutes) switches to the family with the most work waiting among
     // the jobs whose turn it is, the oldest job's family on a tie: one load then serves as many jobs as it can.
     for (const ep of free) {
-      const next = switchTo(sameTurn(fair()));
+      const next = switchTo(sameTurn(fair()).filter((j) => fits(byId.get(j.id)!, ep)));
       if (!next) break;
       take(next, ep);
     }
@@ -657,6 +670,8 @@ class Queue {
       : '';
     for (const j of left) {
       if (!eligible.has(j.id)) { this.wait(j, `waiting: this project already has ${share} GPU jobs running (its next job goes when one finishes)`); continue; }
+      const noRoom = isDiskHeavy(j) ? noRoomReason(endpoints.map((e) => e.id), free_, avoidOf(j)) : '';
+      if (noRoom) { this.wait(j, noRoom); continue; }
       this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || retrying || this.waitReason}`);
     }
     if (left.length) {
@@ -800,6 +815,16 @@ class Queue {
       }
     } catch (e: any) {
       const cancelled = abort.signal.aborted || e.message === 'Cancelled';
+      // A full disk is the server's fault: the job goes back in the line once, to another server.
+      const avoid = this.diskAvoid.get(job.id) ?? new Set<string>();
+      if (ep && retryOnDiskFull(e.message, avoid, cancelled)) {
+        avoid.add(ep.id);
+        this.diskAvoid.set(job.id, avoid);
+        markDiskFull(ep.id);
+        Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: `${ep.id} ran out of disk; trying another server` });
+        job.log.push(`error: ${e.message}`, job.detail);
+        return;
+      }
       Object.assign(job, { status: cancelled ? 'cancelled' : 'failed', finished: Date.now(), error: cancelled ? null : e.message, detail: cancelled ? 'cancelled' : e.message });
       job.log.push(`error: ${e.message}`);
       refundJobCredits(job.id, cancelled ? 'Job cancelled' : `Job failed: ${e.message}`);
