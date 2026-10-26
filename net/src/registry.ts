@@ -50,10 +50,12 @@ export const listedProjects = () => Object.keys(read().projects ?? {});
  *  developer's machine, never the box), localhost on any port.) An Origin header is only a browser's word:
  *  anything outside a browser can send any, so the door gives only player tickets, limited per address, and a project
  *  whose rooms need more (the portal's editor rooms) lists no origins and asks with its key. */
-export function originAllowed(p: NetProject, origin: string) {
+export function originAllowed(p: NetProject, origin: string, room = '') {
   const o = clean(origin);
   if (!o) return false;
-  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(o)) return trustLocalhost();
+  // localhost: a developer's machine (NET_TRUST_LOCALHOST), and anywhere for a project with its own sites when the room
+  // is one of its test rooms (testPrefix: free, apart from live): Studio's playtests serve the game on localhost.
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(o)) return trustLocalhost() || (p.origins.length > 0 && room.startsWith(p.testPrefix));
   return p.origins.includes(o);
 }
 

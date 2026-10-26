@@ -95,7 +95,7 @@ export async function handleNet(req: IncomingMessage, res: ServerResponse, route
       // A browser page with no key goes through the public door (its origin); everything else needs a key.
       const viaDoor = !hasKey && Boolean(origin);
       const auth = svc.ticketAuth(req, viaDoor ? null : client);
-      if (viaDoor && !originAllowed(netProject(String(body.project ?? '')), origin)) return send(res, 403, { error: 'This site may not ask for tickets for that project' });
+      if (viaDoor && !originAllowed(netProject(String(body.project ?? '')), origin, String(body.room ?? ''))) return send(res, 403, { error: 'This site may not ask for tickets for that project' });
       if (!viaDoor && !client) return send(res, 401, { error: 'A Gen API key, or a page on the project\'s own site' });
       return send(res, 200, svc.issueTicket(body, auth));
     }

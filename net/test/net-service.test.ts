@@ -224,7 +224,13 @@ test("the portal's rooms have no keyless door, and localhost is a door only wher
   const { originAllowed, netProject } = await import('../src/registry.ts');
   assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), true, 'on a developer machine');
   process.env.NET_TRUST_LOCALHOST = '0';
-  try { assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), false, 'on the box: anyone can say localhost'); }
+  try {
+    assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:5173'), false, 'on the box: anyone can say localhost');
+    assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:9088', 't-lobby'), true, "a project's test rooms take localhost pages (Studio's playtests)");
+    assert.equal(originAllowed(netProject('netdemo'), 'http://127.0.0.1:9088', 't-abc/p1/level-1'), true, 'a playtest room too');
+    assert.equal(originAllowed(netProject('netdemo'), 'http://localhost:9088', 'lobby'), false, 'never its live rooms');
+    assert.equal(originAllowed(netProject('hawkesgenwebsite'), 'http://localhost:9088', 't-lobby'), false, 'never a project without its own sites');
+  }
   finally { process.env.NET_TRUST_LOCALHOST = '1'; }
 });
 

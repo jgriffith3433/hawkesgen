@@ -154,7 +154,7 @@ export function issueTicket(body: any, auth: TicketAuth) {
   if (auth.client) {
     if (!keyMayIssue(auth.client, p)) throw new NetError(`This key can't make tickets for ${project}`, { status: 403 });
   } else {
-    if (!p.listed || !originAllowed(p, auth.origin)) throw new NetError('Tickets without a key only for the project\'s own sites', { status: 403 });
+    if (!p.listed || !originAllowed(p, auth.origin, room)) throw new NetError('Tickets without a key only for the project\'s own sites', { status: 403 });
     if (role === 'bot' || role === 'test') throw new NetError('bot and test tickets need an API key', { status: 403 });
     doorLimit(`ip:${auth.ip ?? '?'}`, 30);
     doorLimit(`prj:${project}`, 3000);
