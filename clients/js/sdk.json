@@ -1,5 +1,5 @@
 {
-  "_about": "Where each product keeps Hawkes Gen's JS SDK. Products keep copies (their own CI and site builds can't read this private repo), and `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one; `status` lists the ones behind. Paths are folders in each repo (next to C:\\Projects\\hawkesgen, /srv/hawkes on the server). Add a product here when it starts using the SDK. The analytics SDK (hawkes-analytics.js, .mjs and their .d.ts) is also served at https://gen.hawkesgen.com/sdk/analytics@1.js for pages that load it from Gen. Hawkes Net (hawkes-net.mjs with hawkes-net-core.mjs next to it, docs/net.md) is served at /sdk/hawkes-net.mjs the same way.",
+  "_about": "Where each product keeps Hawkes Gen's JS SDK. Products keep copies (their own CI and site builds can't read this private repo), and `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one; `status` lists the ones behind. Paths are folders in each repo (next to C:\\Projects\\hawkesgen, /srv/hawkes on the server). Add a product here when it starts using the SDK. The analytics SDK (hawkes-analytics.js, .mjs and their .d.ts) is also served at https://gen.hawkesgen.com/sdk/analytics@1.js for pages that load it from Gen. Hawkes Net's SDK is not here any more: it is the hawkesnet repo's (sdk/js, npm @hawkesgen/net).",
   "files": [
     "hawkesgen.mjs",
     "hawkesgen-ui.mjs",
@@ -7,10 +7,7 @@
     "hawkes-analytics.js",
     "hawkes-analytics.mjs",
     "hawkes-analytics.d.ts",
-    "hawkes-analytics.d.mts",
-    "hawkes-net.mjs",
-    "hawkes-net-core.mjs",
-    "hawkes-net.d.ts"
+    "hawkes-analytics.d.mts"
   ],
   "consumers": {
     "doseofdestructionwebsite": {
@@ -21,10 +18,6 @@
       "src/devtools/hawkesgen/": [
         "hawkesgen.mjs",
         "hawkesgen-ui.mjs"
-      ],
-      "src/game/net/hawkes/": [
-        "hawkes-net.mjs",
-        "hawkes-net-core.mjs"
       ]
     },
     "phoriginswebsite": {
@@ -56,12 +49,6 @@
       "dashboard/": [
         "hawkesgen.mjs",
         "hawkesgen-ui.mjs"
-      ]
-    },
-    "hawkesgenwebsite": {
-      "public/play/": [
-        "hawkes-net.mjs",
-        "hawkes-net-core.mjs"
       ]
     }
   }

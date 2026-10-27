@@ -235,7 +235,9 @@ The Unity log line `Licensing::Module Error: Access token is unavailable` is ben
 Filters on every read: `range` (`30d`) or `from`/`to`, `env` (`live`; `all`), `build`, `device`, `browser`, `country`,
 `bots=1`, `internal=1`.
 
-## Hawkes Net (docs/net.md)
+## Hawkes Net (the hawkesnet repo)
+
+Hawkes Net is its own service and repo (`jgriffith3433/hawkesnet`, its `docs/net.md`); Gen answers only `/v1/net/whoami` and `/v1/net/usage` and sends the rest to `https://net.hawkesgen.com` with a 308. The routes below are the box's.
 
 | Route | What |
 |---|---|
