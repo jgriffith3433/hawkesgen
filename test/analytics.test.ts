@@ -550,3 +550,72 @@ test('players by network across products, and "that was me" marks past and futur
   assert.equal((adb.prepare("SELECT internal FROM sessions WHERE id = 'priv_sess_1'").get() as any).internal, 0);
   assert.equal((await (await fetch(`${base}/v1/analytics/marks`)).json()).marks.length, 0);
 });
+
+test('bots: isbot user agents, crawler and cloud ranges (a touch makes a cloud visit a person), "not a person", engaged sessions', async () => {
+  resetRateLimits();
+  const { parse, useRanges, datacenterOf } = await import('../src/analytics/datacenter.ts');
+  // The owners' own formats.
+  assert.deepEqual(parse(JSON.stringify({ prefixes: [{ ip_prefix: '3.0.0.0/15' }], ipv6_prefixes: [{ ipv6_prefix: '2600:1f00::/24' }] }), 'json'), ['3.0.0.0/15', '2600:1f00::/24']);
+  assert.deepEqual(parse(JSON.stringify({ prefixes: [{ ipv4Prefix: '34.0.0.0/15' }, { ipv6Prefix: '2600:1900::/28' }] }), 'json'), ['34.0.0.0/15', '2600:1900::/28']);
+  assert.deepEqual(parse(JSON.stringify({ regions: [{ cidrs: [{ cidr: '40.233.0.0/19' }] }] }), 'json'), ['40.233.0.0/19']);
+  assert.deepEqual(parse('5.101.96.0/21,NL,NL-NH,Amsterdam,1098 XH\n', 'csv'), ['5.101.96.0/21']);
+  useRanges([
+    { kind: 'cloud', name: 'Google Cloud', cidrs: ['34.0.0.0/8', '2600:1900::/28'] },
+    { kind: 'crawler', name: 'Googlebot', cidrs: ['34.100.0.0/16'] },
+  ]);
+  assert.deepEqual(datacenterOf('34.5.6.7'), { kind: 'cloud', name: 'Google Cloud' });
+  assert.deepEqual(datacenterOf('34.100.1.2'), { kind: 'crawler', name: 'Googlebot' }, 'a crawler inside a cloud is the crawler');
+  assert.deepEqual(datacenterOf('2600:1900::5'), { kind: 'cloud', name: 'Google Cloud' });
+  assert.equal(datacenterOf('35.1.1.1'), null);
+  assert.equal(datacenterOf('::ffff:34.5.6.7')?.name, 'Google Cloud');
+  assert.equal(parseUA('Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)').bot, true);
+  assert.equal(parseUA(CHROME).bot, false);
+
+  const now = Date.now();
+  const send = (ip: string, anon: string, session: string, events: any[]) =>
+    fetch(`${base}/v1/analytics/collect`, { method: 'POST', headers: { 'Content-Type': 'text/plain', Origin: LIVE, 'User-Agent': CHROME, 'X-Forwarded-For': ip },
+      body: JSON.stringify({ product: 'sickofit', anon, session, events: events.map((e, i) => ({ seq: e.seq ?? i, t: now + i * 1000, page: '/Game/', ...e })) }) }).then((r) => r.json());
+  const row = (id: string) => adb.prepare('SELECT bot, bot_reason, dc, internal FROM sessions WHERE id = ?').get(id) as any;
+  await send('34.5.6.7', 'dc_anon_1', 'dc_sess_1', [{ name: 'session_start' }, { name: 'page_view' }]);
+  assert.deepEqual({ ...row('dc_sess_1') }, { bot: 1, bot_reason: 'data centre (Google Cloud)', dc: 'cloud:Google Cloud', internal: 0 });
+  // Someone touches the page (active time only grows with a real input): a person on a VPN.
+  await send('34.5.6.7', 'dc_anon_1', 'dc_sess_1', [{ name: 'level_start', seq: 2, active: 4000 }]);
+  assert.equal(row('dc_sess_1').bot, 0);
+  // A crawler stays a bot whatever it does.
+  await send('34.100.1.2', 'crawl_anon', 'crawl_sess', [{ name: 'page_view', active: 4000 }]);
+  assert.equal(row('crawl_sess').bot_reason, 'crawler (Googlebot)');
+  // A home network: kept; a short visit is a visit but not engaged.
+  await send('198.51.100.40', 'home_anon', 'home_sess', [{ name: 'page_view', active: 3000 }]);
+  await send('198.51.100.40', 'home_anon', 'home_sess2', [{ name: 'page_view', active: 15000 }]);
+  assert.equal(row('home_sess').bot, 0);
+  const to = String(Date.now() + 60_000);
+  const f = Q.parseFilters((k) => ({ range: '24h', to } as any)[k]);
+  const fe = Q.parseFilters((k) => ({ range: '24h', to, engaged: '1' } as any)[k]);
+  const ids = (ff: any) => Q.sessionList('sickofit', ff, 500).items.map((s: any) => s.id);
+  assert.ok(ids(f).includes('home_sess') && !ids(fe).includes('home_sess') && ids(fe).includes('home_sess2'));
+  assert.ok(!ids(f).includes('crawl_sess'));
+
+  const p = Q.players(f);
+  const crawler = p.items.find((x: any) => x.datacenter === 'Googlebot')!;
+  assert.equal(crawler.bot, true, 'listed, as a bot');
+  assert.ok(p.bots.some((b: any) => b.reason === 'crawler (Googlebot)'));
+  const home = p.items.find((x: any) => x.sessions === 2 && x.engagedSessions === 1)!;
+  assert.ok(home && !home.bot);
+
+  // "Not a person" on the home network, then taken back.
+  const markIt = (body: any) => fetch(`${base}/v1/analytics/marks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+  const m = await markIt({ kind: home.kind, value: home.value, what: 'bot' });
+  assert.equal(m.sessions, 2);
+  assert.deepEqual({ bot: row('home_sess').bot, why: row('home_sess').bot_reason }, { bot: 1, why: 'marked' });
+  await send('198.51.100.40', 'home_anon_new', 'home_sess3', [{ name: 'page_view', active: 20000 }]);
+  assert.equal(row('home_sess3').bot_reason, 'marked', 'later sessions too');
+  await markIt({ kind: home.kind, value: home.value, on: false });
+  assert.equal(row('home_sess').bot, 0);
+  assert.equal(row('home_sess3').bot, 0);
+  // "That's me" replaces "not a person" on the same network.
+  await markIt({ kind: home.kind, value: home.value, what: 'bot' });
+  await markIt({ kind: home.kind, value: home.value, what: 'me' });
+  assert.deepEqual({ bot: row('home_sess2').bot, internal: row('home_sess2').internal }, { bot: 0, internal: 1 });
+  await markIt({ kind: home.kind, value: home.value, on: false });
+  useRanges([]);
+});

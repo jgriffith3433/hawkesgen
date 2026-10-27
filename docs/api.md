@@ -230,7 +230,7 @@ The Unity log line `Licensing::Module Error: Access token is unavailable` is ben
 | `GET /sdk/analytics.js`, `/sdk/analytics@1.js` | **Public, no key.** The JS SDK (`clients/js/hawkes-analytics.js`). `@1` is what pages pin (cached an hour), the plain name 5 minutes; both revalidate by `ETag` (`304`) |
 | `GET /v1/analytics/products` | The registry |
 | `GET /v1/analytics/overview` | Every product: active now, visitors and sessions today / 7d / 30d with trends, a daily series, new vs returning, active time, D1/D7, the biggest drop-off, error rate, rating |
-| `GET /v1/analytics/players`, `GET`/`POST /v1/analytics/marks` | Admin. Who visits across products (by network hash, never the IP) and J's "that was me" marks (`{kind: net\|anon, value, me}`): marked sessions are internal, past and future |
+| `GET /v1/analytics/players`, `GET`/`POST /v1/analytics/marks` | Admin. Who visits across products (by network hash, never the IP), bots by reason, and J's marks (`{kind: net\|anon, value, what: me\|bot, on}`): marked sessions are internal (me) or bots (bot), past and future. Reads also take `engaged=1` |
 | `GET /v1/analytics/:product[/:section]` | `traffic`, `sessions`, `retention`, `funnel?steps=`, `dropoff`, `levels`, `deaths`, `features`, `feedback`, `errors`, `perf`, `builds?a=&b=`, `insights`, `export?what=&format=csv`; `sessions/list`, `sessions/:id` (a timeline). Without a section: all of them |
 
 Filters on every read: `range` (`30d`) or `from`/`to`, `env` (`live`; `all`), `build`, `device`, `browser`, `country`,

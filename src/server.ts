@@ -39,6 +39,12 @@ server.listen(PORT, HOST, () => {
     void refresh();
     setInterval(refresh, 24 * 3600 * 1000).unref();
   });
+  // The ranges crawlers and clouds publish (datacenter.ts: bot verdicts), refreshed daily.
+  void import('./analytics/datacenter.ts').then((m) => {
+    const refresh = () => m.refreshDatacenters().then((r) => r !== 'fresh' && console.log(`[analytics] data centres: ${r}`)).catch((e) => console.warn(`[analytics] ${e.message}`));
+    void refresh();
+    setInterval(refresh, 6 * 3600 * 1000).unref();
+  });
   // The Machines tab's history: running machines measured every minute (EC2 Describe and one SSH command each).
   void import('./machines.ts').then((m) => m.startMonitor()).catch((e) => console.warn(`[machines] ${e.message}`));
   void import('./providers/comfy/image.ts').then((m) => m.resumeImageBuild()).catch((e) => console.warn(`[image] ${e.message}`));

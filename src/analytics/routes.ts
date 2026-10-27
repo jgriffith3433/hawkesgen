@@ -9,14 +9,15 @@
 //   GET /v1/analytics/:product/sessions/list        the session list; /sessions/:id one session's timeline
 //   GET /v1/analytics/players                       who visits, across products, by network (else browser), J's marked
 //   GET /v1/analytics/marks                         J's "that was me" marks
-//   POST /v1/analytics/marks {kind, value, me, note} mark (me: true) or unmark a network or browser as J's (admin)
+//   POST /v1/analytics/marks {kind, value, what, on, note}   mark a network or browser as J's (what: me) or not a person
+//                                                   (what: bot), or take it back (on: false; me: false too) (admin)
 
 import type { ServerResponse } from 'node:http';
 import { canProject, requireRole, type Client } from '../auth.ts';
 import { GenError } from '../util.ts';
 import { products } from './registry.ts';
 import * as Q from './query.ts';
-import { listMarks, markInternal, unmarkInternal } from './store.ts';
+import { listMarks, mark, unmark } from './store.ts';
 
 type Send = (res: ServerResponse, status: number, body: unknown) => void;
 
@@ -39,9 +40,11 @@ export function handleAnalytics(client: Client, route: string, method: string, q
     const kind = body?.kind;
     const value = String(body?.value ?? '');
     if ((kind !== 'net' && kind !== 'anon') || !/^[A-Za-z0-9_-]{4,64}$/.test(value)) throw new GenError('kind (net | anon) and value are required');
-    const r = body?.me === false ? unmarkInternal(kind, value) : markInternal(kind, value, typeof body?.note === 'string' ? body.note.slice(0, 200) : null);
+    const what = body?.what === 'bot' ? 'bot' : 'me';
+    const on = body?.on !== false && body?.me !== false;
+    const r = on ? mark(kind, value, what, typeof body?.note === 'string' ? body.note.slice(0, 200) : null) : unmark(kind, value);
     cache.clear();
-    send(res, 200, { ok: true, kind, value, me: body?.me !== false, ...r });
+    send(res, 200, { ok: true, kind, value, what, on, me: on && what === 'me', ...r });
     return true;
   }
   if (method !== 'GET') return false;

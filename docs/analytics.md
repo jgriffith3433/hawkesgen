@@ -253,15 +253,28 @@ within the limits. Prefer a standard event with props (`feature` with `name`) to
   only in the analytics database. It groups one person's sessions across sites, browsers and private windows (J tests in
   private windows on many devices, where the anon id is new every time) for the players list and "that was me".
 - **User agent** (`src/analytics/ua.ts`): browser + version, OS + version, device (`desktop` \| `phone` \| `tablet`),
-  and a bot flag (crawlers, link previews, headless browsers, HTTP libraries).
+  and a bot flag: isbot's maintained pattern list (`isbot-patterns.ts`, public domain, copied in) plus ours (crawlers,
+  link previews, monitors, headless browsers, HTTP libraries).
 - **Server receive time** (`at`) on every event; the client's `t` is kept for durations inside a session.
-- **Marks:** `bot` (the user agent, `flags.webdriver`, `flags.playtest`) and `internal` (`flags.internal`, or a "that
-  was me" mark on the session's network or anon id). Both are left out of every answer unless asked for (`bots=1`,
-  `internal=1`).
-- **"That was me"** (`marks` table, `markInternal` / `unmarkInternal`): J marks a network or a browser from the players
-  list (Studio's Analytics tab). Every session it matches becomes internal, past and future, and the rollups of those
-  days are redone. Marking a network also marks the anon ids seen on it, so those browsers stay his on other networks
-  (mobile data). Unmarking takes those back too.
+- **Bots** (`store.ts botVerdict`; the session's `bot` and `bot_reason`). Always a bot: a bot user agent (`user
+  agent`), `flags.webdriver` (`webdriver`), Studio's playtests (`playtest`), an IP in a crawler's published range
+  (`crawler (Googlebot)`: Google's crawlers and link-preview fetchers, Bingbot, OpenAI's bots), and J's "not a person"
+  (`marked`). A bot only while nobody touches the page: an IP in a cloud's published range (`data centre (AWS)`: AWS,
+  Google Cloud, Oracle Cloud, DigitalOcean). Active time only grows with a real click, tap, key or scroll, so the
+  first touch makes such a session a person (a VPN on a cloud server). The ranges are the owners' own files
+  (`datacenter.ts`), downloaded into `.data/geo/datacenter.json` and refreshed daily (`HAWKESGEN_DC=off` turns it
+  off); the session keeps which one (`dc`), never the IP. iCloud Private Relay and phone networks aren't in any of
+  them. Sessions from before reasons were kept stay as they were. Page-side automation checks (CDP probes and the
+  like) are not done: fragile, and every product would need the SDK change.
+- **Engaged sessions** (`query.ts ENGAGED`, like GA4's): 10 s or more of active play, or 2 or more pages. Shorter
+  ones are real visits (a bounce, or a game too slow to load) and stay; `engaged=1` keeps only engaged ones.
+- **Marks:** `bot` (above) and `internal` (`flags.internal`, or a "that was me" mark on the session's network or anon
+  id). Both are left out of every answer unless asked for (`bots=1`, `internal=1`).
+- **"That was me" and "not a person"** (`marks` table with `what` me \| bot; `mark` / `unmark`): J marks a network or a
+  browser from the players list (Studio's Analytics tab). Every session it matches becomes internal (me) or a bot,
+  past and future, and the rollups of those days are redone. Marking a network also marks the anon ids seen on it, so
+  those browsers keep the mark on other networks (mobile data). A mark replaces the other kind; unmarking takes the
+  anon marks back too, and the sessions are judged again.
 
 ## Storage
 
@@ -289,6 +302,7 @@ Every route takes the filters; `GET` only; the key needs access to the product (
 | `build`, `device`, `browser`, `country` | exact match (`country` is the ISO code) |
 | `user` | one account (the `identify` id): every section is then just its sessions |
 | `bots=1`, `internal=1` | include them (left out by default) |
+| `engaged=1` | only engaged sessions (10 s or more of active play, or 2 or more pages) |
 
 Times are UTC. A session belongs to the range it started in; events to the range they arrived in.
 
@@ -300,8 +314,8 @@ Times are UTC. A session belongs to the range it started in; events to the range
 | `…/:product/traffic` | Referrers (host, and host + path), UTM source / medium / campaign, landing pages, countries, regions, cities, browsers, OS, devices, screen sizes, languages, time zones: sessions and visitors each |
 | `…/:product/sessions` | Length distribution (active time), sessions per player, median and p90 active seconds |
 | `…/:product/sessions/list?limit&offset` | The sessions, newest first (anonymous: the anon id, never an IP) |
-| `GET /v1/analytics/players?limit&offset` | Admin. Who visits, across products: one row per network (else per anon id, for sessions from before networks were kept) with sessions, browsers, products, devices, places, accounts, envs, referrers, active seconds, errors and `me` (marked as J). Bots left out, internal kept. `real` / `me` counts and `realSessions` |
-| `GET /v1/analytics/marks`, `POST /v1/analytics/marks {kind: net\|anon, value, me?, note?}` | Admin. J's "that was me" marks; `me: false` takes one back. Returns how many sessions changed |
+| `GET /v1/analytics/players?limit&offset` | Admin. Who visits, across products: one row per network (else per anon id, for sessions from before networks were kept) with sessions, engaged sessions, browsers, products, devices, places, accounts, envs, referrers, active seconds, errors, `me` (marked as J), `bot` (marked, or every session a bot) with `botReasons` and `datacenter`. Declared bots (user agent, webdriver, playtests) left out; data-centre, crawler and marked ones kept, internal kept. `real` / `me` / `botRows`, `realSessions`, `engagedSessions`, and `bots`: every bot session in the range by reason |
+| `GET /v1/analytics/marks`, `POST /v1/analytics/marks {kind: net\|anon, value, what?: me\|bot, on?, note?}` | Admin. J's "that was me" (`me`, the default) and "not a person" (`bot`) marks; `on: false` (or the older `me: false`) takes one back. Returns how many sessions changed |
 | `…/:product/sessions/:id` | One session and its event timeline (`offsetMs` from its first event) |
 | `…/:product/retention` | D1/D7/D30 by first-seen week (Monday, UTC) and in total |
 | `…/:product/segments` | Who sticks around: players first seen in the range, grouped by their first session (`entry`, `source` (UTM or referrer host), `device`, `input`, `account`, `hadFun` (a `first_fun` event), `played` (the `progress` steps labelled `minutes_played`)), each with players, D1/D7 and the first session's median active time; and `features`: for every `feature` used in a first session, D1/D7 with it against without it and the lift. Small groups are listed with their n |

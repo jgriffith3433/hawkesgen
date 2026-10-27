@@ -98,6 +98,11 @@ const MIGRATIONS: string[] = [
    CREATE INDEX sessions_net ON sessions (net, started) WHERE net IS NOT NULL;
    CREATE INDEX sessions_anon_any ON sessions (anon);
    CREATE TABLE marks (kind TEXT NOT NULL, value TEXT NOT NULL, at INTEGER NOT NULL, note TEXT, PRIMARY KEY (kind, value)) WITHOUT ROWID;`,
+  // Why a session is a bot (botVerdict), the data centre or crawler it came from (datacenter.ts), and marks that say
+  // "not a person" as well as "that was me".
+  `ALTER TABLE sessions ADD COLUMN bot_reason TEXT;
+   ALTER TABLE sessions ADD COLUMN dc TEXT;
+   ALTER TABLE marks ADD COLUMN what TEXT NOT NULL DEFAULT 'me';`,
 ];
 
 adb.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
@@ -126,6 +131,10 @@ export type Batch = {
   user: string | null;
   /** The visitor's network as a salted hash (netOf), never the IP. */
   net?: string | null;
+  /** The crawler or cloud whose published range the visitor came from (datacenter.ts), as kind:name. */
+  dc?: string | null;
+  /** Why the batch is a bot (user agent, webdriver, playtest), when it is. */
+  botReason?: string | null;
   build: { version: string | null; commit: string | null; date: string | null };
   device: { screen: string | null; lang: string | null; gpu: string | null; tz: string | null; touch: number };
   entry: { referrer: string | null; landing: string | null; utm: Record<string, string | null> };
@@ -143,7 +152,7 @@ const QUIET = new Set(['session_end', 'exit', 'perf']);
 
 const insertEvent = adb.prepare('INSERT OR IGNORE INTO events (product, session, seq, at, t, name, page, screen, level, active, ctx, props) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 const getSession = adb.prepare('SELECT * FROM sessions WHERE product = ? AND id = ?');
-const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal', 'user_id', 'frustrations', 'net'];
+const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal', 'user_id', 'frustrations', 'net', 'bot_reason', 'dc'];
 const putSession = adb.prepare(`INSERT OR REPLACE INTO sessions (${SESSION_COLS.join(', ')}) VALUES (${SESSION_COLS.map(() => '?').join(', ')})`);
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null);
@@ -166,16 +175,20 @@ export function ingest(b: Batch): number {
       country: b.geo?.country ?? null, region: b.geo?.region ?? null, city: b.geo?.city ?? null, tz: b.geo?.tz ?? b.device.tz,
       referrer: b.entry.referrer, landing: b.entry.landing,
       utm_source: b.entry.utm.source ?? null, utm_medium: b.entry.utm.medium ?? null, utm_campaign: b.entry.utm.campaign ?? null, utm_term: b.entry.utm.term ?? null, utm_content: b.entry.utm.content ?? null,
-      bot: 0, internal: 0, user_id: null, frustrations: 0, net: b.net ?? null,
+      bot: 0, internal: 0, user_id: null, frustrations: 0, net: b.net ?? null, bot_reason: null, dc: b.dc ?? null,
     };
     // What the first batch didn't know (the entry often comes with session_start, the GPU with perf).
     for (const [k, v] of [['build', b.build.version], ['commit_sha', b.build.commit], ['build_date', b.build.date], ['gpu', b.device.gpu], ['referrer', b.entry.referrer], ['landing', b.entry.landing], ['utm_source', b.entry.utm.source], ['utm_medium', b.entry.utm.medium], ['utm_campaign', b.entry.utm.campaign]] as const) {
       if (s[k] == null && v != null) s[k] = v;
     }
     if (b.user) s.user_id = b.user; // the latest says (signed in partway through)
-    if (b.bot) s.bot = 1;
+    if (b.bot) {
+      s.bot = 1;
+      if (!s.bot_reason || !HARD.test(s.bot_reason)) s.bot_reason = b.botReason ?? 'user agent';
+    }
     if (b.net && !s.net) s.net = b.net;
-    if (b.internal || isMarked('anon', s.anon) || (s.net && isMarked('net', s.net))) s.internal = 1;
+    if (b.dc && !s.dc) s.dc = b.dc;
+    if (b.internal || sessionMark(s, 'me')) s.internal = 1;
     s.ended = Math.max(s.ended, b.at);
 
     for (const e of [...b.events].sort((x, y) => x.seq - y.seq)) {
@@ -184,6 +197,7 @@ export function ingest(b: Batch): number {
       added++;
       apply(s, e);
     }
+    botVerdict(s); // after the events: a touch on a cloud's address makes it a person
     putSession.run(...SESSION_COLS.map((k) => s[k] ?? null));
     adb.exec('COMMIT');
   } catch (e) {
@@ -263,58 +277,132 @@ export function netOf(ip: string | null): string | null {
 }
 
 export type MarkKind = 'net' | 'anon';
-let marks: Set<string> | null = null;
-const markSet = () => (marks ??= new Set((adb.prepare('SELECT kind, value FROM marks').all() as any[]).map((r) => `${r.kind}:${r.value}`)));
-export const isMarked = (kind: MarkKind, value: string) => markSet().has(`${kind}:${value}`);
-export const listMarks = () => adb.prepare('SELECT kind, value, at, note FROM marks ORDER BY at DESC').all() as { kind: MarkKind; value: string; at: number; note: string | null }[];
+/** What a mark says: the sessions are J's own ("that was me"), or not a person ("not a person"). */
+export type MarkWhat = 'me' | 'bot';
+let marks: Map<string, MarkWhat> | null = null;
+const markMap = () => (marks ??= new Map((adb.prepare('SELECT kind, value, what FROM marks').all() as any[]).map((r) => [`${r.kind}:${r.value}`, r.what])));
+/** What a network's or browser's mark says, if it has one. */
+export const markOf = (kind: MarkKind, value: string | null | undefined): MarkWhat | undefined => (value ? markMap().get(`${kind}:${value}`) : undefined);
+const sessionMark = (s: { anon: string; net?: string | null }, what: MarkWhat) => markOf('anon', s.anon) === what || markOf('net', s.net) === what;
+export const listMarks = () => adb.prepare('SELECT kind, value, what, at, note FROM marks ORDER BY at DESC').all() as { kind: MarkKind; value: string; what: MarkWhat; at: number; note: string | null }[];
+
+// ---------------------------------------------------------------- the bot verdict
+
+/** Reasons that stay whatever the session does next (declared bots, automation, J's "not a person"). */
+const HARD = /^(user agent|webdriver|playtest|crawler|marked)/;
+
+/**
+ * Whether a session is a bot, and why (docs/analytics.md, "Bots"): a bot user agent, navigator.webdriver, Studio's
+ * playtest, a crawler's published range, J's "not a person" mark: always. A cloud's range (datacenter.ts): only while
+ * nobody has touched the page (active time needs a real click, tap, key or scroll), so a person on a VPN still counts.
+ * Sessions from before reasons were kept stay as they were.
+ */
+export function botVerdict(s: any): void {
+  if (sessionMark(s, 'bot')) {
+    s.bot = 1;
+    if (!s.bot_reason || !HARD.test(s.bot_reason)) s.bot_reason = 'marked';
+    return;
+  }
+  if (s.bot_reason && HARD.test(s.bot_reason) && s.bot_reason !== 'marked') return;
+  if (s.bot && !s.bot_reason) return; // from before reasons were kept
+  const [kind, ...rest] = String(s.dc ?? '').split(':');
+  const name = rest.join(':');
+  if (kind === 'crawler') {
+    s.bot = 1;
+    s.bot_reason = `crawler (${name})`;
+  } else if (kind === 'cloud' && !(s.active_ms > 0)) {
+    s.bot = 1;
+    s.bot_reason = `data centre (${name})`;
+  } else {
+    s.bot = 0;
+    s.bot_reason = null;
+  }
+}
 
 /** Days (UTC) of the sessions a mark matches, for the rollups. */
 const daysOf = (kind: MarkKind, value: string) => (adb.prepare(`SELECT DISTINCT started FROM sessions WHERE ${kind} = ?`).all(value) as any[]).map((r) => dayOf(r.started));
 
+/** The sessions a mark matches, brought up to date: internal from "me" marks, bot from the verdict. */
+function settle(kind: MarkKind, value: string): number {
+  let changed = 0;
+  for (const r of adb.prepare(`SELECT product, id, anon, net, dc, active_ms, bot, bot_reason, internal FROM sessions WHERE ${kind} = ?`).all(value) as any[]) {
+    const s: any = { ...r };
+    s.internal = sessionMark(s, 'me') ? 1 : markOf(kind, value) === 'bot' ? 0 : r.internal;
+    botVerdict(s);
+    if (s.internal !== r.internal || s.bot !== r.bot || s.bot_reason !== r.bot_reason) {
+      adb.prepare('UPDATE sessions SET internal = ?, bot = ?, bot_reason = ? WHERE product = ? AND id = ?').run(s.internal, s.bot, s.bot_reason, r.product, r.id);
+      changed++;
+    }
+  }
+  return changed;
+}
+
 /**
- * J's "that was me": the network or anon id is his, so every session it matches is internal, past and future (left
- * out of every answer). Marking a network also marks the anon ids seen on it, so those browsers stay marked on other
- * networks. Returns how many sessions changed.
+ * J's marks from the players list: "that was me" (what 'me': every session it matches is internal, past and future) or
+ * "not a person" (what 'bot': every session is a bot). Marking a network also marks the anon ids seen on it, so those
+ * browsers keep the mark on other networks. A mark replaces the other kind on the same network or browser. Returns how
+ * many sessions changed.
  */
-export function markInternal(kind: MarkKind, value: string, note: string | null = null, now = Date.now()): { sessions: number; anons: number } {
+export function mark(kind: MarkKind, value: string, what: MarkWhat = 'me', note: string | null = null, now = Date.now()): { sessions: number; anons: number } {
   const all: [MarkKind, string][] = [[kind, value]];
   if (kind === 'net') for (const r of adb.prepare('SELECT DISTINCT anon FROM sessions WHERE net = ?').all(value) as any[]) all.push(['anon', r.anon]);
+  for (const [k, v] of all) {
+    adb.prepare('INSERT INTO marks (kind, value, what, at, note) VALUES (?, ?, ?, ?, ?) ON CONFLICT(kind, value) DO UPDATE SET what = excluded.what, at = excluded.at, note = excluded.note')
+      .run(k, v, what, now, k === kind ? note : `with net ${value}`);
+  }
+  marks = null;
+  let changed = 0;
+  adb.exec('BEGIN');
+  try {
+    for (const [k, v] of all) changed += settle(k, v);
+    adb.exec('COMMIT');
+  } catch (e) {
+    adb.exec('ROLLBACK');
+    throw e;
+  }
+  rollup(all.flatMap(([k, v]) => daysOf(k, v)));
+  return { sessions: changed, anons: all.length - 1 };
+}
+
+/** "That was me", kept for callers that only know that one. */
+export const markInternal = (kind: MarkKind, value: string, note: string | null = null, now = Date.now()) => mark(kind, value, 'me', note, now);
+
+/**
+ * Takes a mark back (with the anon marks that came with a network's). Its sessions are judged again without it: they
+ * count unless another mark or the bot verdict says otherwise. A browser's own ?hawkes-internal=1 flag isn't kept
+ * apart, so those sessions count again too.
+ */
+export function unmark(kind: MarkKind, value: string): { sessions: number } {
+  const all: [MarkKind, string][] = [[kind, value]];
+  if (kind === 'net') for (const r of adb.prepare("SELECT value FROM marks WHERE kind = 'anon' AND note = ?").all(`with net ${value}`) as any[]) all.push(['anon', r.value]);
+  for (const [k, v] of all) adb.prepare('DELETE FROM marks WHERE kind = ? AND value = ?').run(k, v);
+  marks = null;
   let changed = 0;
   adb.exec('BEGIN');
   try {
     for (const [k, v] of all) {
-      adb.prepare('INSERT OR IGNORE INTO marks (kind, value, at, note) VALUES (?, ?, ?, ?)').run(k, v, now, k === kind ? note : `with net ${value}`);
-      changed += Number(adb.prepare(`UPDATE sessions SET internal = 1 WHERE ${k} = ? AND internal = 0`).run(v).changes);
+      // Unmarked: "me" sessions lose internal unless another "me" mark holds them; "bot" ones are judged again.
+      for (const r of adb.prepare(`SELECT product, id, anon, net, dc, active_ms, bot, bot_reason, internal FROM sessions WHERE ${k} = ?`).all(v) as any[]) {
+        const s: any = { ...r };
+        s.internal = sessionMark(s, 'me') ? 1 : 0;
+        if (s.bot_reason === 'marked') s.bot_reason = null;
+        if (r.bot && r.bot_reason === 'marked') s.bot = 0;
+        botVerdict(s);
+        if (s.internal !== r.internal || s.bot !== r.bot || s.bot_reason !== r.bot_reason) {
+          adb.prepare('UPDATE sessions SET internal = ?, bot = ?, bot_reason = ? WHERE product = ? AND id = ?').run(s.internal, s.bot, s.bot_reason, r.product, r.id);
+          changed++;
+        }
+      }
     }
     adb.exec('COMMIT');
   } catch (e) {
     adb.exec('ROLLBACK');
     throw e;
   }
-  marks = null;
-  rollup(all.flatMap(([k, v]) => daysOf(k, v)));
-  return { sessions: changed, anons: all.length - 1 };
-}
-
-/**
- * Takes a mark back (with the anon marks that came with a network's). Its sessions count again unless another mark
- * still matches them. A browser's own ?hawkes-internal=1 flag isn't kept apart, so those sessions count again too.
- */
-export function unmarkInternal(kind: MarkKind, value: string): { sessions: number } {
-  const all: [MarkKind, string][] = [[kind, value]];
-  if (kind === 'net') for (const r of adb.prepare("SELECT value FROM marks WHERE kind = 'anon' AND note = ?").all(`with net ${value}`) as any[]) all.push(['anon', r.value]);
-  for (const [k, v] of all) adb.prepare('DELETE FROM marks WHERE kind = ? AND value = ?').run(k, v);
-  marks = null;
-  let changed = 0;
-  for (const [k, v] of all) {
-    for (const r of adb.prepare(`SELECT product, id, anon, net FROM sessions WHERE ${k} = ? AND internal = 1`).all(v) as any[]) {
-      if (isMarked('anon', r.anon) || (r.net && isMarked('net', r.net))) continue;
-      changed += Number(adb.prepare('UPDATE sessions SET internal = 0 WHERE product = ? AND id = ?').run(r.product, r.id).changes);
-    }
-  }
   rollup(all.flatMap(([k, v]) => daysOf(k, v)));
   return { sessions: changed };
 }
+export const unmarkInternal = unmark;
 
 /** Custom event names a product has used (capped per product in the registry). */
 const names = new Map<string, Set<string>>();

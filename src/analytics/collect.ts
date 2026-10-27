@@ -10,6 +10,7 @@ import { products, envFor, type Product } from './registry.ts';
 import { parseUA } from './ua.ts';
 import { lookup, type Geo } from './geo.ts';
 import { ingest, knownNames, addName, netOf, type Batch, type Ev } from './store.ts';
+import { datacenterOf } from './datacenter.ts';
 import { authenticate } from '../auth.ts';
 
 export const LIMITS = {
@@ -189,7 +190,9 @@ export function normalize(body: any, meta: Meta, geo: (ip: string | null) => Geo
     agent,
     geo: geo(meta.ip),
     net: netOf(meta.ip),
+    dc: ((h) => (h ? `${h.kind}:${h.name}` : null))(datacenterOf(meta.ip)),
     bot: agent.bot || flags.webdriver === true || flags.playtest === true,
+    botReason: agent.bot ? 'user agent' : flags.webdriver === true ? 'webdriver' : flags.playtest === true ? 'playtest' : null,
     internal: flags.internal === true,
     at: meta.now,
     events,

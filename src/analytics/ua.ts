@@ -1,8 +1,12 @@
-// User agents: browser + version, OS + version, device type and a bot flag. Small and rule-based (no dependency);
+// User agents: browser + version, OS + version, device type and a bot flag (isbot's list plus ours). Rule-based (no dependency);
 // the SDK adds what a user agent can't say (touch points for iPads that claim to be Macs, navigator.webdriver).
 
 export type Agent = { browser: string; browserVersion: string; os: string; osVersion: string; device: 'desktop' | 'phone' | 'tablet'; bot: boolean };
 
+import { ISBOT_PATTERNS } from './isbot-patterns.ts';
+
+/** isbot's maintained list (a few hundred crawlers, previewers, monitors and libraries), and ours on top. */
+const ISBOT = new RegExp(ISBOT_PATTERNS.join('|'), 'i');
 const BOT = /bot\b|bot\/|crawl|spider|slurp|mediapartners|facebookexternalhit|embedly|quora link|whatsapp|telegrambot|discordbot|slackbot|twitterbot|linkedinbot|preview|lighthouse|pagespeed|pingdom|uptime|monitor|gtmetrix|headless|phantomjs|puppeteer|playwright|selenium|curl\/|wget\/|python-requests|python-urllib|aiohttp|httpclient|okhttp|go-http-client|node-fetch|undici|axios|java\//i;
 
 const major = (v = '') => v.split('.').slice(0, 2).join('.').replace(/\.0$/, '');
@@ -59,5 +63,5 @@ export function parseUA(ua: string): Agent {
   if (/iPad|Tablet|PlayBook|Silk|Kindle/.test(s) || (os === 'Android' && !/Mobile/.test(s))) device = 'tablet';
   else if (/Mobi|iPhone|iPod|Android|Windows Phone/.test(s)) device = 'phone';
 
-  return { browser, browserVersion, os, osVersion, device, bot: !s || BOT.test(s) };
+  return { browser, browserVersion, os, osVersion, device, bot: !s || BOT.test(s) || ISBOT.test(s) };
 }

@@ -4,6 +4,9 @@
 // definitions. Every query is bounded by product and time on an index.
 
 import { adb, DAY, dayOf, listMarks } from './store.ts';
+
+/** An engaged session (like GA4's): 10 s or more of active play, or 2 or more pages. Shorter ones are still visits. */
+export const ENGAGED = (a = 's') => `(${a}.active_ms >= 10000 OR ${a}.pages >= 2)`;
 import { products } from './registry.ts';
 
 export type Filters = {
@@ -19,6 +22,8 @@ export type Filters = {
   user?: string;
   bots: boolean;
   internal: boolean;
+  /** Only engaged sessions (ENGAGED). */
+  engaged?: boolean;
 };
 
 const RANGES: Record<string, number> = { '24h': DAY, '7d': 7 * DAY, '14d': 14 * DAY, '30d': 30 * DAY, '90d': 90 * DAY, '180d': 180 * DAY, '365d': 365 * DAY };
@@ -32,7 +37,7 @@ function time(v: string | undefined): number | null {
 }
 
 /** Filters from a query string: range (today | 24h | 7d | 30d | 90d...) or from/to, env (live by default; all), build,
- * device, browser, country, bots=1 and internal=1 to include them. */
+ * device, browser, country, bots=1 and internal=1 to include them, engaged=1 for engaged sessions only. */
 export function parseFilters(q: (k: string) => string | undefined, now = Date.now()): Filters {
   const range = q('range') ?? '30d';
   let from = time(q('from'));
@@ -46,7 +51,7 @@ export function parseFilters(q: (k: string) => string | undefined, now = Date.no
     env: env === 'all' ? null : env.split(',').map((s) => s.trim()).filter(Boolean),
     build: q('build') || undefined, device: q('device') || undefined, browser: q('browser') || undefined, country: q('country')?.toUpperCase() || undefined,
     user: q('user') || undefined,
-    bots: q('bots') === '1', internal: q('internal') === '1',
+    bots: q('bots') === '1', internal: q('internal') === '1', engaged: q('engaged') === '1',
   };
 }
 
@@ -66,6 +71,7 @@ function sessionWhere(product: string, f: Filters, a = 's') {
   }
   if (!f.bots) sql.push(`${a}.bot = 0`);
   if (!f.internal) sql.push(`${a}.internal = 0`);
+  if (f.engaged) sql.push(ENGAGED(a));
   return { sql: sql.join(' AND '), args };
 }
 
@@ -922,27 +928,37 @@ export function sessionList(product: string, f: Filters, limit = 50, offset = 0)
 /**
  * Who visits, across every product: one row per network (the salted hash of where sessions came from), else per
  * browser (anon id, for sessions from before networks were kept). Each with its sessions, products, devices, place,
- * accounts and whether it is marked as J ("that was me", store.ts markInternal). Bots left out; internal sessions
- * kept, so J sees what he marked. `allowed` limits the products (the caller's key).
+ * accounts and whether it is marked as J ("that was me") or not a person (store.ts mark). Declared bots (user agent,
+ * webdriver, playtests) left out; data-centre, crawler-range and marked bots kept, so J sees what was left out and why,
+ * and internal sessions kept, so he sees what he marked. `bots`: every bot session in the range by reason (what each
+ * rule caught). `allowed` limits the products (the caller's key).
  */
 export function players(f: Filters, allowed: (product: string) => boolean = () => true, limit = 200, offset = 0) {
   const env = f.env ? ` AND s.env IN (${f.env.map(() => '?').join(', ')})` : '';
-  const rows = adb.prepare(`SELECT s.product, s.id, s.anon, s.net, s.env, s.started, s.ended, s.active_ms, s.device, s.browser, s.os, s.country, s.city,
-      s.user_id, s.internal, s.errors, s.referrer
-    FROM sessions s WHERE s.started >= ? AND s.started < ? AND s.bot = 0${env} ORDER BY s.started`).all(f.from, f.to, ...(f.env ?? [])) as any[];
-  const marked = new Set(listMarks().map((m) => `${m.kind}:${m.value}`));
+  const all = adb.prepare(`SELECT s.product, s.id, s.anon, s.net, s.env, s.started, s.ended, s.active_ms, s.pages, s.device, s.browser, s.os, s.country, s.city,
+      s.user_id, s.internal, s.errors, s.referrer, s.bot, s.bot_reason, s.dc
+    FROM sessions s WHERE s.started >= ? AND s.started < ?${env} ORDER BY s.started`).all(f.from, f.to, ...(f.env ?? [])) as any[];
+  const reasons = new Map<string, number>();
+  for (const r of all) if (r.bot && allowed(r.product)) reasons.set(r.bot_reason ?? 'user agent (before reasons were kept)', (reasons.get(r.bot_reason ?? 'user agent (before reasons were kept)') ?? 0) + 1);
+  const rows = all.filter((r) => !r.bot || /^(data centre|crawler|marked)/.test(r.bot_reason ?? ''));
+  const marked = new Map(listMarks().map((m) => [`${m.kind}:${m.value}`, m.what]));
   const groups = new Map<string, any>();
   for (const r of rows) {
     if (!allowed(r.product)) continue;
     const key = r.net ? `net:${r.net}` : `anon:${r.anon}`;
     let g = groups.get(key);
     if (!g) {
-      g = { key, kind: r.net ? 'net' : 'anon', value: r.net ?? r.anon, sessions: 0, internalSessions: 0, activeSeconds: 0, errors: 0, first: r.started, last: r.ended,
+      g = { key, kind: r.net ? 'net' : 'anon', value: r.net ?? r.anon, sessions: 0, internalSessions: 0, botSessions: 0, engagedSessions: 0, botReasons: new Set<string>(), dc: r.dc, activeSeconds: 0, errors: 0, first: r.started, last: r.ended,
         products: new Map<string, number>(), devices: new Map<string, number>(), browsers: new Set<string>(), anons: new Set<string>(), accounts: new Set<string>(), places: new Map<string, number>(), envs: new Set<string>(), referrers: new Set<string>() };
       groups.set(key, g);
     }
     g.sessions++;
     if (r.internal) g.internalSessions++;
+    if (r.bot) {
+      g.botSessions++;
+      g.botReasons.add(r.bot_reason);
+    } else if (r.active_ms >= 10_000 || r.pages >= 2) g.engagedSessions++;
+    if (r.dc) g.dc = r.dc;
     g.activeSeconds += Math.round((r.active_ms ?? 0) / 1000);
     g.errors += r.errors ?? 0;
     g.last = Math.max(g.last, r.ended);
@@ -959,17 +975,21 @@ export function players(f: Filters, allowed: (product: string) => boolean = () =
   const top = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(([name, sessions]) => ({ name, sessions }));
   const list = [...groups.values()].map((g) => ({
     key: g.key, kind: g.kind as 'net' | 'anon', value: g.value,
-    me: marked.has(`${g.kind}:${g.value}`) || g.internalSessions === g.sessions,
-    markedSessions: g.internalSessions,
+    me: marked.get(`${g.kind}:${g.value}`) === 'me' || g.internalSessions === g.sessions,
+    bot: marked.get(`${g.kind}:${g.value}`) === 'bot' || g.botSessions === g.sessions,
+    markedSessions: g.internalSessions, botSessions: g.botSessions, botReasons: [...g.botReasons], engagedSessions: g.engagedSessions,
+    datacenter: g.dc ? String(g.dc).split(':').slice(1).join(':') : null,
     sessions: g.sessions, browsers: g.anons.size, activeSeconds: g.activeSeconds, errors: g.errors, first: g.first, last: g.last,
     products: top(g.products), devices: top(g.devices), places: top(g.places).map((x) => x.name),
     accounts: [...g.accounts], envs: [...g.envs], referrers: [...g.referrers].slice(0, 5),
   })).sort((a, b) => b.last - a.last);
-  const real = list.filter((p) => !p.me);
+  const real = list.filter((p) => !p.me && !p.bot);
   return {
     from: f.from, to: f.to, env: f.env ?? 'all',
-    total: list.length, real: real.length, me: list.length - real.length,
-    realSessions: real.reduce((a, p) => a + p.sessions - p.markedSessions, 0),
+    total: list.length, real: real.length, me: list.filter((p) => p.me).length, botRows: list.filter((p) => p.bot && !p.me).length,
+    realSessions: real.reduce((a, p) => a + p.sessions - p.markedSessions - p.botSessions, 0),
+    engagedSessions: real.reduce((a, p) => a + p.engagedSessions, 0),
+    bots: [...reasons.entries()].sort((a, b) => b[1] - a[1]).map(([reason, sessions]) => ({ reason, sessions })),
     items: list.slice(offset, offset + Math.min(500, limit)),
   };
 }
