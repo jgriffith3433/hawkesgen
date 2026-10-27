@@ -208,7 +208,7 @@ returns a verdict, scores and findings.
 | Breaking Through, Yooba Land | Window > Hawkes Gen (Unity package) |
 | Every project folder | The `hawkesgen` MCP server in `.mcp.json`, plus a "Generative AI: Hawkes Gen" section in its AGENTS.md |
 
-Products keep copies of the JS SDK (`clients/js`: the client, the web components, the folder bridge): their own CI
+The analytics SDK is never copied: every page loads it from Gen (`/sdk/analytics@1.js`; docs/analytics.md). Products keep copies of the rest of the JS SDK (`clients/js`: the client, the web components, the folder bridge): their own CI
 and site builds can't read this private repo. `clients/js/sdk.json` lists where each product keeps them, and
 `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one (`status` lists the ones behind). Sync and
 commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`, `ANALYTICS_VERSION`) when behavior

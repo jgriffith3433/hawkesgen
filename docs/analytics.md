@@ -23,9 +23,12 @@ One script tag, in every page of the product (game pages and website pages alike
   (default `https://gen.hawkesgen.com/v1/analytics/collect`), `data-debug="1"`.
 - Or set `window.HAWKES_BUILD = { version, commit, date }` before it (it wins over `data-build`), or call
   `hawkesAnalytics.init({ product, build, endpoint, debug, context })` yourself.
-- Bundled games can keep a copy instead (`clients/js/sdk.json`, `node bin/hawkesgen-sdk.mjs sync`):
-  `import hawkesAnalytics from './hawkes-analytics.mjs'` (next to `hawkes-analytics.js`; types in the `.d.ts`), then
-  `hawkesAnalytics.init({ product: 'phorigins', build: { version, commit } })`.
+- **Always load it from Gen; never keep a copy** (J, 2026-10-27): a Gen deploy then updates every site at once, and the
+  bot rules stay the same everywhere. Every product does (DoD, PH Origins and Imagine Live TV dropped their copies).
+  A bundled game puts the tag in its HTML before its module (no `data-product`) and calls
+  `hawkesAnalytics.init({ product, build })`; until the SDK loads, push calls into `window.hawkesAnalyticsQ` as
+  `[method, ...args]` (the SDK runs them when it arrives), so the game never depends on Gen (PH Origins'
+  `src/game/analytics.ts` `sdk()`). Copy only the `.d.ts` for the compiler. Breaking changes ship as `analytics@2.js`.
 
 That alone gives page views (SPA route changes too), sessions, active time, referrer and UTM, the device, load
 timings (`page_load`: ttfb, dom, load), errors and unhandled rejections (once per signature), fps per active minute
