@@ -7,12 +7,16 @@
 //                                                   | accounts | builds | insights | export
 //   GET /v1/analytics/:product/accounts/:user       one account: its summary and sessions
 //   GET /v1/analytics/:product/sessions/list        the session list; /sessions/:id one session's timeline
+//   GET /v1/analytics/players                       who visits, across products, by network (else browser), J's marked
+//   GET /v1/analytics/marks                         J's "that was me" marks
+//   POST /v1/analytics/marks {kind, value, me, note} mark (me: true) or unmark a network or browser as J's (admin)
 
 import type { ServerResponse } from 'node:http';
-import { canProject, type Client } from '../auth.ts';
+import { canProject, requireRole, type Client } from '../auth.ts';
 import { GenError } from '../util.ts';
 import { products } from './registry.ts';
 import * as Q from './query.ts';
+import { listMarks, markInternal, unmarkInternal } from './store.ts';
 
 type Send = (res: ServerResponse, status: number, body: unknown) => void;
 
@@ -28,8 +32,19 @@ function cached(key: string, make: () => unknown) {
 }
 
 /** Answers an /v1/analytics route; false when the route isn't one. */
-export function handleAnalytics(client: Client, route: string, method: string, q: (k: string) => string | undefined, res: ServerResponse, send: Send, search = ''): boolean {
-  if (!route.startsWith('/v1/analytics/') || method !== 'GET') return false;
+export function handleAnalytics(client: Client, route: string, method: string, q: (k: string) => string | undefined, res: ServerResponse, send: Send, search = '', body?: any): boolean {
+  if (!route.startsWith('/v1/analytics/')) return false;
+  if (route === '/v1/analytics/marks' && method === 'POST') {
+    requireRole(client, 'admin');
+    const kind = body?.kind;
+    const value = String(body?.value ?? '');
+    if ((kind !== 'net' && kind !== 'anon') || !/^[A-Za-z0-9_-]{4,64}$/.test(value)) throw new GenError('kind (net | anon) and value are required');
+    const r = body?.me === false ? unmarkInternal(kind, value) : markInternal(kind, value, typeof body?.note === 'string' ? body.note.slice(0, 200) : null);
+    cache.clear();
+    send(res, 200, { ok: true, kind, value, me: body?.me !== false, ...r });
+    return true;
+  }
+  if (method !== 'GET') return false;
   const parts = route.slice('/v1/analytics/'.length).split('/').filter(Boolean).map(decodeURIComponent);
   const f = Q.parseFilters(q);
   // Keyed by the minute too, so a range like 30d moves on.
@@ -40,6 +55,14 @@ export function handleAnalytics(client: Client, route: string, method: string, q
   };
   if (parts[0] === 'products' && parts.length === 1) {
     return ok({ products: [...products().values()].filter((p) => canProject(client, p.id)) });
+  }
+  if (parts[0] === 'players' && parts.length === 1) {
+    requireRole(client, 'admin');
+    return ok(Q.players(f, (p) => canProject(client, p), Number(q('limit')) || 200, Number(q('offset')) || 0));
+  }
+  if (parts[0] === 'marks' && parts.length === 1) {
+    requireRole(client, 'admin');
+    return ok({ marks: listMarks() });
   }
   if (parts[0] === 'overview' && parts.length === 1) {
     const all = cached(key, () => Q.overview(f)) as ReturnType<typeof Q.overview>;

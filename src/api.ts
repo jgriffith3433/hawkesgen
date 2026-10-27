@@ -617,7 +617,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     // ------------------------------------------------------------ analytics
     // Reading what players did (src/analytics/routes.ts, docs/analytics.md).
-    if (handleAnalytics(client, route, method, q, res, send, url.search)) return;
+    if (handleAnalytics(client, route, method, q, res, send, url.search, route === '/v1/analytics/marks' && method === 'POST' ? await readJson(req) : undefined)) return;
 
     // ----------------------------------------------------------- templates
     if (route === '/v1/templates' && method === 'GET') {

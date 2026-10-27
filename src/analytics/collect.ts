@@ -1,14 +1,15 @@
 // POST /v1/analytics/collect: the public door every product's pages send events to (docs/analytics.md). No key:
 // the product registry says which origins may send for which product. Batches are validated and trimmed, enriched
 // (place from the IP, browser/OS/device from the user agent) and stored. The IP is used for the place and the rate
-// limit, then dropped: never stored, never logged. The page never gets a 5xx.
+// limit and, as a salted one-way hash, to group a player's sessions by network (store.ts netOf), then dropped:
+// never stored, never logged. The page never gets a 5xx.
 
 import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { products, envFor, type Product } from './registry.ts';
 import { parseUA } from './ua.ts';
 import { lookup, type Geo } from './geo.ts';
-import { ingest, knownNames, addName, type Batch, type Ev } from './store.ts';
+import { ingest, knownNames, addName, netOf, type Batch, type Ev } from './store.ts';
 import { authenticate } from '../auth.ts';
 
 export const LIMITS = {
@@ -187,6 +188,7 @@ export function normalize(body: any, meta: Meta, geo: (ip: string | null) => Geo
     },
     agent,
     geo: geo(meta.ip),
+    net: netOf(meta.ip),
     bot: agent.bot || flags.webdriver === true || flags.playtest === true,
     internal: flags.internal === true,
     at: meta.now,

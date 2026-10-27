@@ -3,7 +3,7 @@
 // the session list and one session's timeline, exports and plain-sentence insights. docs/analytics.md has the
 // definitions. Every query is bounded by product and time on an index.
 
-import { adb, DAY, dayOf } from './store.ts';
+import { adb, DAY, dayOf, listMarks } from './store.ts';
 import { products } from './registry.ts';
 
 export type Filters = {
@@ -917,6 +917,61 @@ export function sessionList(product: string, f: Filters, limit = 50, offset = 0)
       s.user_id, s.frustrations
     FROM sessions s WHERE ${w.sql} AND s.started >= ? AND s.started < ? ORDER BY s.started DESC LIMIT ? OFFSET ?`).all(...w.args, f.from, f.to, Math.min(500, limit), offset);
   return { total, items };
+}
+
+/**
+ * Who visits, across every product: one row per network (the salted hash of where sessions came from), else per
+ * browser (anon id, for sessions from before networks were kept). Each with its sessions, products, devices, place,
+ * accounts and whether it is marked as J ("that was me", store.ts markInternal). Bots left out; internal sessions
+ * kept, so J sees what he marked. `allowed` limits the products (the caller's key).
+ */
+export function players(f: Filters, allowed: (product: string) => boolean = () => true, limit = 200, offset = 0) {
+  const env = f.env ? ` AND s.env IN (${f.env.map(() => '?').join(', ')})` : '';
+  const rows = adb.prepare(`SELECT s.product, s.id, s.anon, s.net, s.env, s.started, s.ended, s.active_ms, s.device, s.browser, s.os, s.country, s.city,
+      s.user_id, s.internal, s.errors, s.referrer
+    FROM sessions s WHERE s.started >= ? AND s.started < ? AND s.bot = 0${env} ORDER BY s.started`).all(f.from, f.to, ...(f.env ?? [])) as any[];
+  const marked = new Set(listMarks().map((m) => `${m.kind}:${m.value}`));
+  const groups = new Map<string, any>();
+  for (const r of rows) {
+    if (!allowed(r.product)) continue;
+    const key = r.net ? `net:${r.net}` : `anon:${r.anon}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, kind: r.net ? 'net' : 'anon', value: r.net ?? r.anon, sessions: 0, internalSessions: 0, activeSeconds: 0, errors: 0, first: r.started, last: r.ended,
+        products: new Map<string, number>(), devices: new Map<string, number>(), browsers: new Set<string>(), anons: new Set<string>(), accounts: new Set<string>(), places: new Map<string, number>(), envs: new Set<string>(), referrers: new Set<string>() };
+      groups.set(key, g);
+    }
+    g.sessions++;
+    if (r.internal) g.internalSessions++;
+    g.activeSeconds += Math.round((r.active_ms ?? 0) / 1000);
+    g.errors += r.errors ?? 0;
+    g.last = Math.max(g.last, r.ended);
+    g.products.set(r.product, (g.products.get(r.product) ?? 0) + 1);
+    const dev = [r.device, r.os, r.browser].filter(Boolean).join(' · ') || 'unknown';
+    g.devices.set(dev, (g.devices.get(dev) ?? 0) + 1);
+    g.anons.add(r.anon);
+    if (r.user_id) g.accounts.add(r.user_id);
+    const place = [r.city, r.country].filter(Boolean).join(', ');
+    if (place) g.places.set(place, (g.places.get(place) ?? 0) + 1);
+    g.envs.add(r.env);
+    if (r.referrer) g.referrers.add(r.referrer);
+  }
+  const top = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(([name, sessions]) => ({ name, sessions }));
+  const list = [...groups.values()].map((g) => ({
+    key: g.key, kind: g.kind as 'net' | 'anon', value: g.value,
+    me: marked.has(`${g.kind}:${g.value}`) || g.internalSessions === g.sessions,
+    markedSessions: g.internalSessions,
+    sessions: g.sessions, browsers: g.anons.size, activeSeconds: g.activeSeconds, errors: g.errors, first: g.first, last: g.last,
+    products: top(g.products), devices: top(g.devices), places: top(g.places).map((x) => x.name),
+    accounts: [...g.accounts], envs: [...g.envs], referrers: [...g.referrers].slice(0, 5),
+  })).sort((a, b) => b.last - a.last);
+  const real = list.filter((p) => !p.me);
+  return {
+    from: f.from, to: f.to, env: f.env ?? 'all',
+    total: list.length, real: real.length, me: list.length - real.length,
+    realSessions: real.reduce((a, p) => a + p.sessions - p.markedSessions, 0),
+    items: list.slice(offset, offset + Math.min(500, limit)),
+  };
 }
 
 export function sessionTimeline(product: string, id: string) {

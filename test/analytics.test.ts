@@ -504,3 +504,49 @@ test('accounts, frustration and time per activity (hawkesgen.com); a relay with 
   assert.equal(http1.accounts[0].sessions, 2);
   assert.equal(http1.sessions.total, 2);
 });
+
+test('players by network across products, and "that was me" marks past and future sessions (no IP kept)', async () => {
+  resetRateLimits();
+  const { netOf } = await import('../src/analytics/store.ts');
+  assert.equal(netOf('2001:db8:1:2:aaaa::1'), netOf('2001:db8:1:2:bbbb:cccc:dddd:eeee'), 'an IPv6 /64 is one network');
+  assert.notEqual(netOf('198.51.100.7'), netOf('198.51.100.8'));
+  const now = Date.now();
+  const sendFrom = (ip: string, origin: string, product: string, anon: string, session: string) =>
+    fetch(`${base}/v1/analytics/collect`, { method: 'POST', headers: { 'Content-Type': 'text/plain', Origin: origin, 'User-Agent': CHROME, 'X-Forwarded-For': ip },
+      body: JSON.stringify({ product, anon, session, events: [{ name: 'session_start', seq: 0, t: now, page: '/' }] }) }).then((r) => r.json());
+  // J: two private windows on two sites from home, then another stranger elsewhere.
+  await sendFrom('198.51.100.7', LIVE, 'sickofit', 'priv_anon_1', 'priv_sess_1');
+  await sendFrom('198.51.100.7', 'https://doseofdestruction.com', 'doseofdestruction', 'priv_anon_2', 'priv_sess_2');
+  await sendFrom('198.51.100.99', LIVE, 'sickofit', 'other_anon_1', 'other_sess_1');
+  const f = Q.parseFilters((k) => ({ range: '24h' } as any)[k]);
+  const list = Q.players(f);
+  const home = list.items.find((p: any) => p.kind === 'net' && p.products.length === 2)!;
+  assert.ok(home, 'one player across both sites');
+  assert.equal(home.sessions, 2);
+  assert.equal(home.browsers, 2);
+  assert.ok(!home.me);
+  for (const t of ['sessions', 'marks']) assert.ok(!JSON.stringify(adb.prepare(`SELECT * FROM ${t}`).all()).includes('198.51.100'), t);
+
+  // Admin only.
+  const mark = (body: any, headers: Record<string, string> = {}) => fetch(`${base}/v1/analytics/marks`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const { createClient } = await import('../src/auth.ts');
+  const { key } = createClient('players-user', 'user', ['*']);
+  assert.equal((await mark({ kind: 'net', value: home.value }, { Authorization: `Bearer ${key}` })).status, 403);
+  const r = await (await mark({ kind: 'net', value: home.value, note: 'home' })).json();
+  assert.equal(r.sessions, 2);
+  assert.equal(r.anons, 2);
+  assert.equal(Q.sessionList('sickofit', f).items.some((s: any) => s.id === 'priv_sess_1'), false, 'left out now');
+  // A new private window at home is J's on arrival; the same browser on mobile data too (its anon is marked).
+  await sendFrom('198.51.100.7', LIVE, 'sickofit', 'priv_anon_3', 'priv_sess_3');
+  await sendFrom('203.0.113.5', LIVE, 'sickofit', 'priv_anon_1', 'priv_sess_4');
+  for (const id of ['priv_sess_3', 'priv_sess_4']) assert.equal((adb.prepare('SELECT internal FROM sessions WHERE id = ?').get(id) as any).internal, 1, id);
+  assert.equal((adb.prepare("SELECT internal FROM sessions WHERE id = 'other_sess_1'").get() as any).internal, 0);
+  const after = await (await fetch(`${base}/v1/analytics/players?range=24h`)).json();
+  assert.equal(after.items.find((p: any) => p.value === home.value).me, true);
+
+  // Taken back: they count again.
+  const un = await (await mark({ kind: 'net', value: home.value, me: false })).json();
+  assert.ok(un.sessions >= 3);
+  assert.equal((adb.prepare("SELECT internal FROM sessions WHERE id = 'priv_sess_1'").get() as any).internal, 0);
+  assert.equal((await (await fetch(`${base}/v1/analytics/marks`)).json()).marks.length, 0);
+});

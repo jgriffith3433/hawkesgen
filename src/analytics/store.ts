@@ -2,6 +2,7 @@
 // as events arrive, and daily rollups. Raw events are kept 13 months; sessions (without their exit snapshot) and the
 // rollups forever. docs/analytics.md.
 
+import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { paths } from '../config.ts';
 import type { Geo } from './geo.ts';
@@ -91,6 +92,12 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE sessions ADD COLUMN user_id TEXT;
    ALTER TABLE sessions ADD COLUMN frustrations INTEGER NOT NULL DEFAULT 0;
    CREATE INDEX sessions_user ON sessions (product, user_id, started) WHERE user_id IS NOT NULL;`,
+  // The network a session came from as a salted one-way hash (never the IP), and J's "that was me" marks on a network
+  // or a browser's anon id: the sessions they match are internal, past and future (markInternal).
+  `ALTER TABLE sessions ADD COLUMN net TEXT;
+   CREATE INDEX sessions_net ON sessions (net, started) WHERE net IS NOT NULL;
+   CREATE INDEX sessions_anon_any ON sessions (anon);
+   CREATE TABLE marks (kind TEXT NOT NULL, value TEXT NOT NULL, at INTEGER NOT NULL, note TEXT, PRIMARY KEY (kind, value)) WITHOUT ROWID;`,
 ];
 
 adb.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
@@ -117,6 +124,8 @@ export type Batch = {
   session: string;
   /** The site's account id, when the page called identify. */
   user: string | null;
+  /** The visitor's network as a salted hash (netOf), never the IP. */
+  net?: string | null;
   build: { version: string | null; commit: string | null; date: string | null };
   device: { screen: string | null; lang: string | null; gpu: string | null; tz: string | null; touch: number };
   entry: { referrer: string | null; landing: string | null; utm: Record<string, string | null> };
@@ -134,7 +143,7 @@ const QUIET = new Set(['session_end', 'exit', 'perf']);
 
 const insertEvent = adb.prepare('INSERT OR IGNORE INTO events (product, session, seq, at, t, name, page, screen, level, active, ctx, props) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 const getSession = adb.prepare('SELECT * FROM sessions WHERE product = ? AND id = ?');
-const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal', 'user_id', 'frustrations'];
+const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal', 'user_id', 'frustrations', 'net'];
 const putSession = adb.prepare(`INSERT OR REPLACE INTO sessions (${SESSION_COLS.join(', ')}) VALUES (${SESSION_COLS.map(() => '?').join(', ')})`);
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null);
@@ -157,7 +166,7 @@ export function ingest(b: Batch): number {
       country: b.geo?.country ?? null, region: b.geo?.region ?? null, city: b.geo?.city ?? null, tz: b.geo?.tz ?? b.device.tz,
       referrer: b.entry.referrer, landing: b.entry.landing,
       utm_source: b.entry.utm.source ?? null, utm_medium: b.entry.utm.medium ?? null, utm_campaign: b.entry.utm.campaign ?? null, utm_term: b.entry.utm.term ?? null, utm_content: b.entry.utm.content ?? null,
-      bot: 0, internal: 0, user_id: null, frustrations: 0,
+      bot: 0, internal: 0, user_id: null, frustrations: 0, net: b.net ?? null,
     };
     // What the first batch didn't know (the entry often comes with session_start, the GPU with perf).
     for (const [k, v] of [['build', b.build.version], ['commit_sha', b.build.commit], ['build_date', b.build.date], ['gpu', b.device.gpu], ['referrer', b.entry.referrer], ['landing', b.entry.landing], ['utm_source', b.entry.utm.source], ['utm_medium', b.entry.utm.medium], ['utm_campaign', b.entry.utm.campaign]] as const) {
@@ -165,7 +174,8 @@ export function ingest(b: Batch): number {
     }
     if (b.user) s.user_id = b.user; // the latest says (signed in partway through)
     if (b.bot) s.bot = 1;
-    if (b.internal) s.internal = 1;
+    if (b.net && !s.net) s.net = b.net;
+    if (b.internal || isMarked('anon', s.anon) || (s.net && isMarked('net', s.net))) s.internal = 1;
     s.ended = Math.max(s.ended, b.at);
 
     for (const e of [...b.events].sort((x, y) => x.seq - y.seq)) {
@@ -224,6 +234,86 @@ export function apply(s: any, e: Ev) {
       break;
     }
   }
+}
+
+// ---------------------------------------------------------------- networks and "that was me"
+
+let salt: string | null = null;
+/**
+ * The visitor's network as a salted one-way hash, so a player's sessions group across sites, private windows and
+ * browsers without the IP being kept. IPv4: the address; IPv6: its /64 (a phone's privacy addresses rotate inside it).
+ * The salt lives only in this database.
+ */
+export function netOf(ip: string | null): string | null {
+  if (!ip) return null;
+  const a = ip.replace(/^::ffff:/i, '').trim();
+  let key = a;
+  if (a.includes(':')) {
+    const [head, tail] = a.split('::');
+    const left = head ? head.split(':') : [];
+    const right = tail != null ? (tail ? tail.split(':') : []) : [];
+    const groups = tail != null ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right] : left;
+    key = groups.slice(0, 4).map((g) => parseInt(g || '0', 16).toString(16)).join(':') + '::/64';
+  }
+  if (!salt) {
+    adb.prepare("INSERT OR IGNORE INTO meta (k, v) VALUES ('net_salt', ?)").run(crypto.randomBytes(24).toString('base64url'));
+    salt = (adb.prepare("SELECT v FROM meta WHERE k = 'net_salt'").get() as { v: string }).v;
+  }
+  return 'n_' + crypto.createHmac('sha256', salt).update(key).digest('base64url').slice(0, 16);
+}
+
+export type MarkKind = 'net' | 'anon';
+let marks: Set<string> | null = null;
+const markSet = () => (marks ??= new Set((adb.prepare('SELECT kind, value FROM marks').all() as any[]).map((r) => `${r.kind}:${r.value}`)));
+export const isMarked = (kind: MarkKind, value: string) => markSet().has(`${kind}:${value}`);
+export const listMarks = () => adb.prepare('SELECT kind, value, at, note FROM marks ORDER BY at DESC').all() as { kind: MarkKind; value: string; at: number; note: string | null }[];
+
+/** Days (UTC) of the sessions a mark matches, for the rollups. */
+const daysOf = (kind: MarkKind, value: string) => (adb.prepare(`SELECT DISTINCT started FROM sessions WHERE ${kind} = ?`).all(value) as any[]).map((r) => dayOf(r.started));
+
+/**
+ * J's "that was me": the network or anon id is his, so every session it matches is internal, past and future (left
+ * out of every answer). Marking a network also marks the anon ids seen on it, so those browsers stay marked on other
+ * networks. Returns how many sessions changed.
+ */
+export function markInternal(kind: MarkKind, value: string, note: string | null = null, now = Date.now()): { sessions: number; anons: number } {
+  const all: [MarkKind, string][] = [[kind, value]];
+  if (kind === 'net') for (const r of adb.prepare('SELECT DISTINCT anon FROM sessions WHERE net = ?').all(value) as any[]) all.push(['anon', r.anon]);
+  let changed = 0;
+  adb.exec('BEGIN');
+  try {
+    for (const [k, v] of all) {
+      adb.prepare('INSERT OR IGNORE INTO marks (kind, value, at, note) VALUES (?, ?, ?, ?)').run(k, v, now, k === kind ? note : `with net ${value}`);
+      changed += Number(adb.prepare(`UPDATE sessions SET internal = 1 WHERE ${k} = ? AND internal = 0`).run(v).changes);
+    }
+    adb.exec('COMMIT');
+  } catch (e) {
+    adb.exec('ROLLBACK');
+    throw e;
+  }
+  marks = null;
+  rollup(all.flatMap(([k, v]) => daysOf(k, v)));
+  return { sessions: changed, anons: all.length - 1 };
+}
+
+/**
+ * Takes a mark back (with the anon marks that came with a network's). Its sessions count again unless another mark
+ * still matches them. A browser's own ?hawkes-internal=1 flag isn't kept apart, so those sessions count again too.
+ */
+export function unmarkInternal(kind: MarkKind, value: string): { sessions: number } {
+  const all: [MarkKind, string][] = [[kind, value]];
+  if (kind === 'net') for (const r of adb.prepare("SELECT value FROM marks WHERE kind = 'anon' AND note = ?").all(`with net ${value}`) as any[]) all.push(['anon', r.value]);
+  for (const [k, v] of all) adb.prepare('DELETE FROM marks WHERE kind = ? AND value = ?').run(k, v);
+  marks = null;
+  let changed = 0;
+  for (const [k, v] of all) {
+    for (const r of adb.prepare(`SELECT product, id, anon, net FROM sessions WHERE ${k} = ? AND internal = 1`).all(v) as any[]) {
+      if (isMarked('anon', r.anon) || (r.net && isMarked('net', r.net))) continue;
+      changed += Number(adb.prepare('UPDATE sessions SET internal = 0 WHERE product = ? AND id = ?').run(r.product, r.id).changes);
+    }
+  }
+  rollup(all.flatMap(([k, v]) => daysOf(k, v)));
+  return { sessions: changed };
 }
 
 /** Custom event names a product has used (capped per product in the registry). */
