@@ -8,12 +8,16 @@
  * adds track(), screen(), setContext(), levelStart()/levelEnd(), death(), feedback(), ask(), frustration(), engage()
  * and friends; identify() ties the sessions to the site's own account id; activity() counts input the page can't see
  * (a game in a sandboxed iframe).
+ * A person, not a bot: active time starts with the first real input (a trusted pointer, touch, key, wheel or mouse
+ * move; a page script's synthetic events don't count), which is sent once per session as first_input. Known automation
+ * leftovers (Playwright, Selenium, PhantomJS globals) go in flags.automation. Gen judges bots from these
+ * (docs/analytics.md, "Bots").
  * Events go out in batches (every 5 s or 20 events) with sendBeacon; what can't be sent waits in localStorage.
  * No cookies, no fingerprinting: an anonymous random id in localStorage. hawkesAnalytics.optOut() stops everything.
  */
 (function () {
   'use strict';
-  var ANALYTICS_VERSION = 2;
+  var ANALYTICS_VERSION = 3;
   var w = typeof window !== 'undefined' ? window : null;
   var METHODS = ['init', 'config', 'track', 'screen', 'setContext', 'loadStart', 'ready', 'levelStart', 'levelEnd', 'death', 'choice', 'feature', 'video', 'feedback', 'error', 'ask', 'optOut', 'optIn', 'internal', 'flush', 'activity', 'identify', 'frustration', 'engage'];
   if (!w || !w.document) {
@@ -95,7 +99,22 @@
         pt.start.hawkesWrapped = true;
       }
     } catch (e) { /* a frozen object */ }
-    return { webdriver: !!nav.webdriver, playtest: playtestParam, internal: get(ls, 'hawkes.internal') === '1' };
+    return { webdriver: !!nav.webdriver, playtest: playtestParam, internal: get(ls, 'hawkes.internal') === '1', automation: automation() };
+  }
+  // What browser automation leaves behind on the page (never set by a person's browser): the first one found, by name.
+  var AUTOMATION = ['__playwright__binding__', '__pwInitScripts', '_phantom', 'callPhantom', '__nightmare', 'domAutomation', 'domAutomationController',
+    '_selenium', '__selenium_unwrapped', '__webdriver_evaluate', '__driver_evaluate', '__webdriver_script_fn', '__fxdriver_unwrapped', '_Selenium_IDE_Recorder'];
+  var automationFound;
+  function automation() {
+    if (automationFound !== undefined) return automationFound || undefined;
+    automationFound = '';
+    try {
+      for (var i = 0; i < AUTOMATION.length; i++) if (AUTOMATION[i] in w) { automationFound = AUTOMATION[i]; break; }
+      if (!automationFound) for (var k in doc) if (/^\$?cdc_/.test(k)) { automationFound = 'cdc_'; break; }
+      var root = doc.documentElement;
+      if (!automationFound && root && root.getAttribute) ['webdriver', 'selenium', 'driver'].some(function (a) { return root.getAttribute(a) != null && (automationFound = a + ' attribute'); });
+    } catch (e) { /* a strange window */ }
+    return automationFound || undefined;
   }
 
   // ------------------------------------------------------------------ device
@@ -125,7 +144,8 @@
 
   // ------------------------------------------------------------------ session and active time
   // The session lives in sessionStorage (a new tab is a new session; a reload is not), keyed by its last activity.
-  var sess = null, lastInput = now(), lastTick = now(), entryNext = true, shown = visible();
+  // lastInput: -Infinity until the first real input, so nothing counts as active before a person touches the page.
+  var sess = null, lastInput = -Infinity, lastTick = now(), entryNext = true, shown = visible(), pageT = now();
   function newSession(t) {
     var u = {};
     ['source', 'medium', 'campaign', 'term', 'content'].forEach(function (k) { var v = param('utm_' + k); if (v) u[k] = v.slice(0, 100); });
@@ -157,11 +177,19 @@
     }
     if (sess) sess.last = t;
   }
-  function input() {
+  var INPUT_KIND = { pointerdown: 'pointer', touchstart: 'touch', keydown: 'key', wheel: 'wheel', mousemove: 'mouse', click: 'pointer' };
+  function input(e) {
     if (optedOut) return;
+    if (e && e.isTrusted === false) return; // dispatched by a page script, not a person
     var t = accrue();
     touchSession(t);
     lastInput = t;
+    // Once per session: a person was here (Gen's bot verdict). activity() is input forwarded from a sandboxed frame.
+    if (sess && !sess.input) {
+      sess.input = 1;
+      save();
+      emit('first_input', { kind: e ? INPUT_KIND[e.type] || 'other' : 'forwarded', after: Math.round((t - pageT) / 100) / 10 });
+    }
   }
 
   // ------------------------------------------------------------------ events and the queue
@@ -296,7 +324,7 @@
   }
   var clicks = [];
   function click(e) {
-    input();
+    input(e);
     try {
       var a = e.target && e.target.closest && e.target.closest('a[href]');
       if (a && /^https?:/.test(a.href) && new URL(a.href).host !== loc.host) emit('outbound', { url: hostPath(a.href), text: str((a.textContent || '').trim(), 60) || undefined });
@@ -338,8 +366,8 @@
     shown = visible();
     if (!shown) return exit();
     exited = false;
-    lastInput = now(); // coming back to the tab counts as activity
-    touchSession(lastInput);
+    if (sess && sess.input) lastInput = now(); // a person coming back to the tab counts as activity
+    touchSession(now());
     startFps();
   }
 
@@ -349,10 +377,11 @@
     started = true;
     var saved = getJson(ss, 'hawkes.session');
     if (saved && saved.id && now() - saved.last <= SESSION_IDLE) { sess = saved; entryNext = true; } else if (!optedOut) newSession(now());
+    if (sess && sess.input) lastInput = now(); // the next page of a session a person already touched
     pageView();
     ['pointerdown', 'keydown', 'touchstart', 'wheel'].forEach(function (ev) { on(w, ev, input, { passive: true, capture: true }); });
     var moved = 0;
-    on(w, 'mousemove', function () { var t = now(); if (t - moved > 2000) { moved = t; input(); } });
+    on(w, 'mousemove', function (e) { var t = now(); if (t - moved > 2000) { moved = t; input(e); } });
     on(doc, 'click', click, { passive: true, capture: true });
     on(doc, 'visibilitychange', visibility);
     on(w, 'pagehide', exit);
@@ -440,7 +469,7 @@
     internal: function (on) { set(ls, 'hawkes.internal', on === false ? null : '1'); },
     flush: function () { flush(); },
     // Input the SDK can't see itself (a game in a sandboxed frame forwards its own): keeps active time and the session.
-    activity: function () { input(); },
+    activity: function () { input(null); },
     // The site's own account id (no email, no name): sessions are tied to it from now on; null on sign-out.
     identify: function (id) {
       id = id == null || id === '' ? null : String(id);

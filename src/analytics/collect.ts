@@ -32,7 +32,7 @@ export const LIMITS = {
 export const STANDARD = new Set([
   'page_view', 'session_start', 'session_end', 'game_load_start', 'game_ready', 'screen', 'run_start', 'run_end',
   'level_start', 'level_end', 'death', 'progress', 'checkpoint', 'choice', 'feature', 'video', 'feedback', 'error',
-  'perf', 'outbound', 'exit', 'frustration', 'engage',
+  'perf', 'outbound', 'exit', 'frustration', 'engage', 'first_input',
 ]);
 
 const str = (v: unknown, max: number, re?: RegExp): string | null => {
@@ -168,6 +168,8 @@ export function normalize(body: any, meta: Meta, geo: (ip: string | null) => Geo
 
   const agent = parseUA(meta.ua);
   const flags = body.flags && typeof body.flags === 'object' ? body.flags : {};
+  // What browser automation left on the page (the SDK's flags.automation: a global's or attribute's name).
+  const automation = typeof flags.automation === 'string' && /^[\w$ ]{1,40}$/.test(flags.automation) ? flags.automation : null;
   const d = body.device && typeof body.device === 'object' ? body.device : {};
   const entry = body.entry && typeof body.entry === 'object' ? body.entry : {};
   const utm = entry.utm && typeof entry.utm === 'object' ? entry.utm : {};
@@ -191,8 +193,8 @@ export function normalize(body: any, meta: Meta, geo: (ip: string | null) => Geo
     geo: geo(meta.ip),
     net: netOf(meta.ip),
     dc: ((h) => (h ? `${h.kind}:${h.name}` : null))(datacenterOf(meta.ip)),
-    bot: agent.bot || flags.webdriver === true || flags.playtest === true,
-    botReason: agent.bot ? 'user agent' : flags.webdriver === true ? 'webdriver' : flags.playtest === true ? 'playtest' : null,
+    bot: agent.bot || flags.webdriver === true || flags.playtest === true || Boolean(automation),
+    botReason: agent.bot ? 'user agent' : flags.webdriver === true ? 'webdriver' : flags.playtest === true ? 'playtest' : automation ? `automation (${automation})` : null,
     internal: flags.internal === true,
     at: meta.now,
     events,

@@ -578,15 +578,22 @@ test('bots: isbot user agents, crawler and cloud ranges (a touch makes a cloud v
   const row = (id: string) => adb.prepare('SELECT bot, bot_reason, dc, internal FROM sessions WHERE id = ?').get(id) as any;
   await send('34.5.6.7', 'dc_anon_1', 'dc_sess_1', [{ name: 'session_start' }, { name: 'page_view' }]);
   assert.deepEqual({ ...row('dc_sess_1') }, { bot: 1, bot_reason: 'data centre (Google Cloud)', dc: 'cloud:Google Cloud', internal: 0 });
-  // Someone touches the page (active time only grows with a real input): a person on a VPN.
+  // Active time alone isn't a person (SDK v2 counted the first minute anyway); a real input is.
   await send('34.5.6.7', 'dc_anon_1', 'dc_sess_1', [{ name: 'level_start', seq: 2, active: 4000 }]);
-  assert.equal(row('dc_sess_1').bot, 0);
+  assert.equal(row('dc_sess_1').bot, 1);
+  await send('34.5.6.7', 'dc_anon_1', 'dc_sess_1', [{ name: 'first_input', seq: 3, props: { kind: 'pointer', after: 3.1 } }]);
+  assert.equal(row('dc_sess_1').bot, 0, 'a person on a VPN');
+  // Automation left on the page: a bot from anywhere.
+  const auto = await fetch(`${base}/v1/analytics/collect`, { method: 'POST', headers: { 'Content-Type': 'text/plain', Origin: LIVE, 'User-Agent': CHROME, 'X-Forwarded-For': '198.51.100.41' },
+    body: JSON.stringify({ product: 'sickofit', anon: 'auto_anon', session: 'auto_sess', flags: { automation: '__playwright__binding__' }, events: [{ name: 'page_view', seq: 0, t: now }] }) }).then((r) => r.json());
+  assert.equal(auto.accepted, 1);
+  assert.equal(row('auto_sess').bot_reason, 'automation (__playwright__binding__)');
   // A crawler stays a bot whatever it does.
   await send('34.100.1.2', 'crawl_anon', 'crawl_sess', [{ name: 'page_view', active: 4000 }]);
   assert.equal(row('crawl_sess').bot_reason, 'crawler (Googlebot)');
   // A home network: kept; a short visit is a visit but not engaged.
-  await send('198.51.100.40', 'home_anon', 'home_sess', [{ name: 'page_view', active: 3000 }]);
-  await send('198.51.100.40', 'home_anon', 'home_sess2', [{ name: 'page_view', active: 15000 }]);
+  await send('198.51.100.40', 'home_anon', 'home_sess', [{ name: 'page_view', active: 3000 }, { name: 'page_view', active: 3000 }]);
+  await send('198.51.100.40', 'home_anon', 'home_sess2', [{ name: 'first_input' }, { name: 'page_view', active: 15000 }]);
   assert.equal(row('home_sess').bot, 0);
   const to = String(Date.now() + 60_000);
   const f = Q.parseFilters((k) => ({ range: '24h', to } as any)[k]);

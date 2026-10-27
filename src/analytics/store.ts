@@ -103,6 +103,8 @@ const MIGRATIONS: string[] = [
   `ALTER TABLE sessions ADD COLUMN bot_reason TEXT;
    ALTER TABLE sessions ADD COLUMN dc TEXT;
    ALTER TABLE marks ADD COLUMN what TEXT NOT NULL DEFAULT 'me';`,
+  // A person touched the page (the SDK's first_input, v3): what the cloud rule and engaged sessions go by.
+  `ALTER TABLE sessions ADD COLUMN input INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 adb.exec('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)');
@@ -152,7 +154,7 @@ const QUIET = new Set(['session_end', 'exit', 'perf']);
 
 const insertEvent = adb.prepare('INSERT OR IGNORE INTO events (product, session, seq, at, t, name, page, screen, level, active, ctx, props) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 const getSession = adb.prepare('SELECT * FROM sessions WHERE product = ? AND id = ?');
-const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal', 'user_id', 'frustrations', 'net', 'bot_reason', 'dc'];
+const SESSION_COLS = ['product', 'id', 'anon', 'env', 'build', 'commit_sha', 'build_date', 'started', 'ended', 'first_t', 'last_t', 'active_ms', 'events', 'pages', 'max_progress', 'last_event', 'last_screen', 'last_level', 'level_t', 'level_open', 'load_t', 'ready', 'ready_ms', 'deaths', 'errors', 'levels_done', 'exit', 'browser', 'browser_version', 'os', 'os_version', 'device', 'screen', 'lang', 'gpu', 'country', 'region', 'city', 'tz', 'referrer', 'landing', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'bot', 'internal', 'user_id', 'frustrations', 'net', 'bot_reason', 'dc', 'input'];
 const putSession = adb.prepare(`INSERT OR REPLACE INTO sessions (${SESSION_COLS.join(', ')}) VALUES (${SESSION_COLS.map(() => '?').join(', ')})`);
 
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null);
@@ -175,7 +177,7 @@ export function ingest(b: Batch): number {
       country: b.geo?.country ?? null, region: b.geo?.region ?? null, city: b.geo?.city ?? null, tz: b.geo?.tz ?? b.device.tz,
       referrer: b.entry.referrer, landing: b.entry.landing,
       utm_source: b.entry.utm.source ?? null, utm_medium: b.entry.utm.medium ?? null, utm_campaign: b.entry.utm.campaign ?? null, utm_term: b.entry.utm.term ?? null, utm_content: b.entry.utm.content ?? null,
-      bot: 0, internal: 0, user_id: null, frustrations: 0, net: b.net ?? null, bot_reason: null, dc: b.dc ?? null,
+      bot: 0, internal: 0, user_id: null, frustrations: 0, net: b.net ?? null, bot_reason: null, dc: b.dc ?? null, input: 0,
     };
     // What the first batch didn't know (the entry often comes with session_start, the GPU with perf).
     for (const [k, v] of [['build', b.build.version], ['commit_sha', b.build.commit], ['build_date', b.build.date], ['gpu', b.device.gpu], ['referrer', b.entry.referrer], ['landing', b.entry.landing], ['utm_source', b.entry.utm.source], ['utm_medium', b.entry.utm.medium], ['utm_campaign', b.entry.utm.campaign]] as const) {
@@ -197,7 +199,7 @@ export function ingest(b: Batch): number {
       added++;
       apply(s, e);
     }
-    botVerdict(s); // after the events: a touch on a cloud's address makes it a person
+    botVerdict(s); // after the events: a person's first input on a cloud's address makes it a person
     putSession.run(...SESSION_COLS.map((k) => s[k] ?? null));
     adb.exec('COMMIT');
   } catch (e) {
@@ -241,6 +243,7 @@ export function apply(s: any, e: Ev) {
     case 'death': s.deaths++; break;
     case 'error': s.errors++; break;
     case 'frustration': case 'rage_click': s.frustrations = (s.frustrations ?? 0) + 1; break;
+    case 'first_input': s.input = 1; break;
     case 'session_end': case 'exit': {
       const a = num(p.active);
       if (a != null) s.active_ms = Math.max(s.active_ms, Math.round(a * 1000));
@@ -289,12 +292,13 @@ export const listMarks = () => adb.prepare('SELECT kind, value, what, at, note F
 // ---------------------------------------------------------------- the bot verdict
 
 /** Reasons that stay whatever the session does next (declared bots, automation, J's "not a person"). */
-const HARD = /^(user agent|webdriver|playtest|crawler|marked)/;
+const HARD = /^(user agent|webdriver|playtest|automation|crawler|marked)/;
 
 /**
  * Whether a session is a bot, and why (docs/analytics.md, "Bots"): a bot user agent, navigator.webdriver, Studio's
- * playtest, a crawler's published range, J's "not a person" mark: always. A cloud's range (datacenter.ts): only while
- * nobody has touched the page (active time needs a real click, tap, key or scroll), so a person on a VPN still counts.
+ * playtest, automation left on the page, a crawler's published range, J's "not a person" mark: always. A cloud's
+ * range (datacenter.ts): unless a person touched the page (the SDK's first_input: a trusted click, tap, key, wheel or
+ * mouse move), so someone on a VPN still counts; pages on an older SDK never send it, so their cloud visits are bots.
  * Sessions from before reasons were kept stay as they were.
  */
 export function botVerdict(s: any): void {
@@ -310,7 +314,7 @@ export function botVerdict(s: any): void {
   if (kind === 'crawler') {
     s.bot = 1;
     s.bot_reason = `crawler (${name})`;
-  } else if (kind === 'cloud' && !(s.active_ms > 0)) {
+  } else if (kind === 'cloud' && !s.input) {
     s.bot = 1;
     s.bot_reason = `data centre (${name})`;
   } else {
@@ -325,7 +329,7 @@ const daysOf = (kind: MarkKind, value: string) => (adb.prepare(`SELECT DISTINCT 
 /** The sessions a mark matches, brought up to date: internal from "me" marks, bot from the verdict. */
 function settle(kind: MarkKind, value: string): number {
   let changed = 0;
-  for (const r of adb.prepare(`SELECT product, id, anon, net, dc, active_ms, bot, bot_reason, internal FROM sessions WHERE ${kind} = ?`).all(value) as any[]) {
+  for (const r of adb.prepare(`SELECT product, id, anon, net, dc, input, bot, bot_reason, internal FROM sessions WHERE ${kind} = ?`).all(value) as any[]) {
     const s: any = { ...r };
     s.internal = sessionMark(s, 'me') ? 1 : markOf(kind, value) === 'bot' ? 0 : r.internal;
     botVerdict(s);
@@ -382,7 +386,7 @@ export function unmark(kind: MarkKind, value: string): { sessions: number } {
   try {
     for (const [k, v] of all) {
       // Unmarked: "me" sessions lose internal unless another "me" mark holds them; "bot" ones are judged again.
-      for (const r of adb.prepare(`SELECT product, id, anon, net, dc, active_ms, bot, bot_reason, internal FROM sessions WHERE ${k} = ?`).all(v) as any[]) {
+      for (const r of adb.prepare(`SELECT product, id, anon, net, dc, input, bot, bot_reason, internal FROM sessions WHERE ${k} = ?`).all(v) as any[]) {
         const s: any = { ...r };
         s.internal = sessionMark(s, 'me') ? 1 : 0;
         if (s.bot_reason === 'marked') s.bot_reason = null;

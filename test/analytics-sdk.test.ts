@@ -174,8 +174,21 @@ test('sessions: a reload continues, 30 idle minutes start a new one, a new tab i
   assert.equal(tab.sent[0].events[0].props.visits, 3);
 });
 
-test('active time: visible and an input in the last 60 s', () => {
+test('active time: visible and an input in the last 60 s; nothing before the first real input, sent once as first_input', () => {
+  const idle = page();
+  idle.advance(45_000);
+  idle.fire('win', 'keydown', { isTrusted: false }); // a page script's synthetic event
+  idle.a.track('untouched');
+  idle.hide();
+  idle.show();
+  idle.advance(10_000);
+  idle.a.flush();
+  assert.equal(idle.events().find((e: any) => e.name === 'untouched').active, 0, 'a page nobody touched has no active time');
+  assert.ok(!idle.names().includes('first_input'));
+  assert.equal(idle.events().find((e: any) => e.name === 'exit').props.active, 0);
+
   const p = page();
+  p.advance(2500);
   p.fire('win', 'keydown');
   p.advance(30_000);
   p.a.track('one');
@@ -194,6 +207,8 @@ test('active time: visible and an input in the last 60 s', () => {
   assert.equal(ev.two.active, 60_000);
   assert.equal(ev.exit.props.active, 80);
   assert.equal(ev.three.active, 90_000, 'coming back counts as activity');
+  assert.deepEqual(plainOf(ev.first_input.props), { kind: 'key', after: 2.5 });
+  assert.equal(p.names().filter((n: string) => n === 'first_input').length, 1, 'once per session');
 });
 
 test('the exit snapshot: the last 20 events, the game state trimmed, active time; once per hide', () => {
@@ -274,6 +289,9 @@ test('flags: webdriver, the playtest bot, internal (remembered)', () => {
   const ls = new MemStorage(), clock = { t: T0 };
   assert.equal(page({ webdriver: true }).a.config().flags.webdriver, true);
   assert.equal(page({ url: 'https://sickofitgame.com/Game/?playtest=level-1' }).a.config().flags.playtest, true);
+  assert.equal(page().a.config().flags.automation, undefined);
+  assert.equal(page({ before: (w) => { w.__playwright__binding__ = () => {}; } }).a.config().flags.automation, '__playwright__binding__');
+  assert.equal(page({ before: (w) => { w.document.$cdc_asdjflasutopfhvcZLmcfl_ = {}; } }).a.config().flags.automation, 'cdc_');
   const bot = page({ before: (w) => { w.hawkesPlaytest = { state: () => ({ ready: true, status: 'idle' }), start() {} }; } });
   assert.equal(bot.a.config().flags.playtest, false);
   bot.w.hawkesPlaytest.start('smoke');
@@ -473,7 +491,11 @@ test('v2: identify ties batches to an account, activity keeps active time, frust
   assert.equal(p.sent[4].user, undefined, 'signed out');
 
   // Input the page can't see (a sandboxed game frame) still counts as activity.
+  p.a.activity();
+  p.a.flush();
   const before = p.events().at(-1).active;
+  assert.equal(p.events().at(-1).name, 'first_input');
+  assert.equal(p.events().at(-1).props.kind, 'forwarded');
   for (let i = 0; i < 10; i++) { p.advance(50_000); p.a.activity(); }
   p.a.track('later');
   p.a.flush();

@@ -5,8 +5,12 @@
 
 import { adb, DAY, dayOf, listMarks } from './store.ts';
 
-/** An engaged session (like GA4's): 10 s or more of active play, or 2 or more pages. Shorter ones are still visits. */
-export const ENGAGED = (a = 's') => `(${a}.active_ms >= 10000 OR ${a}.pages >= 2)`;
+/**
+ * An engaged session (like GA4's): 10 s or more of active play, or 2 or more pages after a person touched the page.
+ * Shorter ones are still visits. SDK v3 counts active time only after a real input; v2 counted the first minute
+ * anyway, so engaged sessions from v2 pages are looser.
+ */
+export const ENGAGED = (a = 's') => `(${a}.active_ms >= 10000 OR (${a}.pages >= 2 AND ${a}.input = 1))`;
 import { products } from './registry.ts';
 
 export type Filters = {
@@ -935,7 +939,7 @@ export function sessionList(product: string, f: Filters, limit = 50, offset = 0)
  */
 export function players(f: Filters, allowed: (product: string) => boolean = () => true, limit = 200, offset = 0) {
   const env = f.env ? ` AND s.env IN (${f.env.map(() => '?').join(', ')})` : '';
-  const all = adb.prepare(`SELECT s.product, s.id, s.anon, s.net, s.env, s.started, s.ended, s.active_ms, s.pages, s.device, s.browser, s.os, s.country, s.city,
+  const all = adb.prepare(`SELECT s.product, s.id, s.anon, s.net, s.env, s.started, s.ended, s.active_ms, s.pages, s.input, s.device, s.browser, s.os, s.country, s.city,
       s.user_id, s.internal, s.errors, s.referrer, s.bot, s.bot_reason, s.dc
     FROM sessions s WHERE s.started >= ? AND s.started < ?${env} ORDER BY s.started`).all(f.from, f.to, ...(f.env ?? [])) as any[];
   const reasons = new Map<string, number>();
@@ -957,7 +961,7 @@ export function players(f: Filters, allowed: (product: string) => boolean = () =
     if (r.bot) {
       g.botSessions++;
       g.botReasons.add(r.bot_reason);
-    } else if (r.active_ms >= 10_000 || r.pages >= 2) g.engagedSessions++;
+    } else if (r.active_ms >= 10_000 || (r.pages >= 2 && r.input)) g.engagedSessions++;
     if (r.dc) g.dc = r.dc;
     g.activeSeconds += Math.round((r.active_ms ?? 0) / 1000);
     g.errors += r.errors ?? 0;

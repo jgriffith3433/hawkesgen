@@ -72,7 +72,7 @@ export interface HawkesAnalytics {
   /** Debug mode only: every event made, in order. */
   readonly debugLog: HawkesAnalyticsEvent[];
   init(options: HawkesAnalyticsInit): void;
-  config(): { product: string | null; endpoint: string; build?: HawkesBuild; debug: boolean; env: 'live' | 'beta' | 'preview' | 'local'; anon: string; session?: string; optedOut: boolean; flags: { webdriver: boolean; playtest: boolean; internal: boolean } };
+  config(): { product: string | null; endpoint: string; build?: HawkesBuild; debug: boolean; env: 'live' | 'beta' | 'preview' | 'local'; anon: string; session?: string; optedOut: boolean; flags: { webdriver: boolean; playtest: boolean; internal: boolean; automation?: string } };
   /** A custom event: name ^[a-z][a-z0-9_]{1,39}$. Prefer a standard one (feature) when it fits. */
   track(name: string, props?: Props): void;
   screen(name: string): void;

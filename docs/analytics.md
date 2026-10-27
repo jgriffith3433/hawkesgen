@@ -70,7 +70,13 @@ A page with no storage of its own (a sandboxed iframe) can be given both ids: `i
 
 **Identity and flags:** an anonymous random id in `localStorage` (`hawkes.anon`, with `hawkes.first` and
 `hawkes.visits`); no cookies, no fingerprinting. The session lives in `sessionStorage` (a reload continues it, a new
-tab or 30 idle minutes start a new one). `env` comes from the hostname. `flags.webdriver` is `navigator.webdriver`;
+tab or 30 idle minutes start a new one). `env` comes from the hostname. **A person, not a bot (SDK v3):** active time
+starts with the first real input of the session (a trusted pointer, touch, key, wheel or mouse move; events a page
+script dispatches don't count, and neither does showing the tab before then), sent once as `first_input`; `activity()`
+counts as one (a sandboxed frame's forwarded input). `flags.automation` names what browser automation left on the page
+(Playwright's, Selenium's or PhantomJS's globals, ChromeDriver's `cdc_` keys, a `webdriver` attribute on `<html>`).
+The DevTools-protocol probe some vendors use isn't done: it logs to the console and fires for anyone with DevTools
+open. `flags.webdriver` is `navigator.webdriver`;
 `flags.playtest` is set when the page was opened with `?playtest=`/`?hawkesPlaytest` or the runner called
 `hawkesPlaytest.start()`. Open any page once with `?hawkes-internal=1` to mark that browser as J's (remembered;
 `?hawkes-internal=0` clears it). `hawkesAnalytics.optOut()` / `optIn()` (remembered) stop and restart everything.
@@ -217,6 +223,7 @@ the default funnel's order.
 | `page_view` | Each page (and each in-app route change) | `title?` |
 | `session_start` | The first event of a session | `returning: bool` (the anon id existed) |
 | `session_end` | The page hides or closes, or 30 idle minutes end the session | `active` (seconds of active time, not tab-hidden time) |
+| `first_input` | The session's first real input (SDK v3), once | `kind` (`pointer`, `touch`, `key`, `wheel`, `mouse`, `forwarded`), `after` (seconds since the page loaded) |
 | `game_load_start` | The game starts loading (Unity loader created, engine init) | — |
 | `game_ready` | The player can play (title screen interactive) | `ms` (since `game_load_start`). A session with `game_load_start` and no `game_ready` is a player who gave up while loading |
 | `screen` | The game changes screen | `name` (also sets the event's `screen`) |
@@ -257,17 +264,19 @@ within the limits. Prefer a standard event with props (`feature` with `name`) to
   link previews, monitors, headless browsers, HTTP libraries).
 - **Server receive time** (`at`) on every event; the client's `t` is kept for durations inside a session.
 - **Bots** (`store.ts botVerdict`; the session's `bot` and `bot_reason`). Always a bot: a bot user agent (`user
-  agent`), `flags.webdriver` (`webdriver`), Studio's playtests (`playtest`), an IP in a crawler's published range
-  (`crawler (Googlebot)`: Google's crawlers and link-preview fetchers, Bingbot, OpenAI's bots), and J's "not a person"
-  (`marked`). A bot only while nobody touches the page: an IP in a cloud's published range (`data centre (AWS)`: AWS,
-  Google Cloud, Oracle Cloud, DigitalOcean). Active time only grows with a real click, tap, key or scroll, so the
-  first touch makes such a session a person (a VPN on a cloud server). The ranges are the owners' own files
+  agent`), `flags.webdriver` (`webdriver`), Studio's playtests (`playtest`), `flags.automation` (`automation
+  (__playwright__binding__)`), an IP in a crawler's published range (`crawler (Googlebot)`: Google's crawlers and
+  link-preview fetchers, Bingbot, OpenAI's bots), and J's "not a person" (`marked`). A bot unless a person touched the
+  page: an IP in a cloud's published range (`data centre (AWS)`: AWS, Google Cloud, Oracle Cloud, DigitalOcean). The
+  session's `first_input` (its `input` column) makes it a person (someone on a VPN on a cloud server); active time
+  alone doesn't (SDK v2 counted the first minute after load), and pages on an older SDK never send it, so their cloud
+  visits stay bots. The ranges are the owners' own files
   (`datacenter.ts`), downloaded into `.data/geo/datacenter.json` and refreshed daily (`HAWKESGEN_DC=off` turns it
   off); the session keeps which one (`dc`), never the IP. iCloud Private Relay and phone networks aren't in any of
-  them. Sessions from before reasons were kept stay as they were. Page-side automation checks (CDP probes and the
-  like) are not done: fragile, and every product would need the SDK change.
-- **Engaged sessions** (`query.ts ENGAGED`, like GA4's): 10 s or more of active play, or 2 or more pages. Shorter
-  ones are real visits (a bounce, or a game too slow to load) and stay; `engaged=1` keeps only engaged ones.
+  them. Sessions from before reasons were kept stay as they were.
+- **Engaged sessions** (`query.ts ENGAGED`, like GA4's): 10 s or more of active play, or 2 or more pages after a
+  first input. Shorter ones are real visits (a bounce, or a game too slow to load) and stay; `engaged=1` keeps only
+  engaged ones. Pages on SDK v2 counted the first minute as active, so their engaged sessions are looser.
 - **Marks:** `bot` (above) and `internal` (`flags.internal`, or a "that was me" mark on the session's network or anon
   id). Both are left out of every answer unless asked for (`bots=1`, `internal=1`).
 - **"That was me" and "not a person"** (`marks` table with `what` me \| bot; `mark` / `unmark`): J marks a network or a
@@ -337,7 +346,8 @@ Times are UTC. A session belongs to the range it started in; events to the range
 ### Definitions
 
 - **Visitor / player:** a distinct `anon` id. **New:** first seen (in that env, with the same filters) inside the range.
-- **Active time:** the largest `active` the session sent (or `session_end`'s `active`).
+- **Active time:** the largest `active` the session sent (or `session_end`'s `active`). SDK v3: visible time within
+  60 s of a real input, from the first one on.
 - **Retention (rolling):** of the players first seen in a cohort whose day *n* has come, the share with a session on
   UTC day *n* after their first day, or later.
 - **Funnel:** a player (or session) counts at step *k* if they did steps 1…*k* in that order inside the range.
