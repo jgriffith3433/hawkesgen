@@ -150,3 +150,20 @@ test('a long system prompt goes in a file (one argument over 128 KB fails to sta
   assert.equal(fs.readFileSync(f, 'utf8'), guide);
   assert.ok(long.every((a) => a.length < 100_000), 'every argument short');
 });
+
+test('onText: the answer as it is written (--include-partial-messages), only the model\'s own text, ending whole', async () => {
+  const calls = freshLog();
+  const seen: string[] = [];
+  const r = await ask({ prompt: 'Stream this answer', model: 'claude-sonnet-5-5', onText: (t) => seen.push(t) });
+  assert.equal(r.text, 'echo: Stream this answer (0 images)');
+  assert.equal(seen[0], '', 'it starts from nothing');
+  assert.ok(seen.length > 4, 'many pieces arrive');
+  for (let i = 1; i < seen.length; i++) assert.ok(seen[i].startsWith(seen[i - 1]), 'each is the one before plus more');
+  assert.equal(seen.at(-1), r.text);
+  assert.ok(!seen.some((t) => t.includes('NOT OURS')), 'a tool\'s text is not the answer');
+  const [c] = calls();
+  assert.ok(c.args.includes('--include-partial-messages'));
+  const plain = freshLog();
+  await ask({ prompt: 'No stream', model: 'claude-sonnet-5-5' });
+  assert.ok(!plain()[0].args.includes('--include-partial-messages'), 'only asked for when someone listens');
+});

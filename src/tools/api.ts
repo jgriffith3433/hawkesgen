@@ -1,7 +1,7 @@
 // Tools backed by hosted APIs: ElevenLabs (voice, sound) and Claude (text,
 // JSON, vision).
 
-import type { Tool } from './types.ts';
+import type { RunContext, Tool } from './types.ts';
 import { loadSettings } from '../config.ts';
 import fs from 'node:fs';
 import { speak, soundEffect, designVoice, saveDesignedVoice, dialogue, voiceChange, isolateVoice } from '../providers/elevenlabs.ts';
@@ -252,6 +252,29 @@ export const voiceSaveTool: Tool = {
   },
 };
 
+/** The answer as it is written, readable while the job runs: `result.partial` (the text so far) and `result.chars`,
+ *  saved at most every PARTIAL_MS so a caller polling GET /v1/jobs/:id (or listening to /v1/events) can act on it early
+ *  (the portal's Overseer builds the world from it line by line). The finished result replaces it. */
+const PARTIAL_MS = 250;
+function partials(ctx: RunContext) {
+  let last = 0;
+  let timer: NodeJS.Timeout | null = null;
+  let text = '';
+  let stopped = false;
+  const flush = () => { timer = null; last = Date.now(); if (!stopped && !ctx.signal.aborted) ctx.result({ partial: text, chars: text.length }); };
+  return {
+    onText: (soFar: string) => {
+      text = soFar;
+      if (timer || stopped) return;
+      const wait = PARTIAL_MS - (Date.now() - last);
+      if (wait <= 0) flush();
+      else timer = setTimeout(flush, wait);
+    },
+    /** No more partials (before the finished result, or on failure). */
+    stop: () => { stopped = true; if (timer) clearTimeout(timer); timer = null; },
+  };
+}
+
 const llmParams = {
   prompt: { type: 'text', required: true },
   system: { type: 'text' },
@@ -272,7 +295,8 @@ export const llmTextTool: Tool = {
   async run(ctx) {
     const p = ctx.params;
     ctx.step(`asking ${p.model}`);
-    const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens }, ctx.signal);
+    const live = partials(ctx);
+    const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, onText: live.onText }, ctx.signal).finally(live.stop);
     ctx.usage(usageOf(r));
     ctx.result({ text: r.text, model: r.model, usage: r.usage });
   },
@@ -291,7 +315,8 @@ export const llmJsonTool: Tool = {
     const p = ctx.params;
     if (!p.schema || typeof p.schema !== 'object') throw new GenError('schema must be a JSON Schema object');
     ctx.step(`asking ${p.model} for JSON`);
-    const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, schema: p.schema }, ctx.signal);
+    const live = partials(ctx);
+    const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, schema: p.schema, onText: live.onText }, ctx.signal).finally(live.stop);
     ctx.usage(usageOf(r));
     let value: unknown;
     try {

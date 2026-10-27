@@ -52,6 +52,9 @@ POST /v1/jobs
 | `GET /v1/events` | Server-sent events: `event: job` with each job change |
 
 A finished job has `outputs: [{ asset, seed, mime, kind, title }]` and/or `result` (text, JSON, numbers).
+While `llm.text` or `llm.json` runs, its `result` is the answer so far: `{ partial: "<text written so far>", chars }`,
+saved about four times a second (also in `/v1/events`), so a caller can act on it before the end (the portal's Overseer
+builds the world from it line by line). The finished result replaces it. The API backend caches the system prompt.
 
 ## Tools
 

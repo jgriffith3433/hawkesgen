@@ -21,7 +21,11 @@ import { GenError, id, mimeOf, sleep } from '../util.ts';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
-export type AskInput = { prompt: string; system?: string; images?: string[]; model: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown> };
+export type AskInput = {
+  prompt: string; system?: string; images?: string[]; model: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown>;
+  /** The answer's text so far, each time more arrives (--include-partial-messages). A retry starts it again from "". */
+  onText?: (soFar: string) => void;
+};
 export type AskOptions = { timeoutMs?: number; retryDelaysMs?: number[] };
 
 // ------------------------------------------------------------- calls at once
@@ -86,7 +90,7 @@ function cliEnv(): NodeJS.ProcessEnv {
 export const SYSTEM_INLINE_MAX = 16_000;
 
 /** Program and arguments for one call. A long system prompt is written into `dir` (the call's own folder). */
-export function cliArgs({ model, effort, system, schema }: AskInput, dir?: string) {
+export function cliArgs({ model, effort, system, schema, onText }: AskInput, dir?: string) {
   const file = env('HAWKESGEN_CLAUDE') ?? 'claude';
   const pre: string[] = env('HAWKESGEN_CLAUDE_ARGS') ? JSON.parse(env('HAWKESGEN_CLAUDE_ARGS')!) : [];
   const args = [
@@ -101,6 +105,7 @@ export function cliArgs({ model, effort, system, schema }: AskInput, dir?: strin
   } else args.push('--system-prompt', sys);
   if (effort) args.push('--effort', effort);
   if (schema) args.push('--json-schema', JSON.stringify(schema));
+  if (onText) args.push('--include-partial-messages');
   return { file, args: [...pre, ...args] };
 }
 
@@ -129,11 +134,18 @@ function runOnce(input: AskInput, timeoutMs: number, signal?: AbortSignal): Prom
     let result: any;
     let model: string | undefined;
     let ended: GenError | null = null;
+    let soFar = '';
+    if (input.onText) input.onText('');
     const line = (l: string) => {
       if (!l.trim()) return;
       let m: any;
       try { m = JSON.parse(l); } catch { return; }
       if (m.type === 'assistant' && m.message?.model && m.message.model !== '<synthetic>') model = m.message.model;
+      // The answer as it is written: text deltas of the model's own message (not a tool's).
+      if (input.onText && m.type === 'stream_event' && !m.parent_tool_use_id && m.event?.type === 'content_block_delta' && m.event.delta?.type === 'text_delta') {
+        soFar += String(m.event.delta.text ?? '');
+        try { input.onText(soFar); } catch { /* the listener's problem */ }
+      }
       if (m.type === 'result') result = m;
     };
     const kill = (why: GenError) => {

@@ -64,18 +64,26 @@ export function usageOf(r: { model: string; usage: any; cost: number; billing: B
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
-type AskParams = { prompt: string; system?: string; images?: string[]; model?: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown> };
+type AskParams = {
+  prompt: string; system?: string; images?: string[]; model?: string; effort?: string; maxTokens?: number; schema?: Record<string, unknown>;
+  /** The answer's text so far, each time more arrives (the API and Max plan paths; the others call it once at the end). */
+  onText?: (soFar: string) => void;
+};
 
 /** One request: text (and images) in, text or schema-valid JSON out. Routes by settings.brain and settings.claude.backend. */
 export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: Billing }> {
   const brain = loadSettings().brain;
   if (brain === 'cursor' || brain === 'copilot') {
-    const r = await (brain === 'cursor' ? cursor : copilot).ask({ ...p, model: loadSettings().model || p.model }, signal);
+    const { onText, ...q } = p;
+    const r = await (brain === 'cursor' ? cursor : copilot).ask({ ...q, model: loadSettings().model || p.model }, signal);
+    onText?.(r.text);
     return p.schema ? { ...r, text: maxPlan.answerText({ result: r.text }, p.schema) } : r;
   }
   const back = backend();
   if (back === 'bedrock') {
-    const r = await bedrock.ask(p, signal);
+    const { onText, ...q } = p;
+    const r = await bedrock.ask(q, signal);
+    onText?.(r.text);
     return p.schema ? { ...r, text: bedrock.extractJson(r.text) } : r;
   }
   if (back === 'api') {
@@ -86,7 +94,7 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
 }
 
 /** The API key path: billed per token. */
-async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema }: AskParams, signal?: AbortSignal) {
+async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema, onText }: AskParams, signal?: AbortSignal) {
   const content: any[] = images.map((file) => {
     const mime = mimeOf(file);
     if (!IMAGE_TYPES.has(mime)) throw new GenError(`Claude reads PNG, JPEG, WebP or GIF images, not ${file}`);
@@ -95,15 +103,22 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
   content.push({ type: 'text', text: prompt });
   let response: any;
   try {
-    response = await anthropic().beta.messages.stream({
+    const stream = anthropic().beta.messages.stream({
       model,
       max_tokens: maxTokens,
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
       output_config: { effort, ...(schema ? { format: { type: 'json_schema', schema } } : {}) },
-      ...(system ? { system } : {}),
+      // The system prompt is cached: callers like the portal's Overseer send the same long guide with every message.
+      ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
       messages: [{ role: 'user', content }],
-    } as any, { signal }).finalMessage();
+    } as any, { signal });
+    if (onText) {
+      let soFar = '';
+      onText('');
+      stream.on('text', (delta: string) => { soFar += delta; try { onText(soFar); } catch { /* the listener's problem */ } });
+    }
+    response = await stream.finalMessage();
   } catch (e: any) {
     if (e instanceof Anthropic.AuthenticationError) throw new GenError('The ANTHROPIC_API_KEY in .env was rejected.', { status: 502, kind: 'auth' });
     if (e instanceof Anthropic.RateLimitError) throw new GenError('Claude is rate limited right now; try again in a minute.', { status: 429, kind: 'throttled' });

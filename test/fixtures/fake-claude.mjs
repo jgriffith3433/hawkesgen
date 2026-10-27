@@ -1,6 +1,6 @@
 // A stand-in for `claude -p --input-format stream-json --output-format stream-json` (test/claudecode.test.ts).
 // FAKE_CLAUDE_LOG: a folder that gets one JSON file per call (arguments, the stdin message, the environment's keys).
-// FAKE_CLAUDE_MODE: ok (default), throttle-once, auth, slow.
+// FAKE_CLAUDE_MODE: ok (default), throttle-once, auth, slow. --include-partial-messages streams the text answer first.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -37,6 +37,16 @@ const images = content.filter((c) => c.type === 'image').length;
 const text = content.find((c) => c.type === 'text').text;
 const schema = args.includes('--json-schema');
 out({ type: 'assistant', message: { model, role: 'assistant', content: [{ type: 'text', text: 'ok' }] } });
+// --include-partial-messages: the answer in pieces first, as Claude Code streams them.
+if (args.includes('--include-partial-messages') && !schema) {
+  const whole = `echo: ${text} (${images} images)`;
+  out({ type: 'stream_event', event: { type: 'message_start' } });
+  for (let i = 0; i < whole.length; i += 4) {
+    out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: whole.slice(i, i + 4) } } });
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  out({ type: 'stream_event', parent_tool_use_id: 'toolu_x', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'NOT OURS' } } });
+}
 out({
   type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', total_cost_usd: 0.01,
   result: schema ? '```json\n{"ignored":true}\n```' : `echo: ${text} (${images} images)`,
