@@ -24,6 +24,13 @@ type Problem = { severity: string; message: string; source: string };
 const TERMINAL = new Set(['won', 'lost', 'done', 'stuck', 'error']);
 
 /** Injected into every page: a frame counter the runner reads (works with or without the contract). */
+/** The page's globals (the globals param): named strings only, set before the page's own scripts. */
+export function globalsScript(globals: unknown): string | null {
+  if (!globals || typeof globals !== 'object' || Array.isArray(globals)) return null;
+  const set = Object.entries(globals as Record<string, unknown>).filter(([k, v]) => /^[A-Z][A-Z0-9_]{0,63}$/.test(k) && typeof v === 'string' && v.length <= 2048).slice(0, 16);
+  return set.length ? set.map(([k, v]) => `window[${JSON.stringify(k)}]=${JSON.stringify(v)};`).join('') : null;
+}
+
 const FPS_SCRIPT = `(() => {
   const s = { frames: 0, last: performance.now(), samples: [] };
   window.__hawkesRunnerFps = s;
@@ -63,6 +70,7 @@ export const playtestRunTool: Tool = {
     maxPages: { type: 'integer', default: 40, min: 1, max: 300, description: 'Site mode: how many pages to visit', advanced: true },
     recorder: { type: 'enum', values: ['auto', 'screencast', 'playwright'], default: 'auto', description: 'How the video is made. screencast: every frame Chromium draws, kept at 30 fps, encoded after the run on the browser\'s machine (smooth). playwright: Playwright\'s recordVideo (25 fps, encoded on the browser\'s machine). auto: screencast when the browser runs on a GPU machine, else playwright.', advanced: true },
     baseline: { type: 'string', description: 'A previous playtest.run job of the same scenario: screenshots at matching events (scene changes, the end) are compared with a perceptual diff', advanced: true, example: 'j_0123456789ab' },
+    globals: { type: 'json', description: 'Values the page sees before any of its scripts run, as window[name] = value: { "HAWKES_NET_ENDPOINT": "https://hawkesnet.hawkesgen.com" } (Hawkes Studio puts beta playtests on beta Hawkes Net). Names are capital letters, digits and _, values strings; nothing else.', advanced: true, example: { HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.com' } },
     peers: { type: 'integer', default: 1, min: 1, max: 4, description: 'Multiplayer: how many players (browser tabs in the same browser) play together. Each opens the URL with a shared random room=<id> and peer=<0..n-1>; peer 0 plays the scenario, the others scenarioPeers (or the same one). Their videos play side by side in the job\'s video; problems and events say which peer. Needs the playtest contract.' },
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
   },
@@ -173,6 +181,8 @@ export const playtestRunTool: Tool = {
           ignoreHTTPSErrors: true,
         }), 30_000, 'opening a browser tab');
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
+        const pageGlobals = globalsScript(p.globals);
+        if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
         page = await within(context.newPage(), 30_000, 'opening a browser tab');
       };
       const wantScreencast = p.recorder === 'screencast' || (p.recorder === 'auto' && Boolean(host));
@@ -681,6 +691,8 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
           ignoreHTTPSErrors: true,
         }), 30_000, 'opening a browser tab');
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
+        const pageGlobals = globalsScript(p.globals);
+        if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
         return { context, page: await within(context.newPage(), 30_000, 'opening a browser tab') as any };
       };
       let { context, page } = await openTab(!wantScreencast);

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { within, settleReview } from '../src/tools/playtest.ts';
+import { within, settleReview, globalsScript } from '../src/tools/playtest.ts';
 
 test('within: passes a result through, and rejects as stuck past the limit', async () => {
   assert.equal(await within(Promise.resolve(7), 1000, 'quick'), 7);
@@ -221,4 +221,12 @@ test('peers: the players\' videos are stacked into one 30 fps mp4 (side by side,
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('globals: named strings become window values before the page runs; anything else is dropped', () => {
+  assert.equal(globalsScript({ HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.com' }), 'window["HAWKES_NET_ENDPOINT"]="https://hawkesnet.hawkesgen.com";');
+  assert.equal(globalsScript({ lower: 'x', 'A-B': 'x', N: 3, O: { a: 1 } }), null, 'bad names and non-strings are dropped');
+  assert.equal(globalsScript({ X: '</script><script>alert(1)' }), 'window["X"]="</script><script>alert(1)";', 'values are JSON strings, never code');
+  assert.equal(globalsScript(null), null);
+  assert.equal(globalsScript(['A']), null);
 });
