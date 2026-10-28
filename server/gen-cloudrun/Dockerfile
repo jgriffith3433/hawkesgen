@@ -27,7 +27,7 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 # Claude Code, for the Max-plan brain (settings.claude.backend "max-plan", src/providers/claudecode.ts) and the
 # dashboard's Claude sign-in (src/claude-accounts.ts runs `claude setup-token` under util-linux's `script`).
-RUN npm install -g --no-audit --no-fund @anthropic-ai/claude-code && claude --version
+RUN npm install -g --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code && claude --version
 
 # The same Python tools auto-start.bat sets up on J's PC (src/jobs.ts finds .venv/bin/python).
 RUN python3 -m venv /app/.venv && /app/.venv/bin/pip install "rembg[cpu]" pillow
