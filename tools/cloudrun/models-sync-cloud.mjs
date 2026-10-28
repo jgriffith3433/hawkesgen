@@ -31,7 +31,7 @@ fs.writeFileSync(path.join(dir, 'cloudbuild.yaml'), [
   '  - name: node:24',
   '    entrypoint: bash',
   `    args: ['-c', ${JSON.stringify(cmd)}]`,
-  `    env: ['GOOGLE_CLOUD_PROJECT=${project}']`,
+  `    env: ['GOOGLE_CLOUD_PROJECT=${project}', 'HAWKES_BUCKET_READY=1']`,
   'timeout: 7200s',
   'options:',
   '  logging: CLOUD_LOGGING_ONLY',

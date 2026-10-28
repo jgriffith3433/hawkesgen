@@ -80,7 +80,8 @@ const total = rows.reduce((a, r) => a + (r.size ?? 0), 0);
 const copy = todo.reduce((a, r) => a + (r.size ?? 0), 0);
 console.log(`\n  ${rows.length} models, ${gb(total)} in all; ${todo.length} to copy (${gb(copy)}). Storage about $${(total / 1e9 * STORAGE_PER_GB_MONTH).toFixed(2)}/month.`);
 
-const exists = gcloud(args, ['storage', 'buckets', 'describe', `gs://${bucket}`, `--project=${args.project}`, '--format=value(name)'], { read: true });
+// HAWKES_BUCKET_READY=1: the bucket is known to exist (models-sync-cloud.mjs runs this where there is no gcloud).
+const exists = process.env.HAWKES_BUCKET_READY === '1' ? bucket : gcloud(args, ['storage', 'buckets', 'describe', `gs://${bucket}`, `--project=${args.project}`, '--format=value(name)'], { read: true });
 const lifecycle = path.join(STATE_DIR, 'lifecycle.json');
 if (!exists) {
   console.log(`\nThe bucket ${exists === null && !args.apply ? 'may not exist (or gcloud is missing)' : 'does not exist'}; it would be made with:`);
