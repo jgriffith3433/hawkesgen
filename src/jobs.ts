@@ -28,7 +28,7 @@ import { canProject, fixedProject, projectScopeSql, type Client } from './auth.t
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { expandMotionRequest, motionFile } from './motions.ts';
 import { ensureInputs } from './storage.ts';
-import { autoStartRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, type Backoff } from './autostart.ts';
+import { autoStartRound, offRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, type Backoff } from './autostart.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, serverFreeDisk, markDiskFull, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
@@ -665,14 +665,17 @@ class Queue {
     const r = this.autoRound;
     const booting = r && (r.started.length || r.launched) && Date.now() - r.at < 600_000 ? `${r.note} (booting, a few minutes)` : '';
     // No server could start: say when auto start tries again and about when a server could take the job.
-    const retrying = !booting && r?.nextTry && r.nextTry > Date.now() - ROUND_MS && Date.now() - r.at < 1_800_000
+    const stopFails = r?.failed.some((f) => f.id !== 'launch');
+    const retrying = !booting && stopFails && r?.nextTry && r.nextTry > Date.now() - ROUND_MS && Date.now() - r.at < 1_800_000
       ? `no stopped GPU server could start (AWS had no machine free, or no quota); next try in ${Math.max(1, Math.round((r.nextTry - Date.now()) / 60_000))} min (a server in about ${Math.max(1, Math.round((r.nextTry - Date.now()) / 60_000 + BOOT_SECONDS / 60))} min if one is free then)`
       : '';
+    // With auto start on, the last round says why nothing runs yet; with it off, the old "start one" hint.
+    const why = !booting && !retrying && r && r.note && (r.want > 0 || !loadSettings().fleet.auto) && Date.now() - r.at < 1_800_000 ? r.note : '';
     for (const j of left) {
       if (!eligible.has(j.id)) { this.wait(j, `waiting: this project already has ${share} GPU jobs running (its next job goes when one finishes)`); continue; }
       const noRoom = isDiskHeavy(j) ? noRoomReason(endpoints.map((e) => e.id), free_, avoidOf(j)) : '';
       if (noRoom) { this.wait(j, noRoom); continue; }
-      this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || retrying || this.waitReason}`);
+      this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || retrying || why || this.waitReason}`);
     }
     if (left.length) {
       const wanting = left.filter((j) => eligible.has(j.id)).length;
@@ -695,7 +698,11 @@ class Queue {
    */
   async autoStart(want: number) {
     const fleet = loadSettings().fleet;
-    if (!fleet.auto || Date.now() - this.lastAutoStart < ROUND_MS) return;
+    if (!fleet.auto) {
+      if (!this.autoRound || this.autoRound.want !== 0) this.report(offRound());
+      return;
+    }
+    if (Date.now() - this.lastAutoStart < ROUND_MS) return;
     this.lastAutoStart = Date.now();
     try {
       const round = await autoStartRound(want, fleet, {
@@ -704,17 +711,24 @@ class Queue {
         launch: () => launchServer({ idleMinutes: fleet.idleMinutes, type: fleet.launchType || 'g6e.xlarge' }),
         imageAvailable,
       }, this.autoBackoff);
-      this.autoRound = round;
-      if (!round.started.length && !round.launched && !round.failed.length) return;
-      console.log(`[queue] auto start: ${round.note}`);
-      const line = `${new Date(round.at).toISOString().slice(11, 19)} ${round.note}`;
-      for (const j of this.queued().filter((x) => getTool(x.tool)?.provider === 'comfy')) {
-        j.log.push(line);
-        j.log = j.log.slice(-300);
-        save(j, ['log']);
-      }
+      this.report(round);
     } catch (e: any) {
       console.warn(`[queue] auto start: ${e.message}`);
+      this.report({ at: Date.now(), want, started: [], failed: [], launched: null, nextTry: null, expectedWait: null, imageStale: null, note: `auto start couldn't check the fleet: ${e.message}` });
+    }
+  }
+
+  /** Keeps the round for the fleet status, and logs its note to the waiting GPU jobs when it changes (or something started). */
+  report(round: AutoStartRound) {
+    const changed = round.note !== this.autoRound?.note;
+    this.autoRound = round;
+    if (!changed && !round.started.length && !round.launched) return;
+    console.log(`[queue] auto start: ${round.note}`);
+    const line = `${new Date(round.at).toISOString().slice(11, 19)} ${round.note}`;
+    for (const j of this.queued().filter((x) => getTool(x.tool)?.provider === 'comfy')) {
+      j.log.push(line);
+      j.log = j.log.slice(-300);
+      save(j, ['log']);
     }
   }
 
@@ -722,7 +736,7 @@ class Queue {
   autoStartState() {
     const s = loadSettings().fleet;
     return {
-      auto: s.auto, autoLaunch: s.autoLaunch, last: this.autoRound,
+      auto: s.auto, autoLaunch: s.autoLaunch, last: this.autoRound, reason: this.autoRound?.note ?? null, imageStale: this.autoRound?.imageStale ?? null,
       backoff: [...this.autoBackoff].filter(([, b]) => b.until > Date.now()).map(([id, b]) => ({ id, until: b.until, reason: b.reason, misses: b.misses ?? 1 })),
       // For Studio: when auto start tries a stopped server again, and about how many seconds until one takes jobs.
       nextTry: this.autoRound?.nextTry ?? null,

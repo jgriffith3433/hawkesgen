@@ -38,9 +38,16 @@ export type AutoStartRound = {
   nextTry: number | null;
   /** About how many seconds until a server takes jobs: booting, or the next try plus booting (null: no server to start). */
   expectedWait: number | null;
-  /** One line for the waiting jobs and the fleet status. */
+  /** One line for the waiting jobs and the fleet status. Never empty: a round that starts nothing says why. */
   note: string;
+  /** True when no fleet image matches models.json (null: not checked this round). A launch then installs from scratch. */
+  imageStale: boolean | null;
 };
+
+/** The round when auto start is off: nothing is tried, and the note says so. */
+export function offRound(now = Date.now()): AutoStartRound {
+  return { at: now, want: 0, started: [], failed: [], launched: null, nextTry: null, expectedWait: null, imageStale: null, note: 'auto start is off (Fleet tab, setting "auto"): start or launch a GPU server by hand' };
+}
 
 /** Server id -> until when auto start leaves it alone, why, and its misses in a row (kept a while after, to keep doubling). */
 export type Backoff = Map<string, { until: number; reason: string; misses?: number }>;
@@ -59,7 +66,7 @@ export async function autoStartRound(
   // A miss is forgotten an hour after its backoff ends (the doubling starts over).
   for (const [id, b] of backoff) if (b.until + 3_600_000 <= now) backoff.delete(id);
   const waiting = (id: string) => (backoff.get(id)?.until ?? 0) > now;
-  const round: AutoStartRound = { at: now, want, started: [], failed: [], launched: null, nextTry: null, expectedWait: null, note: '' };
+  const round: AutoStartRound = { at: now, want, started: [], failed: [], launched: null, nextTry: null, expectedWait: null, note: '', imageStale: null };
   const all = await fleet.status();
   const up = all.filter((st) => ['running', 'pending'].includes(st.state!)).length;
   let short = Math.max(0, Math.min(opts.servers, want) - up);
@@ -102,28 +109,49 @@ export async function autoStartRound(
       if (kind === 'quota') badRegions.add(st.region!);
     });
   }
-  if (short > 0 && opts.autoLaunch && all.length < opts.servers && (await fleet.imageAvailable())) {
-    const r = await fleet.launch().catch((e) => {
-      round.failed.push({ id: 'launch', region: '', zone: null, kind: e?.kind ?? 'other', error: e?.message ?? String(e) });
-      return null;
-    });
-    if (r) round.launched = { id: r.id, region: r.region ?? null };
+  // Launch a new server when nothing stopped could start. No matching fleet image is no reason to wait: launchServer
+  // then installs from scratch (slower, and that server isn't disposable), so the round says so.
+  let capNote = '';
+  if (short > 0 && opts.autoLaunch) {
+    if (all.length >= opts.servers) capNote = `fleet cap reached (${all.length} of ${opts.servers} servers exist): stop or terminate one, or raise "servers"`;
+    else if (!waiting('launch')) {
+      round.imageStale = !(await fleet.imageAvailable().catch(() => false));
+      const r = await fleet.launch().catch((e) => {
+        const kind = e?.kind ?? 'other';
+        const misses = (backoff.get('launch')?.misses ?? 0) + 1;
+        round.failed.push({ id: 'launch', region: '', zone: null, kind, error: e?.message ?? String(e) });
+        backoff.set('launch', { until: now + backoffMs(misses), reason: `${kind}: ${e?.message ?? e}`, misses });
+        return null;
+      });
+      if (r) {
+        round.launched = { id: r.id, region: r.region ?? null };
+        backoff.delete('launch');
+      }
+    }
   }
   if (round.started.length || round.launched) round.expectedWait = BOOT_SECONDS;
   else if (short > 0) {
     // The next try: the soonest a stopped server leaves its backoff (or the next round, for one skipped this round).
     const next = usable.map((st) => (waiting(st.id!) ? backoff.get(st.id!)!.until : tried.has(st.id!) ? null : now + ROUND_MS)).filter((t): t is number => t !== null);
+    if (opts.autoLaunch && all.length < opts.servers && waiting('launch')) next.push(backoff.get('launch')!.until);
     round.nextTry = next.length ? Math.max(now, Math.min(...next)) : null;
     round.expectedWait = round.nextTry === null ? null : Math.round((round.nextTry - now) / 1000) + BOOT_SECONDS;
   }
   const parts: string[] = [];
   for (const s of round.started) parts.push(`started server ${s.id} (${s.zone ?? s.region}) for waiting jobs`);
-  if (round.launched) parts.push(`launched server ${round.launched.id} from the image for waiting jobs`);
-  if (round.failed.length) parts.push(`couldn't start ${round.failed.map((f) => `${f.id} (${f.zone ?? f.region}: ${f.kind})`).join(', ')}`);
+  if (round.launched) parts.push(round.imageStale ? `launched server ${round.launched.id} from a fresh install because the fleet image is out of date (slower to be ready, and it stays until terminated)` : `launched server ${round.launched.id} from the image for waiting jobs`);
+  const launchFail = round.failed.find((f) => f.id === 'launch');
+  const startFails = round.failed.filter((f) => f.id !== 'launch');
+  if (startFails.length) parts.push(`couldn't start ${startFails.map((f) => `${f.id} (${f.zone ?? f.region}: ${f.kind})`).join(', ')}`);
   if (!round.started.length && !round.launched && short > 0) {
-    if (round.nextTry !== null) parts.push(`next try in ${Math.max(1, Math.round((round.nextTry - now) / 60_000))} min, a server in about ${Math.round(round.expectedWait! / 60)} min if AWS has one free by then`);
-    else if (!round.failed.length) parts.push(usable.length ? 'no stopped server could start; trying again later' : opts.autoLaunch ? 'no stopped server to start' : 'no stopped server to start (launching new ones is off: start or launch one in the Fleet tab)');
+    const when = round.nextTry !== null ? `next try in ${Math.max(1, Math.round((round.nextTry - now) / 60_000))} min` : '';
+    const launchErr = launchFail ?? (opts.autoLaunch && waiting('launch') ? { kind: backoff.get('launch')!.reason.split(':')[0], error: backoff.get('launch')!.reason.replace(/^[^:]*: /, '') } : null);
+    if (launchErr) parts.push(`no GPU server running; launching a new one failed: ${launchErr.kind}: ${launchErr.error}${when ? `, ${when}` : ''}`);
+    else if (round.nextTry !== null) parts.push(`${when}, a server in about ${Math.round(round.expectedWait! / 60)} min if AWS has one free by then`);
+    else if (capNote) parts.push(capNote);
+    else if (!startFails.length) parts.push(usable.length ? 'no stopped server could start; trying again later' : opts.autoLaunch ? 'no stopped server to start' : 'no stopped server to start (launching new ones is off: start or launch one in the Fleet tab)');
   }
+  if (!parts.length && short === 0) parts.push('enough GPU servers are already up or starting');
   round.note = parts.join('; ');
   return round;
 }

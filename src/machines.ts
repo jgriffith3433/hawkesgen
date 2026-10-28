@@ -316,7 +316,11 @@ export function alertsFor(list: Machine[], now = Date.now()): Alert[] {
 /** GET /v1/machines: live re-measures if the last reading is over 15 s old, else the last minute's reading. */
 export async function machines({ live = false } = {}) {
   const list = await collect(live ? LIVE_MS : Infinity);
-  return { at: Date.now(), alerts: alertsFor(list), machines: list };
+  const alerts = alertsFor(list);
+  // No fleet image for the current models.json: new servers install from scratch (slow, not disposable). J decides when to build one.
+  const img = await fleet.imageStatus().catch(() => null);
+  if (img && !img.ok) alerts.push({ level: 'warn', machine: 'fleet', text: img.error ? `can't check the fleet image (${img.error})` : `no fleet image matches models.json (${img.key}): new GPU servers install from scratch, which takes much longer and they stay until terminated. Build one: hawkesgen fleet image build (costs a server hour)` });
+  return { at: Date.now(), alerts, machines: list };
 }
 
 /** The last reading's disk use for each running GPU server (the fleet tab's warning). No new SSH. */

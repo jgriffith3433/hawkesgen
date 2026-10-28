@@ -644,6 +644,24 @@ export async function imageAvailable() {
   return false;
 }
 
+let imageStatusCache: { at: number; value: { ok: boolean; key: string; error?: string } } | null = null;
+
+/** Whether a fleet image matching models.json exists in some region (a minute's cache; an AWS error is reported, not hidden). */
+export async function imageStatus() {
+  if (imageStatusCache && Date.now() - imageStatusCache.at < 60_000) return imageStatusCache.value;
+  const key = manifestKey();
+  let value: { ok: boolean; key: string; error?: string } = { ok: false, key };
+  let error = '';
+  for (const r of REGIONS) {
+    try {
+      if (await findImage(r)) { value = { ok: true, key }; error = ''; break; }
+    } catch (e: any) { error = e.message; }
+  }
+  if (!value.ok && error) value.error = error;
+  imageStatusCache = { at: Date.now(), value };
+  return value;
+}
+
 let sizeCache: { at: number; value: Record<string, number> } | null = null;
 
 /** Each core model's size on Hugging Face ("dir/file" -> bytes; 0 when unknown). Cached for a day. */
