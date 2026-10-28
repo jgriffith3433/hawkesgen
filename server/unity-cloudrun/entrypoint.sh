@@ -2,8 +2,11 @@
 # One Unity build for Hawkes Gen (src/providers/builder/cloudrun.ts writes the spec; docs/unity-cloudrun.md).
 #
 #   HAWKES_SPEC=gs://<bucket>/unity-builds/<job>/spec.json   (set per execution by Gen)
-#   Secrets (Secret Manager, mounted as env by the job): UNITY_LICENSE (the contents of Unity_lic.ulf, Personal),
-#   or UNITY_SERIAL + UNITY_EMAIL + UNITY_PASSWORD (Plus/Pro); GITHUB_TOKEN (Contents: read on the repos).
+#   Secrets (Secret Manager, as env): UNITY_EMAIL + UNITY_PASSWORD (a Unity Personal account, activated through the
+#   Unity Licensing Client each build and returned after), optionally UNITY_SERIAL (a Plus/Pro seat instead);
+#   GITHUB_TOKEN (Contents: read on the repos).
+#   HAWKES_LICENSE_CHECK=1: activate, open a throwaway project, return the license, exit (no spec needed).
+#   HAWKES_PERSIST=1: the Library lives on the machine's own disk (the build VM), not in the bucket's cache.
 #
 # Steps: license -> sources at exact commits -> website input -> Library cache -> Unity (the project's own batch
 # method, hard timeout) -> website changes as site.tgz + manifest -> Library cache back (success only, only if it
@@ -16,7 +19,7 @@ P="$WORK/Projects"
 OUT="$WORK/out"
 UNITY="${UNITY_BIN:-unity-editor}"
 STUB=".hawkes-stub"
-mkdir -p "$P" "$OUT"
+rm -rf "$OUT"; mkdir -p "$P" "$OUT"   # a VM disk keeps /work: never hand back an old build's outputs
 T0=$(date +%s)
 
 log() { echo "[Hawkes] $*"; }
@@ -46,10 +49,31 @@ gs_put() {
 }
 
 # ------------------------------------------------------------ the license
-# activate: sets LICENSE_MODE; on failure prints the reason and returns 1. GameCI's paths: a Personal .ulf
-# (UNITY_LICENSE, handed over with -manualLicenseFile), or a Plus/Pro serial with the account's email and password.
-ULF_DIR="$HOME/.local/share/unity3d/Unity"
-LICENSE_FAIL_RE='No valid Unity Editor license|license is not valid|Invalid license|not entitled|User is not logged in|License activation failed|Failed to activate|Two[- ]factor|2FA'
+# Unity Personal has no manual (.ulf) activation any more, so a Personal seat is activated the way GameCI (cli PR
+# #246, merged 2026-09) and RageAgainstThePixel's unity-cli do it: the Unity Licensing Client that ships inside the
+# editor, signed in with the account's email and password (secrets unity-email, unity-password), and returned with
+# --return-ulf at the end of every build. A Plus/Pro serial (UNITY_SERIAL) uses the editor's own -serial path.
+# The client's flags are undocumented by Unity; both known spellings are tried. Never echo the secrets.
+LICENSE_FAIL_RE='No valid Unity Editor license|license is not valid|Invalid license|not entitled|User is not logged in|License activation failed|Failed to activate'
+TFA_RE='two.?factor|2fa|verification code|verify your|authenticator|device verification'
+CRED_RE='invalid (username|password|credentials)|unauthori[sz]ed|incorrect (email|password)|wrong (email|password)'
+SEAT_RE='no (available )?seats|seat is not available|0 free entitlements|LICENSE_LIMIT|maximum number of|activation limit'
+TRANSIENT_RE='TimeoutPolicy did not complete|timed out|Service ?Unavailable|503|502|Connection (reset|refused)|Could not resolve'
+
+licensing_client() {
+  if [ -n "${UNITY_LICENSING_CLIENT_PATH:-}" ]; then echo "$UNITY_LICENSING_CLIENT_PATH"; return; fi
+  find "${UNITY_PATH:-/opt/unity}" -type f -name Unity.Licensing.Client 2>/dev/null | head -1
+}
+# What a failed activation means, in plain words (the first match wins).
+license_reason() {
+  local f="$1" code="$2"
+  if grep -Eiq "$TFA_RE" "$f"; then echo "the Unity account asks for two-factor or device verification, which a headless build can't answer: use a build account without 2FA (docs/unity-cloudrun.md, License)"
+  elif [ "$code" = 2 ] || grep -Eiq "$CRED_RE" "$f"; then echo "Unity refused the email or password (secrets unity-email, unity-password)"
+  elif grep -Eiq "$SEAT_RE" "$f"; then echo "the Unity account has no free Personal activation (seat limit): another build or machine still holds one; it frees when that build returns it, or return old activations on id.unity.com"
+  else echo "the Unity Licensing Client failed (exit $code): $(grep -Eiv 'password|serial|token' "$f" | grep -Ei 'error|fail|denied|refus' | head -1 | sed -E 's/[[:cntrl:]]//g' | cut -c1-200)"
+  fi
+}
+# activate: sets LICENSE_MODE; on failure prints the reason and returns 1.
 activate() {
   if [ -n "${UNITY_SERIAL:-}" ]; then
     if [ -z "${UNITY_EMAIL:-}" ] || [ -z "${UNITY_PASSWORD:-}" ]; then
@@ -57,34 +81,62 @@ activate() {
     fi
     LICENSE_MODE=serial
     "$UNITY" -batchmode -nographics -quit -logFile "$WORK/activate.log" -serial "$UNITY_SERIAL" -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" >/dev/null 2>&1
-  elif [ -n "${UNITY_LICENSE:-}" ]; then
-    LICENSE_MODE=ulf
-    mkdir -p "$ULF_DIR"
-    printf '%s' "$UNITY_LICENSE" > "$WORK/Unity_lic.ulf"
-    cp "$WORK/Unity_lic.ulf" "$ULF_DIR/Unity_lic.ulf"
-    "$UNITY" -batchmode -nographics -quit -logFile "$WORK/activate.log" -manualLicenseFile "$WORK/Unity_lic.ulf" >/dev/null 2>&1
-  else
-    echo "no Unity license secret: UNITY_LICENSE (secret unity-license: the contents of Unity_lic.ulf from Unity Hub) is empty, and there is no UNITY_SERIAL"; return 1
+    if grep -Eiq "$LICENSE_FAIL_RE|$TFA_RE|$CRED_RE|$SEAT_RE" "$WORK/activate.log" 2>/dev/null; then license_reason "$WORK/activate.log" 1; return 1; fi
+    return 0
   fi
-  if grep -Eiq "$LICENSE_FAIL_RE" "$WORK/activate.log" 2>/dev/null; then
-    grep -Eio -m1 ".{0,40}($LICENSE_FAIL_RE).{0,80}" "$WORK/activate.log" | sed -E 's/[[:cntrl:]]//g'; return 1
+  if [ -z "${UNITY_EMAIL:-}" ] || [ -z "${UNITY_PASSWORD:-}" ]; then
+    echo "no Unity account for the license: the secrets unity-email and unity-password (UNITY_EMAIL, UNITY_PASSWORD) are empty"; return 1
+  fi
+  local client; client=$(licensing_client)
+  [ -n "$client" ] || { echo "the Unity Licensing Client isn't in the image (no Unity.Licensing.Client under ${UNITY_PATH:-/opt/unity})"; return 1; }
+  LICENSE_MODE=personal
+  local code=1 try spelling
+  # The two spellings in use: unity-cli's (--activate-ulf) and GameCI's (--activate-all); transient errors retry.
+  for spelling in --activate-ulf --activate-all; do
+    for try in 1 2 3; do
+      "$client" "$spelling" --include-personal --username "$UNITY_EMAIL" --password "$UNITY_PASSWORD" > "$WORK/activate.log" 2>&1
+      code=$?
+      [ "$code" = 0 ] && break 2
+      grep -Eiq "$TRANSIENT_RE" "$WORK/activate.log" || break
+      sleep $(( try * 10 ))
+    done
+    # An unknown option means the other spelling; anything else is the answer.
+    grep -Eiq 'unrecognized|unknown (option|argument)|invalid option|usage:' "$WORK/activate.log" || break
+  done
+  if [ "$code" != 0 ]; then
+    license_reason "$WORK/activate.log" "$code"; return 1
   fi
   return 0
 }
+license_return() {
+  case "$LICENSE_MODE" in
+    personal)
+      log "returning the license"
+      "$(licensing_client)" --return-ulf > "$WORK/return.log" 2>&1 || log "returning the license failed (see return.log); the seat frees itself later"
+      ;;
+    serial)
+      log "returning the license"
+      "$UNITY" -batchmode -nographics -quit -logFile "$WORK/return.log" -returnlicense -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" >/dev/null 2>&1 || log "returning the license failed (see return.log)"
+      ;;
+  esac
+  LICENSE_MODE=""
+}
 
 # License check only (the pilot's first step: gcloud run jobs execute <job> --update-env-vars HAWKES_LICENSE_CHECK=1 --wait).
+# Activates, opens a throwaway project in the editor, returns the license. Exit 0 = licensed.
 if [ "${HAWKES_LICENSE_CHECK:-}" = 1 ]; then
   if activate > "$WORK/license.why"; then
-    log "license: OK ($LICENSE_MODE)"
-    # A tiny batch run proves the editor opens licensed (an empty project is made and thrown away).
+    log "license: activated ($LICENSE_MODE)"
     "$UNITY" -batchmode -nographics -quit -createProject "$WORK/license-check" -logFile "$WORK/check.log" >/dev/null 2>&1
-    if grep -Eiq "$LICENSE_FAIL_RE" "$WORK/check.log"; then log "license: FAILED when opening a project: $(grep -Eio -m1 ".{0,40}($LICENSE_FAIL_RE).{0,80}" "$WORK/check.log")"; exit 1; fi
-    log "license: the editor opened a project licensed"
-    [ "$LICENSE_MODE" = serial ] && "$UNITY" -batchmode -nographics -quit -logFile "$WORK/return.log" -returnlicense -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" >/dev/null 2>&1
-    exit 0
+    if grep -Eiq "$LICENSE_FAIL_RE" "$WORK/check.log"; then
+      log "license: FAILED when opening a project: $(grep -Eio -m1 ".{0,40}($LICENSE_FAIL_RE).{0,80}" "$WORK/check.log" | sed -E 's/[[:cntrl:]]//g')"
+      license_return; exit 1
+    fi
+    log "license: OK, the editor opened a project licensed"
+    license_return; exit 0
   fi
   log "license: FAILED: $(cat "$WORK/license.why")"
-  tail -n 40 "$WORK/activate.log" 2>/dev/null | grep -Eiv 'password|serial' || true
+  grep -Eiv 'password|serial|token|@' "$WORK/activate.log" 2>/dev/null | tail -n 30 || true
   exit 1
 fi
 
@@ -104,13 +156,6 @@ PROJ="$P/$PROJECT"
 SITE_DIR="${SITE:+$P/$SITE}"
 
 # ------------------------------------------------------------ finishing (always)
-license_return() {
-  if [ "$LICENSE_MODE" = serial ]; then
-    log "returning the license"
-    "$UNITY" -batchmode -nographics -quit -logFile "$WORK/return.log" -returnlicense -username "$UNITY_EMAIL" -password "$UNITY_PASSWORD" >/dev/null 2>&1 || log "returning the license failed (see return.log)"
-  fi
-  rm -f "$HOME/.local/share/unity3d/Unity/Unity_lic.ulf" "$WORK/Unity_lic.ulf"
-}
 mem_peak() { cat /sys/fs/cgroup/memory.peak 2>/dev/null || cat /sys/fs/cgroup/memory/memory.max_usage_in_bytes 2>/dev/null || echo null; }
 finish() {
   stage end

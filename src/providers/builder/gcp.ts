@@ -205,17 +205,54 @@ export async function cancelExecution(name: string) {
 
 // -------------------------------------------------------------- Cloud Logging
 
-/** The execution's log lines after `since` (RFC 3339), oldest first; `last` is where the next call starts. */
-export async function executionLogs(project: string, execution: string, since: string) {
-  const short = execution.split('/').pop();
+/** Log lines matching `filter` after `since` (RFC 3339), oldest first; `last` is where the next call starts. */
+export async function logLines(project: string, filter: string, since: string) {
   const j = await gapi('https://logging.googleapis.com/v2/entries:list', {
-    body: {
-      resourceNames: [`projects/${project}`],
-      filter: `resource.type="cloud_run_job" AND labels."run.googleapis.com/execution_name"="${short}" AND timestamp>"${since}"`,
-      orderBy: 'timestamp asc', pageSize: 1000,
-    },
+    body: { resourceNames: [`projects/${project}`], filter: `${filter} AND timestamp>"${since}"`, orderBy: 'timestamp asc', pageSize: 1000 },
   });
   const entries = (j.entries ?? []) as any[];
-  const lines = entries.map((e) => String(e.textPayload ?? e.jsonPayload?.message ?? '')).filter(Boolean);
+  // Cloud Run writes textPayload; Docker's gcplogs driver (the build VM) writes jsonPayload.data.
+  const lines = entries.map((e) => String(e.textPayload ?? e.jsonPayload?.data ?? e.jsonPayload?.message ?? '')).filter(Boolean);
   return { lines, last: entries.length ? String(entries[entries.length - 1].timestamp) : since };
+}
+
+/** The execution's log lines after `since`. */
+export async function executionLogs(project: string, execution: string, since: string) {
+  const short = execution.split('/').pop();
+  return logLines(project, `resource.type="cloud_run_job" AND labels."run.googleapis.com/execution_name"="${short}"`, since);
+}
+
+// ------------------------------------------------------------ Compute Engine
+
+export type VmTarget = { project: string; zone: string; name: string };
+const vmBase = (t: VmTarget) => `https://compute.googleapis.com/compute/v1/projects/${t.project}/zones/${t.zone}/instances/${t.name}`;
+
+/** The instance (status, id, metadata), or null when there is none. */
+export async function getInstance(t: VmTarget): Promise<{ id: string; status: string; fingerprint: string; items: { key: string; value: string }[] } | null> {
+  const i = await gapi(vmBase(t), { missingOk: true });
+  if (!i) return null;
+  return { id: String(i.id), status: String(i.status), fingerprint: String(i.metadata?.fingerprint ?? ''), items: (i.metadata?.items ?? []) as { key: string; value: string }[] };
+}
+
+/** Sets metadata keys on the instance (others are kept); `null` removes a key. */
+export async function setInstanceMetadata(t: VmTarget, values: Record<string, string | null>) {
+  const i = await getInstance(t);
+  if (!i) throw fail(`There is no instance ${t.name} in ${t.zone}.`);
+  const items = mergeMetadata(i.items, values);
+  await gapi(`${vmBase(t)}/setMetadata`, { body: { fingerprint: i.fingerprint, items } });
+}
+
+/** Metadata items with `values` applied (exported for the test). */
+export function mergeMetadata(items: { key: string; value: string }[], values: Record<string, string | null>) {
+  const out = items.filter((x) => !(x.key in values));
+  for (const [key, value] of Object.entries(values)) if (value !== null) out.push({ key, value });
+  return out;
+}
+
+export async function startInstance(t: VmTarget) {
+  await gapi(`${vmBase(t)}/start`, { body: {} });
+}
+
+export async function stopInstance(t: VmTarget) {
+  await gapi(`${vmBase(t)}/stop`, { body: {} }).catch(() => {});
 }

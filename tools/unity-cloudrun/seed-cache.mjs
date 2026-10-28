@@ -17,6 +17,8 @@ import zlib from 'node:zlib';
 import { spawn, spawnSync } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { APPLY, config, flag, die, done } from './common.mjs';
+import { gcloudBin } from '../gcloud-bin.mjs';
+const [GCLOUD, GPRE] = gcloudBin();
 
 const c = config();
 if (!c.bucket) die('Which bucket? Pass --bucket <name>, or set settings.unityBuild.gcp.bucket.');
@@ -63,7 +65,7 @@ const commit = spawnSync('git', ['-C', folder, 'rev-parse', 'HEAD'], { encoding:
 const tarExe = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 const excludeArgs = EXCLUDE.flatMap((e) => ['--exclude', `Library/${e}`]);
 const tar = spawn(tarExe, ['-cf', '-', ...excludeArgs, 'Library'], { cwd: folder, stdio: ['ignore', 'pipe', 'inherit'] });
-const up = spawn('gcloud', ['storage', 'cp', '-', object, `--project=${c.project}`], { stdio: ['pipe', 'inherit', 'inherit'], shell: process.platform === 'win32' });
+const up = spawn(GCLOUD, [...GPRE, 'storage', 'cp', '-', object, `--project=${c.project}`], { stdio: ['pipe', 'inherit', 'inherit'] });
 let packed = 0;
 const zstd = zlib.createZstdCompress({ params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } });
 zstd.on('data', (d) => (packed += d.length));
@@ -80,7 +82,7 @@ clearInterval(timer);
 const meta = { savedAt: new Date().toISOString(), libraryBytes: bytes, files, unity: unity ?? c.unity, commit, job: 'seed', seededFrom: `${os.hostname()} (${process.platform})`, compressedBytes: packed };
 const metaFile = path.join(os.tmpdir(), `${repo}-${key}.json`);
 fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
-const r = spawnSync('gcloud', ['storage', 'cp', metaFile, `gs://${c.bucket}/unity-cache/${repo}/${key}.json`, `--project=${c.project}`], { stdio: 'inherit', shell: process.platform === 'win32' });
+const r = spawnSync(GCLOUD, [...GPRE, 'storage', 'cp', metaFile, `gs://${c.bucket}/unity-cache/${repo}/${key}.json`, `--project=${c.project}`], { stdio: 'inherit' });
 if (r.status !== 0) die('Uploading the cache\'s .json failed; the cache is there but a build will only use it once the .json is.');
 console.log(`Seeded ${repo}/${key}: ${gb(bytes)} -> ${gb(packed)} packed in ${Math.round((Date.now() - t0) / 1000)} s.`);
 done();

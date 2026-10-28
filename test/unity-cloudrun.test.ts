@@ -158,3 +158,44 @@ test('a cloud build costs its seconds at 8 vCPU and 32 GiB', () => {
   // 10 minutes: 600 * (8 * 0.000018 + 32 * 0.000002) = 600 * 0.000208
   assert.equal(Math.round(cloudRunCost(600) * 10000) / 10000, 0.1248);
 });
+
+const vm = await import('../src/providers/builder/vm.ts');
+const { shouldMoveToVm, licenseMessage } = await import('../src/providers/builder/cloudrun.ts');
+
+test('the build VM is named after the project, as Compute Engine allows', () => {
+  assert.equal(vm.vmName('sickofitgame-unity'), 'hawkes-unity-sickofitgame-unity');
+  assert.equal(vm.vmName('YoobaLand/YoobaLand'), 'hawkes-unity-yoobaland-yoobaland');
+  assert.ok(vm.vmName('x'.repeat(100)).length <= 63);
+  assert.match(vm.vmName('A_B.c'), /^[a-z]([-a-z0-9]*[a-z0-9])?$/);
+});
+
+test('instance states while waiting for a build', () => {
+  assert.equal(vm.vmPhase('STAGING'), 'starting');
+  assert.equal(vm.vmPhase('RUNNING'), 'running');
+  assert.equal(vm.vmPhase('STOPPING'), 'stopping');
+  assert.equal(vm.vmPhase('TERMINATED'), 'stopped');
+  assert.equal(vm.vmPhase('SUSPENDED'), 'stopped');
+});
+
+test('a Cloud Run build over 85% of its memory, or killed for memory, moves to the VM', () => {
+  const limit = 32 * 1024 ** 3;
+  assert.equal(shouldMoveToVm({ peakBytes: 0.9 * limit, limitBytes: limit, oom: false, at: 0.85 }), 'peak');
+  assert.equal(shouldMoveToVm({ peakBytes: 0.8 * limit, limitBytes: limit, oom: false, at: 0.85 }), null);
+  assert.equal(shouldMoveToVm({ peakBytes: null, limitBytes: limit, oom: true, at: 0.85 }), 'oom');
+  assert.equal(shouldMoveToVm({ peakBytes: limit, limitBytes: limit, oom: true, at: 0 }), null);
+});
+
+test('instance metadata: set and remove keys, keep the others', () => {
+  const items = [{ key: 'startup-script', value: '#!/bin/bash' }, { key: 'hawkes-spec', value: 'gs://old' }, { key: 'hawkes-image', value: 'img' }];
+  assert.deepEqual(gcp.mergeMetadata(items, { 'hawkes-spec': 'gs://new', 'hawkes-job': 'j_1' }), [
+    { key: 'startup-script', value: '#!/bin/bash' }, { key: 'hawkes-image', value: 'img' }, { key: 'hawkes-spec', value: 'gs://new' }, { key: 'hawkes-job', value: 'j_1' },
+  ]);
+  assert.deepEqual(gcp.mergeMetadata(items, { 'hawkes-spec': null }).map((x) => x.key), ['startup-script', 'hawkes-image']);
+});
+
+test('"vm" is a backend per project; a license failure names the two secrets', () => {
+  const u = { ...SETTINGS_DEFAULTS.unityBuild, backend: 'cloudrun' as const, projects: { 'sickofitgame-unity': 'vm' as const } };
+  assert.equal(unityBackendOf({ project: 'sickofitgame-unity' }, u), 'vm');
+  assert.equal(unityBackendOf({ project: 'breakingthrough' }, u), 'cloudrun');
+  assert.match(licenseMessage('Unity refused the email or password'), /unity-email and unity-password/);
+});

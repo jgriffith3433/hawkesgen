@@ -11,8 +11,8 @@
 //   - Two service accounts: hawkes-unity-build (what the job runs as: reads/writes the bucket, reads the secrets, writes
 //     logs) and hawkes-gen (what Hawkes Gen uses: runs the job with overrides, reads its logs, reads/writes the bucket).
 //   - The secrets the job reads (made empty if missing; J adds the values, see docs/unity-cloudrun.md):
-//       unity-license (UNITY_LICENSE: the contents of Unity_lic.ulf), github-token (GITHUB_TOKEN),
-//       and with --serial: unity-serial, unity-email, unity-password (a Plus/Pro seat instead of the .ulf).
+//       unity-email, unity-password (UNITY_EMAIL, UNITY_PASSWORD: the Unity account each build signs in with to activate
+//       a Personal license, returned after), github-token (GITHUB_TOKEN), and with --serial: unity-serial (Plus/Pro).
 //   - The job: 8 vCPU, 32 GiB (the most Cloud Run gives), one task, no retries, task timeout = build limit + 15 min,
 //     second-generation execution environment.
 import { APPLY, config, flag, imageBase, runtimeSa, genSa, gcloud, gcloudQuery, die, done } from './common.mjs';
@@ -60,7 +60,7 @@ gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccoun
 gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', rsa, P, `--member=serviceAccount:${gsa}`, '--role=roles/iam.serviceAccountUser']);
 
 console.log('\n# Secrets (values are J\'s to add; see docs/unity-cloudrun.md)');
-const secrets = [['unity-license', 'UNITY_LICENSE'], ['github-token', 'GITHUB_TOKEN'], ...(serial ? [['unity-serial', 'UNITY_SERIAL'], ['unity-email', 'UNITY_EMAIL'], ['unity-password', 'UNITY_PASSWORD']] : [])];
+const secrets = [['unity-email', 'UNITY_EMAIL'], ['unity-password', 'UNITY_PASSWORD'], ['github-token', 'GITHUB_TOKEN'], ...(serial ? [['unity-serial', 'UNITY_SERIAL']] : [])];
 const missingValues = [];
 for (const [name] of secrets) {
   if (gcloudQuery(['secrets', 'describe', name, P, '--format=value(name)']) === null) {
@@ -71,8 +71,8 @@ for (const [name] of secrets) {
 }
 if (missingValues.length) {
   console.log(`\nThese secrets have no value yet, so the job can't be deployed until J adds them: ${missingValues.join(', ')}`);
-  console.log('  gcloud secrets versions add unity-license --data-file="C:\\ProgramData\\Unity\\Unity_lic.ulf" ' + P);
-  console.log('  gcloud secrets versions add github-token --data-file=<a file holding a fine-grained token with Contents: read> ' + P);
+  console.log(`  powershell -ExecutionPolicy Bypass -File tools\\unity-cloudrun\\add-secrets.ps1 -Project ${c.project}`);
+  console.log('  (it asks for the Unity email, the Unity password and the GitHub token without showing them, and adds each as a secret version)');
   if (APPLY) die('\nAdd them, then run this again with --apply.');
 }
 
