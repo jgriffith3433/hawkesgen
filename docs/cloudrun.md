@@ -172,17 +172,16 @@ These prices are for one instance while it is up, Tier 1 (us-central1), instance
 | vCPU | $0.000018/s |
 | GiB of memory | $0.000002/s |
 | L4 | $0.0001867/s ($0.67/h) |
-| RTX PRO 6000 | **$0.00125/s ($4.50/h), an estimate** |
+| RTX PRO 6000 | **$0.00036522/s ($1.31/h)**, from cloud.google.com/run/pricing as found 2026-10-28 |
 
-**Check the RTX PRO 6000 rate on cloud.google.com/run/pricing before deciding anything.** The whole comparison
-turns on it. The prices sit in `services.json` and the code reads them from there.
+**Check both GPU rates on cloud.google.com/run/pricing before deciding anything** (the page may have changed). The prices sit in `services.json` and the code reads them from there.
 
 **Instance costs:**
 
 | Shape | Price |
 |---|---|
 | L4 instance: 8 vCPU, 32 GiB | **$1.42/h** |
-| RTX PRO 6000 instance: 20 vCPU, 80 GiB (its minimum) | **$6.37/h** |
+| RTX PRO 6000 instance: 20 vCPU, 80 GiB (its minimum) | **$3.19/h** |
 
 **The services.** "Last 30 days" is the work they would have taken.
 
@@ -190,21 +189,19 @@ turns on it. The prices sit in `services.json` and the code reads them from ther
 |---|---|---|---|---|---|---|
 | `gen-z-image` | L4 | z-image (image.generate, image.control) | mount | 2 | ~1,470 jobs, under 11 h (lora.train stays on the fleet) | under $16 |
 | `gen-utility` | L4 | birefnet, sam3, esrgan, film, depth-anything-3, image.geometry, sdpose, image.pose-detect, seedvr2, marigold, ace-step, hunyuan3d, hunyuan3d-mv | mount | 2 | ~2,800 jobs, ~6 h | ~$9 |
-| `gen-qwen-edit` | RTX PRO 6000 | qwen-edit | download | 2 | 3,997 jobs, 39.2 h | $250 |
-| `gen-qwen-image` | RTX PRO 6000 | qwen-image-2512, qwen-edit-2509, qwen-layered | mount | 1 | ~20 jobs, ~1 h | ~$6 |
-| `gen-wan` | RTX PRO 6000 | wan-i2v, wan-animate, wan-infinitetalk, wan-t2v, wan-fun-control, wan-animate2, wan21-scail | download (i2v) | 2 | ~820 jobs, 24.5 h | $156 |
-| `gen-3d` | RTX PRO 6000 | mesh.views3d, trellis2 | download | 2 | 514 jobs, 48.8 h | $311 |
-| `gen-minimax` | RTX PRO 6000 | minimax-h3 | mount | 1 | 48 jobs, 10.8 h | $69 |
-| `gen-ltx` | RTX PRO 6000 | ltx-2.3 | mount | 1 | 22 jobs, ~1.5 h | ~$10 |
+| `gen-qwen-edit` | RTX PRO 6000 | qwen-edit | download | 2 | 3,997 jobs, 39.2 h | ~$125 |
+| `gen-qwen-image` | RTX PRO 6000 | qwen-image-2512, qwen-edit-2509, qwen-layered | mount | 1 | ~20 jobs, ~1 h | ~$3 |
+| `gen-wan` | RTX PRO 6000 | wan-i2v, wan-animate, wan-infinitetalk, wan-t2v, wan-fun-control, wan-animate2, wan21-scail | download (i2v) | 2 | ~820 jobs, 24.5 h | ~$78 |
+| `gen-3d` | RTX PRO 6000 | mesh.views3d, trellis2 | download | 2 | 514 jobs, 48.8 h | ~$156 |
+| `gen-minimax` | RTX PRO 6000 | minimax-h3 | mount | 1 | 48 jobs, 10.8 h | ~$34 |
+| `gen-ltx` | RTX PRO 6000 | ltx-2.3 | mount | 1 | 22 jobs, ~1.5 h | ~$5 |
 | `gen-qwen-edit-l4` (pilot alternative) | L4 | none unless settings point qwen-edit at it | mount | 1 | n/a | $1.42/h |
 
-**Read this table carefully.** At $4.50/h the RTX PRO 6000 instance costs 3.4 times what an L40S does. The AWS fleet
-costs $1.86/h. At under half utilization, which is what we measured, that is about $4.10 per hour of useful work.
-So an RTX family only gets cheaper on Cloud Run when two things hold:
-
-- **The card must be fast enough.** It has to finish the same job at least about 1.5 times faster than the L40S
-  (Blackwell's FP8 throughput and 96 GB, which hold both Wan experts at once, may do it).
-- **Or it moves to the L4.** The family has to run acceptably there.
+**Read this table carefully.** An RTX PRO 6000 instance ($3.19/h) costs about 1.7 times an AWS L40S server ($1.86/h),
+but Cloud Run bills only while a job runs (plus the idle tail below), and the fleet ran at under half utilization:
+about $4.10 per hour of useful work. So even before any speed difference the RTX services cost less per useful hour, and
+the 96 GB card holds a whole family (both Wan experts, Qwen-Edit with its text encoder) without reloading. All the
+services above, at last month's hours, come to roughly $425 plus the idle tail, against $718 for the AWS fleet that month.
 
 The L4 services are clearly cheaper than the fleet. The idle tail adds to every burst: Cloud Run keeps an idle
 instance for up to about 10 minutes, billed. That is about $1.06 per RTX instance and $0.24 per L4 instance. With

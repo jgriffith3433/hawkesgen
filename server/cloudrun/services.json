@@ -10,9 +10,10 @@
     "memoryPerGibSecond": 0.000002,
     "gpuPerSecond": {
       "nvidia-l4": 0.0001867,
-      "nvidia-rtx-pro-6000": 0.00125
+      "nvidia-rtx-pro-6000": 0.00036522
     },
-    "verified": false
+    "verified": false,
+    "source": "cloud.google.com/run/pricing (Tier 1, no zonal redundancy) as found 2026-10-28: L4 0.0001867, RTX PRO 6000 0.00036522 per GPU-second; check before relying on them"
   },
   "gpus": {
     "nvidia-l4": { "vramGb": 24, "minCpu": 4, "minMemoryGi": 16, "regions": ["us-central1", "us-east4", "europe-west1", "europe-west4", "asia-southeast1"], "fallbackRegion": "us-central1" },
