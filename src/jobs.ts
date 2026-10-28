@@ -33,6 +33,7 @@ import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable,
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { cloudRoute, cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
+import { cloudPlaytestFor, cloudLanes } from './providers/playtester/cloudrun.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
@@ -566,6 +567,18 @@ class Queue {
       return this.gpuSeen.ready ? this.gpuSeen.limit : 1;
     };
     const tabsOf = (j: Job) => (j.tool === 'playtest.run' ? Math.max(1, Math.min(4, Number(j.params.peers) || 1)) : 1);
+    // Browser tabs the Cloud Run playtest service plays at once, when this job's project plays there; else null.
+    const cloudPlaytestLanes = (j: Job, s: typeof settings) => {
+      // The same rule playtest.run follows for a GPU browser: gpu require, or auto anywhere but this PC (Windows).
+      const gpuHost = j.params.gpu === 'require' || (j.params.gpu !== 'off' && process.platform !== 'win32');
+      if (!gpuHost || (s.playtest.backend === 'ec2' && !Object.values(s.playtest.projects).includes('cloudrun'))) return null;
+      try {
+        const c = cloudPlaytestFor(j.project, s);
+        return c ? cloudLanes(c) : null;
+      } catch {
+        return null;
+      }
+    };
 
     // API and local lanes.
     for (const j of waiting.filter((x) => toolOf(x).provider !== 'comfy')) {
@@ -583,11 +596,13 @@ class Queue {
       }
       // Unity builds on Cloud Run (settings.unityBuild, docs/unity-cloudrun.md) have a lane of their own: one machine per build.
       const cloudBuild = provider === 'builder' && unityBackendOf(j.params, settings.unityBuild) === 'cloudrun';
-      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : provider;
+      // So do playtests on Cloud Run (settings.playtest, docs/playtest-cloudrun.md): max instances x tabs per instance.
+      const cloudPlay = provider === 'playtest' ? cloudPlaytestLanes(j, settings) : null;
+      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : cloudPlay ? 'playtest-cloud' : provider;
       const lane = this.lanes.get(key) ?? new Set();
       this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
-      const limit = own ? own.limit() : nested ? Infinity : cloudBuild ? settings.unityBuild.concurrency : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
+      const limit = own ? own.limit() : nested ? Infinity : cloudBuild ? settings.unityBuild.concurrency : cloudPlay ? cloudPlay : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
       // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
       const weight = provider === 'playtest' ? tabsOf(j) : 1;
       const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;

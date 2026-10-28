@@ -130,6 +130,19 @@ export type Settings = {
     projects: Record<string, 'builder' | 'cloudrun'>;
     gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number };
   };
+  /**
+   * Where playtest.run's browser runs on the control server (docs/playtest-cloudrun.md). "ec2" is the playtesters (T4
+   * machines over an SSH tunnel, src/providers/playtester/playtester.ts); "cloudrun" is the Cloud Run L4 service
+   * (server/playtest-cloudrun/, src/providers/playtester/cloudrun.ts). `projects` overrides it per product. Cloud Run is
+   * used only when `cloudrun.url` is set; if it can't be reached the run falls back to the playtesters. `maxInstances`
+   * and `tabsPerInstance` must match the deployed service (Gen's lane admits their product in browser tabs). `encode`:
+   * where the video is encoded, on the service (NVENC) or here.
+   */
+  playtest: {
+    backend: 'ec2' | 'cloudrun';
+    projects: Record<string, 'ec2' | 'cloudrun'>;
+    cloudrun: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here' };
+  };
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
@@ -151,7 +164,28 @@ export const SETTINGS_DEFAULTS: Settings = {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, projects: {},
     gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32 },
   },
+  playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' } },
 };
+
+/** settings.playtest, checked: known backends only, an https run.app-style URL, sane sizes. */
+function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['playtest'] {
+  const d = SETTINGS_DEFAULTS.playtest;
+  const be = (v: unknown): 'ec2' | 'cloudrun' | null => (v === 'cloudrun' ? 'cloudrun' : v === 'ec2' ? 'ec2' : null);
+  const c: Partial<Settings['playtest']['cloudrun']> = t?.cloudrun ?? {};
+  const n = (v: unknown, lo: number, hi: number, def: number) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || def));
+  const projects: Record<string, 'ec2' | 'cloudrun'> = {};
+  for (const [k, v] of Object.entries(t?.projects ?? {})) if (/^[A-Za-z0-9._/-]{1,80}$/.test(k) && be(v)) projects[k] = be(v)!;
+  return {
+    backend: be(t?.backend) ?? d.backend,
+    projects,
+    cloudrun: {
+      url: typeof c.url === 'string' && /^https:\/\/[a-z0-9.-]+\/?$/.test(c.url) ? c.url.replace(/\/$/, '') : null,
+      maxInstances: n(c.maxInstances, 1, 20, d.cloudrun.maxInstances),
+      tabsPerInstance: n(c.tabsPerInstance, 1, 8, d.cloudrun.tabsPerInstance),
+      encode: c.encode === 'here' ? 'here' : 'service',
+    },
+  };
+}
 export const FLEET_MAX = 16;
 
 const NAME = /^[a-z0-9][a-z0-9._:-]{0,62}$/;
@@ -218,6 +252,7 @@ function clean(s: Settings): Settings {
       cdn: typeof s.storage?.cdn === 'string' && /^https:\/\/[a-z0-9.-]+$/.test(s.storage.cdn) ? s.storage.cdn : null,
     },
     gpu: cleanGpu(s.gpu),
+    playtest: cleanPlaytest(s.playtest),
   };
 }
 
@@ -260,7 +295,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun } } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -281,6 +316,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     storage: { ...cur.storage, ...(patch.storage ?? {}) },
     gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
     unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) } },
+    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) } },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
   return next;

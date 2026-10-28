@@ -12,7 +12,13 @@ import { GenError, run as runProc, sleep } from '../util.ts';
 import { listAssets, getAsset } from '../library.ts';
 import { db } from '../db.ts';
 import { ask, DEFAULT_MODEL, usageOf } from '../providers/anthropic.ts';
-import { openPlaytestHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
+import { openGpuHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
+
+/** The GPU host's browser: Cloud Run's is already connected (a connection per tab); a playtester's is over the tunnel. */
+function connectHost(chromium: any, host: PlaytestHost) {
+  if (host.browser) return Promise.resolve(host.browser);
+  return chromium.connect(host.wsEndpoint, { timeout: 90_000, headers: { 'x-playwright-launch-options': JSON.stringify({ headless: true, args: GPU_LINUX_ARGS }) } });
+}
 import { awsConfig } from '../providers/comfy/fleet.ts';
 import { startLiveShots, endLiveShots } from './liveShots.ts';
 import { beginLive } from './livePlay.ts';
@@ -139,11 +145,10 @@ export const playtestRunTool: Tool = {
     try {
       // The control server (Linux) has no GPU: games run on a GPU fleet server's browser when one is ready.
       if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
-        const u = new URL(p.url);
-        const localPorts = /^(localhost|127\.0\.0\.1)$/.test(u.hostname) ? [Number(u.port || (u.protocol === 'https:' ? 443 : 80))] : [];
+        // Cloud Run when settings.playtest says so (docs/playtest-cloudrun.md), else the playtesters / GPU servers.
         // Installing the browser on a server takes a few minutes the first time.
         // Games (anything but a site crawl) start the playtester if it's off.
-        const opening = openPlaytestHost(localPorts, ctx.step, { startPlaytester: p.mode !== 'site' });
+        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u) });
         host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
           opening.then((h) => h?.close(), () => {});
           if (p.gpu === 'require') throw e;
@@ -161,7 +166,7 @@ export const playtestRunTool: Tool = {
       }
       ctx.step(host ? `opening Chromium on ${host.server}` : 'opening Chromium');
       browser = await within(host
-        ? chromium.connect(host.wsEndpoint, { timeout: 90_000, headers: { 'x-playwright-launch-options': JSON.stringify({ headless: true, args: GPU_LINUX_ARGS }) } })
+        ? connectHost(chromium, host)
         : chromium.launch({
           headless: !p.headed,
           timeout: 90_000,
@@ -179,11 +184,13 @@ export const playtestRunTool: Tool = {
           viewport,
           ...(video ? { recordVideo: { dir: videoDir, size: viewport } } : {}),
           ignoreHTTPSErrors: true,
+          ...(host?.contextOptions ?? {}),
         }), 30_000, 'opening a browser tab');
+        if (host?.prepareContext) await within(host.prepareContext(context), 15_000, 'preparing the tab');
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
         const pageGlobals = globalsScript(p.globals);
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
-        page = await within(context.newPage(), 30_000, 'opening a browser tab');
+        page =await within(context.newPage(), 30_000, 'opening a browser tab');
       };
       const wantScreencast = p.recorder === 'screencast' || (p.recorder === 'auto' && Boolean(host));
       await openTab(!wantScreencast);
@@ -451,10 +458,11 @@ export const playtestRunTool: Tool = {
         try {
           // On the machine that recorded it (this server's two cores stay free for the agents), else here.
           let encoded = false;
-          if (host) {
+          if (host && (host.encode || host.ssh)) {
             ctx.step(`encoding the video on ${host.server}`);
             try {
-              const encoder = await encodeRemotely(host.ssh, remoteEncodeScript(viewport), mjpeg, out, AbortSignal.any([ctx.signal, AbortSignal.timeout(20 * 60_000)]));
+              const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(20 * 60_000)]);
+              const encoder = host.encode ? await host.encode(mjpeg, out, viewport, signal) : await encodeRemotely(host.ssh!, remoteEncodeScript(viewport), mjpeg, out, signal);
               Object.assign(recorder, { encodedOn: host.server, encoder });
               encoded = true;
             } catch (e: any) {
@@ -650,9 +658,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
 
   try {
     if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
-      const u = new URL(p.url);
-      const localPorts = /^(localhost|127\.0\.0\.1)$/.test(u.hostname) ? [Number(u.port || (u.protocol === 'https:' ? 443 : 80))] : [];
-      const opening = openPlaytestHost(localPorts, ctx.step, { startPlaytester: true, tabs: n });
+      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u) });
       host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
         opening.then((h) => h?.close(), () => {});
         if (p.gpu === 'require') throw e;
@@ -669,7 +675,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
     }
     ctx.step(host ? `opening Chromium on ${host.server}` : 'opening Chromium');
     browser = await within(host
-      ? chromium.connect(host.wsEndpoint, { timeout: 90_000, headers: { 'x-playwright-launch-options': JSON.stringify({ headless: true, args: GPU_LINUX_ARGS }) } })
+      ? connectHost(chromium, host)
       : chromium.launch({
         headless: !p.headed,
         timeout: 90_000,
@@ -689,7 +695,9 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
           viewport,
           ...(video ? { recordVideo: { dir: videoDir, size: viewport } } : {}),
           ignoreHTTPSErrors: true,
+          ...(host?.contextOptions ?? {}),
         }), 30_000, 'opening a browser tab');
+        if (host?.prepareContext) await within(host.prepareContext(context), 15_000, 'preparing the tab');
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
         const pageGlobals = globalsScript(p.globals);
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');

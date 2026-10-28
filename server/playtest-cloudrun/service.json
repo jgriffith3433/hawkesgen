@@ -1,0 +1,14 @@
+{
+  "_about": "The Cloud Run GPU service that plays playtests (docs/playtest-cloudrun.md). One WebSocket connection is one browser tab (a multiplayer run opens one per player), so containerConcurrency = tabsPerInstance and Gen's playtest lane admits maxInstances x tabsPerInstance tabs. Prices come from server/cloudrun/services.json (the same L4 rate). Gen's settings.playtest.cloudrun.maxInstances / tabsPerInstance must match what is deployed: deploy.mjs prints the patch.",
+  "name": "gen-playtest",
+  "image": "gen-playtest",
+  "repository": "hawkes-gen",
+  "region": "us-east4",
+  "gpu": "nvidia-l4",
+  "cpu": 8,
+  "memoryGi": 32,
+  "maxInstances": 2,
+  "tabsPerInstance": 4,
+  "timeoutSeconds": 3600,
+  "why": "us-east4 (Northern Virginia) sits next to the control server in AWS us-east-1: every Playwright call (page.evaluate, a routed request, a screencast frame) is a round trip. 8 vCPU / 32 GiB is Google's recommended L4 size; four tabs per instance is twice what a g4dn.xlarge (4 vCPU, T4) plays: the pilot measures it."
+}

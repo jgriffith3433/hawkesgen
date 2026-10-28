@@ -1,0 +1,10 @@
+{
+  "name": "hawkes-playtest-cloudrun",
+  "private": true,
+  "type": "module",
+  "description": "Hawkes Gen's playtest service on Cloud Run (docs/playtest-cloudrun.md). build.mjs writes Gen's Playwright version over __PW_VERSION__.",
+  "dependencies": {
+    "playwright": "__PW_VERSION__",
+    "ws": "8.18.3"
+  }
+}
