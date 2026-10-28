@@ -35,7 +35,6 @@ export function gcpTokens(): Tokens {
   let auth: any = null;
   let imp: any = null;
   const ids = new Map<string, { token: string; until: number }>();
-  let access: { token: string; until: number } | null = null;
   const load = async () => {
     if (auth) return;
     const G = await import('google-auth-library');
@@ -45,11 +44,12 @@ export function gcpTokens(): Tokens {
   };
   tokens = {
     async access() {
-      if (access && Date.now() < access.until) return access.token;
+      // The library caches each token until shortly before its real expiry. Never keep one for a fixed time here: a
+      // metadata server (Cloud Build, Cloud Run, GCE) hands out tokens with any amount of life left, and a copy that
+      // ran past one failed every upload with 401.
       await load();
       const t = imp ? (await imp.getAccessToken()).token : await auth.getAccessToken();
       if (!t) throw new Error('No Google Cloud credentials (set GOOGLE_APPLICATION_CREDENTIALS, or run gcloud auth application-default login)');
-      access = { token: t, until: Date.now() + 45 * 60_000 };
       return t;
     },
     async id(audience) {
