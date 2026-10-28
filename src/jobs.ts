@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { db, parseRow, J } from './db.ts';
-import { paths, loadSettings, ROOT, DATA_DIR } from './config.ts';
+import { paths, loadSettings, ROOT, DATA_DIR, unityBackendOf } from './config.ts';
 import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
@@ -577,11 +577,13 @@ class Queue {
         this.wait(j, `waiting: ${own.yieldTo.join(', ')} jobs go first`);
         continue;
       }
-      const key = own ? own.name : nested ? 'pipeline-step' : provider;
+      // Unity builds on Cloud Run (settings.unityBuild, docs/unity-cloudrun.md) have a lane of their own: one machine per build.
+      const cloudBuild = provider === 'builder' && unityBackendOf(j.params, settings.unityBuild) === 'cloudrun';
+      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : provider;
       const lane = this.lanes.get(key) ?? new Set();
       this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
-      const limit = own ? own.limit() : nested ? Infinity : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
+      const limit = own ? own.limit() : nested ? Infinity : cloudBuild ? settings.unityBuild.concurrency : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
       // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
       const weight = provider === 'playtest' ? tabsOf(j) : 1;
       const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;

@@ -11,6 +11,7 @@
 //   hawkesgen fleet image [status|build [--from <id> [--as-is]] [region=r]|prune [--dry-run]|cancel] [--yes]
 //   hawkesgen playtester [status|launch [type=..] [region=..]|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [id=i-...] [--yes]
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
+//   hawkesgen builder caches | clear-cache <project> [key]      (Unity cloud builds' Library caches)
 //   hawkesgen storage [status|backfill|restore]      the library's files in S3
 //   hawkesgen storage metadata [--apply]              fix Content-Type and Cache-Control on objects already in S3 (dry run without --apply)
 //   hawkesgen lod [status|backfill [--project P] [--kind image|mesh] [--limit N] [--dry-run]]   levels of detail (src/lod.ts)
@@ -145,6 +146,20 @@ async function main() {
         if (b.stage) console.log(`  ${b.stage.stage}: ${b.stage.detail ?? ''}`);
         if (b.rdpFile) console.log(`  Remote Desktop: ${b.rdpFile} (password in ${b.passwordFile})`);
         return;
+      }
+      // Unity cloud builds' Library caches (docs/unity-cloudrun.md).
+      if (action === 'caches') {
+        const r = await gen.request('/builder/caches');
+        if (!r.caches.length) return console.log('No Library caches yet (the first successful cloud build of each project saves one).');
+        for (const c of r.caches) {
+          console.log(`${c.repo.padEnd(24)} ${c.key.padEnd(8)} ${(c.bytes / 1024 ** 3).toFixed(2)} GB packed${c.libraryBytes ? ` (${(c.libraryBytes / 1024 ** 3).toFixed(1)} GB)` : ''}  ${c.ageDays} days old  unity ${c.unity ?? '?'}  ${c.commit ? c.commit.slice(0, 7) : ''}${c.streak ? `  ${c.streak} cache-looking failure(s)` : ''}${c.cleanNext ? '  next build runs clean' : ''}`);
+        }
+        return;
+      }
+      if (action === 'clear-cache') {
+        if (!rest[1]) return console.log('usage: hawkesgen builder clear-cache <project> [key]   (e.g. breakingthrough beta)');
+        if (!(await confirm(`Delete the Library cache of ${rest[1]}${rest[2] ? ` (${rest[2]})` : ''}? Its next cloud build is a full import.`))) return;
+        return console.log(JSON.stringify(await gen.request('/builder/caches/clear', { method: 'POST', body: { repo: rest[1], key: rest[2], confirm: true } }), null, 2));
       }
       const costly = ['launch', 'start', 'terminate', 'ssh'].includes(action);
       if (costly && !(await confirm(action === 'launch' ? 'Launch the Unity build server? It costs about $0.77/hr while running (it stops itself when idle) plus ~$24/month for its disk.' : action === 'terminate' ? 'Delete the build server and its disk (every project Library)?' : `${action} the build server?`))) return;

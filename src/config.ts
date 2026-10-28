@@ -109,6 +109,19 @@ export type Settings = {
   /** The sound suite (docs/audio.md). `verified`: open models that passed their smoke test and audition; `provider: auto` uses
    *  only these, else ElevenLabs. `targetLufs`: loudness per project (and kind) for audio.process; "default" is the fallback. */
   audio: { verified: string[]; targetLufs: Record<string, number> };
+  /**
+   * Where unity.build and unity.test run (docs/unity-cloudrun.md). "builder" is the Windows build server on AWS
+   * (src/providers/builder/builder.ts); "cloudrun" is a Google Cloud Run job per build (cloudrun.ts), with the
+   * project's Library cached in Cloud Storage. `timeoutMinutes` is the hard limit on one build for both.
+   * `cleanAfterFailures`: that many cache-looking failures in a row make the next cloud build run without the cache.
+   * `concurrency`: cloud builds at once (the build server always runs one).
+   */
+  unityBuild: {
+    backend: 'builder' | 'cloudrun'; timeoutMinutes: number; cleanAfterFailures: number; concurrency: number;
+    /** A backend per project ("sickofitgame-unity": "builder") over `backend`: a Library too big for Cloud Run stays where it fits. */
+    projects: Record<string, 'builder' | 'cloudrun'>;
+    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number };
+  };
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
@@ -125,6 +138,10 @@ export const SETTINGS_DEFAULTS: Settings = {
   rates: { elevenlabsPer1kChars: 0.3 },
   storage: { bucket: null, cdn: null },
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
+  unityBuild: {
+    backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, projects: {},
+    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32 },
+  },
 };
 export const FLEET_MAX = 16;
 
@@ -167,9 +184,41 @@ function clean(s: Settings): Settings {
       verified: Array.isArray(s.audio?.verified) ? [...new Set(s.audio!.verified.map(String).filter((x) => /^[a-z0-9][a-z0-9._-]{0,40}$/.test(x)))] : [],
       targetLufs: Object.fromEntries(Object.entries({ ...SETTINGS_DEFAULTS.audio.targetLufs, ...(s.audio?.targetLufs ?? {}) }).map(([k, v]) => [k, Number(v)]).filter(([, v]) => Number.isFinite(v as number) && (v as number) <= -5 && (v as number) >= -40)) as Record<string, number>,
     },
+    unityBuild: cleanUnityBuild(s.unityBuild),
     storage: {
       bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null,
       cdn: typeof s.storage?.cdn === 'string' && /^https:\/\/[a-z0-9.-]+$/.test(s.storage.cdn) ? s.storage.cdn : null,
+    },
+  };
+}
+
+/** Which backend a unity.build / unity.test job runs on: its `backend` param, else its project's, else the default. */
+export function unityBackendOf(params: { backend?: unknown; project?: unknown } | undefined, u: Settings['unityBuild']): 'builder' | 'cloudrun' {
+  const b = params?.backend;
+  if (b === 'builder' || b === 'cloudrun') return b;
+  const own = typeof params?.project === 'string' ? u.projects[params.project.replace(/\\/g, '/')] : undefined;
+  return own ?? u.backend;
+}
+
+function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settings['unityBuild'] {
+  const d = SETTINGS_DEFAULTS.unityBuild;
+  const n = (v: unknown, lo: number, hi: number, def: number) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || def));
+  const g = { ...d.gcp, ...(u?.gcp ?? {}) };
+  const word = (v: unknown, re: RegExp, def: string) => (typeof v === 'string' && re.test(v) ? v : def);
+  return {
+    backend: u?.backend === 'cloudrun' ? 'cloudrun' : 'builder',
+    timeoutMinutes: n(u?.timeoutMinutes, 10, 180, d.timeoutMinutes),
+    cleanAfterFailures: n(u?.cleanAfterFailures, 1, 10, d.cleanAfterFailures),
+    concurrency: n(u?.concurrency, 1, 8, d.concurrency),
+    projects: Object.fromEntries(Object.entries(u?.projects ?? {}).filter(([k, v]) => /^[A-Za-z0-9._/-]{1,80}$/.test(k) && (v === 'builder' || v === 'cloudrun'))) as Record<string, 'builder' | 'cloudrun'>,
+    gcp: {
+      project: word(g.project, /^[a-z][a-z0-9-]{4,29}$/, ''),
+      region: word(g.region, /^[a-z]+-[a-z]+\d+$/, d.gcp.region),
+      job: word(g.job, /^[a-z][a-z0-9-]{0,48}$/, d.gcp.job),
+      bucket: word(g.bucket, /^[a-z0-9][a-z0-9._-]{2,62}$/, ''),
+      unity: word(g.unity, /^\d{4}\.\d+\.\d+[abfp]\d+$/, d.gcp.unity),
+      cpu: [4, 8].includes(Number(g.cpu)) ? Number(g.cpu) : d.gcp.cpu,
+      memoryGiB: n(g.memoryGiB, 4, 32, d.gcp.memoryGiB),
     },
   };
 }
@@ -182,7 +231,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -200,6 +249,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     model: patch.model ?? cur.model,
     rates: { ...cur.rates, ...(patch.rates ?? {}) },
     audio: { ...cur.audio, ...(patch.audio ?? {}) },
+    unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) } },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
   return next;
