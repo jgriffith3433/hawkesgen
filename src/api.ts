@@ -400,7 +400,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const user = getUserForClient(client);
       if (!user) throw new GenError('Sign in with a user account to buy credits', { status: 403 });
       const body = await readJson(req);
-      const checkout = await createStripeCheckoutSession(user, body, origin || 'https://gen.hawkesgen.com');
+      const checkout = await createStripeCheckoutSession(user, body, origin || 'https://gen.hawkesgen.ai');
       return send(res, 200, checkout);
     }
     if (route === '/v1/billing/ledger' && method === 'GET') {

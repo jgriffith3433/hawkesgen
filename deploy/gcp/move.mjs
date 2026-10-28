@@ -31,14 +31,14 @@ const phase = args.find((a) => !a.startsWith('--')) ?? 'help';
 const G = gcpState();
 const NEW_IP = G.ip;
 const MOVE = '/var/tmp/hawkes-move';
-const DOMAIN = awsState().domain ?? 'hawkesgen.com';
+const DOMAIN = awsState().domain ?? 'hawkesgen.ai';
 
 // ------------------------------------------------------------------ hosts
 async function hosts() {
   const { previewHosts } = await import(pathToFileURL(path.join(STUDIO_DEPLOY, 'caddyfile.mjs')).href);
   const products = JSON.parse(fs.readFileSync(path.join(PROJECTS, 'hawkesstudio', 'products.json'), 'utf8'));
   const { subs, devHosts } = previewHosts(products, !!awsState().devHosts);
-  // hawkesgen.com and www are the portal's (Firebase), never this server.
+  // hawkesgen.ai and www are the portal's (Firebase), never this server.
   return ['studio', 'gen', ...subs, ...devHosts.map((s) => `dev-${s}`)].map((s) => `${s}.${DOMAIN}`);
 }
 
@@ -350,7 +350,7 @@ echo "gen-running $(sqlite3 -readonly /srv/hawkes/hawkesgen/.data/hawkesgen.db "
   } else {
     say('6-8. (with --apply) wait for DNS, check HTTPS for every name, the checks again, point hawkesstudio/deploy/.state.json at the VM');
   }
-  say(`then on J's PC: HAWKES_ALLOW_IPS in hawkesgen/.env from ${OLD_IP} to ${NEW_IP ?? '<new ip>'}; ssh-keygen -R studio.hawkesgen.com (the VM has its own host key)`);
+  say(`then on J's PC: HAWKES_ALLOW_IPS in hawkesgen/.env from ${OLD_IP} to ${NEW_IP ?? '<new ip>'}; ssh-keygen -R studio.hawkesgen.ai (the VM has its own host key)`);
 }
 
 async function rollback() {

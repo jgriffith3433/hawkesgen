@@ -106,7 +106,7 @@ sha, levels: [{ level, bytes, w, h | tris, tex, role, sha }] }`, smallest first 
 | `GET /v1/lods?ids=a_1,a_2,...` (up to 500) | `{ lods: { id: summary }, queued }`: many at once (a game's bundle). Assets without levels yet are queued |
 | `GET /v1/lods/status` | Assets by state, levels made and their bytes, linked low copies, `asset.lod` jobs |
 | `POST /v1/lods/backfill` `{ project?, kind?: image \| mesh, limit?, dryRun? }` | (admin) Links low copies older jobs made, then queues everything kept without levels at this version, newest first. Kept: uploads, top-level jobs' outputs, and of an `asset.make` chain only its first step's picture (not a mask) and its last step's result; the in-between (view sheets, views, masks, raw meshes) and pipeline steps get none. CLI: `hawkesgen lod backfill [--project p] [--kind k]` |
-| (setting) `lod.projects` | The projects whose assets get levels automatically (globs; default `usr_*`, `ubeta_*`: hawkesgen.com's customers and starter library, the beta portal's). Others only when asked for by id (`GET /v1/lods`) |
+| (setting) `lod.projects` | The projects whose assets get levels automatically (globs; default `usr_*`, `ubeta_*`: hawkesgen.ai's customers and starter library, the beta portal's). Others only when asked for by id (`GET /v1/lods`) |
 | `POST /v1/lods/prune` `{ project?, limit?, dryRun? }` | (admin) Clears levels made for in-between work: their files and their S3 copies (unless the same content is still used). Their state becomes `pruned`; asked for by id later (`GET /v1/lods`), they're made again. CLI: `hawkesgen lod prune [--project p] [--dry-run]` |
 
 ## Library storage (S3)
@@ -122,7 +122,7 @@ Objects carry the asset's Content-Type (HTML and SVG go as `application/octet-st
 
 ## CDN
 
-`cdn.hawkesgen.com` serves the library's S3 files (`https://cdn.hawkesgen.com/sha256/<hash>`) through CloudFront. Made by
+`cdn.hawkesgen.ai` serves the library's S3 files (`https://cdn.hawkesgen.ai/sha256/<hash>`) through CloudFront. Made by
 `node deploy/cdn.mjs` (idempotent; **dry run by default**, `--apply` to create; J runs it, an agent never does). It uses Gen's
 AWS config and never prints keys. Options: `--domain`, `--zone`, `--bucket`, `--alarm-usd` (default 20).
 
@@ -133,7 +133,7 @@ What it sets up, each step skipped when it already exists:
 - a response headers policy: `Access-Control-Allow-Origin: *` (sandboxed games have origin null), `Timing-Allow-Origin: *`, `X-Content-Type-Options: nosniff`, `Content-Security-Policy: default-src 'none'; sandbox` (a file can never act as a page)
 - the distribution (PriceClass_100: US, Canada, Europe edges; pay-as-you-go, not a flat-rate plan) and the Route 53 A/AAAA alias
 - a CloudWatch alarm `hawkesgen-cdn-cloudfront-charges` on CloudFront's month-to-date charges (needs "Receive Billing Alerts" on in the account; add an SNS topic in CloudWatch to be emailed)
-- `settings.storage.cdn` = `https://cdn.hawkesgen.com` (saved in the checkout it runs in; on the cloud server `POST /v1/settings` with `{"storage":{"bucket":"...","cdn":"https://cdn.hawkesgen.com"}}`; `storage` is replaced as a whole, so send the bucket too)
+- `settings.storage.cdn` = `https://cdn.hawkesgen.ai` (saved in the checkout it runs in; on the cloud server `POST /v1/settings` with `{"storage":{"bucket":"...","cdn":"https://cdn.hawkesgen.ai"}}`; `storage` is replaced as a whole, so send the bucket too)
 
 Cost: no monthly fee. The free tier covers 1 TB out and 10M requests a month; after that about $0.085/GB and $0.01 per 10,000 HTTPS
 requests in the US. S3 to CloudFront transfer is free. No WAF (Shield Standard is on). The script prints this at the end of every run.
@@ -245,7 +245,7 @@ Filters on every read: `range` (`30d`) or `from`/`to`, `env` (`live`; `all`), `b
 
 ## Hawkes Net (the hawkesnet repo)
 
-Hawkes Net is its own service and repo (`jgriffith3433/hawkesnet`, its `docs/net.md`); Gen answers only `/v1/net/whoami` and `/v1/net/usage` and sends the rest to `https://net.hawkesgen.com` with a 308. The routes below are the box's.
+Hawkes Net is its own service and repo (`jgriffith3433/hawkesnet`, its `docs/net.md`); Gen answers only `/v1/net/whoami` and `/v1/net/usage` and sends the rest to `https://net.hawkesgen.ai` with a 308. The routes below are the box's.
 
 | Route | What |
 |---|---|

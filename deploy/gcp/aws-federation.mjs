@@ -32,7 +32,7 @@ const FALLBACK = {
   },
   'hawkes-mail': {
     Version: '2012-10-17',
-    Statement: [{ Effect: 'Allow', Action: ['ses:SendEmail', 'ses:SendRawEmail'], Resource: 'arn:aws:ses:us-east-1:*:identity/hawkesgen.com', Condition: { StringLike: { 'ses:FromAddress': '*@hawkesgen.com' } } }],
+    Statement: [{ Effect: 'Allow', Action: ['ses:SendEmail', 'ses:SendRawEmail'], Resource: 'arn:aws:ses:us-east-1:*:identity/hawkesgen.ai', Condition: { StringLike: { 'ses:FromAddress': '*@hawkesgen.ai' } } }],
   },
 };
 

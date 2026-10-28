@@ -112,7 +112,7 @@ steps (eevee on a server, relight, restore, the mixed control, InfiniteTalk) nee
 
 ### Added on 2026-10-18: player analytics (decision m_e4959acc8abd)
 
-J: "Let's use our own home grown solution that posts to our hawkesgen.com studio ... make sure to capture the build
+J: "Let's use our own home grown solution that posts to our hawkesgen.ai studio ... make sure to capture the build
 they are on, date etc ... make a new one for our hawkes gen so we can even add it to our product page for hawkes gen
 as part of the sdk/api ... implement analytics fully so I know where players are dropping off, why, what they like,
 what they don't like, browsers, location etc."

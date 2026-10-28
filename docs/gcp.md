@@ -34,9 +34,9 @@ background task, for the dry run beside the live box).
 | `/etc/hawkes/keys.env` | a file | the same file, plus a backup in `hawkes-control-keys-env` | deploy scripts append to it over SSH |
 | AWS access | instance role `hawkes/hawkes-control` | role `hawkes/hawkes-control-gce`, web identity from the VM | no keys anywhere |
 | GPU fleet, Windows build server, playtesters | AWS | **stay on AWS** | another workstream moves GPU and Unity work to Cloud Run; until then Gen drives EC2 as before |
-| Gen's library bucket, playtest videos (S3), cdn.hawkesgen.com (CloudFront) | AWS | **stay on AWS** | the storage move to GCS is its own work; the VM's role keeps `s3:*` on `hawkes-*` |
+| Gen's library bucket, playtest videos (S3), cdn.hawkesgen.ai (CloudFront) | AWS | **stay on AWS** | the storage move to GCS is its own work; the VM's role keeps `s3:*` on `hawkes-*` |
 | Email (SES), Cost Explorer, Route 53 | AWS | **stay on AWS** | through the federated role (SES, CE); DNS through `hawkesgenwebsite/cloud/dns.py` |
-| Hawkes Net, the portal | their own VMs / Firebase | unchanged | they reach `gen.hawkesgen.com` by name |
+| Hawkes Net, the portal | their own VMs / Firebase | unchanged | they reach `gen.hawkesgen.ai` by name |
 
 us-east4 (Ashburn) is next to us-east-1 (northern Virginia): a millisecond or two to the fleet, the build server and S3.
 
@@ -99,7 +99,7 @@ GCE VM (service account hawkes-control, unique id N)
   only ones minted for this purpose, are accepted.
 - **Permissions:** the same as today's `hawkes/hawkes-control`: its inline policies `hawkes-control` (EC2, Service
   Quotas, `sts:GetCallerIdentity`, Secrets Manager `hawkes/*`, S3 `hawkes-*`, CloudWatch Logs, Cost Explorer) and
-  `hawkes-mail` (SES from `*@hawkesgen.com`), copied live from the old role by `--apply` (`--live` shows them).
+  `hawkes-mail` (SES from `*@hawkesgen.ai`), copied live from the old role by `--apply` (`--live` shows them).
   Secrets Manager can be dropped once nothing reads `hawkes/*` there any more.
 - **Gen:** `src/providers/gceaws.ts` fetches the token from the metadata server and calls STS with plain `fetch`; the
   provider is shared by every AWS client in the process (one STS call an hour). With the fleet patch,
@@ -175,7 +175,7 @@ helpers still write to AWS; until they learn Google, store there and run `secret
       host through Caddy on the VM.
 
    To look at the copy in a browser before the switch, point the names at the VM in J's hosts file
-   (`<new ip> studio.hawkesgen.com gen.hawkesgen.com`); it's a smoke copy, so nothing runs there.
+   (`<new ip> studio.hawkesgen.ai gen.hawkesgen.ai`); it's a smoke copy, so nothing runs there.
 
 ### The switch (about an hour of downtime)
 
@@ -192,14 +192,14 @@ live meanwhile. Then `move.mjs switch --apply`:
    firewalls and Caddy, enabled at boot; lingering for `hawkes` (agents run as its user units).
 5. DNS: `dns.py point <name> A <new ip>` (Route 53, TTL 60) for `studio.`, `gen.` and every beta host from
    `products.json` `previews` (today: dod, phorigins, sickofit, yoobaland, placedept, icanbe, imaginelivetv, corporate,
-   hawkesgenwebsite, hawkesnet), plus `dev-<sub>` hosts if they were turned on. `hawkesgen.com` and `www` are the
+   hawkesgenwebsite, hawkesnet), plus `dev-<sub>` hosts if they were turned on. `hawkesgen.ai` and `www` are the
    portal's and are not touched. The old records have TTL 300, so resolvers move within five minutes.
 6. It waits until Google's public resolver answers the new address for every name.
 7. HTTPS to every name over the internet, then the checks again on the VM.
 8. `hawkesstudio/deploy/.state.json` points at the VM (the AWS one kept as `.state.aws.json`).
 
 Then on J's PC: in `hawkesgen/.env`, `HAWKES_ALLOW_IPS=<new ip>` instead of 52.0.19.230 (else Gen started on the PC
-takes the server out of the fleet's security groups); `ssh-keygen -R studio.hawkesgen.com` (the VM has its own host
+takes the server out of the fleet's security groups); `ssh-keygen -R studio.hawkesgen.ai` (the VM has its own host
 key). Resume the PM; Studio's next pull-deploy, beta push and daily run are the real test.
 
 Downtime: stopping takes a minute, the final copy a few (the databases and a day's changes), starting two, DNS up to
@@ -235,7 +235,7 @@ looks again, including AWS security groups in the three regions and Google firew
 | hawkesstudio `docs/cloud.md` (lines 22, 52) | the diagram and the SSH command | edit to the VM's address |
 | hawkesstudio `deploy/.state.json` (ignored) | `ip` every deploy script SSHes to | `switch` rewrites it (`.state.aws.json` keeps the old) |
 | hawkesgen `.env` on J's PC (ignored) | `HAWKES_ALLOW_IPS=52.0.19.230` | J sets the new IP |
-| Route 53 `hawkesgen.com` | A records: studio, gen and the 10 beta hosts | `switch` (dns.py) |
+| Route 53 `hawkesgen.ai` | A records: studio, gen and the 10 beta hosts | `switch` (dns.py) |
 | AWS security groups: `hawkesgen-comfy` / `dod-comfy` (each fleet region), the build server's, the playtesters' | 52.0.19.230/32 on 8189, 22, 3389 | Gen on the VM replaces it on start (`refreshAccess`, `builderAccess`) and when a playtester is used (`playtesterAccess`) |
 | AWS security group `hawkes-control` (sg-0aaed8dd41cf3abdf) | the old box's own group | the move adds 22 from the VM for the copy; `cleanup` removes it |
 | The portal's and Hawkes Net's firewalls | docs/cloud.md says the portal box took SSH "from J's IP or this server" | `refs` lists any rule that names the old address; add the VM's beside it |

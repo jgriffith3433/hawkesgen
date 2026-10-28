@@ -166,7 +166,7 @@ export async function refreshDatacenters(now = Date.now()): Promise<string> {
   const failed: string[] = [];
   for (const s of SOURCES) {
     try {
-      const r = await fetch(s.url, { signal: AbortSignal.timeout(60_000), headers: { 'User-Agent': 'HawkesGen-analytics/1 (+https://hawkesgen.com)' } });
+      const r = await fetch(s.url, { signal: AbortSignal.timeout(60_000), headers: { 'User-Agent': 'HawkesGen-analytics/1 (+https://hawkesgen.ai)' } });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const cidrs = parse(await r.text(), s.format);
       if (!cidrs.length) throw new Error('no ranges in it');

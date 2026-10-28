@@ -241,7 +241,7 @@ function reply(res: ServerResponse, status: number, body: unknown) {
 }
 
 /**
- * A site's own server passing on its visitors' batches (POST /v1/analytics/relay; the hawkesgen.com portal does, for
+ * A site's own server passing on its visitors' batches (POST /v1/analytics/relay; the hawkesgen.ai portal does, for
  * games that run in a sandbox with no origin of their own): with a Gen key, it says the page's origin, the visitor's
  * address and browser. Its own route because Caddy drops any key sent to the public collect door.
  */

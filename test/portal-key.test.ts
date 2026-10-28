@@ -1,4 +1,4 @@
-// The hawkesgen.com portal's key: one 'user' key with the pattern project 'usr_*'. On a customer's behalf it narrows
+// The hawkesgen.ai portal's key: one 'user' key with the pattern project 'usr_*'. On a customer's behalf it narrows
 // itself to their project with X-Hawkesgen-Project, so Gen's own checks keep customers apart. Without the header it sees
 // every usr_ project (the portal settles credits from the events) and nothing else; internal tools stay closed, and Gen
 // charges it no credits (the portal keeps them).
@@ -23,7 +23,7 @@ await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
 const base = `http://127.0.0.1:${(server.address() as any).port}`;
 test.after(() => server.close());
 
-const portal = createClient('hawkesgen.com portal', 'user', ['usr_*']);
+const portal = createClient('hawkesgen.ai portal', 'user', ['usr_*']);
 const other = createClient('studio', 'user', ['sickofit']);
 async function call(route: string, key: string, opts: { body?: unknown; as?: string } = {}) {
   const headers: Record<string, string> = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };

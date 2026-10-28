@@ -178,10 +178,10 @@ test('envs from the origin: live, beta, preview (/c/), local', () => {
   const env = (origin: string, page = '/') => normalize(batch(ids(), [{ name: 'page_view', page }]), { ...meta, origin }).batch?.env;
   assert.equal(env('https://sickofitgame.com'), 'live');
   assert.equal(env('https://www.sickofitgame.com'), 'live');
-  assert.equal(env('https://sickofit.hawkesgen.com'), 'beta');
-  assert.equal(env('https://sickofit.hawkesgen.com', '/c/c_0123abcd/Game/'), 'preview');
+  assert.equal(env('https://sickofit.hawkesgen.ai'), 'beta');
+  assert.equal(env('https://sickofit.hawkesgen.ai', '/c/c_0123abcd/Game/'), 'preview');
   assert.equal(env('http://localhost:5173'), 'local');
-  assert.equal(env('https://dod.hawkesgen.com'), undefined); // another product's beta
+  assert.equal(env('https://dod.hawkesgen.ai'), undefined); // another product's beta
 });
 
 test('collect over HTTP: text/plain, CORS for registered origins only, 64 KB cap, never a 5xx, rate limit', async () => {
@@ -311,7 +311,7 @@ play('player_four_xx', 'p4_session_a', day(-1), [{ name: 'game_load_start', dt: 
 play('bot_player_xxx', 'bot_session_a', day(-5), [{ name: 'game_load_start' }, { name: 'game_ready' }], { ua: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/141.0.0.0 Safari/537.36' });
 play('webdriver_xxxx', 'wd_session_a', day(-5), [{ name: 'game_ready' }], { flags: { webdriver: true } });
 play('j_own_device_x', 'j_session_a', day(-5), [{ name: 'game_ready' }], { flags: { internal: true } });
-play('beta_player_xx', 'beta_session_a', day(-5), [{ name: 'game_ready' }], { origin: 'https://phorigins.hawkesgen.com', build: '2.1' });
+play('beta_player_xx', 'beta_session_a', day(-5), [{ name: 'game_ready' }], { origin: 'https://phorigins.hawkesgen.ai', build: '2.1' });
 
 const F = (q: Record<string, string> = {}) => Q.parseFilters((k) => q[k] ?? (k === 'range' ? '30d' : undefined), NOW);
 
@@ -437,8 +437,8 @@ test("a site's registry funnel is its default funnel (Hawkes Gen: visit, play, f
 });
 
 const plain = (v: unknown) => JSON.parse(JSON.stringify(v));
-test('accounts, frustration and time per activity (hawkesgen.com); a relay with a key passes the visitor on', async () => {
-  const HG = 'https://hawkesgen.com';
+test('accounts, frustration and time per activity (hawkesgen.ai); a relay with a key passes the visitor on', async () => {
+  const HG = 'https://hawkesgen.ai';
   const at = Date.now() - 2 * 3600_000; // ended well before "now": these sessions are over
   const send = (anon: string, session: string, user: string | null, events: any[]) => {
     const r = normalize({ product: 'hawkesgen', anon, session, user, events: events.map((e, i) => ({ seq: i, t: at + (e.dt ?? i * 1000), page: '/app', ...e })) }, { origin: HG, ua: CHROME, ip: null, now: at });

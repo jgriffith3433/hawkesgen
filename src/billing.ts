@@ -420,7 +420,7 @@ export function getUserLedger(userId: string, limit = 100) {
 export async function createStripeCheckoutSession(
   user: UserRow,
   body: { packId?: unknown; successUrl?: unknown; cancelUrl?: unknown },
-  defaultOrigin = 'https://gen.hawkesgen.com',
+  defaultOrigin = 'https://gen.hawkesgen.ai',
 ) {
   const packId = String(body.packId ?? '').trim();
   const pack = getCreditPack(packId);

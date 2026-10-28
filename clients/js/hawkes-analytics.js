@@ -1,6 +1,6 @@
 /* Hawkes Analytics: the player analytics SDK every Hawkes product's pages load (Hawkes Gen, docs/analytics.md).
  *
- *   <script src="https://gen.hawkesgen.com/sdk/analytics@1.js" data-product="sickofit" data-build="1.4.2" defer></script>
+ *   <script src="https://gen.hawkesgen.ai/sdk/analytics@1.js" data-product="sickofit" data-build="1.4.2" defer></script>
  *   or: import './hawkes-analytics.js'; window.hawkesAnalytics.init({ product: 'sickofit' })   (hawkes-analytics.mjs)
  *
  * No dependencies, never throws into the game, never blocks it. Page views, sessions, active time, device, load
@@ -30,7 +30,7 @@
   if (w.hawkesAnalytics && w.hawkesAnalytics.version) return; // loaded twice
 
   var doc = w.document, nav = w.navigator || {}, loc = w.location;
-  var ENDPOINT = 'https://gen.hawkesgen.com/v1/analytics/collect';
+  var ENDPOINT = 'https://gen.hawkesgen.ai/v1/analytics/collect';
   var SESSION_IDLE = 30 * 60e3; // 30 minutes without activity ends a session
   var ACTIVE_IDLE = 60e3; // active time stops 60 s after the last input
   var FLUSH_MS = 5e3, FLUSH_AT = 20, MAX_BATCH = 200, MAX_BYTES = 60000;
@@ -73,7 +73,7 @@
   function envOf(host, path) {
     host = String(host || '').toLowerCase();
     if (!host || host === 'localhost' || /^127\./.test(host) || host === '[::1]' || /\.local$/.test(host) || /^(10|192\.168)\./.test(host)) return 'local';
-    if (/\.hawkesgen\.com$/.test(host)) return /^\/c\//.test(path || '') ? 'preview' : 'beta';
+    if (/\.hawkesgen\.ai$/.test(host)) return /^\/c\//.test(path || '') ? 'preview' : 'beta';
     return 'live';
   }
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// cdn.hawkesgen.com: a CloudFront distribution in front of the library bucket (src/storage.ts). Idempotent: every step
+// cdn.hawkesgen.ai: a CloudFront distribution in front of the library bucket (src/storage.ts). Idempotent: every step
 // looks at what exists and only does what's missing. Dry run by default (reads only, prints the plan and the cost);
 // --apply creates things. Docs: docs/cdn.md.
 //
 //   node deploy/cdn.mjs                 # plan
 //   node deploy/cdn.mjs --apply         # create/repair, then save settings.storage.cdn
-//   options: --domain cdn.hawkesgen.com  --zone hawkesgen.com  --bucket <name>  --alarm-usd 20
+//   options: --domain cdn.hawkesgen.ai  --zone hawkesgen.ai  --bucket <name>  --alarm-usd 20
 //
 // Uses Gen's own AWS config (awsConfig(): .env keys or the instance role). Keys are never printed.
 import { CloudFrontClient, ListOriginAccessControlsCommand, CreateOriginAccessControlCommand, ListCachePoliciesCommand, CreateCachePolicyCommand, ListResponseHeadersPoliciesCommand, CreateResponseHeadersPolicyCommand, ListDistributionsCommand, CreateDistributionCommand } from '@aws-sdk/client-cloudfront';
@@ -21,8 +21,8 @@ const args = process.argv.slice(2);
 const flag = (n) => args.includes(`--${n}`);
 const opt = (n, d) => (args.includes(`--${n}`) ? args[args.indexOf(`--${n}`) + 1] : d);
 const APPLY = flag('apply');
-const DOMAIN = opt('domain', 'cdn.hawkesgen.com');
-const ZONE = opt('zone', 'hawkesgen.com');
+const DOMAIN = opt('domain', 'cdn.hawkesgen.ai');
+const ZONE = opt('zone', 'hawkesgen.ai');
 const BUCKET = opt('bucket', configuredBucket() ?? 'hawkes-gen-library-028793236279');
 const ALARM_USD = Number(opt('alarm-usd', 20));
 const NAMES = { oac: 'hawkesgen-library-oac', cache: 'hawkesgen-cdn-path-only', headers: 'hawkesgen-cdn-headers', alarm: 'hawkesgen-cdn-cloudfront-charges', sid: 'HawkesCdnRead' };
@@ -158,7 +158,7 @@ if (loadSettings().storage.cdn === url) say(`  already ${url}`);
 else if (APPLY && dist) {
   const s = loadSettings();
   saveSettings({ storage: { ...s.storage, cdn: url } });
-  say(`  set to ${url} in this checkout's settings. On the cloud server run: curl -X POST -H "Authorization: Bearer $KEY" -H 'content-type: application/json' -d '{"storage":{"bucket":"${BUCKET}","cdn":"${url}"}}' https://gen.hawkesgen.com/v1/settings`);
+  say(`  set to ${url} in this checkout's settings. On the cloud server run: curl -X POST -H "Authorization: Bearer $KEY" -H 'content-type: application/json' -d '{"storage":{"bucket":"${BUCKET}","cdn":"${url}"}}' https://gen.hawkesgen.ai/v1/settings`);
 } else did(`set storage.cdn to ${url}`);
 
 say(`\nCost: pay-as-you-go, no monthly fee. The free tier covers 1 TB out and 10M requests a month; after that about $0.085/GB and $0.01 per 10,000 HTTPS requests (US, PriceClass_100: US/Canada/Europe edges). S3 to CloudFront transfer is free. The certificate, OAC and policies are free; the Route 53 records cost about $0.40 a month for the alias queries at most, and CloudWatch gives the first 10 alarms free.`);

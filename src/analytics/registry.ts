@@ -6,7 +6,7 @@ import { paths } from '../config.ts';
 export type Env = 'live' | 'beta' | 'preview' | 'local';
 export type Product = { id: string; name: string; origins: string[]; beta?: string; levels?: string[]; funnel?: string[]; customEvents: number };
 
-export const BETA_DOMAIN = 'hawkesgen.com';
+export const BETA_DOMAIN = 'hawkesgen.ai';
 
 let cache: { mtime: number; products: Map<string, Product> } | null = null;
 
@@ -37,7 +37,7 @@ export function products(file = paths.analyticsProducts): Map<string, Product> {
 
 /**
  * The env an origin means for a product, or null when the product doesn't accept it: one of its live origins (live),
- * https://<beta>.hawkesgen.com (beta, or preview for pages under /c/<change>/), http(s)://localhost or 127.0.0.1 on
+ * https://<beta>.hawkesgen.ai (beta, or preview for pages under /c/<change>/), http(s)://localhost or 127.0.0.1 on
  * any port (local).
  */
 export function envFor(p: Product, origin: string, page = ''): Env | null {

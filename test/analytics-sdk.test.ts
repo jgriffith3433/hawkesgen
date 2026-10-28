@@ -92,7 +92,7 @@ test('batches: every 5 s, or at 20 events; one session per batch, entry with the
   p.advance(5000);
   assert.equal(p.sent.length, 1);
   const b = p.sent[0];
-  assert.equal(b.url, 'https://gen.hawkesgen.com/v1/analytics/collect');
+  assert.equal(b.url, 'https://gen.hawkesgen.ai/v1/analytics/collect');
   assert.equal(b.product, 'sickofit');
   assert.deepEqual(b.build, { version: '1.4.2' });
   assert.equal(b.env, 'live');
@@ -279,8 +279,8 @@ test('env from the hostname', () => {
   const env = (url: string) => page({ url }).a.config().env;
   assert.equal(env('https://sickofitgame.com/'), 'live');
   assert.equal(env('https://www.phorigins.com/play'), 'live');
-  assert.equal(env('https://sickofit.hawkesgen.com/Game/'), 'beta');
-  assert.equal(env('https://sickofit.hawkesgen.com/c/c_123/Game/'), 'preview');
+  assert.equal(env('https://sickofit.hawkesgen.ai/Game/'), 'beta');
+  assert.equal(env('https://sickofit.hawkesgen.ai/c/c_123/Game/'), 'preview');
   assert.equal(env('http://localhost:5173/'), 'local');
   assert.equal(env('http://127.0.0.1:8080/'), 'local');
 });
@@ -445,10 +445,10 @@ test('the Unity bridge (.jslib): loads the SDK with the product and build, and q
     d.querySelector = (sel: string) => (sel === 'script[data-hawkes-analytics]' ? added[0] ?? null : null);
     d.createElement = () => { const attrs: Record<string, string> = {}; return { attrs, setAttribute: (k: string, v: string) => { attrs[k] = v; }, getAttribute: (k: string) => attrs[k] ?? null }; };
     new Function('mergeInto', 'LibraryManager', 'UTF8ToString', 'window', 'document', 'location', JSLIB)((_l: any, o: any) => Object.assign(lib, o), { library: lib }, (s: string) => s, w, d, w.location);
-    lib.HawkesAnalytics_Init('sickofit', 'https://gen.hawkesgen.com/sdk/analytics@1.js', '', '1.4.2', 0);
-    lib.HawkesAnalytics_Init('sickofit', 'https://gen.hawkesgen.com/sdk/analytics@1.js', '', '1.4.2', 0);
+    lib.HawkesAnalytics_Init('sickofit', 'https://gen.hawkesgen.ai/sdk/analytics@1.js', '', '1.4.2', 0);
+    lib.HawkesAnalytics_Init('sickofit', 'https://gen.hawkesgen.ai/sdk/analytics@1.js', '', '1.4.2', 0);
     assert.equal(added.length, 1, 'one script tag');
-    assert.equal(added[0].src, 'https://gen.hawkesgen.com/sdk/analytics@1.js');
+    assert.equal(added[0].src, 'https://gen.hawkesgen.ai/sdk/analytics@1.js');
     assert.equal(added[0].attrs['data-build'], '1.4.2+v12');
     lib.HawkesAnalytics_Call('setContext', '[{"level":"1"}]');
     lib.HawkesAnalytics_Call('track', '["unity_boot",{"a":1}]');

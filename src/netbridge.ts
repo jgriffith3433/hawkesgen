@@ -1,4 +1,4 @@
-// What Gen does for Hawkes Net, which runs on its own box (https://net.hawkesgen.com; the service is net/ in this repo,
+// What Gen does for Hawkes Net, which runs on its own box (https://net.hawkesgen.ai; the service is net/ in this repo,
 // docs/net.md). Three things, nothing else:
 //   GET  /v1/net/whoami   the calling key (id, name, role, projects; narrowed by X-Hawkesgen-Project like every Gen call):
 //                         how the box checks Gen API keys (it keeps an answer a minute)
@@ -14,7 +14,7 @@ import { env } from './config.ts';
 import { recordUsage } from './usage.ts';
 
 /** The Hawkes Net service (HAWKESGEN_NET_URL to point elsewhere, e.g. a box on this PC). */
-export const netUrl = () => (env('HAWKESGEN_NET_URL') ?? 'https://net.hawkesgen.com').replace(/\/+$/, '');
+export const netUrl = () => (env('HAWKESGEN_NET_URL') ?? 'https://net.hawkesgen.ai').replace(/\/+$/, '');
 /** What the relay costs per GB out (EC2 data transfer, us-east-1), for the usage rows. */
 const RELAY_GB_COST = () => Number(env('HAWKESNET_GB_COST') ?? 0.09);
 

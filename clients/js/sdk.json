@@ -1,5 +1,5 @@
 {
-  "_about": "Where each product keeps Hawkes Gen's JS SDK. Products keep copies (their own CI and site builds can't read this private repo), and `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one; `status` lists the ones behind. Paths are folders in each repo (next to C:\\Projects\\hawkesgen, /srv/hawkes on the server). Add a product here when it starts using the SDK. The analytics SDK (hawkes-analytics.js, .mjs and their .d.ts) is also served at https://gen.hawkesgen.com/sdk/analytics@1.js for pages that load it from Gen. Hawkes Net's SDK is not here any more: it is the hawkesnet repo's (sdk/js, npm @hawkesgen/net).",
+  "_about": "Where each product keeps Hawkes Gen's JS SDK. Products keep copies (their own CI and site builds can't read this private repo), and `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one; `status` lists the ones behind. Paths are folders in each repo (next to C:\\Projects\\hawkesgen, /srv/hawkes on the server). Add a product here when it starts using the SDK. The analytics SDK (hawkes-analytics.js, .mjs and their .d.ts) is also served at https://gen.hawkesgen.ai/sdk/analytics@1.js for pages that load it from Gen. Hawkes Net's SDK is not here any more: it is the hawkesnet repo's (sdk/js, npm @hawkesgen/net).",
   "files": [
     "hawkesgen.mjs",
     "hawkesgen-ui.mjs",

@@ -128,7 +128,7 @@ Run, nothing is uploaded and nothing listens on the internet:
   socket, a local game server).
 - **Service workers** are blocked on those contexts (`serviceWorkers: 'block'`), because routing doesn't see a service
   worker's fetches.
-- **Everything else** goes straight out from the service: live sites, CDNs, net.hawkesgen.com and beta Hawkes Net.
+- **Everything else** goes straight out from the service: live sites, CDNs, net.hawkesgen.ai and beta Hawkes Net.
 - **Why this is enough.** It works the same for a static build, a Vite dev server and a server app. It needs no bucket,
   no signed URLs and no second route into the container.
 
@@ -143,7 +143,7 @@ working:
 - Local copies go through the routing above.
 - Login cookies a local server sets reach the remote browser through `Set-Cookie`, and come back with its requests.
 
-If Studio ever plays a protected `https://<sub>.hawkesgen.com/` directly, it would need to pass a cookie (a
+If Studio ever plays a protected `https://<sub>.hawkesgen.ai/` directly, it would need to pass a cookie (a
 `playtest.run` param that would `context.addCookies`). That gap is the same on EC2.
 
 ### Video

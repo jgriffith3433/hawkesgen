@@ -224,7 +224,7 @@ test('peers: the players\' videos are stacked into one 30 fps mp4 (side by side,
 });
 
 test('globals: named strings become window values before the page runs; anything else is dropped', () => {
-  assert.equal(globalsScript({ HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.com' }), 'window["HAWKES_NET_ENDPOINT"]="https://hawkesnet.hawkesgen.com";');
+  assert.equal(globalsScript({ HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.ai' }), 'window["HAWKES_NET_ENDPOINT"]="https://hawkesnet.hawkesgen.ai";');
   assert.equal(globalsScript({ lower: 'x', 'A-B': 'x', N: 3, O: { a: 1 } }), null, 'bad names and non-strings are dropped');
   assert.equal(globalsScript({ X: '</script><script>alert(1)' }), 'window["X"]="</script><script>alert(1)";', 'values are JSON strings, never code');
   assert.equal(globalsScript(null), null);

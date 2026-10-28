@@ -64,7 +64,7 @@ export function authenticate(req: IncomingMessage): Client | null {
   return null;
 }
 
-// A key's projects are names, '*' (all), or a prefix pattern like 'u_*': the hawkesgen.com portal holds one key and
+// A key's projects are names, '*' (all), or a prefix pattern like 'u_*': the hawkesgen.ai portal holds one key and
 // works in a project per customer (u_<id>), naming it on every call.
 const matches = (p: string, project: string) => p === '*' || p === project || (p.endsWith('*') && project.startsWith(p.slice(0, -1)));
 

@@ -24,7 +24,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `CLAUDE.md` just imports this file; edit this one.
 
 **Deploys:** this folder is the private repo `jgriffith3433/hawkesgen`. Every push to `main` deploys it to the cloud
-(gen.hawkesgen.com): CI (`.github/workflows/ci.yml`: typecheck and tests) must pass, then the control server pulls it
+(gen.hawkesgen.ai): CI (`.github/workflows/ci.yml`: typecheck and tests) must pass, then the control server pulls it
 within a few minutes, waiting while jobs run (`hawkesstudio/deploy/hawkes-pull.mjs`). Push to main only with J's OK,
 after `npm run typecheck` and `npm test`; commit only your own files (other sessions edit here too). Roll back with
 `git revert` + push. Details: `hawkesstudio/docs/cloud.md` ("How code gets to the server").
@@ -72,7 +72,7 @@ each job).
 | `src/tools/threed.ts`, `viewsheet.ts` | The "always more than one view" rule (refusals, deprecation notices, tool order) and `image.viewsheet` (back/left/right views, Claude's consistency check, the sheet) |
 | `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
 | `src/analytics/`, `analytics/products.json` | Player analytics (docs/analytics.md): `collect.ts` (the public door: validation, limits, CORS, rate limit), `geo.ts` + `mmdb.ts` (DB-IP Lite GeoIP), `ua.ts`, `store.ts` (`.data/analytics.db`: events, sessions, daily rollups, the purge), `query.ts` + `routes.ts` (the reads). The registry lists each product's origins |
-| `src/netbridge.ts` | **Hawkes Net's bridge.** Hawkes Net (multiplayer, `https://net.hawkesgen.com`) is its own repo, `jgriffith3433/hawkesnet`. Gen's whole part: `GET /v1/net/whoami` (the box checks API keys with it), `POST /v1/net/usage` (the box's usage into Gen's usage table) and a 308 to the box for the rest of `/v1/net/` and the SDK files (`/sdk/hawkes-net*.mjs`). Test `test/netbridge.test.ts` |
+| `src/netbridge.ts` | **Hawkes Net's bridge.** Hawkes Net (multiplayer, `https://net.hawkesgen.ai`) is its own repo, `jgriffith3433/hawkesnet`. Gen's whole part: `GET /v1/net/whoami` (the box checks API keys with it), `POST /v1/net/usage` (the box's usage into Gen's usage table) and a 308 to the box for the rest of `/v1/net/` and the SDK files (`/sdk/hawkes-net*.mjs`). Test `test/netbridge.test.ts` |
 | `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |
 | `src/machines.ts` | The Machines monitor (`GET /v1/machines`, the dashboard tab): the GPU servers, build server and playtester measured over SSH (CPU, memory, GPU, disk, network, idle clock) every minute while running, 7 days of history in `machine_samples`, and the alerts |
 | `src/providers/elevenlabs.ts`, `anthropic.ts`, `cursor.ts` | API clients. Every writing call goes through `anthropic.ts` `ask()`. `settings.brain` `cursor` runs Cursor's `agent` on the Cursor plan (`cursor.ts`, `CURSOR_API_KEY`, model Grok 4.7). `copilot` runs the GitHub Copilot CLI (`copilot.ts`, `copilot -p --output-format json`, `COPILOT_GITHUB_TOKEN` or a server login, $0, usage as `copilot`). `claude` runs Claude Code on J's Max plan by default (`claudecode.ts`: `claude -p`, stream-json, $0, usage as `max-plan`, capped by `settings.claude`); `settings.claude.backend: "api"` brings back the API key |

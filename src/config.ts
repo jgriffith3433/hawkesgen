@@ -80,7 +80,7 @@ export type Settings = {
     maxDiskGb: number;
   };
   /** The LOD system makes levels automatically only for these projects (globs: "usr_*"): the ones whose games load them
-   *  (hawkesgen.com's customers and its starter library, the beta portal's). Anything else asked for by id still gets them. */
+   *  (hawkesgen.ai's customers and its starter library, the beta portal's). Anything else asked for by id still gets them. */
   lod: { projects: string[] };
   /** Fair sharing of the GPU between customers (src/jobs.ts `fairOrder`): `perProjectGpu` is the most GPU jobs one customer
    *  project runs at once, `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
@@ -105,7 +105,7 @@ export type Settings = {
   /** Dollars per unit for usage reports, where the provider doesn't say. */
   rates: { elevenlabsPer1kChars: number };
   /** The library's files also go to this S3 bucket (src/storage.ts); null keeps them on this disk only. */
-  storage: { bucket: string | null; /** Which cloud the bucket is in: s3 (default) or gcs (Google Cloud Storage, src/storage.ts). */ provider?: 's3' | 'gcs'; /** The CDN's base URL (https://cdn.hawkesgen.com), set by deploy/cdn.mjs; files are at <cdn>/sha256/<hash>. */ cdn?: string | null };
+  storage: { bucket: string | null; /** Which cloud the bucket is in: s3 (default) or gcs (Google Cloud Storage, src/storage.ts). */ provider?: 's3' | 'gcs'; /** The CDN's base URL (https://cdn.hawkesgen.ai), set by deploy/cdn.mjs; files are at <cdn>/sha256/<hash>. */ cdn?: string | null };
   /** The sound suite (docs/audio.md). `verified`: open models that passed their smoke test and audition; `provider: auto` uses
    *  only these, else ElevenLabs. `targetLufs`: loudness per project (and kind) for audio.process; "default" is the fallback. */
   audio: { verified: string[]; targetLufs: Record<string, number> };

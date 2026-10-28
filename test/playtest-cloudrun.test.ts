@@ -95,7 +95,7 @@ test('local origins: the page\'s localhost port only, any scheme', () => {
   assert.ok(pc.isLocal('http://localhost:8089/Game/v3/Build.data.unityweb', ports));
   assert.ok(pc.isLocal('ws://127.0.0.1:8089/hmr', ports));
   assert.ok(!pc.isLocal('http://localhost:5173/', ports), 'another local port is not served');
-  assert.ok(!pc.isLocal('https://net.hawkesgen.com/', ports), 'the internet goes straight out from the service');
+  assert.ok(!pc.isLocal('https://net.hawkesgen.ai/', ports), 'the internet goes straight out from the service');
 });
 
 test('headers: no hop-by-hop ones either way; every Set-Cookie kept; no content-encoding (fetch decoded it)', () => {
