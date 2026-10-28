@@ -8,3 +8,4 @@ bin/git-credential-hawkes text eol=lf
 *.jpg binary
 *.webp binary
 *.glb binary
+server/cloudrun/** text eol=lf

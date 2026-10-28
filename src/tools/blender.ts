@@ -116,6 +116,7 @@ export const blenderRenderTool: Tool = {
     'docs/blender.md has the shot format and docs/film-pipeline.md the whole film pipeline.',
   provider: 'comfy',
   family: 'blender',
+  server: 'ssh',
   output: 'video',
   inputs: {
     scene: { kind: 'file', description: 'A .blend, or a .zip of a project folder with its textures (the .blend at the top, or name it with blend).' },

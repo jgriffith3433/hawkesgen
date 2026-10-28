@@ -8,6 +8,11 @@
 //
 // Uploads run in the background (two at a time) and are retried on the next start; `backfill` queues every asset made
 // before this existed. The bucket is private and is created the first time (us-east-1, like the control server).
+//
+// Google Cloud Storage instead of S3: settings.storage.provider "gcs" (or HAWKESGEN_LIBRARY_STORE=gcs), the same
+// bucket setting naming a GCS bucket, credentials from Application Default Credentials (src/providers/gcp/gcs.ts). Same
+// keys (sha256/<hash>), same metadata. The GCS bucket is never created here: make it with the location and access
+// rules J chose (docs/cloudrun.md). tools/storage-copy.mjs copies an S3 bucket's objects into it.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,6 +20,7 @@ import { db } from './db.ts';
 import { awsConfig } from './providers/comfy/fleet.ts';
 import { loadSettings } from './config.ts';
 import { mimeOf } from './util.ts';
+import { gcs, gsUri, type Gcs } from './providers/gcp/gcs.ts';
 
 const REGION = 'us-east-1';
 export const bucket = (): string | null => {
@@ -22,6 +28,11 @@ export const bucket = (): string | null => {
   return b && b !== 'off' ? String(b) : null;
 };
 export const keyOf = (sha: string) => `sha256/${sha}`;
+/** Which cloud holds the bucket: S3 (the default) or Google Cloud Storage. */
+export const provider = (): 's3' | 'gcs' => {
+  const p = process.env.HAWKESGEN_LIBRARY_STORE ?? loadSettings().storage.provider;
+  return p === 'gcs' ? 'gcs' : 's3';
+};
 
 /** Keys are sha256/<hash>, so a key's bytes never change: browsers and a CDN may keep them forever. */
 export const CACHE_CONTROL = 'public, max-age=31536000, immutable';
@@ -112,11 +123,37 @@ async function s3Store(b: string): Promise<Store> {
   };
 }
 
+/** The library in a Google Cloud Storage bucket, behind the same Store interface. `client` is for tests. */
+export function gcsStore(b: string, client: Gcs = gcs()): Store {
+  const uri = (key: string) => gsUri(b, key);
+  return {
+    async has(key) {
+      return (await client.stat(uri(key))) !== null;
+    },
+    async put(key, file, _size, contentType) {
+      await client.writeFile(uri(key), file, contentType, CACHE_CONTROL);
+    },
+    async head(key) {
+      const o = await client.stat(uri(key));
+      return o ? { contentType: o.contentType, cacheControl: o.cacheControl } : null;
+    },
+    async setMeta(key, contentType) {
+      await client.patch(uri(key), { contentType, cacheControl: CACHE_CONTROL });
+    },
+    async del(keys) {
+      for (const k of keys) await client.del(uri(k));
+    },
+    async get(key, dest) {
+      await client.download(uri(key), dest);
+    },
+  };
+}
+
 async function getStore(): Promise<Store | null> {
   if (store) return store;
   const b = bucket();
   if (!b) return null;
-  store = await s3Store(b);
+  store = provider() === 'gcs' ? gcsStore(b) : await s3Store(b);
   return store;
 }
 

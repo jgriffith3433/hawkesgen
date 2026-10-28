@@ -105,10 +105,18 @@ export type Settings = {
   /** Dollars per unit for usage reports, where the provider doesn't say. */
   rates: { elevenlabsPer1kChars: number };
   /** The library's files also go to this S3 bucket (src/storage.ts); null keeps them on this disk only. */
-  storage: { bucket: string | null; /** The CDN's base URL (https://cdn.hawkesgen.com), set by deploy/cdn.mjs; files are at <cdn>/sha256/<hash>. */ cdn?: string | null };
+  storage: { bucket: string | null; /** Which cloud the bucket is in: s3 (default) or gcs (Google Cloud Storage, src/storage.ts). */ provider?: 's3' | 'gcs'; /** The CDN's base URL (https://cdn.hawkesgen.com), set by deploy/cdn.mjs; files are at <cdn>/sha256/<hash>. */ cdn?: string | null };
   /** The sound suite (docs/audio.md). `verified`: open models that passed their smoke test and audition; `provider: auto` uses
    *  only these, else ElevenLabs. `targetLufs`: loudness per project (and kind) for audio.process; "default" is the fallback. */
   audio: { verified: string[]; targetLufs: Record<string, number> };
+  /**
+   * Where GPU jobs run (docs/cloudrun.md). `backend`: fleet (the AWS servers, the default) or cloudrun (the family's Cloud
+   * Run service, server/cloudrun/services.json); `families` overrides it per model family. `cloudrun.urls`: each deployed
+   * service's URL (tools/cloudrun/deploy.mjs prints them); a family whose service has no URL stays on the fleet.
+   * `cloudrun.bucket`: inputs and outputs of runs (gs://<bucket>/cloudrun/...). `cloudrun.services`: family -> service
+   * overrides (a pilot alternative).
+   */
+  gpu: { backend: 'fleet' | 'cloudrun'; families: Record<string, 'fleet' | 'cloudrun'>; cloudrun: { bucket: string | null; urls: Record<string, string>; services: Record<string, string> } };
 };
 
 export const SETTINGS_DEFAULTS: Settings = {
@@ -123,10 +131,29 @@ export const SETTINGS_DEFAULTS: Settings = {
   model: '',
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
-  storage: { bucket: null, cdn: null },
+  storage: { bucket: null, provider: 's3', cdn: null },
+  gpu: { backend: 'fleet', families: {}, cloudrun: { bucket: null, urls: {}, services: {} } },
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
 };
 export const FLEET_MAX = 16;
+
+const NAME = /^[a-z0-9][a-z0-9._:-]{0,62}$/;
+/** settings.gpu, checked: only known backends, family and service names, https Cloud Run URLs. */
+function cleanGpu(g: Partial<Settings['gpu']> | undefined): Settings['gpu'] {
+  const be = (v: unknown): 'fleet' | 'cloudrun' | null => (v === 'cloudrun' ? 'cloudrun' : v === 'fleet' ? 'fleet' : null);
+  const families: Record<string, 'fleet' | 'cloudrun'> = {};
+  for (const [k, v] of Object.entries(g?.families ?? {})) if (NAME.test(k) && be(v)) families[k] = be(v)!;
+  const urls: Record<string, string> = {};
+  for (const [k, v] of Object.entries(g?.cloudrun?.urls ?? {})) if (NAME.test(k) && typeof v === 'string' && /^https:\/\/[a-z0-9.-]+\/?$/.test(v)) urls[k] = v.replace(/\/$/, '');
+  const services: Record<string, string> = {};
+  for (const [k, v] of Object.entries(g?.cloudrun?.services ?? {})) if (NAME.test(k) && typeof v === 'string' && NAME.test(v)) services[k] = v;
+  const b = g?.cloudrun?.bucket;
+  return {
+    backend: be(g?.backend) ?? 'fleet',
+    families,
+    cloudrun: { bucket: typeof b === 'string' && /^[a-z0-9][a-z0-9._-]{2,62}$/.test(b) ? b : null, urls, services },
+  };
+}
 
 function clean(s: Settings): Settings {
   const n = (v: unknown, lo: number, hi: number, d: number) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || d));
@@ -169,8 +196,10 @@ function clean(s: Settings): Settings {
     },
     storage: {
       bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null,
+      provider: s.storage?.provider === 'gcs' ? 'gcs' : 's3',
       cdn: typeof s.storage?.cdn === 'string' && /^https:\/\/[a-z0-9.-]+$/.test(s.storage.cdn) ? s.storage.cdn : null,
     },
+    gpu: cleanGpu(s.gpu),
   };
 }
 
@@ -182,7 +211,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -200,6 +229,8 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     model: patch.model ?? cur.model,
     rates: { ...cur.rates, ...(patch.rates ?? {}) },
     audio: { ...cur.audio, ...(patch.audio ?? {}) },
+    storage: { ...cur.storage, ...(patch.storage ?? {}) },
+    gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
   return next;

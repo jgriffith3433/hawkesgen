@@ -195,6 +195,7 @@ export const motionFromTextTool: Tool = {
     'docs/3d-characters.md ("motion.from-text").',
   provider: 'comfy',
   family: 'motion',
+  server: 'ssh',
   output: 'file',
   inputs: {
     character: { kind: 'file', description: 'The rig to put the clip on (GLB or FBX from mesh.rig). Without it, the job returns the BVH only.' },

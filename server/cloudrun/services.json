@@ -1,0 +1,210 @@
+{
+  "_about": "Which Cloud Run GPU service runs each ComfyUI model family (docs/cloudrun.md). Gen's queue sends a GPU job to its family's service when settings.gpu says cloudrun for that family and the service's URL is in settings.gpu.cloudrun.urls; everything else (families not listed here, tools that need a server over SSH: blender, rig, motion, lora.train, image.character, the open audio models) stays on the AWS fleet. models: 'dir/file' entries (from server/models.json and the workflow manifests) the service loads at startup. load: 'download' copies them into the instance's in-memory filesystem before the startup probe passes (fastest per Google's GPU guide; costs memory), 'mount' reads them lazily from the models bucket through a Cloud Storage FUSE volume (no memory; the first job on an instance reads them at FUSE speed). Every service also mounts the bucket, so a model a job asks for that isn't preloaded comes from the mount. maxInstances is the service's ceiling and Gen's concurrency for it (concurrency is 1 per instance). Prices are per second, Tier 1, instance-based billing, no zonal redundancy: VERIFY them on cloud.google.com/run/pricing before relying on the numbers (the RTX PRO 6000 rate is an estimate).",
+  "image": "gen-gpu",
+  "repository": "hawkes-gen",
+  "bucketSuffix": "-gen-gpu",
+  "timeoutSeconds": 3600,
+  "graphLimitSeconds": 3300,
+  "prices": {
+    "cpuPerVcpuSecond": 0.000018,
+    "memoryPerGibSecond": 0.000002,
+    "gpuPerSecond": {
+      "nvidia-l4": 0.0001867,
+      "nvidia-rtx-pro-6000": 0.00125
+    },
+    "verified": false
+  },
+  "gpus": {
+    "nvidia-l4": { "vramGb": 24, "minCpu": 4, "minMemoryGi": 16, "regions": ["us-central1", "us-east4", "europe-west1", "europe-west4", "asia-southeast1"], "fallbackRegion": "us-central1" },
+    "nvidia-rtx-pro-6000": { "vramGb": 96, "minCpu": 20, "minMemoryGi": 80, "regions": ["us-central1", "europe-west4", "asia-southeast1", "asia-south2"], "fallbackRegion": "us-central1" }
+  },
+  "services": {
+    "gen-z-image": {
+      "gpu": "nvidia-l4",
+      "cpu": 8,
+      "memoryGi": 32,
+      "maxInstances": 2,
+      "load": "mount",
+      "families": ["z-image"],
+      "why": "image.generate and image.control: 12 GB diffusion model + 8 GB text encoder fit the L4 (ComfyUI unloads the encoder after encoding). At 32 GiB (Google's recommended L4 size) the 20 GB of files plus ComfyUI's staging copy would not fit in memory: mount.",
+      "models": [
+        "diffusion_models/z_image_turbo_bf16.safetensors",
+        "text_encoders/qwen_3_4b.safetensors",
+        "vae/ae.safetensors",
+        "model_patches/Z-Image-Turbo-Fun-Controlnet-Union.safetensors"
+      ]
+    },
+    "gen-utility": {
+      "gpu": "nvidia-l4",
+      "cpu": 8,
+      "memoryGi": 32,
+      "maxInstances": 2,
+      "load": "mount",
+      "families": ["birefnet", "sam3", "esrgan", "film", "depth-anything-3", "image.geometry", "sdpose", "image.pose-detect", "seedvr2", "marigold", "ace-step", "hunyuan3d", "hunyuan3d-mv"],
+      "why": "Small, fast models (seconds per job) that all fit 24 GB one at a time; one warm instance serves them all. Lazy mount, so a cold instance only reads what its job uses. hunyuan3d and marigold are the largest here: check them in the pilot before turning them on.",
+      "models": [
+        "background_removal/birefnet.safetensors",
+        "checkpoints/sam3.1_multiplex_fp16.safetensors",
+        "upscale_models/RealESRGAN_x4plus.safetensors",
+        "frame_interpolation/film_net_fp16.safetensors",
+        "geometry_estimation/depth_anything_3_mono_large.safetensors",
+        "geometry_estimation/moge_3_vitg_fp16.safetensors",
+        "checkpoints/sdpose_wholebody_fp16.safetensors",
+        "diffusion_models/rt_detr_v4-x-hgnet_fp16.safetensors",
+        "vae/seedvr2_ema_vae_fp16.safetensors",
+        "diffusion_models/seedvr2_3b_int8_convrot.safetensors",
+        "diffusion_models/qwen_image_edit_2509_int8_convrot.safetensors",
+        "loras/marigold_v2_albedo.safetensors",
+        "embeddings/marigold_v2_albedo_conditioning.safetensors",
+        "vae/marigold_v2_albedo_vae.safetensors",
+        "loras/marigold_v2_normals.safetensors",
+        "embeddings/marigold_v2_normals_conditioning.safetensors",
+        "vae/marigold_v2_normals_vae.safetensors",
+        "diffusion_models/acestep_v1.5_xl_turbo_bf16.safetensors",
+        "vae/ace_1.5_vae.safetensors",
+        "text_encoders/qwen_0.6b_ace15.safetensors",
+        "text_encoders/qwen_4b_ace15.safetensors",
+        "checkpoints/hunyuan_3d_v2.1.safetensors",
+        "checkpoints/hunyuan3d-dit-v2-mv_fp16.safetensors"
+      ]
+    },
+    "gen-qwen-edit": {
+      "gpu": "nvidia-rtx-pro-6000",
+      "cpu": 20,
+      "memoryGi": 80,
+      "maxInstances": 2,
+      "load": "download",
+      "families": ["qwen-edit"],
+      "why": "The busiest family (4,000 jobs a month, 39 s each): 28.5 GB of models, more than the L4's 24 GB with the 7B text encoder. Downloaded at startup so every job runs at full speed; 80 GiB holds the files plus ComfyUI's staging copy. The pilot also measures it on an L4 (gen-qwen-edit-l4 in alternatives): if quality and time hold, that is about a quarter of the price.",
+      "models": [
+        "diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors",
+        "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "vae/qwen_image_vae.safetensors",
+        "loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+        "loras/qwen-image-edit-2511-multiple-angles-lora.safetensors"
+      ]
+    },
+    "gen-qwen-image": {
+      "gpu": "nvidia-rtx-pro-6000",
+      "cpu": 20,
+      "memoryGi": 80,
+      "maxInstances": 1,
+      "load": "mount",
+      "families": ["qwen-image-2512", "qwen-edit-2509", "qwen-layered"],
+      "why": "The other Qwen models (panorama, relight, layers): rarely used, together far more than memory holds (the layered model alone is 40 GB). Mounted, read on first use.",
+      "models": [
+        "diffusion_models/qwen_image_2512_fp8_e4m3fn.safetensors",
+        "loras/Qwen-Image-2512-Lightning-4steps-V1.0-fp32.safetensors",
+        "loras/qwen-360-diffusion-2512-int8-bf16-v2.safetensors",
+        "diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+        "loras/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+        "loras/Qwen-Image-Edit-2509-Relight.safetensors",
+        "diffusion_models/qwen_image_layered_bf16.safetensors",
+        "vae/qwen_image_layered_vae.safetensors",
+        "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "vae/qwen_image_vae.safetensors"
+      ]
+    },
+    "gen-wan": {
+      "gpu": "nvidia-rtx-pro-6000",
+      "cpu": 20,
+      "memoryGi": 80,
+      "maxInstances": 2,
+      "load": "download",
+      "families": ["wan-i2v", "wan-animate", "wan-infinitetalk", "wan-t2v", "wan-fun-control", "wan-animate2", "wan21-scail"],
+      "why": "Every Wan model: they share the text encoder and VAE. wan-i2v (the busiest, 700 jobs) is downloaded at startup (~38 GB); the other Wan families come from the mount on first use. 96 GB of VRAM holds both 14B experts at once, which the L40S could not.",
+      "models": [
+        "diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+        "diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+        "loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+        "loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+        "loras/wan2.2_i2v_A14b_high_noise_lora_rank64_lightx2v_4step_1022.safetensors",
+        "loras/wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors",
+        "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "vae/wan_2.1_vae.safetensors"
+      ]
+    },
+    "gen-3d": {
+      "gpu": "nvidia-rtx-pro-6000",
+      "cpu": 20,
+      "memoryGi": 80,
+      "maxInstances": 2,
+      "load": "download",
+      "families": ["mesh.views3d", "trellis2"],
+      "why": "Images to 3D (mesh.views3d, mesh.textured): 48 GPU hours a month at 5 to 6 minutes a job, and the two share their VAEs and DINO encoder. Int8 models: small enough to download at startup.",
+      "models": [
+        "diffusion_models/pixal3d_multiview_int8_convrot.safetensors",
+        "diffusion_models/trellis_2_int8_convrot.safetensors",
+        "diffusion_models/pixal3d_int8_convrot.safetensors",
+        "vae/trellis_2_texture_vae_bf16.safetensors",
+        "vae/trellis_2_shape_vae_bf16.safetensors",
+        "clip_vision/dino_v3_L_naf_fp32.safetensors",
+        "geometry_estimation/moge_2_vitl_normal_fp16.safetensors",
+        "background_removal/birefnet.safetensors"
+      ]
+    },
+    "gen-minimax": {
+      "gpu": "nvidia-rtx-pro-6000",
+      "cpu": 20,
+      "memoryGi": 80,
+      "maxInstances": 1,
+      "load": "mount",
+      "families": ["minimax-h3"],
+      "why": "MiniMax-H3 (video.scene, keyframes, extend): 13 minutes a job, so a minute of lazy loading is small next to it, and its 32B encoder plus two diffusion models are too much to keep in memory.",
+      "models": [
+        "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+        "loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+        "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+      ]
+    },
+    "gen-ltx": {
+      "gpu": "nvidia-rtx-pro-6000",
+      "cpu": 20,
+      "memoryGi": 80,
+      "maxInstances": 1,
+      "load": "mount",
+      "families": ["ltx-2.3"],
+      "why": "LTX-2.3 (video.control, lipsync, perform): 22 jobs a month, two 22B checkpoints. Mounted.",
+      "models": [
+        "checkpoints/ltx-2.3-22b-distilled-fp8.safetensors",
+        "checkpoints/ltx-2.3-22b-dev-fp8.safetensors",
+        "text_encoders/gemma_3_12B_it_fp4_mixed.safetensors",
+        "loras/ltx-2.3-22b-ic-lora-union-control-ref0.5.safetensors",
+        "loras/ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+        "loras/gemma-3-12b-it-abliterated_lora_rank64_bf16.safetensors",
+        "loras/ltx-2.3-id-lora-talkvid-3k.safetensors",
+        "latent_upscale_models/ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+        "geometry_estimation/moge_2_vitl_normal_fp16.safetensors"
+      ]
+    }
+  },
+  "alternatives": {
+    "gen-qwen-edit-l4": {
+      "gpu": "nvidia-l4",
+      "cpu": 8,
+      "memoryGi": 32,
+      "maxInstances": 1,
+      "load": "mount",
+      "families": [],
+      "why": "Pilot only: qwen-edit on an L4 to compare time and quality with gen-qwen-edit. Deployed with --service gen-qwen-edit-l4; Gen sends it nothing unless settings.gpu.cloudrun.services maps qwen-edit to it.",
+      "models": [
+        "diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors",
+        "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "vae/qwen_image_vae.safetensors",
+        "loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+      ]
+    }
+  },
+  "stayOnVm": {
+    "blender": "Renders run up to 90 minutes: past Cloud Run's 60-minute request limit. Also driven over SSH.",
+    "rig": "mesh.rig: its own venvs and Blender over SSH.",
+    "motion": "motion.from-text: its own venv and Blender over SSH.",
+    "audio:*": "The open audio models (voxcpm2, qwen3-tts, moss...): one venv each, run over SSH by post/audio/run.py. Phase 2: a worker image with the venvs behind the same /run protocol.",
+    "lora.train, image.character": "z-image family, but they copy files to and from the server over SSH (training up to 42 minutes, the LoRA file kept on the server).",
+    "api-kling, api-seedance": "Partner API nodes: they wait on someone else's servers, so a GPU is wasted on them. Later: a CPU-only Cloud Run service with the same image."
+  }
+}

@@ -278,6 +278,7 @@ export const blenderCharacterTool: Tool = {
     'docs/3d-characters.md has every op.',
   provider: 'comfy',
   family: 'blender',
+  server: 'ssh',
   output: 'mesh',
   inputs: {
     files: { kind: 'file', multiple: true, max: 32, required: true, description: 'The character, clips (FBX, GLB, BVH), props and a high-poly, by index (ops[].file = 0 is the first). A library clip is motion:<pack>/<name> (motion:ual1/Walk_Loop).' },
