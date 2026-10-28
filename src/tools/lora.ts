@@ -31,6 +31,7 @@ export const loraTrainTool: Tool = {
     'give `captions` or set `autoCaption` (Claude writes them).',
   provider: 'comfy',
   family: 'z-image',
+  server: 'ssh',
   output: 'file',
   inputs: { images: { kind: 'image', multiple: true, max: 40, required: true, description: 'The character: clean images, one character each, varied poses' } },
   params: {
@@ -159,6 +160,7 @@ export const imageCharacterTool: Tool = {
     'character\'s LoRA, so it stays on-model in new poses, angles and scenes. Use the LoRA asset id from lora.train.',
   provider: 'comfy',
   family: 'z-image',
+  server: 'ssh',
   output: 'image',
   inputs: {},
   params: {

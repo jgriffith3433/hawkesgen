@@ -1,0 +1,255 @@
+// What a ComfyUI tool gets (ctx.comfy) when its job runs on a Cloud Run GPU service instead of a fleet server
+// (docs/cloudrun.md). The tool's code is the same: it uploads, runs graphs and downloads. Underneath:
+//
+//   upload     the file goes to gs://<bucket>/cloudrun/inputs/<sha256><ext> (once per content); the graph refers to it
+//              by the same name a fleet server would give it (hawkesgen/<sha16><ext>)
+//   runGraph   ONE request to the service runs the graph to the end on whichever instance takes it, with every input
+//              it names as a gs:// URI: nothing depends on reaching the same instance twice. The answer streams progress
+//              and lists the outputs, which the instance wrote to gs://<bucket>/cloudrun/runs/<key>/
+//   download   reads an output back from the bucket
+//   ensureModels   models the service doesn't preload ride along with each request (the instance fetches them)
+//
+// The run key is sha256(job id + graph). Jobs on Cloud Run get seeds derived from their id (jobs.ts), so a job picked
+// up again after a restart rebuilds the same graphs and the same keys: a run that finished is answered from its
+// manifest.json without the GPU, and one still going (its heartbeat.json moved in the last minute) is waited for.
+// Cancelling writes runs/<key>/cancel, which the instance checks every few seconds; a client that merely disconnects
+// (a Gen restart) does not cancel.
+
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import type { ComfyRun } from '../../tools/types.ts';
+import type { ComfyFile, Graph } from '../comfy/client.ts';
+import type { ModelRef } from '../../workflows/convert.ts';
+import type { CloudService } from './services.ts';
+import { gcs, gcpTokens, type Gcs } from '../gcp/gcs.ts';
+import { env } from '../../config.ts';
+import { GenError } from '../../util.ts';
+
+/** A heartbeat younger than this means the run is still going on some instance. */
+const FRESH_MS = 60_000;
+/** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
+const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
+
+export type CloudFile = ComfyFile & { uri: string; bytes?: number };
+export type RunDeps = {
+  store: Pick<Gcs, 'stat' | 'read' | 'readJson' | 'write' | 'writeJson'>;
+  fetch: typeof fetch;
+  idToken: (audience: string) => Promise<string>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+};
+
+let override: RunDeps | null = null;
+/** Tests swap in a fake service and bucket. */
+export function setCloudDeps(d: RunDeps | null) {
+  override = d;
+}
+
+export const defaultDeps = (): RunDeps => override ?? ({
+  store: gcs(),
+  fetch: (input, init) => fetch(input, init),
+  idToken: (aud) => gcpTokens().id(aud),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  now: () => Date.now(),
+});
+
+/** JSON with sorted keys, so the same graph always hashes the same. */
+export function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson((v as any)[k])}`).join(',')}}`;
+  return JSON.stringify(v) ?? 'null';
+}
+
+export const runKey = (jobId: string, graph: unknown) => crypto.createHash('sha256').update(`${jobId}\n${stableJson(graph)}`).digest('hex');
+
+/** A random-looking seed that is the same every time for this job and take (Cloud Run jobs' runs stay idempotent). */
+export const jobSeed = (jobId: string, n: number) => (crypto.createHash('sha256').update(`${jobId}:${n}`).digest().readUInt32BE(0) % (2 ** 31 - 2)) + 1;
+
+/** Every input name the graph uses (string values that contain one of the uploaded names). */
+export function inputsOf(graph: unknown, names: Map<string, string>): Record<string, string> {
+  const used: Record<string, string> = {};
+  const walk = (v: unknown) => {
+    if (typeof v === 'string') {
+      for (const [name, uri] of names) if (v.includes(name)) used[name] = uri;
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  walk(graph);
+  return used;
+}
+
+/** Reads an NDJSON stream line by line. */
+export async function* ndjson(body: ReadableStream<Uint8Array>): AsyncGenerator<any> {
+  const dec = new TextDecoder();
+  let buf = '';
+  for await (const chunk of body as any as AsyncIterable<Uint8Array>) {
+    buf += dec.decode(chunk, { stream: true });
+    let i: number;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line) yield JSON.parse(line);
+    }
+  }
+  if (buf.trim()) yield JSON.parse(buf.trim());
+}
+
+export type CloudHooks = {
+  step(detail: string): void;
+  /** Progress that shouldn't fill the log (each poll). */
+  progress(detail: string): void;
+  /** Keeps the graph with the job (dashboard -> job). */
+  keepGraph(graph: Graph): void;
+  /** Instance seconds a run took (and the cold start it paid for), for the job's cost. */
+  addSeconds(seconds: number, startupSeconds: number): void;
+  signal: AbortSignal;
+};
+
+export type CloudComfyRun = ComfyRun & { service: CloudService };
+
+export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: CloudHooks, deps: RunDeps = defaultDeps()): CloudComfyRun {
+  const base = `gs://${svc.bucket}/cloudrun`;
+  /** Input name -> gs:// URI. */
+  const names = new Map<string, string>();
+  const known = new Set<string>();
+  const pending = new Map<string, ModelRef>();
+
+  const uploadBuffer = async (data: Buffer, name: string) => {
+    const sha = crypto.createHash('sha256').update(data).digest('hex');
+    const ext = path.extname(name).toLowerCase();
+    const uri = `${base}/inputs/${sha}${ext}`;
+    if (!known.has(uri)) {
+      if (!(await deps.store.stat(uri))) await deps.store.write(uri, data);
+      known.add(uri);
+    }
+    const local = `hawkesgen/${sha.slice(0, 16)}${ext}`;
+    names.set(local, uri);
+    return local;
+  };
+
+  const cancelled = (key: string) => {
+    void deps.store.write(`${base}/runs/${key}/cancel`, 'cancel', 'text/plain').catch(() => undefined);
+    return new Error('Cancelled');
+  };
+
+  /** The final line of a run: its files, or an error that says what happened. */
+  const finish = (m: any): CloudFile[] => {
+    hooks.addSeconds(Number(m.seconds) || 0, Number(m.cold?.startupSeconds) || 0);
+    if (m.t === 'done') return (m.files ?? []) as CloudFile[];
+    if (m.cancelled) throw new Error('Cancelled');
+    if (m.missingModels?.length) {
+      throw new GenError(`${m.message}\n${svc.name} doesn't have ${m.missingModels.join(', ')}: copy it into the models bucket (node tools/cloudrun/models-sync.mjs --apply) and add it to the service in server/cloudrun/services.json.`);
+    }
+    throw Object.assign(new Error(`${svc.name}: ${m.message}`), { lost: !!m.lost, overLimit: !!m.overLimit });
+  };
+
+  const runGraph = async (graph: Graph): Promise<CloudFile[]> => {
+    hooks.keepGraph(graph);
+    const key = runKey(job.id, graph);
+    const out = `${base}/runs/${key}/`;
+    const extra = env('COMFY_ORG_API_KEY') ? { api_key_comfy_org: env('COMFY_ORG_API_KEY') } : undefined;
+    const body = JSON.stringify({ key, graph, files: inputsOf(graph, names), models: [...pending.values()].map(({ dir, file }) => ({ dir, file })), out, timeoutSeconds: svc.graphLimitSeconds, extra });
+    const started = deps.now();
+    let posts = 0;
+    let waitedSince = 0;
+    for (;;) {
+      if (hooks.signal.aborted) throw cancelled(key);
+      // Finished before (Gen restarted after the run ended): the answer is in the bucket.
+      const done = await deps.store.readJson(`${out}manifest.json`).catch(() => null);
+      if (done?.t === 'done') {
+        hooks.step(`${svc.name}: this graph already ran (answer from its manifest)`);
+        return finish(done);
+      }
+      // Still going on an instance (a Gen restart, or the connection dropped): wait for it rather than run it twice.
+      const beat = await deps.store.readJson(`${out}heartbeat.json`).catch(() => null);
+      if (beat && deps.now() - Number(beat.at) < FRESH_MS) {
+        if (!waitedSince) {
+          waitedSince = deps.now();
+          hooks.step(`${svc.name}: the graph is still running on Cloud Run (${beat.detail ?? 'running'}); waiting for it`);
+        } else hooks.progress(`${svc.name}: ${beat.detail ?? 'running'}`);
+        await deps.sleep(10_000);
+        continue;
+      }
+      if (posts >= 3) throw new Error(`${svc.name}: the connection to Cloud Run broke ${posts} times and the run left no answer`);
+      posts++;
+      waitedSince = 0;
+      const result = await post(key, body);
+      if (result) return finish(result);
+      // The stream ended with no answer: loop to read the manifest or follow the heartbeat.
+      if (deps.now() - started > (svc.graphLimitSeconds + 300) * 1000) {
+        throw Object.assign(new Error(`${svc.name}: the run passed Cloud Run's time limit`), { overLimit: true });
+      }
+      hooks.step(`${svc.name}: the connection ended before the answer; checking the run`);
+    }
+  };
+
+  /** One POST /run. -> the final line, or null when the stream broke first. */
+  const post = async (key: string, body: string): Promise<any | null> => {
+    const until = deps.now() + WAIT_FOR_INSTANCE_MS;
+    for (let told = false; ; told = true) {
+      if (hooks.signal.aborted) throw cancelled(key);
+      let r: Response;
+      try {
+        r = await deps.fetch(`${svc.url}/run`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${await deps.idToken(svc.url)}`, 'Content-Type': 'application/json' },
+          body,
+          signal: hooks.signal,
+        });
+      } catch (e: any) {
+        if (hooks.signal.aborted) throw cancelled(key);
+        hooks.step(`${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
+        await deps.sleep(10_000);
+        if (deps.now() > until) throw new Error(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
+        continue;
+      }
+      // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503. Wait our turn.
+      if (r.status === 429 || r.status === 503) {
+        await r.body?.cancel().catch(() => undefined);
+        if (deps.now() > until) throw new Error(`${svc.name}: no Cloud Run instance came free in ${Math.round(WAIT_FOR_INSTANCE_MS / 60_000)} minutes`);
+        if (!told) hooks.step(`${svc.name}: waiting for a free Cloud Run GPU instance`);
+        await deps.sleep(15_000);
+        continue;
+      }
+      if (r.status === 401 || r.status === 403) {
+        throw new GenError(`${svc.name} refused Gen's identity (${r.status}): Gen's service account needs roles/run.invoker on it (tools/cloudrun/deploy.mjs grants it), and ADC must be able to mint ID tokens (docs/cloudrun.md, "Credentials").`);
+      }
+      if (!r.ok || !r.body) throw new Error(`${svc.name} /run: ${r.status} ${(await r.text().catch(() => '')).slice(0, 400)}`);
+      try {
+        for await (const ev of ndjson(r.body)) {
+          if (ev.t === 'progress') hooks.progress(`${svc.name}: ${ev.detail}`);
+          else if (ev.t === 'done' || ev.t === 'error') return ev;
+        }
+      } catch (e: any) {
+        if (hooks.signal.aborted) throw cancelled(key);
+        if (e instanceof SyntaxError) throw new Error(`${svc.name} answered something that isn't the run protocol: ${e.message}`);
+        // The stream broke: the run may still be going on the instance (it keeps going without us).
+      }
+      return null;
+    }
+  };
+
+  return {
+    service: svc,
+    server: { id: `cloudrun:${svc.name}`, region: 'gcp', price: svc.pricePerSecond * 3600 },
+    upload: (file: string) => uploadBuffer(fs.readFileSync(file), file),
+    uploadBuffer,
+    runGraph,
+    async download(file: ComfyFile) {
+      const uri = (file as CloudFile).uri;
+      if (!uri) throw new Error(`${file.filename} has no Cloud Storage copy`);
+      const data = await deps.store.read(uri);
+      if (!data) throw new Error(`${uri} is gone from the bucket`);
+      return data;
+    },
+    async ensureModels(models: ModelRef[]) {
+      for (const m of models) {
+        const id = `${m.dir}/${m.file}`;
+        if (!svc.preload.has(id)) pending.set(id, m);
+      }
+    },
+    // Nothing on Cloud Run runs outside a graph (tools that work over SSH stay on the fleet).
+    timed: <T>(work: () => Promise<T>) => work(),
+  };
+}

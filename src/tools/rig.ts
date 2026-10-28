@@ -179,6 +179,7 @@ export const meshRigTool: Tool = {
     'not a ComfyUI node). docs/3d-characters.md ("mesh.rig").',
   provider: 'comfy',
   family: 'rig',
+  server: 'ssh',
   output: 'mesh',
   inputs: {
     mesh: { kind: 'file', required: true, description: 'The character: a GLB from mesh.views3d (FBX or OBJ too), standing upright.' },

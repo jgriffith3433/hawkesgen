@@ -32,6 +32,8 @@ import { autoStartRound, offRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, 
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, serverFreeDisk, markDiskFull, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
+import { cloudRoute, cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
+import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
 import { getUserForClient } from './users.ts';
@@ -495,6 +497,8 @@ class Queue {
   families = new Map<string, string>();
   /** Job id -> servers it failed on with a full disk (it is retried once elsewhere). */
   diskAvoid = new Map<string, Set<string>>();
+  /** Cloud Run service -> job ids running on it (each one instance; at most the service's max instances). */
+  cloud = new Map<string, Set<string>>();
   /** Server id -> content hash -> uploaded name. */
   uploads = new Map<string, Map<string, string>>();
   pumping = false;
@@ -604,8 +608,25 @@ class Queue {
       });
     }
 
-    // The GPU lane.
-    const gpu = waiting.filter((x) => toolOf(x).provider === 'comfy');
+    // The GPU lane. Jobs whose family runs on Cloud Run (settings.gpu, docs/cloudrun.md) go to their service; the rest
+    // to the fleet below.
+    const allGpu = waiting.filter((x) => toolOf(x).provider === 'comfy');
+    if (!allGpu.length) return;
+    const routes = new Map<string, CloudService>();
+    if (cloudEnabled(settings)) {
+      let map: ReturnType<typeof loadServiceMap> | null = null;
+      try {
+        map = loadServiceMap();
+      } catch (e: any) {
+        console.warn(`[queue] server/cloudrun/services.json: ${e.message}; GPU jobs stay on the fleet`);
+      }
+      for (const j of map ? allGpu : []) {
+        const r = cloudRoute(j, toolOf(j), settings, map!);
+        if (r.service) routes.set(j.id, r.service);
+      }
+      if (routes.size) this.fillCloud(allGpu.filter((j) => routes.has(j.id)), routes, settings);
+    }
+    const gpu = allGpu.filter((j) => !routes.has(j.id));
     if (!gpu.length) return;
     let endpoints: Endpoint[] = [];
     try {
@@ -619,11 +640,7 @@ class Queue {
     const taken = new Set<string>();
     // Fair sharing: each customer project has a cap of GPU jobs at once, and projects take turns (see fairOrder).
     const share = settings.queue.perProjectGpu;
-    const running = new Map<string, number>();
-    for (const id of this.busy.values()) {
-      const p = getJob(id)?.project;
-      if (p) running.set(p, (running.get(p) ?? 0) + 1);
-    }
+    const running = this.gpuRunning();
     const exemptOf = exemptCheck();
     const byId = new Map(gpu.map((j) => [j.id, j]));
     const fair = () => fairOrder(gpu.filter((j) => !taken.has(j.id)).map((j) => ({ id: j.id, project: j.project, family: j.family, priority: j.priority, created: j.created, exempt: exemptOf(j) })), running, share).filter((j) => j.ok);
@@ -682,6 +699,43 @@ class Queue {
       if (wanting && endpoints.length < Math.min(cap, wanting + this.busy.size)) void this.autoStart(wanting + this.busy.size);
       if (this.timer) clearTimeout(this.timer);
       this.timer = setTimeout(() => this.pump(), endpoints.length ? 10_000 : 30_000);
+    }
+  }
+
+  /** Each project's GPU jobs running now, on the fleet and on Cloud Run (fair sharing counts both). */
+  gpuRunning() {
+    const running = new Map<string, number>();
+    const ids = [...this.busy.values(), ...[...this.cloud.values()].flatMap((s) => [...s])];
+    for (const id of ids) {
+      const p = getJob(id)?.project;
+      if (p) running.set(p, (running.get(p) ?? 0) + 1);
+    }
+    return running;
+  }
+
+  /**
+   * GPU jobs routed to Cloud Run: in fair order (projects take turns, as on the fleet), each service running at most its
+   * max instances at once (concurrency 1 per instance), so Cloud Run never has to queue or refuse a request of ours.
+   */
+  fillCloud(jobs: Job[], routes: Map<string, CloudService>, settings: ReturnType<typeof loadSettings>) {
+    const share = settings.queue.perProjectGpu;
+    const running = this.gpuRunning();
+    const exemptOf = exemptCheck();
+    const byId = new Map(jobs.map((j) => [j.id, j]));
+    const order = fairOrder(jobs.map((j) => ({ id: j.id, project: j.project, family: j.family, priority: j.priority, created: j.created, exempt: exemptOf(j) })), running, share);
+    for (const f of order) {
+      const j = byId.get(f.id)!;
+      const svc = routes.get(j.id)!;
+      if (!f.ok) { this.wait(j, `waiting: this project already has ${share} GPU jobs running (its next job goes when one finishes)`); continue; }
+      const lane = this.cloud.get(svc.name) ?? new Set<string>();
+      this.cloud.set(svc.name, lane);
+      if (lane.size >= svc.maxInstances) { this.wait(j, `waiting for a Cloud Run GPU (${svc.name}: ${lane.size} of ${svc.maxInstances} running)`); continue; }
+      lane.add(j.id);
+      if (!f.exempt) running.set(j.project, (running.get(j.project) ?? 0) + 1);
+      void this.runJob(j, null, svc).finally(() => {
+        lane.delete(j.id);
+        this.pump();
+      });
     }
   }
 
@@ -755,13 +809,18 @@ class Queue {
     }
   }
 
-  async runJob(job: Job, ep: Endpoint | null) {
+  async runJob(job: Job, ep: Endpoint | null, cloud: CloudService | null = null) {
     const tool = getTool(job.tool)!;
     const abort = new AbortController();
     this.aborts.set(job.id, abort);
     const tmpDir = path.join(paths.tmp, job.id);
     fs.mkdirSync(tmpDir, { recursive: true });
-    Object.assign(job, { status: 'running', started: Date.now(), server: ep?.id ?? null, detail: ep ? `connecting to the GPU server in ${ep.region}` : 'starting' });
+    // Instance seconds this attempt used on Cloud Run (and the cold starts it paid for), for its cost.
+    const cloudUse = { seconds: 0, startup: 0, runs: 0, cold: 0 };
+    Object.assign(job, {
+      status: 'running', started: Date.now(), server: cloud ? `cloudrun:${cloud.name}` : ep?.id ?? null,
+      detail: cloud ? `starting on Cloud Run (${cloud.name}, ${cloud.gpu})` : ep ? `connecting to the GPU server in ${ep.region}` : 'starting',
+    });
     save(job, ['status', 'started', 'server', 'detail']);
     const step = (detail: string) => {
       job.detail = detail;
@@ -799,7 +858,9 @@ class Queue {
         job.result = value;
         save(job, ['result']);
       },
-      seed: (n) => (job.params.seed ? Number(job.params.seed) + n : crypto.randomInt(1, 2 ** 31)),
+      // On Cloud Run a job without a seed gets seeds derived from its id, so a job picked up again after a restart
+      // rebuilds the same graphs (the same run keys) and takes the answers its runs already left in the bucket.
+      seed: (n) => (job.params.seed ? Number(job.params.seed) + n : cloud ? jobSeed(job.id, n) : crypto.randomInt(1, 2 ** 31)),
       usage: (u) => {
         recordUsage({ client: job.client, project: job.project, job: job.id, ...u });
         job.cost = Math.round((job.cost + (u.cost ?? 0)) * 10000) / 10000;
@@ -812,6 +873,27 @@ class Queue {
       // Library files this job reads that aren't on this disk (a new server) come back from S3 first.
       await ensureInputs(job.inputs);
       if (ep) ctx.comfy = await this.comfyRun(job, ep, step, abort.signal);
+      if (cloud) {
+        ctx.comfy = cloudComfyRun(job, cloud, {
+          step,
+          progress: (d) => { job.detail = d; events.emit('job', summary(job)); },
+          keepGraph: (graph) => {
+            const name = `${job.id}-${job.graphs.length + 1}.json`;
+            fs.writeFileSync(path.join(paths.graphs, name), JSON.stringify(graph, null, 1));
+            job.graphs.push(name);
+            save(job, ['graphs']);
+          },
+          addSeconds: (seconds, startup) => {
+            cloudUse.seconds += seconds + startup;
+            cloudUse.startup += startup;
+            cloudUse.runs += 1;
+            if (startup) cloudUse.cold += 1;
+            job.gpu_seconds = Math.round((job.gpu_seconds + seconds) * 10) / 10;
+            save(job, ['gpu_seconds']);
+          },
+          signal: abort.signal,
+        });
+      }
       await tool.run(ctx);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
       // The LOD system: low copies this job made are linked to their models, and its images and models get their
@@ -829,6 +911,13 @@ class Queue {
       }
     } catch (e: any) {
       const cancelled = abort.signal.aborted || e.message === 'Cancelled';
+      // A graph that ran past Cloud Run's request limit goes back in the line once, for the fleet (no time limit there).
+      if (cloud && e.overLimit && !cancelled && job.labels.gpuBackend !== 'fleet') {
+        Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: `${e.message}; running it on the fleet instead`, labels: { ...job.labels, gpuBackend: 'fleet' } });
+        job.log.push(`error: ${e.message}`, job.detail);
+        save(job, ['labels']);
+        return;
+      }
       // A full disk is the server's fault: the job goes back in the line once, to another server.
       const avoid = this.diskAvoid.get(job.id) ?? new Set<string>();
       if (ep && retryOnDiskFull(e.message, avoid, cancelled)) {
@@ -848,9 +937,20 @@ class Queue {
         recordUsage({ client: job.client, project: job.project, job: job.id, provider: 'aws-gpu', unit: 'gpu_seconds', amount: job.gpu_seconds, cost, detail: ep.region });
         job.cost = Math.round((job.cost + cost) * 10000) / 10000;
       }
+      // Cloud Run bills the instance (GPU, vCPUs and memory) per second: the seconds its runs took, plus the cold start
+      // when this job's request started the instance. The idle minutes before Cloud Run scales an instance down aren't
+      // any one job's; docs/cloudrun.md says how to read them from the billing export.
+      if (cloud && cloudUse.seconds) {
+        const cost = cloudUse.seconds * cloud.pricePerSecond;
+        recordUsage({
+          client: job.client, project: job.project, job: job.id, provider: 'gcp-gpu', unit: 'instance_seconds', amount: Math.round(cloudUse.seconds * 10) / 10, cost,
+          detail: `${cloud.name} ${cloud.gpu}, ${cloudUse.runs} run${cloudUse.runs === 1 ? '' : 's'}${cloudUse.cold ? `, ${cloudUse.cold} cold start (${Math.round(cloudUse.startup)} s)` : ''}`,
+        });
+        job.cost = Math.round((job.cost + cost) * 10000) / 10000;
+      }
       this.aborts.delete(job.id);
       removeLater(tmpDir);
-      save(job, ['status', 'finished', 'error', 'detail', 'log', 'gpu_seconds', 'cost']);
+      save(job, ['status', 'started', 'server', 'finished', 'error', 'detail', 'log', 'gpu_seconds', 'cost']);
     }
   }
 

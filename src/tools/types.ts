@@ -43,7 +43,8 @@ export type Output = {
 };
 
 export type ComfyRun = {
-  comfy: Comfy;
+  /** The fleet server's ComfyUI client (absent on Cloud Run, where every graph is one request: docs/cloudrun.md). */
+  comfy?: Comfy;
   server: { id: string; region: string; price: number };
   /** Uploads a local file (once per server; cached by content). Returns the name nodes use. */
   upload(file: string): Promise<string>;
@@ -92,6 +93,9 @@ export type Tool = {
   /** A lane of its own instead of its provider's (asset.lod: `lod`, one at a time). `yieldTo`: it waits while any job of
    *  those lanes runs or waits (customers' CPU work first). */
   lane?: { name: string; limit: () => number; yieldTo?: string[] };
+  /** `ssh`: the tool also works on the GPU server itself over SSH (Blender, venvs, copying files), so it always runs on a
+   *  fleet server, never on Cloud Run (src/providers/cloudrun/services.ts). */
+  server?: 'ssh';
   /** For ComfyUI tools: the set of models it loads (servers swap between families). */
   family?: string | ((params: Record<string, any>) => string);
   output: 'image' | 'video' | 'audio' | 'text' | 'json' | 'mesh' | 'file';

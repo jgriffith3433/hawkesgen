@@ -130,7 +130,7 @@ async function fallback(ctx: RunContext, el: Tool, why: unknown) {
 export const voiceOpenTool: Tool = {
   id: OPEN.voice, version: 1, title: 'Speak a line (open models)',
   description: 'Speaks a line on an open model on the Gen GPU fleet (MOSS-TTS, Qwen3-TTS, VoxCPM2, Chatterbox): with DIRECTION (emotion, delivery, pace, style), in a saved Gen voice (voice: gv_...), cloned from a 3-10 s sample (input reference), or from a description. This is the default for audio.voice (the same tool: ElevenLabs only with provider "elevenlabs" or an ElevenLabs voice id). Loudness-normalised, silence-trimmed; verify: true transcribes each take and checks it says the text.',
-  provider, family: (p) => `audio:${planModelId(p)}`, output: 'audio',
+  provider, server: 'ssh', family: (p) => `audio:${planModelId(p)}`, output: 'audio',
   inputs: referenceInput,
   params: {
     text: { type: 'text', required: true },
@@ -190,7 +190,7 @@ const SAMPLE = 'The door was open when we got there, and nobody was inside. Some
 export const voiceDesignOpenTool: Tool = {
   id: OPEN.design, version: 1, title: 'Design a voice (open models)',
   description: 'Designs voices from a description on an open model (Qwen3-TTS or VoxCPM2): candidates (default 3), each saved in the Gen voice library as a candidate with its recipe and its preview clip as the reference, so it can be recreated and spoken by any cloning model. No slot cap. audio.voice-save (a gv_ id) names the one you keep.',
-  provider, family: (p) => `audio:${safeModel('voice', ['design'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['design'], params.openModel), output: 'audio', inputs: {},
+  provider, server: 'ssh', family: (p) => `audio:${safeModel('voice', ['design'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['design'], params.openModel), output: 'audio', inputs: {},
   params: {
     description: { type: 'text', required: true, description: 'Age, tone, accent, attitude, recording quality.' },
     text: { type: 'text', description: 'What the previews say. Empty: a short neutral passage.' },
@@ -301,7 +301,7 @@ export const voiceCloneTool: Tool = {
 export const sfxOpenTool: Tool = {
   id: OPEN.sfx, version: 1, title: 'Sound effect (open models)',
   description: 'A sound effect on an open model (MOSS-SoundEffect; Stable Audio 3 Small-SFX when its ComfyUI template is imported). duration: seconds (empty: the model decides). loop: a seamless bed (made a little longer, crossfaded, loop point checked). count: takes; variants: a list of different prompts for one game event (e.g. six footsteps), each a take. Normalised, trimmed, converted. This is the default for audio.sfx (ElevenLabs only with provider "elevenlabs").',
-  provider, family: (p) => `audio:${safeModel('sfx', ['sfx'], p.openModel)}`, guard: ({ params }) => void pickModel('sfx', params.loop ? ['sfx', 'loop'] : ['sfx'], params.openModel), output: 'audio', inputs: {},
+  provider, server: 'ssh', family: (p) => `audio:${safeModel('sfx', ['sfx'], p.openModel)}`, guard: ({ params }) => void pickModel('sfx', params.loop ? ['sfx', 'loop'] : ['sfx'], params.openModel), output: 'audio', inputs: {},
   params: {
     text: { type: 'text', required: true },
     duration: { type: 'number', min: 0.5, max: 30, description: 'Seconds (empty: the model decides).' },
@@ -355,7 +355,7 @@ export const sfxOpenTool: Tool = {
 export const dialogueOpenTool: Tool = {
   id: OPEN.dialogue, version: 1, title: "Table read (open models)",
   description: "A scene's dialogue on an open model: every line in its character's Gen voice (cast { who: gv_... }), each line with its own direction ({ who, text, direction }), laid on one track with gaps (gapMs; a line's pauseMs overrides) and returned with each line as its own clip and when it starts and ends, the shape audio.dialogue returns. Lines are spoken one by one (no overlap); [interrupting] and other ElevenLabs-only timing is not modelled.",
-  provider, family: (p) => `audio:${safeModel('voice', ['speak'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['speak'], params.openModel), output: 'audio', inputs: {},
+  provider, server: 'ssh', family: (p) => `audio:${safeModel('voice', ['speak'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['speak'], params.openModel), output: 'audio', inputs: {},
   params: {
     lines: { type: 'json', required: true, description: '[{ who, text, direction?, pauseMs? }] in order', example: [{ who: 'The Mechanic', text: "You're late." }, { who: 'Exit Punk', text: "I'm eleven seconds late.", direction: 'out of breath' }] },
     cast: { type: 'json', description: '{ "Exit Punk": "gv_..." }', example: { 'The Mechanic': 'gv_voice', 'Exit Punk': 'gv_voice' } },
