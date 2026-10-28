@@ -43,7 +43,7 @@ if (have) {
 // The context: the commit's files, with the Dockerfile at the top (Cloud Build's --tag wants it there).
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), `gen-build-${short}-`));
 const tar = path.join(dir, '..', `gen-${short}.tar`);
-execFileSync('git', ['-C', ROOT, 'archive', '--format=tar', '-o', tar, commit]);
+execFileSync('git', ['-C', ROOT, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', 'archive', '--format=tar', '-o', tar, commit]);
 // Relative paths: Git for Windows' tar reads "C:" as a remote host.
 execFileSync('tar', ['-xf', `../${path.basename(tar)}`], { cwd: dir });
 fs.rmSync(tar, { force: true });
