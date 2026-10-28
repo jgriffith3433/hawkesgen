@@ -1,0 +1,69 @@
+#!/usr/bin/env node
+// Deploys (or updates) the playtest service on Cloud Run. docs/playtest-cloudrun.md, "Pilot".
+//
+//   node tools/playtest-cloudrun/deploy.mjs [--project hawkes-staging] [--region us-east4] [--image <tag>]
+//        [--max-instances 2] [--tabs 4] [--gen-sa <email>] [--worker-sa <email>] [--setup] [--apply]
+//
+// One NVIDIA L4 per instance (8 vCPU, 32 GiB), scale to zero, at most --max-instances, containerConcurrency = --tabs
+// (one WebSocket = one browser tab), instance-based billing, no GPU zonal redundancy, a 60-minute request limit, the
+// startup probe on /ready (the GPU self-test must find a GL path that draws on the NVIDIA GPU before traffic), the
+// service account gen-playtest@ (no roles: the browser needs nothing from Google Cloud), and roles/run.invoker for
+// Gen's service account only (never allUsers). Written as a Knative YAML (.data/cloudrun/service-gen-playtest.yaml)
+// and applied with `gcloud run services replace`, so running it again updates it. --setup creates gen-playtest@ (and
+// gen-control@ if this project has no Cloud Run GPU services yet). Without --apply: prints every command, changes
+// nothing. At the end it prints the settings patch that points Gen at it.
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { parseArgs, gcloud, saveState, readState, STATE_DIR, loadServiceMap } from '../cloudrun/lib.mjs';
+import { loadSpec, imageTag, serviceYaml, pricePerHour } from './lib.mjs';
+
+const args = parseArgs();
+const spec = loadSpec();
+if (!process.argv.some((a) => a.startsWith('--region'))) args.region = spec.region;
+const map = loadServiceMap();
+const gpu = map.gpus[spec.gpu];
+if (!gpu.regions.includes(args.region)) throw new Error(`${spec.gpu} isn't offered for Cloud Run services in ${args.region} (offered: ${gpu.regions.join(', ')})`);
+if (spec.cpu < gpu.minCpu || spec.memoryGi < gpu.minMemoryGi) throw new Error(`${spec.gpu} needs at least ${gpu.minCpu} vCPU and ${gpu.minMemoryGi} GiB`);
+const maxInstances = Math.max(1, Math.min(20, Number(args.maxInstances ?? spec.maxInstances)));
+const tabs = Math.max(1, Math.min(8, Number(args.tabs ?? spec.tabsPerInstance)));
+const image = args.image ?? readState('playtest-image.json')?.tag ?? imageTag(args, spec);
+const workerSa = args.workerSa ?? `gen-playtest@${args.project}.iam.gserviceaccount.com`;
+const genSa = args.genSa ?? `gen-control@${args.project}.iam.gserviceaccount.com`;
+const perHour = pricePerHour(spec, map);
+
+console.log(`Project ${args.project}, region ${args.region}, image ${image}`);
+console.log(`${spec.name}: ${spec.gpu} x1, ${spec.cpu} vCPU, ${spec.memoryGi} GiB, up to ${maxInstances} instance(s) x ${tabs} tabs = ${maxInstances * tabs} playtest tabs at once`);
+console.log(`  about $${perHour.toFixed(2)}/hour per instance while up (scale to zero: nothing when idle beyond Cloud Run's idle tail)`);
+console.log(`  runs as ${workerSa}; only ${genSa} may call it\n`);
+
+if (args.setup) {
+  console.log('Setup: service accounts');
+  for (const [sa, title] of [[workerSa, 'Hawkes Gen playtest browsers (no roles)'], [genSa, 'Hawkes Gen control server']]) {
+    const have = gcloud(args, ['iam', 'service-accounts', 'describe', sa, `--project=${args.project}`, '--format=value(email)'], { read: true });
+    if (!have) gcloud(args, ['iam', 'service-accounts', 'create', sa.split('@')[0], `--project=${args.project}`, `--display-name=${title}`]);
+  }
+  console.log('');
+}
+
+const yaml = serviceYaml(spec, { image, region: args.region, serviceAccount: workerSa, maxInstances, tabs });
+const file = path.join(STATE_DIR, `service-${spec.name}.yaml`);
+fs.mkdirSync(STATE_DIR, { recursive: true });
+fs.writeFileSync(file, JSON.stringify(yaml, null, 2));
+console.log(`service definition: ${file}`);
+gcloud(args, ['run', 'services', 'replace', file, `--project=${args.project}`, `--region=${args.region}`]);
+gcloud(args, ['run', 'services', 'add-iam-policy-binding', spec.name, `--project=${args.project}`, `--region=${args.region}`, `--member=serviceAccount:${genSa}`, '--role=roles/run.invoker']);
+const policy = gcloud(args, ['run', 'services', 'get-iam-policy', spec.name, `--project=${args.project}`, `--region=${args.region}`, '--format=json'], { read: true });
+if (policy && /allUsers|allAuthenticatedUsers/.test(policy)) console.log(`WARNING: ${spec.name} is open to allUsers/allAuthenticatedUsers: remove that binding (only Gen's account may call it)`);
+const url = gcloud(args, ['run', 'services', 'describe', spec.name, `--project=${args.project}`, `--region=${args.region}`, '--format=value(status.url)'], { read: true });
+
+const patch = { playtest: { cloudrun: { url: url || '<the service URL>', maxInstances, tabsPerInstance: tabs } } };
+if (!args.apply) {
+  console.log('\nDry run: nothing deployed. Add --apply to deploy (J\'s OK: L4 quota, and instances bill while up).');
+  if (url) console.log(`The service already answers at ${url}`);
+  process.exit(0);
+}
+saveState('playtest-url.json', { url, region: args.region, maxInstances, tabs });
+console.log('\nPoint Gen at it (POST /v1/settings, owner key). Playtests move only for the products you name, or all with "backend":');
+console.log(JSON.stringify({ ...patch, playtest: { ...patch.playtest, projects: { '<product>': 'cloudrun' } } }, null, 2));
+console.log('Then: hawkesgen playtester cloud selftest');

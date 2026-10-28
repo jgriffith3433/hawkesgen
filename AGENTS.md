@@ -10,6 +10,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/workflows.md` covers ComfyUI workflows as tools.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.
+- `docs/playtest-cloudrun.md` covers playtests on Cloud Run (the L4 browser service, how WebGL gets the GPU, local builds through the connection, cost per playtest, the pilot).
 - `docs/cloudrun.md` covers GPU jobs on Google Cloud Run (scale to zero): the worker image (`server/cloudrun/`), the family → service map (`services.json`), routing by `settings.gpu` (fleet stays the default), the per-graph request protocol, the scripts in `tools/cloudrun/` (dry run unless `--apply`; deploying needs J's OK) and the pilot steps.
 - `docs/blender.md` covers Blender shots to video (`blender.render`, `video.control`) and rigging generated characters (`mesh.rig`).
 - `docs/film-pipeline.md` covers the film pipeline: shots with beats and props in hands, the director gate (`film.gate`), the cinema, dialogue, VFX-layer and LoRA recipes (`film.plan`), the trailer cut and what a trailer costs. **Making a trailer, a cutscene or any shot with Blender as the motion rig: start with `film.plan`, run `film.gate` before spending GPU.**
@@ -159,6 +160,13 @@ returns a verdict, scores and findings.
   itself from `server/playtester/bootstrap.sh` and powers off after 20 idle minutes;
   `hawkesgen playtester status|launch [region=..]|start|stop [id=i-..]`. Else a ready GPU fleet server, else software.
   On this PC, its own GPU.
+- **Cloud Run backend** (`docs/playtest-cloudrun.md`, not deployed yet): `settings.playtest.backend` / `.projects` pick
+  `ec2` (the playtesters, the default) or `cloudrun` (the `gen-playtest` service with an L4, scale to zero;
+  `server/playtest-cloudrun/`, `src/providers/playtester/cloudrun.ts`, `openGpuHost`). One WebSocket per tab with a
+  Google ID token; local builds are served from here through Playwright's `route()`/`routeWebSocket()` (no tunnel); the
+  video encodes on the service (NVENC) over a WebSocket, else here; its own `playtest-cloud` lane of maxInstances x
+  tabsPerInstance tabs. A GPU self-test gates the service's `/ready` (`hawkesgen playtester cloud selftest`). Any
+  failure falls back to the playtesters. Scripts in `tools/playtest-cloudrun/` print first, `--apply` to change.
 - **Lanes count browser tabs** (a multiplayer run is one per player): each playtester's by its type
   (`PLAYTESTER_TYPES[..].lanes`: g4dn.xlarge 2, g4dn.2xlarge 4), summed over every playtester that exists (the queue,
   `jobs.ts`); three on a GPU fleet server; one on this PC or in software (the local browser also takes turns inside

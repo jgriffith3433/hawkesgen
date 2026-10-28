@@ -234,7 +234,7 @@ asked. With that default, `deploy.mjs` moves RTX services to us-central1 and war
 | The open audio models (`audio:*`: voxcpm2, qwen3-tts, moss…) | One venv each, run by `post/audio/run.py` over SSH. Phase 2: a second worker image with the venvs behind the same `/run` protocol, on L4. |
 | `lora.train`, `image.character` (z-image family) | They copy training images and LoRA files to and from the server over SSH. Training takes 22 to 42 minutes. |
 | `api-kling`, `api-seedance` | Partner API nodes that wait on someone else's servers. A GPU is wasted on them. Later: the same image on a CPU-only service. |
-| Playtests, the Unity build server | Not ComfyUI. Unchanged. |
+| Playtests, the Unity build server | Not ComfyUI. Each has its own Cloud Run design: `docs/playtest-cloudrun.md`, `docs/unity-cloudrun.md`. |
 
 These tools carry `server: 'ssh'` (`src/tools/types.ts`), so routing never sends them to Cloud Run, whatever the
 settings say.

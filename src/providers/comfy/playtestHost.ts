@@ -71,8 +71,39 @@ export type PlaytestHost = {
   wsEndpoint: string; server: string; close(): void;
   /** The playtester it runs on (null on a GPU fleet server), and the lanes it holds there until close(). */ playtester: string | null;
   /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
-  /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). */ ssh: { args: string[]; dest: string };
+  /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). Null on Cloud Run. */ ssh: { args: string[]; dest: string } | null;
+  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun';
+  /** A browser already connected (Cloud Run: a pool with a connection per tab); else playtest.ts connects to wsEndpoint. */ browser?: any;
+  /** Added to every browser context's options (Cloud Run with a local page: service workers off, so routing sees every request). */ contextOptions?: Record<string, unknown>;
+  /** Run on every new context before its page opens (Cloud Run: local origins served from here through the connection). */ prepareContext?(context: any): Promise<void>;
+  /** Encodes the screencast's MJPEG where the browser ran (Cloud Run: the service's /encode); returns the encoder. */ encode?(mjpeg: string, out: string, viewport: { width: number; height: number }, signal: AbortSignal): Promise<string>;
 };
+
+/**
+ * The GPU browser for a playtest: Cloud Run when settings.playtest says so for this project and the service is
+ * deployed (docs/playtest-cloudrun.md), else, or when Cloud Run can't be reached, the playtesters and GPU servers as
+ * before (openPlaytestHost). Null when no GPU browser is ready.
+ */
+export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, tabs = 1, project, job, onUsage }: { startPlaytester?: boolean; tabs?: number; project?: string | null; job?: string; onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void } = {}): Promise<PlaytestHost | null> {
+  const { cloudPlaytestFor, openCloudPlaytestHost, localPortsOf } = await import('../playtester/cloudrun.ts');
+  const { loadSettings } = await import('../../config.ts');
+  const cloud = (() => {
+    try {
+      return cloudPlaytestFor(project, loadSettings());
+    } catch (e: any) {
+      step(`Cloud Run playtests aren't set up right (${e.message}); using the playtesters`);
+      return null;
+    }
+  })();
+  if (cloud) {
+    try {
+      return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, step, onUsage });
+    } catch (e: any) {
+      step(`no Cloud Run browser (${String(e?.message ?? e).slice(0, 200)}); using the playtesters`);
+    }
+  }
+  return openPlaytestHost(localPortsOf(pageUrl), step, { startPlaytester, tabs });
+}
 
 /**
  * A browser on a GPU machine (a playtester with room first, else a GPU fleet server): ensures the host, opens the tunnel
@@ -134,5 +165,5 @@ export async function openPlaytestHost(localPorts: number[], step: (s: string) =
     if (/^(localhost|127\.0\.0\.1)$/.test(u.hostname) && remote.has(port)) u.port = String(remote.get(port));
     return u.toString();
   };
-  return { wsEndpoint: `ws://127.0.0.1:${local}/`, server: `${ep.id} (${ep.region})`, playtester: pt?.id ?? null, close: () => { child.kill(); release(); }, mapUrl, ssh: { args: sshArgs, dest } };
+  return { wsEndpoint: `ws://127.0.0.1:${local}/`, server: `${ep.id} (${ep.region})`, playtester: pt?.id ?? null, close: () => { child.kill(); release(); }, mapUrl, ssh: { args: sshArgs, dest }, backend: pt ? 'ec2' : 'fleet' };
 }

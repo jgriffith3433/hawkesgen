@@ -10,6 +10,7 @@
 //   hawkesgen fleet [status|start [id]|stop [id]|stop-all|launch|sync [id]|access|adopt <dir>|set k=v] [--yes]
 //   hawkesgen fleet image [status|build [--from <id> [--as-is]] [region=r]|prune [--dry-run]|cancel] [--yes]
 //   hawkesgen playtester [status|launch [type=..] [region=..]|start|ensure|stop|terminate|access|idle <min>|ssh "<bash>"] [id=i-...] [--yes]
+//   hawkesgen playtester cloud [selftest] [fresh] [all] [project=..]   (Cloud Run playtests: settings, lanes, price, GPU self-test)
 //   hawkesgen builder [status|launch|start|stop|terminate|access|rdp|github [owner/repo ...]|idle <min>|ssh "<powershell>"] [--yes]
 //   hawkesgen builder caches | clear-cache <project> [key]      (Unity cloud builds' Library caches)
 //   hawkesgen storage [status|backfill|restore]      the library's files in S3
@@ -174,6 +175,14 @@ async function main() {
     }
     case 'playtester': {
       const action = rest[0] ?? 'status';
+      // Cloud Run (docs/playtest-cloudrun.md): `playtester cloud [selftest] [fresh] [all] [project=..]`.
+      if (action === 'cloud') {
+        const args = kv(rest.slice(1).filter((a: string) => a.includes('=')));
+        const flags = new Set(rest.slice(1));
+        if (flags.has('selftest') && !(await confirm('Ask the Cloud Run playtest service for its GPU self-test? It may start an instance (a few cents plus its idle tail).'))) return;
+        const qs = new URLSearchParams({ ...(flags.has('selftest') ? { selftest: '1' } : {}), ...(flags.has('fresh') ? { fresh: '1' } : {}), ...(flags.has('all') ? { all: '1' } : {}), ...(args.project ? { project: args.project } : {}) });
+        return console.log(JSON.stringify(await gen.request(`/playtester/cloud${qs.size ? `?${qs}` : ''}`), null, 2));
+      }
       if (action === 'status') {
         const b = await gen.request('/playtester');
         if (!b.exists) return console.log(`No playtester yet. "hawkesgen playtester launch" makes one (g4dn.xlarge with a T4 GPU, about $${b.pricePerHour}/hr while running, plus ~$${Math.round(b.diskPerMonth)}/month for its ${b.diskGb} GB disk).`);
