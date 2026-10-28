@@ -50,14 +50,14 @@ for (const [name, title] of [['hawkes-unity-build', 'Hawkes Unity cloud build (t
     gcloud(['iam', 'service-accounts', 'create', name, P, `--display-name=${title}`]);
   }
 }
-const bucketRole = (sa) => gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${c.bucket}`, P, `--member=serviceAccount:${sa}`, '--role=roles/storage.objectAdmin'], { retries: 9 });
+const bucketRole = (sa) => gcloud(['storage', 'buckets', 'add-iam-policy-binding', `gs://${c.bucket}`, P, `--member=serviceAccount:${sa}`, '--role=roles/storage.objectAdmin', '--format=none'], { retries: 9 });
 bucketRole(rsa);
 bucketRole(gsa);
-gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccount:${rsa}`, '--role=roles/logging.logWriter', '--condition=None'], { retries: 9 });
-gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccount:${gsa}`, '--role=roles/logging.viewer', '--condition=None'], { retries: 9 });
+gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccount:${rsa}`, '--role=roles/logging.logWriter', '--condition=None', '--format=none'], { retries: 9 });
+gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccount:${gsa}`, '--role=roles/logging.viewer', '--condition=None', '--format=none'], { retries: 9 });
 // run.developer includes run.jobs.runWithOverrides and executions get/cancel; actAs on the job's account to start it.
-gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccount:${gsa}`, '--role=roles/run.developer', '--condition=None'], { retries: 9 });
-gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', rsa, P, `--member=serviceAccount:${gsa}`, '--role=roles/iam.serviceAccountUser'], { retries: 9 });
+gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccount:${gsa}`, '--role=roles/run.developer', '--condition=None', '--format=none'], { retries: 9 });
+gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', rsa, P, `--member=serviceAccount:${gsa}`, '--role=roles/iam.serviceAccountUser', '--format=none'], { retries: 9 });
 
 console.log('\n# Secrets (values are J\'s to add; see docs/unity-cloudrun.md)');
 const secrets = [['unity-email', 'UNITY_EMAIL'], ['unity-password', 'UNITY_PASSWORD'], ['github-token', 'GITHUB_TOKEN'], ...(serial ? [['unity-serial', 'UNITY_SERIAL']] : [])];
@@ -66,14 +66,15 @@ for (const [name] of secrets) {
   if (gcloudQuery(['secrets', 'describe', name, P, '--format=value(name)']) === null) {
     gcloud(['secrets', 'create', name, P, '--replication-policy=automatic']);
   }
-  gcloud(['secrets', 'add-iam-policy-binding', name, P, `--member=serviceAccount:${rsa}`, '--role=roles/secretmanager.secretAccessor'], { retries: 9 });
+  gcloud(['secrets', 'add-iam-policy-binding', name, P, `--member=serviceAccount:${rsa}`, '--role=roles/secretmanager.secretAccessor', '--format=none'], { retries: 9 });
   if (!gcloudQuery(['secrets', 'versions', 'list', name, P, '--limit=1', '--format=value(name)'])) missingValues.push(name);
 }
 if (missingValues.length) {
   console.log(`\nThese secrets have no value yet, so the job can't be deployed until J adds them: ${missingValues.join(', ')}`);
   console.log(`  powershell -ExecutionPolicy Bypass -File tools\\unity-cloudrun\\add-secrets.ps1 -Project ${c.project}`);
   console.log('  (it asks for the Unity email, the Unity password and the GitHub token without showing them, and adds each as a secret version)');
-  if (APPLY) die('\nAdd them, then run this again with --apply.');
+  // Exit 3: everything is ready but the secrets' values (pilot.ps1 goes on to ask for them).
+  if (APPLY) { console.error('\nAdd them, then run this again with --apply.'); process.exit(3); }
 }
 
 console.log('\n# The job');

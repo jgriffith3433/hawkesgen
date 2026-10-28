@@ -12,7 +12,7 @@ $image = 'us-east4-docker.pkg.dev/hawkes-staging/hawkes/unity-build:6000.3.7f1-a
 $bucket = "hawkes-unity-$Project"
 Write-Host "1/4 accounts, permissions, bucket, empty secrets" -ForegroundColor Cyan
 node tools/unity-cloudrun/deploy-job.mjs --project $Project --bucket $bucket --image $image --apply
-if ($LASTEXITCODE -ne 0) { throw "step 1 failed (above); run this script again, every step is safe to repeat" }
+if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3) { throw "step 1 failed (above); run this script again, every step is safe to repeat" }
 Write-Host "2/4 your Unity sign-in and the GitHub token" -ForegroundColor Cyan
 $g = "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
 function Put([string]$name, [string]$prompt) {
