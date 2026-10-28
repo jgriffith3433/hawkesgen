@@ -879,7 +879,8 @@ render.settings = async () => {
 async function claudeAccounts(list) {
   const box = $('#claudeAccounts');
   if (!box) return;
-  const l = list ?? await api('/claude/accounts');
+  // Starting a sign-in answers with the sign-in alone, not the list: read the list then.
+  const l = list?.accounts ? list : await api('/claude/accounts');
   const day = (t) => (t ? new Date(t).toLocaleDateString() : '—');
   const si = l.signin;
   box.innerHTML = `<h3>🔑 Claude accounts</h3>
