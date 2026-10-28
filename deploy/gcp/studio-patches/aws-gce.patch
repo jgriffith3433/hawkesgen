@@ -1,0 +1,145 @@
+diff -ruN a/src/aws.ts b/src/aws.ts
+--- a/src/aws.ts	2026-10-28 13:08:23.477298200 -0700
++++ b/src/aws.ts	2026-10-28 13:08:37.777182000 -0700
+@@ -1,8 +1,11 @@
+ // Read-only AWS calls from Studio without the SDK: Cost Explorer (JSON) and EC2's Describe* (XML), signed with the
+-// server role's credentials (hawkes/hawkes-control, through IMDSv2) or AWS_* environment keys on J's PC.
++// server role's credentials (hawkes/hawkes-control, through IMDSv2), on the Google control server the role
++// hawkes/hawkes-control-gce through the VM's identity token (gceaws.ts, HAWKES_AWS_FEDERATION=gce; docs/gcp.md), or
++// AWS_* environment keys on J's PC.
+ // Studio never changes anything in AWS through this file.
+ 
+ import crypto from 'node:crypto';
++import { federationOn, gceAwsCredentials } from './gceaws.ts';
+ 
+ export type Creds = { key: string; secret: string; token?: string };
+ 
+@@ -11,6 +14,11 @@
+ /** Environment keys if set, else the instance role through IMDSv2 (cached for 10 minutes). */
+ export async function awsCredentials(): Promise<Creds> {
+   if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) return { key: process.env.AWS_ACCESS_KEY_ID, secret: process.env.AWS_SECRET_ACCESS_KEY, token: process.env.AWS_SESSION_TOKEN };
++  // On Google (GCE): no instance role; the VM's identity token is traded with STS (cached and renewed in gceaws.ts).
++  if (federationOn(process.env)) {
++    const c = await gceAwsCredentials();
++    return { key: c.accessKeyId, secret: c.secretAccessKey, token: c.sessionToken };
++  }
+   if (cached && cached.until > Date.now()) return cached.creds;
+   if (missing && missing.until > Date.now()) throw missing.error;
+   lookup ??= (async () => {
+diff -ruN a/src/gceaws.ts b/src/gceaws.ts
+--- a/src/gceaws.ts	1969-12-31 16:00:00.000000000 -0800
++++ b/src/gceaws.ts	2026-10-28 13:08:46.967139500 -0700
+@@ -0,0 +1,91 @@
++// AWS without stored keys when the control server runs on Google Compute Engine (docs/gcp.md, "Keyless AWS").
++// The same file as hawkesgen src/providers/gceaws.ts: change both.
++//
++// The VM's service account asks the GCE metadata server for a Google-signed ID token with a fixed audience, and AWS STS
++// trades it for the role hawkes/hawkes-control-gce (AssumeRoleWithWebIdentity: the role trusts accounts.google.com with
++// that service account's unique id; hawkesstudio deploy/gcp/aws-federation.mjs makes it). The temporary credentials are
++// shared by every AWS client in this process and renewed 10 minutes before they expire. Nothing touches the disk.
++//
++// On when HAWKES_AWS_FEDERATION=gce (the hawkes-gen unit's GCP drop-in sets it), with
++//   HAWKES_AWS_ROLE_ARN   arn:aws:iam::<account>:role/hawkes/hawkes-control-gce
++//   HAWKES_AWS_AUDIENCE   the audience the role's trust policy expects (default hawkes-control-aws)
++// awsConfig() (comfy/fleet.ts) returns { region, credentials: gceAwsCredentials } then.
++//
++// No SDK: one unsigned POST to STS's query API, so Studio (no AWS SDK of its own) uses the same code path.
++
++import os from 'node:os';
++
++export const DEFAULT_AUDIENCE = 'hawkes-control-aws';
++const METADATA = 'http://169.254.169.254/computeMetadata/v1';
++/** Renew this long before the credentials expire. */
++const EARLY_MS = 10 * 60_000;
++
++export type AwsCreds = { accessKeyId: string; secretAccessKey: string; sessionToken: string; expiration: Date };
++type Fetch = typeof fetch;
++
++export function federationOn(env: Record<string, string | undefined> = process.env) {
++  return env.HAWKES_AWS_FEDERATION === 'gce';
++}
++
++/** A Google-signed ID token for this VM's service account (valid an hour), from the metadata server. */
++export async function gceIdentityToken(audience: string, f: Fetch = fetch): Promise<string> {
++  const url = `${METADATA}/instance/service-accounts/default/identity?audience=${encodeURIComponent(audience)}&format=standard`;
++  const r = await f(url, { headers: { 'Metadata-Flavor': 'Google' }, signal: AbortSignal.timeout(5000) });
++  const text = (await r.text()).trim();
++  if (!r.ok || text.split('.').length !== 3) throw new Error(`GCE metadata gave no identity token (HTTP ${r.status}): is this a GCE VM with a service account?`);
++  return text;
++}
++
++const tag = (xml: string, name: string) => new RegExp(`<${name}>([^<]*)</${name}>`).exec(xml)?.[1];
++
++/** STS AssumeRoleWithWebIdentity (no signature needed: the token is the proof). */
++export async function assumeRoleWithWebIdentity(o: { roleArn: string; token: string; sessionName: string; durationSeconds?: number; region?: string }, f: Fetch = fetch): Promise<AwsCreds> {
++  const region = o.region ?? 'us-east-1';
++  const body = new URLSearchParams({
++    Action: 'AssumeRoleWithWebIdentity', Version: '2011-06-15', RoleArn: o.roleArn, RoleSessionName: o.sessionName,
++    WebIdentityToken: o.token, DurationSeconds: String(o.durationSeconds ?? 3600),
++  }).toString();
++  const r = await f(`https://sts.${region}.amazonaws.com/`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8' }, body, signal: AbortSignal.timeout(15_000) });
++  const xml = await r.text();
++  if (!r.ok) {
++    const err: any = new Error(`AWS STS refused the GCE identity (${r.status} ${tag(xml, 'Code') ?? ''}: ${tag(xml, 'Message') ?? xml.slice(0, 200)})`);
++    err.name = tag(xml, 'Code') ?? 'AccessDenied';
++    throw err;
++  }
++  const accessKeyId = tag(xml, 'AccessKeyId');
++  const secretAccessKey = tag(xml, 'SecretAccessKey');
++  const sessionToken = tag(xml, 'SessionToken');
++  const expiration = tag(xml, 'Expiration');
++  if (!accessKeyId || !secretAccessKey || !sessionToken || !expiration) throw new Error('AWS STS answered without credentials');
++  return { accessKeyId, secretAccessKey, sessionToken, expiration: new Date(expiration) };
++}
++
++/** A role session name AWS accepts ([\w+=,.@-], 2-64 chars): shows in CloudTrail which machine it was. */
++export function sessionName(host = os.hostname()) {
++  return `gce-${host}`.replace(/[^\w+=,.@-]/g, '-').slice(0, 64);
++}
++
++let current: AwsCreds | null = null;
++let pending: Promise<AwsCreds> | null = null;
++
++/**
++ * The AWS SDK credentials provider (an async function returning credentials with `expiration`): cached for the whole
++ * process, renewed EARLY_MS before expiry, one renewal at a time.
++ */
++export async function gceAwsCredentials(): Promise<AwsCreds> {
++  if (current && current.expiration.getTime() - Date.now() > EARLY_MS) return current;
++  pending ??= (async () => {
++    const roleArn = process.env.HAWKES_AWS_ROLE_ARN;
++    if (!roleArn) throw new Error('HAWKES_AWS_FEDERATION=gce needs HAWKES_AWS_ROLE_ARN (the role made by deploy/gcp/aws-federation.mjs)');
++    const token = await gceIdentityToken(process.env.HAWKES_AWS_AUDIENCE || DEFAULT_AUDIENCE);
++    current = await assumeRoleWithWebIdentity({ roleArn, token, sessionName: sessionName() });
++    return current;
++  })().finally(() => { pending = null; });
++  return pending;
++}
++
++/** Tests: forget the cached credentials. */
++export function resetGceAwsCredentials() {
++  current = null;
++  pending = null;
++}
+diff -ruN a/src/playtests.ts b/src/playtests.ts
+--- a/src/playtests.ts	2026-10-28 13:08:23.508363600 -0700
++++ b/src/playtests.ts	2026-10-28 13:08:37.777182000 -0700
+@@ -8,6 +8,7 @@
+ 
+ import path from 'node:path';
+ import { createRequire } from 'node:module';
++import { federationOn, gceAwsCredentials } from './gceaws.ts';
+ import { pathToFileURL } from 'node:url';
+ import { db, rowToStep, type Step } from './db.ts';
+ import { gen, ensureGen, fileUrl } from './gen.ts';
+@@ -283,7 +284,9 @@
+   presigner ??= (async () => {
+     const s3 = await import(pathToFileURL(hawkesgenRequire.resolve('@aws-sdk/client-s3')).href);
+     const pre = await import(pathToFileURL(hawkesgenRequire.resolve('@aws-sdk/s3-request-presigner')).href);
+-    return { client: new s3.S3Client({ region }), GetObjectCommand: s3.GetObjectCommand, getSignedUrl: pre.getSignedUrl };
++    // On Google (GCE) the SDK's default chain finds no credentials: the federated role's (gceaws.ts), renewed before expiry.
++    const credentials = federationOn(process.env) ? gceAwsCredentials : undefined;
++    return { client: new s3.S3Client({ region, ...(credentials ? { credentials } : {}) }), GetObjectCommand: s3.GetObjectCommand, getSignedUrl: pre.getSignedUrl };
+   })();
+   presigner.catch(() => (presigner = null));
+   const p = await presigner;

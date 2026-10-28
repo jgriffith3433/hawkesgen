@@ -30,6 +30,13 @@ process.on('unhandledRejection', (e: any) => console.error(`[unhandled rejection
 server.listen(PORT, HOST, () => {
   console.log(`Hawkes Gen on http://${HOST}:${PORT}  (data: ${DATA_DIR})`);
   startLagMonitor();
+  // HAWKESGEN_SMOKE=1: the API and dashboard only. No queue (nothing runs or resumes), no uploads, no machine monitor, no
+  // fleet or build-server access changes: a copy of the data can be checked beside the live service without both of them
+  // driving the same GPU servers (the move to Google, hawkesstudio docs/gcp.md; like Studio's STUDIO_SMOKE).
+  if (process.env.HAWKESGEN_SMOKE === '1') {
+    console.log('[smoke] HAWKESGEN_SMOKE=1: the queue and every background task are off');
+    return;
+  }
   queue.start();
   void import('./storage.ts').then((m) => m.resumeOnStart()).catch((e) => console.warn(`[storage] ${e.message}`));
   // Analytics: the daily rollups and the 13-month purge, and the GeoIP database (downloaded monthly).
