@@ -117,6 +117,7 @@ export type Settings = {
    * overrides (a pilot alternative).
    */
   gpu: { backend: 'fleet' | 'cloudrun'; families: Record<string, 'fleet' | 'cloudrun'>; cloudrun: { bucket: string | null; urls: Record<string, string>; services: Record<string, string> } };
+  /**
    * Where unity.build and unity.test run (docs/unity-cloudrun.md). "builder" is the Windows build server on AWS
    * (src/providers/builder/builder.ts); "cloudrun" is a Google Cloud Run job per build (cloudrun.ts), with the
    * project's Library cached in Cloud Storage. `timeoutMinutes` is the hard limit on one build for both.
