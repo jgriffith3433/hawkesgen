@@ -22,9 +22,12 @@ export function flag(name, fallback) {
 /** settings.unityBuild.gcp from Gen's settings file, with command-line flags over it. */
 export function config() {
   let gcp = {};
+  let vm = {};
   try {
     const dataDir = process.env.HAWKESGEN_DATA_DIR ?? path.join(ROOT, '.data');
-    gcp = JSON.parse(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8')).unityBuild?.gcp ?? {};
+    const u = JSON.parse(fs.readFileSync(path.join(dataDir, 'settings.json'), 'utf8')).unityBuild ?? {};
+    gcp = u.gcp ?? {};
+    vm = u.vm ?? {};
   } catch { /* no settings yet */ }
   const c = {
     project: flag('project', gcp.project ?? ''),
@@ -35,6 +38,8 @@ export function config() {
     registry: flag('registry', 'hawkes'),
     cpu: Number(flag('cpu', gcp.cpu ?? 8)),
     memoryGiB: Number(flag('memory', gcp.memoryGiB ?? 32)),
+    zone: flag('zone', vm.zone ?? 'us-east4-a'),
+    machineType: flag('machine-type', vm.machineType ?? 'n2-standard-8'),
   };
   if (!c.project) die('Which Google Cloud project? Pass --project <id> (or set settings.unityBuild.gcp.project in Gen).');
   return c;

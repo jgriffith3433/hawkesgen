@@ -123,14 +123,22 @@ export type Settings = {
    * project's Library cached in Cloud Storage. `timeoutMinutes` is the hard limit on one build for both.
    * `cleanAfterFailures`: that many cache-looking failures in a row make the next cloud build run without the cache.
    * `concurrency`: cloud builds at once (the build server always runs one).
+   * "vm" (per project, for Libraries too big for Cloud Run's 32 GiB in memory): the same container on a spot VM per
+   * project with a persistent disk that keeps the Library (vm.ts; `vm` below). `vmAt`: a Cloud Run build whose memory
+   * peak passes that share of its limit moves its project to "vm" for the next build (0 turns it off).
    */
   unityBuild: {
-    backend: 'builder' | 'cloudrun'; timeoutMinutes: number; cleanAfterFailures: number; concurrency: number;
-    /** A backend per project ("sickofitgame-unity": "builder") over `backend`: a Library too big for Cloud Run stays where it fits. */
-    projects: Record<string, 'builder' | 'cloudrun'>;
+    backend: UnityBackend; timeoutMinutes: number; cleanAfterFailures: number; concurrency: number; vmAt: number;
+    /** A backend per project ("sickofitgame-unity": "vm") over `backend`: a Library too big for Cloud Run builds where it fits. */
+    projects: Record<string, UnityBackend>;
     gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number };
+    /** The build VMs: one per project, named hawkes-unity-<project>, made by tools/unity-cloudrun/vm.mjs. */
+    vm: { zone: string; machineType: string; pricePerHour: number };
   };
 };
+
+export type UnityBackend = 'builder' | 'cloudrun' | 'vm';
+const isUnityBackend = (v: unknown): v is UnityBackend => v === 'builder' || v === 'cloudrun' || v === 'vm';
 
 export const SETTINGS_DEFAULTS: Settings = {
   fleet: { servers: 4, auto: true, autoLaunch: false, launchType: 'g6e.xlarge', idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
@@ -148,8 +156,9 @@ export const SETTINGS_DEFAULTS: Settings = {
   gpu: { backend: 'fleet', families: {}, cloudrun: { bucket: null, urls: {}, services: {} } },
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
-    backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, projects: {},
+    backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
     gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32 },
+    vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
 };
 export const FLEET_MAX = 16;
@@ -222,9 +231,9 @@ function clean(s: Settings): Settings {
 }
 
 /** Which backend a unity.build / unity.test job runs on: its `backend` param, else its project's, else the default. */
-export function unityBackendOf(params: { backend?: unknown; project?: unknown } | undefined, u: Settings['unityBuild']): 'builder' | 'cloudrun' {
+export function unityBackendOf(params: { backend?: unknown; project?: unknown } | undefined, u: Settings['unityBuild']): UnityBackend {
   const b = params?.backend;
-  if (b === 'builder' || b === 'cloudrun') return b;
+  if (isUnityBackend(b)) return b;
   const own = typeof params?.project === 'string' ? u.projects[params.project.replace(/\\/g, '/')] : undefined;
   return own ?? u.backend;
 }
@@ -233,13 +242,20 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
   const d = SETTINGS_DEFAULTS.unityBuild;
   const n = (v: unknown, lo: number, hi: number, def: number) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || def));
   const g = { ...d.gcp, ...(u?.gcp ?? {}) };
+  const vm = { ...d.vm, ...(u?.vm ?? {}) };
   const word = (v: unknown, re: RegExp, def: string) => (typeof v === 'string' && re.test(v) ? v : def);
   return {
-    backend: u?.backend === 'cloudrun' ? 'cloudrun' : 'builder',
+    backend: isUnityBackend(u?.backend) ? u!.backend : 'builder',
     timeoutMinutes: n(u?.timeoutMinutes, 10, 180, d.timeoutMinutes),
     cleanAfterFailures: n(u?.cleanAfterFailures, 1, 10, d.cleanAfterFailures),
     concurrency: n(u?.concurrency, 1, 8, d.concurrency),
-    projects: Object.fromEntries(Object.entries(u?.projects ?? {}).filter(([k, v]) => /^[A-Za-z0-9._/-]{1,80}$/.test(k) && (v === 'builder' || v === 'cloudrun'))) as Record<string, 'builder' | 'cloudrun'>,
+    vmAt: u?.vmAt !== undefined && Number.isFinite(Number(u.vmAt)) ? Math.max(0, Math.min(1, Number(u.vmAt))) : d.vmAt,
+    projects: Object.fromEntries(Object.entries(u?.projects ?? {}).filter(([k, v]) => /^[A-Za-z0-9._/-]{1,80}$/.test(k) && isUnityBackend(v))) as Record<string, UnityBackend>,
+    vm: {
+      zone: word(vm.zone, /^[a-z]+-[a-z]+\d+-[a-z]$/, d.vm.zone),
+      machineType: word(vm.machineType, /^[a-z0-9]+-[a-z0-9-]+$/, d.vm.machineType),
+      pricePerHour: Math.max(0, Math.min(10, Number(vm.pricePerHour) || d.vm.pricePerHour)),
+    },
     gcp: {
       project: word(g.project, /^[a-z][a-z0-9-]{4,29}$/, ''),
       region: word(g.region, /^[a-z]+-[a-z]+\d+$/, d.gcp.region),
@@ -280,7 +296,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     audio: { ...cur.audio, ...(patch.audio ?? {}) },
     storage: { ...cur.storage, ...(patch.storage ?? {}) },
     gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
-    unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) } },
+    unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) }, vm: { ...cur.unityBuild.vm, ...(patch.unityBuild?.vm ?? {}) } },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
   return next;

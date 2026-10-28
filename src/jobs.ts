@@ -582,8 +582,10 @@ class Queue {
         continue;
       }
       // Unity builds on Cloud Run (settings.unityBuild, docs/unity-cloudrun.md) have a lane of their own: one machine per build.
-      const cloudBuild = provider === 'builder' && unityBackendOf(j.params, settings.unityBuild) === 'cloudrun';
-      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : provider;
+      // Builds on a project's VM (one VM per project) take their own lane, one at a time.
+      const unityBackend = provider === 'builder' ? unityBackendOf(j.params, settings.unityBuild) : null;
+      const cloudBuild = unityBackend === 'cloudrun';
+      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : unityBackend === 'vm' ? 'builder-vm' : provider;
       const lane = this.lanes.get(key) ?? new Set();
       this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.

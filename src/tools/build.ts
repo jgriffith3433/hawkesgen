@@ -6,19 +6,24 @@ import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
 import { runCloudBuild, type BuildOptions } from '../providers/builder/cloudrun.ts';
-import { paths, loadSettings, unityBackendOf } from '../config.ts';
+import { runVmBuild } from '../providers/builder/vm.ts';
+import { paths, loadSettings, unityBackendOf, type UnityBackend } from '../config.ts';
 import { GenError } from '../util.ts';
 
 /** Which backend runs a build: the param when given, else the project's own (settings.unityBuild.projects), else settings.unityBuild.backend. */
-export function buildBackend(param?: unknown, project?: string, u = loadSettings().unityBuild): 'builder' | 'cloudrun' {
+export function buildBackend(param?: unknown, project?: string, u = loadSettings().unityBuild): UnityBackend {
   return unityBackendOf({ backend: param, project }, u);
 }
 
-/** One Unity batch run on the chosen backend (the same result shape from both). */
-async function build(jobId: string, spec: BuildSpec, hooks: BuildHooks, backend: 'builder' | 'cloudrun', opts: BuildOptions = {}) {
+/** One Unity batch run on the chosen backend (the same result shape from each). */
+async function build(jobId: string, spec: BuildSpec, hooks: BuildHooks, backend: UnityBackend, opts: BuildOptions = {}) {
   if (backend === 'cloudrun') {
     const r = await runCloudBuild(jobId, spec, hooks, opts);
     return { ...r, backend, usage: 'gcp-cloudrun' };
+  }
+  if (backend === 'vm') {
+    const r = await runVmBuild(jobId, spec, hooks, opts);
+    return { ...r, backend, usage: 'gcp-vm' };
   }
   const r = await runBuild(jobId, spec, hooks);
   return { ...r, backend, usage: 'aws-builder', cloud: undefined };
@@ -46,7 +51,7 @@ export const unityBuild: Tool = {
     siteDir: { type: 'string', description: 'A folder under C:\\Projects that gets the build instead of the website folder (a scratch copy of it), so the real site is untouched', advanced: true },
     env: { type: 'json', description: 'Environment variables for the build (e.g. {"BUILD_VERSION": "12"})', advanced: true },
     args: { type: 'json', description: 'Extra Unity command-line arguments (a list)', advanced: true },
-    backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun'], default: 'auto', description: 'Where to build: auto uses settings.unityBuild.backend', advanced: true },
+    backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun', 'vm'], default: 'auto', description: 'Where to build: auto uses settings.unityBuild.backend', advanced: true },
     cache: { type: 'string', description: 'Cloud builds: the Library cache to restore and save (default: the branch, beta or main; other branches restore beta and save nothing)', advanced: true },
     clean: { type: 'boolean', default: false, description: 'Cloud builds: build without the Library cache (a full import); a success saves a fresh cache', advanced: true },
   },
@@ -70,6 +75,7 @@ export const unityBuild: Tool = {
         logTail: r.ok ? undefined : r.logTail,
         backend,
         ...(r.cloud ? { cloud: r.cloud } : {}),
+        ...((r as { movedToVm?: string }).movedToVm ? { movedToVm: (r as { movedToVm?: string }).movedToVm } : {}),
       });
       if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });
       ctx.log(`built in ${Math.round(r.seconds / 60)} min${version ? `: Game/v${version}` : ''}, about $${r.cost.toFixed(2)}`);
@@ -110,7 +116,7 @@ export const unityTest: Tool = {
     platform: { type: 'enum', values: ['EditMode', 'PlayMode'], default: 'EditMode' },
     category: { type: 'string', description: 'Only tests in this category (-testCategory), e.g. Playtest or HawkesGen.Humanoid' },
     target: { type: 'enum', values: ['WebGL', 'StandaloneWindows64'], default: 'WebGL', advanced: true },
-    backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun'], default: 'auto', description: 'Where to run: auto uses settings.unityBuild.backend (an fbx check always runs on the build server)', advanced: true },
+    backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun', 'vm'], default: 'auto', description: 'Where to run: auto uses settings.unityBuild.backend (an fbx check always runs on the build server)', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;

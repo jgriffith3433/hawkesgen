@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, loadSettings } from '../../config.ts';
+import { paths, loadSettings, saveSettings } from '../../config.ts';
 import { GenError } from '../../util.ts';
 import {
   type BuildSpec, type BuildHooks, UNITY_EXCLUDE, SITE_EXCLUDE, standIn, unityVersionOf, localPackages, repoOf, walk, localGit,
@@ -145,80 +145,118 @@ function saveJob(jobId: string, j: CloudJob) {
 
 export type BuildOptions = { cache?: string; clean?: boolean };
 
+/** The checks every backend makes first; returns the spec with its stand-ins resolved and the Unity version. */
+export function checkBuild(spec: BuildSpec, cfg: ReturnType<typeof cloudConfig>, where: string) {
+  const target = spec.target ?? 'WebGL';
+  spec = { ...spec, projectDir: standIn(spec.projectDir, 'projectDir'), siteDir: standIn(spec.siteDir, 'siteDir') };
+  if (spec.siteDir && !spec.site) throw fail('siteDir needs site (the website folder it stands in for).');
+  if (target !== 'WebGL') throw fail(`Builds ${where} make WebGL only (the image has the WebGL module); ${target} needs the build server.`, 'config');
+  const unity = unityVersionOf(spec.project, spec.projectDir);
+  if (unity !== cfg.gcp.unity) throw fail(`${spec.project} uses Unity ${unity}, but the build image has ${cfg.gcp.unity}. Build a new image for it (tools/unity-cloudrun/build-image.mjs) or use the build server.`, 'config');
+  return { spec, unity, target };
+}
+
+export type Prepared = { prefix: string; specUri: string; repo: string; saveKey: string | null; stateKey: string; clean: boolean };
+
+/** Works out the commits, uploads the inputs and writes spec.json; the same for Cloud Run and the build VM. */
+export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string, target: string, hooks: BuildHooks, opts: BuildOptions, cfg: ReturnType<typeof cloudConfig>, tmp: string): Promise<Prepared> {
+  const bucket = cfg.gcp.bucket;
+  const repo = cacheRepo(spec.project);
+  hooks.step('working out the commits to build');
+  const src = sourcesOf(spec);
+  const overlayBytes = src.overlay.reduce((n, f) => n + f.size, 0);
+  if (overlayBytes > OVERLAY_MAX) throw fail(`${src.overlay.length} uncommitted files (${mb(overlayBytes)}) differ from GitHub: commit and push them, or use the build server.`, 'source');
+  for (const r of src.repos) hooks.log(`${r.slug} at ${r.commit.slice(0, 12)}${r.branch ? ` (${r.branch})` : ''}${r.sparse.length ? `: ${r.sparse.join(', ')}` : ''}`);
+  const keys = cacheKeys({ branch: src.projectBranch, explicit: opts.cache });
+  const stateKey = keys.save ?? keys.restore[0];
+  const decision = shouldRunClean(cacheStateOf(repo, stateKey), opts.clean);
+  if (decision.clean) hooks.log(`clean build: ${decision.reason}`);
+  const prefix = `unity-builds/${jobId}`;
+  hooks.step('uploading the build inputs');
+  let overlay: string | null = null;
+  if (src.overlay.length) {
+    const tgz = await packFiles(src.overlay, tmp, 'overlay');
+    await gcsWrite(bucket, `${prefix}/overlay.tgz`, tgz);
+    overlay = `${prefix}/overlay.tgz`;
+    hooks.log(`${src.overlay.length} uncommitted files (${mb(overlayBytes)}) go with the build`);
+  }
+  let siteIn: string | null = null;
+  if (spec.site) {
+    const s = siteInput(spec.site, spec.siteDir);
+    const stubFiles = [...s.stubs.entries()].map(([dir, omitted]) => {
+      const f = path.join(tmp, `stub-${dir.replace(/\//g, '_')}`);
+      fs.writeFileSync(f, `Hawkes Gen cloud build: ${omitted.length} big files of this folder stay on the machine that started the build.\n${omitted.join('\n')}\n`);
+      return { key: `${spec.site}/${dir}/${STUB}`, file: f, size: 0 };
+    });
+    const tgz = await packFiles([...s.keep, ...stubFiles], tmp, 'site');
+    await gcsWrite(bucket, `${prefix}/site-in.tgz`, tgz);
+    siteIn = `${prefix}/site-in.tgz`;
+    const stubbed = [...s.stubs.keys()];
+    hooks.log(`website input: ${s.keep.length} files (${mb(fs.statSync(tgz).size)} packed)${stubbed.length ? `; ${stubbed.join(', ')} stubbed` : ''}`);
+  }
+  const body = {
+    v: 1, job: jobId, unity, target, project: spec.project, site: spec.site ?? null,
+    method: spec.method ?? null, tests: spec.tests ?? null, testFilter: spec.testFilter ?? null,
+    args: spec.args ?? [], env: spec.env ?? {},
+    repos: src.repos, overlay, deletes: src.deletes, siteInput: siteIn,
+    cache: { bucket, prefix: `unity-cache/${repo}`, restore: decision.clean ? [] : keys.restore, save: keys.save, clean: decision.clean, reason: decision.reason, exclude: CACHE_EXCLUDE },
+    out: { bucket, prefix },
+    timeoutMinutes: cfg.timeoutMinutes,
+  };
+  await gcsWrite(bucket, `${prefix}/spec.json`, Buffer.from(JSON.stringify(body, null, 2)), 'application/json');
+  return { prefix, specUri: `gs://${bucket}/${prefix}/spec.json`, repo, saveKey: keys.save, stateKey, clean: decision.clean };
+}
+
+/** Shows the build's progress lines (the same as the build server's) and remembers the first license line. */
+export function progressFollower(hooks: BuildHooks) {
+  const f = {
+    lastStep: '', licenseLine: '',
+    take(lines: string[]) {
+      for (const line of lines) {
+        if (LICENSE_RE.test(line)) f.licenseLine ||= line.trim();
+        const s = progressOf(line);
+        if (s && s !== f.lastStep) {
+          f.lastStep = s;
+          hooks.step(s);
+          if (/error|fail|license|Deploy|Step \d|\[Hawkes\]|Exiting/i.test(s)) hooks.log(s);
+        }
+      }
+    },
+  };
+  return f;
+}
+
 /** Builds on Cloud Run; resolves to the same shape as builder.ts runBuild. */
 export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks, opts: BuildOptions = {}) {
   const t0 = Date.now();
   const cfg = cloudConfig();
-  const target = spec.target ?? 'WebGL';
-  spec = { ...spec, projectDir: standIn(spec.projectDir, 'projectDir'), siteDir: standIn(spec.siteDir, 'siteDir') };
-  if (spec.siteDir && !spec.site) throw fail('siteDir needs site (the website folder it stands in for).');
-  if (target !== 'WebGL') throw fail(`Cloud builds make WebGL only (the image has the WebGL module); ${target} needs the build server.`, 'config');
-  const unity = unityVersionOf(spec.project, spec.projectDir);
-  if (unity !== cfg.gcp.unity) throw fail(`${spec.project} uses Unity ${unity}, but the cloud image has ${cfg.gcp.unity}. Build a new image for it (tools/unity-cloudrun/build-image.mjs) or use the build server.`, 'config');
-  const bucket = cfg.gcp.bucket;
-  const repo = cacheRepo(spec.project);
+  const checked = checkBuild(spec, cfg, 'on Cloud Run');
+  spec = checked.spec;
   const tmp = fs.mkdtempSync(path.join(paths.tmp, 'cloudbuild-'));
 
   let job = loadJob(jobId);
   if (job) {
     hooks.log(`the cloud build was already started (${job.execution.split('/').pop()}); following it`);
   } else {
-    hooks.step('working out the commits to build');
-    const src = sourcesOf(spec);
-    const overlayBytes = src.overlay.reduce((n, f) => n + f.size, 0);
-    if (overlayBytes > OVERLAY_MAX) throw fail(`${src.overlay.length} uncommitted files (${mb(overlayBytes)}) differ from GitHub: commit and push them, or use the build server.`, 'source');
-    for (const r of src.repos) hooks.log(`${r.slug} at ${r.commit.slice(0, 12)}${r.branch ? ` (${r.branch})` : ''}${r.sparse.length ? `: ${r.sparse.join(', ')}` : ''}`);
-    const keys = cacheKeys({ branch: src.projectBranch, explicit: opts.cache });
-    const stateKey = keys.save ?? keys.restore[0];
-    const decision = shouldRunClean(cacheStateOf(repo, stateKey), opts.clean);
-    if (decision.clean) hooks.log(`clean build: ${decision.reason}`);
-    const prefix = `unity-builds/${jobId}`;
-    hooks.step('uploading the build inputs');
-    let overlay: string | null = null;
-    if (src.overlay.length) {
-      const tgz = await packFiles(src.overlay, tmp, 'overlay');
-      await gcsWrite(bucket, `${prefix}/overlay.tgz`, tgz);
-      overlay = `${prefix}/overlay.tgz`;
-      hooks.log(`${src.overlay.length} uncommitted files (${mb(overlayBytes)}) go with the build`);
+    let p: Prepared;
+    try {
+      p = await prepareBuild(jobId, spec, checked.unity, checked.target, hooks, opts, cfg, tmp);
+    } catch (e) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      throw e;
     }
-    let siteIn: string | null = null;
-    let stubs: Record<string, number> = {};
-    if (spec.site) {
-      const s = siteInput(spec.site, spec.siteDir);
-      const stubFiles = [...s.stubs.entries()].map(([dir, omitted]) => {
-        const f = path.join(tmp, `stub-${dir.replace(/\//g, '_')}`);
-        fs.writeFileSync(f, `Hawkes Gen cloud build: ${omitted.length} big files of this folder stay on the machine that started the build.\n${omitted.join('\n')}\n`);
-        return { key: `${spec.site}/${dir}/${STUB}`, file: f, size: 0 };
-      });
-      const tgz = await packFiles([...s.keep, ...stubFiles], tmp, 'site');
-      await gcsWrite(bucket, `${prefix}/site-in.tgz`, tgz);
-      siteIn = `${prefix}/site-in.tgz`;
-      stubs = Object.fromEntries([...s.stubs.entries()].map(([d, o]) => [d, o.length]));
-      hooks.log(`website input: ${s.keep.length} files (${mb(fs.statSync(tgz).size)} packed)${Object.keys(stubs).length ? `; ${Object.keys(stubs).join(', ')} stubbed` : ''}`);
-    }
-    const body = {
-      v: 1, job: jobId, unity, target, project: spec.project, site: spec.site ?? null,
-      method: spec.method ?? null, tests: spec.tests ?? null, testFilter: spec.testFilter ?? null,
-      args: spec.args ?? [], env: spec.env ?? {},
-      repos: src.repos, overlay, deletes: src.deletes, siteInput: siteIn,
-      cache: { bucket, prefix: `unity-cache/${repo}`, restore: decision.clean ? [] : keys.restore, save: keys.save, clean: decision.clean, reason: decision.reason, exclude: CACHE_EXCLUDE },
-      out: { bucket, prefix },
-      timeoutMinutes: cfg.timeoutMinutes,
-    };
-    await gcsWrite(bucket, `${prefix}/spec.json`, Buffer.from(JSON.stringify(body, null, 2)), 'application/json');
     hooks.step('starting the cloud build');
     // The execution may run 15 minutes past the build's own limit (fetch, cache, upload); Gen cancels it after that.
-    const execution = await runJob(cfg.target, { HAWKES_SPEC: `gs://${bucket}/${prefix}/spec.json` }, (cfg.timeoutMinutes + 15) * 60);
-    job = { execution, prefix, started: Date.now(), repo, saveKey: keys.save, stateKey, clean: decision.clean };
+    const execution = await runJob(cfg.target, { HAWKES_SPEC: p.specUri }, (cfg.timeoutMinutes + 15) * 60);
+    job = { execution, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
     saveJob(jobId, job);
-    hooks.log(`cloud build started: ${execution.split('/').pop()} (Unity ${unity}, ${target}${spec.method ? `, ${spec.method}` : ''}${decision.clean ? ', clean' : ''})`);
+    hooks.log(`cloud build started: ${execution.split('/').pop()} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
   }
 
   // Follow the execution and its log.
   const deadline = job.started + (cfg.timeoutMinutes + 25) * 60_000;
   let since = new Date(job.started - 60_000).toISOString();
-  let lastStep = '';
-  let licenseLine = '';
+  const follow = progressFollower(hooks);
   let state = await getExecution(job.execution);
   hooks.step('waiting for the cloud machine');
   for (;;) {
@@ -231,15 +269,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     try {
       const l = await executionLogs(cfg.target.project, job.execution, since);
       since = l.last;
-      for (const line of l.lines) {
-        if (LICENSE_RE.test(line)) licenseLine ||= line.trim();
-        const s = progressOf(line);
-        if (s && s !== lastStep) {
-          lastStep = s;
-          hooks.step(s);
-          if (/error|fail|license|Deploy|Step \d|\[Hawkes\]|Exiting/i.test(s)) hooks.log(s);
-        }
-      }
+      follow.take(l.lines);
     } catch (e: any) {
       hooks.log(`(couldn't read the cloud build's log: ${e.message}; retrying)`);
     }
@@ -249,7 +279,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
       fs.rmSync(jobFile(jobId), { force: true });
       recordBuild(job.repo, job.stateKey, { ok: false, failure: 'other', at: new Date().toISOString(), job: jobId, kind: 'timeout', clean: job.clean }, cfg.cleanAfterFailures);
       fs.rmSync(tmp, { recursive: true, force: true });
-      throw fail(`The cloud build ran past its limit (${cfg.timeoutMinutes} minutes plus 25 for setup) and was cancelled (last step: ${lastStep || 'none'}).`, 'timeout');
+      throw fail(`The cloud build ran past its limit (${cfg.timeoutMinutes} minutes plus 25 for setup) and was cancelled (last step: ${follow.lastStep || 'none'}).`, 'timeout');
     }
     await new Promise((r) => setTimeout(r, 10_000));
     try {
@@ -259,33 +289,70 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     }
   }
   fs.rmSync(jobFile(jobId), { force: true });
-  return finishCloudBuild(jobId, spec, hooks, { job, state, tmp, t0, cpu: cfg.gcp.cpu, gib: cfg.gcp.memoryGiB, bucket, cleanAfter: cfg.cleanAfterFailures, licenseLine });
+  const ran = state.started && state.completed ? (Date.parse(state.completed) - Date.parse(state.started)) / 1000 : (Date.now() - job.started) / 1000;
+  const oom = /memory limit|out of memory|OOM/i.test(state.message);
+  const r = await finishBuildResult(jobId, spec, hooks, {
+    job: { ...job, label: `execution ${job.execution.split('/').pop()}` }, ran, cost: cloudRunCost(ran, cfg.gcp.cpu, cfg.gcp.memoryGiB), tmp, t0,
+    bucket: cfg.gcp.bucket, cleanAfter: cfg.cleanAfterFailures, licenseLine: follow.licenseLine,
+    noResult: state.cancelled ? 'it was cancelled in Cloud Run' : state.message || 'no result.json',
+  });
+  // Too big for Cloud Run: the next build of this project goes to its build VM (vm.ts), and the job says so.
+  const limit = cfg.gcp.memoryGiB * 1024 ** 3;
+  const peak = (r.cloud as { memoryPeakBytes?: number | null } | undefined)?.memoryPeakBytes ?? null;
+  const move = shouldMoveToVm({ peakBytes: peak, limitBytes: limit, oom: oom && !r.ok, at: cfg.vmAt });
+  if (move) {
+    const moved = markProjectForVm(spec.project);
+    const msg = `${spec.project} ${move === 'oom' ? 'ran out of memory on Cloud Run' : `peaked at ${mb(peak!)} of Cloud Run's ${cfg.gcp.memoryGiB} GiB (over ${Math.round(cfg.vmAt * 100)}%)`}: ${moved ? 'its next build runs on its build VM (settings.unityBuild.projects); make the VM first if it isn\'t there: node tools/unity-cloudrun/vm.mjs --folder <project> --apply' : 'it already builds on its VM'}.`;
+    hooks.log(msg);
+    (r as { movedToVm?: string }).movedToVm = msg;
+  }
+  return r;
 }
 
-async function finishCloudBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks, o: { job: CloudJob; state: Awaited<ReturnType<typeof getExecution>>; tmp: string; t0: number; cpu: number; gib: number; bucket: string; cleanAfter: number; licenseLine: string }) {
-  const { job, state, tmp, bucket } = o;
-  const ran = state.started && state.completed ? (Date.parse(state.completed) - Date.parse(state.started)) / 1000 : (Date.now() - job.started) / 1000;
+/** Whether a Cloud Run build was too big for Cloud Run: its peak passed `at` of the limit, or it was killed for memory. */
+export function shouldMoveToVm({ peakBytes, limitBytes, oom, at }: { peakBytes: number | null; limitBytes: number; oom: boolean; at: number }): 'oom' | 'peak' | null {
+  if (at <= 0) return null;
+  if (oom) return 'oom';
+  return peakBytes !== null && peakBytes > at * limitBytes ? 'peak' : null;
+}
+
+/** Sets the project's backend to "vm"; false when it already was. */
+export function markProjectForVm(project: string) {
+  const u = loadSettings().unityBuild;
+  const key = project.replace(/\\/g, '/');
+  if (u.projects[key] === 'vm') return false;
+  saveSettings({ unityBuild: { ...u, projects: { ...u.projects, [key]: 'vm' } } });
+  return true;
+}
+
+export type FinishOptions = {
+  job: { prefix: string; repo: string; stateKey: string; clean: boolean; label: string; execution?: string; instance?: string };
+  ran: number; cost: number; tmp: string; t0: number; bucket: string; cleanAfter: number; licenseLine: string; noResult: string;
+};
+
+/** Reads result.json and the log, lays the website changes down, records the cache outcome (both cloud backends). */
+export async function finishBuildResult(jobId: string, spec: BuildSpec, hooks: BuildHooks, o: FinishOptions) {
+  const { job, tmp, bucket } = o;
   const seconds = Math.round((Date.now() - o.t0) / 1000);
-  const cost = cloudRunCost(ran, o.cpu, o.gib);
   const raw = await gcsRead(bucket, `${job.prefix}/result.json`).catch(() => null);
   const logBuf = (await gcsRead(bucket, `${job.prefix}/unity.log`).catch(() => null)) ?? Buffer.from('');
   const logText = logBuf.toString('utf8');
   const logTail = logText.split(/\r?\n/).slice(-60).join('\n');
-  const base = { exitCode: null as number | null, seconds, cost, log: logBuf, results: null as Buffer | null, logTail, tmp, project: [] as string[], site: null as null | { changed: string[]; deleted: string[]; bytes: number } };
+  const base = { exitCode: null as number | null, seconds, cost: o.cost, log: logBuf, results: null as Buffer | null, logTail, tmp, project: [] as string[], site: null as null | { changed: string[]; deleted: string[]; bytes: number } };
   const at = new Date().toISOString();
   let result: CloudResult | null = null;
   try {
     if (raw) result = parseCloudResult(raw);
   } catch (e: any) {
-    hooks.log(`(the cloud build's result couldn't be read: ${e.message})`);
+    hooks.log(`(the build's result couldn't be read: ${e.message})`);
   }
+  const where = { execution: job.execution, instance: job.instance };
   if (!result) {
-    const why = state.cancelled ? 'it was cancelled in Cloud Run' : state.message || 'no result.json';
     recordBuild(job.repo, job.stateKey, { ok: false, failure: failureKind(logText), at, job: jobId, clean: job.clean }, o.cleanAfter);
-    return { ...base, ok: false, error: `The cloud build ended without a result (${why}; execution ${job.execution.split('/').pop()}).`, kind: 'builder', errors: [] as string[], cloud: { execution: job.execution } };
+    return { ...base, ok: false, error: `The build ended without a result (${o.noResult}; ${job.label}).`, kind: 'builder', errors: [] as string[], cloud: { ...where, memoryPeakBytes: null as number | null } };
   }
-  const cloud = { execution: job.execution, cache: result.cache, stages: result.seconds, memoryPeakBytes: result.memoryPeakBytes, ranSeconds: Math.round(ran) };
-  if (result.cache.restoredFrom) hooks.log(`Library cache: restored ${result.cache.restoredFrom} (${mb(result.cache.restoredBytes)})`);
+  const cloud = { ...where, cache: result.cache, stages: result.seconds, memoryPeakBytes: result.memoryPeakBytes, ranSeconds: Math.round(o.ran) };
+  if (result.cache.restoredFrom) hooks.log(`Library cache: restored ${result.cache.restoredFrom}${result.cache.restoredBytes ? ` (${mb(result.cache.restoredBytes)})` : ''}`);
   else hooks.log(`Library cache: none restored${result.cache.reason ? ` (${result.cache.reason})` : ''}`);
   if (result.cache.saved) hooks.log(`Library cache: saved ${result.cache.savedKey} (${mb(result.cache.savedBytes)})`);
   else if (result.cache.skipped) hooks.log(`Library cache: not saved (${result.cache.skipped})`);
@@ -302,9 +369,7 @@ async function finishCloudBuild(jobId: string, spec: BuildSpec, hooks: BuildHook
     const hardLicense = result.kind === 'license' ? (result.error ?? o.licenseLine) : lines.find((l) => HARD_LICENSE_RE.test(l));
     const kind = hardLicense ? 'license' : result.kind ?? 'build';
     recordBuild(job.repo, job.stateKey, { ok: false, failure: failureKind(logText, kind), at, job: jobId, kind, restored: result.cache.restoredFrom, clean: job.clean }, o.cleanAfter);
-    if (hardLicense) {
-      return { ...base, exitCode: result.exitCode, ok: false, error: `Unity isn't licensed in the cloud build (${String(hardLicense).trim().slice(0, 300)}). Put the contents of Unity_lic.ulf in the secret unity-license (docs/unity-cloudrun.md, "License"), then build again.`, kind: 'license', errors: result.errors, cloud };
-    }
+    if (hardLicense) return { ...base, exitCode: result.exitCode, ok: false, error: licenseMessage(String(hardLicense)), kind: 'license', errors: result.errors, cloud };
     const errors = result.errors.length ? result.errors : [...new Set(lines.filter((l) => /\[GameDeploy\].*(ERROR|FAILED)|DEPLOY FAILED|\[Hawkes\].*(error|failed)|error CS\d+|BuildFailedException|Build Failed|Exception:|error:/i.test(l) && !/Licensing::/i.test(l)).map((l) => l.trim()))].slice(0, 20);
     const lastLine = errors[0] ?? lines.filter((l) => l.trim() && !/Licensing::/i.test(l)).slice(-1)[0]?.trim();
     const error = result.error ? `${result.error}${lastLine && !result.error.includes(lastLine) ? `: ${lastLine}` : ''}` : `Unity exited with code ${result.exitCode}${lastLine ? `: ${lastLine}` : ''}`;
@@ -339,6 +404,12 @@ async function finishCloudBuild(jobId: string, spec: BuildSpec, hooks: BuildHook
   for (const k of ['overlay.tgz', 'site-in.tgz', 'site.tgz']) await gcsDelete(bucket, `${job.prefix}/${k}`).catch(() => {});
   return { ...base, exitCode: result.exitCode ?? 0, ok: true, error: null, kind: null, errors: [] as string[], site, cloud };
 }
+
+/** The words for a license failure (the container's plain reason, or Unity's own line). */
+export function licenseMessage(reason: string) {
+  return `Unity isn't licensed in the cloud build: ${reason.trim().slice(0, 300)}. The build signs in to Unity with the secrets unity-email and unity-password (docs/unity-cloudrun.md, "License"); fix them and build again.`;
+}
+
 
 // ------------------------------------------------------------- the caches
 

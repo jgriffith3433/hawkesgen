@@ -56,14 +56,16 @@ running 25 minutes after that. The Windows build server now has the same limit (
 
 | Key | Default | What |
 |---|---|---|
-| `backend` | `builder` | Where builds run unless a project says otherwise |
-| `projects` | `{}` | Per project: `{ "breakingthrough": "cloudrun", "sickofitgame-unity": "builder" }` |
-| `timeoutMinutes` | 40 | The hard limit on one build (both backends) |
+| `backend` | `builder` | Where builds run unless a project says otherwise: `builder`, `cloudrun` or `vm` |
+| `projects` | `{}` | Per project: `{ "breakingthrough": "cloudrun", "sickofitgame-unity": "vm" }` |
+| `timeoutMinutes` | 40 | The hard limit on one build (every backend) |
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
-| `concurrency` | 2 | Cloud builds at once (their own queue lane, `builder-cloud`; the Windows box stays one at a time) |
+| `concurrency` | 2 | Cloud Run builds at once (their own queue lane, `builder-cloud`; VM builds `builder-vm` and the Windows box one at a time) |
+| `vmAt` | 0.85 | A Cloud Run build peaking over this share of its memory moves its project to `vm` (0: never) |
 | `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32 |
+| `vm` | | `zone` (us-east4-a), `machineType` (n2-standard-8), `pricePerHour` (0.10, for usage) |
 
-The tool params `backend` (auto/builder/cloudrun), `cache` (a cache name) and `clean` (no cache) override per job.
+The tool params `backend` (auto/builder/cloudrun/vm), `cache` (a cache name) and `clean` (no cache) override per job.
 `unity.test` with an `fbx` input always runs on the build server (the FBX is placed in the project folder here).
 
 ## The Library cache
@@ -113,25 +115,54 @@ regenerable and grows without bound. Without it the Library is 5.7 GB and fits. 
 rebuilds its Addressables content from scratch (a few minutes more; the pilot measures it). If its peak goes over
 ~28 GiB, or the Addressables rebuild makes it slower than the Windows box, Sick Of It goes to the VM fallback.
 
-### The fallback for big projects: the same container on a spot VM
+### The build VM: for projects too big for Cloud Run
 
-Not Cloud Run's other volumes: an **NFS** volume (Filestore from ~$200/month, or a VM serving NFS) mounts without
-locking ("no-lock mode"), and Unity's ArtifactDB is LMDB, which needs real file locks and fast random I/O; a **Cloud
-Storage** volume (gcsfuse) is worse for it. Neither is safe for a Library. Cloud Run has no disk-backed scratch volume.
+Cloud Run's other volumes don't help here. An **NFS** volume (Filestore, from about $200/month, or a VM serving NFS)
+mounts without file locking ("no-lock mode"), and Unity's ArtifactDB is LMDB, which needs real locks and fast random
+I/O. A **Cloud Storage** volume (gcsfuse) is worse for it. Neither is safe for a Library, and Cloud Run has no
+disk-backed scratch volume.
 
-So: **one small Linux VM per big project**, `n2-standard-8` (8 vCPU, 32 GB) **spot**, with a 100 GB `pd-balanced`
-disk that keeps `/work` (sources and the Library) between builds, running **the same image**:
+So a project whose backend is **`vm`** (`settings.unityBuild.projects`) builds on **its own small spot VM**, running
+**the same image** (`src/providers/builder/vm.ts`):
 
-- Gen starts the VM (Compute Engine API) with the build's spec in its metadata; the VM's startup script runs
-  `docker run -e HAWKES_SPEC=... -e HAWKES_PERSIST=1 -e HAWKES_WORK=/work -v /mnt/disks/work:/work <image>` with the
-  secrets read from Secret Manager, then powers off. Gen follows `result.json` in the bucket and the log in Cloud Logging
-  (Docker's `gcplogs` driver), exactly as for Cloud Run, and lays the output down with the same code.
-- `HAWKES_PERSIST=1` is already in the entrypoint: the Library on the disk is used as is (no restore, no save to the
-  bucket), the checkout is fetched in place (`git clean` keeps `Library/`), and `BuildCache` can stay (the disk has room).
-- Cost: spot n2-standard-8 about $0.08-0.10/hr while building (a pre-empted build fails with no result and is simply
-  run again), the disk ~$10/month (100 GB), no idle box. Compare the Windows box: $0.77/hr + $24/month.
-- Not built yet in Gen (only the container side is): it is the next step if the Sick Of It pilot says so. Until
-  then, `settings.unityBuild.projects["sickofitgame-unity"] = "builder"` keeps it on the Windows box.
+- **The machine:**
+  - The VM is `hawkes-unity-<project>`, e.g. `hawkes-unity-sickofitgame-unity`.
+  - It is an `n2-standard-8` spot machine (8 vCPU, 32 GB) running Container-Optimized OS, with a 50 GB boot disk.
+  - A separate 200 GB `pd-balanced` work disk (`<name>-work`) keeps the sources and the Library between builds.
+  - `tools/unity-cloudrun/vm.mjs` makes it, printing first and acting only with `--apply`. It is stopped whenever
+    nothing builds.
+- **A build, from Gen:**
+  1. Gen uploads the same inputs and `spec.json` as for Cloud Run.
+  2. It sets the instance metadata `hawkes-spec` and `hawkes-job`, then starts the VM (Compute Engine REST with ADC,
+     no SDK).
+  3. The VM's startup script (`server/unity-cloudrun/vm-startup.sh`) mounts the work disk, reads the secrets from
+     Secret Manager into a root-only file in `/run`, pulls the image, and runs the container. The flags are
+     `HAWKES_PERSIST=1 HAWKES_WORK=/work` and `--log-driver=gcplogs`.
+  4. When the build is done, the VM powers itself off.
+  5. Gen follows the container's log (Cloud Logging, `gcplogs-docker-driver`), `result.json` in the bucket, and the
+     instance's state. Then it stops the VM, which does nothing if it already is, and takes `hawkes-spec` off it.
+  6. Gen lays the output down with the same code as for Cloud Run, and the result has the same shape.
+- **`HAWKES_PERSIST=1`:**
+  - The Library on the disk is used as it is.
+  - If there is none yet, the first build restores the bucket's cache, which seed-cache.mjs may have uploaded.
+  - Nothing is saved back to the bucket.
+  - The checkout is fetched in place; `git clean` keeps `Library/`.
+  - `BuildCache` can stay, because the disk has room.
+- **When Google takes the spot VM back:** the VM stops and the build ends with "the build VM stopped before the build
+  finished … run the build again". Its disk and Library are kept.
+- **Waiting:** VM builds have their own queue lane, one at a time. A VM found still running from an earlier build is
+  stopped after a minute.
+- **Automatic move to the VM:** when a Cloud Run build's memory peak (`cloud.memoryPeakBytes`) passes **85%** of its
+  limit (`settings.unityBuild.vmAt`; 0 turns it off), or Cloud Run kills it for memory, Gen sets that project to
+  `vm`. The job's log and its `result.movedToVm` say so, and also say to make the VM first if it isn't there.
+- **Cost:**
+  - Spot `n2-standard-8` is about $0.08–0.10/hour while building (`settings.unityBuild.vm.pricePerHour`, 0.10, for
+    the usage records).
+  - The disks cost about $20/month (200 GB) plus $5/month (50 GB boot).
+  - There is no idle machine. The Windows box, for comparison, costs $0.77/hour plus $24/month.
+- **Rights** (vm.mjs sets them):
+  - The build's account may read the image.
+  - Gen's account has `compute.instanceAdmin.v1`, so it can start and stop the VM and set its metadata.
 
 ## Costs per build
 
@@ -152,72 +183,145 @@ idle tails plus hung hours at $0.77/hr and its $24/month disk.
 
 ## License
 
-**Finding (settle this first):** GameCI does **not** activate Unity **Personal** with `UNITY_EMAIL` + `UNITY_PASSWORD`
-alone. Its activation needs the email, the password, **and either `UNITY_SERIAL` (Plus/Pro) or `UNITY_LICENSE`** (the
-contents of a `.ulf` license file). For Personal, the `.ulf` comes from Unity Hub: Preferences > Licenses > Add > "Get
-a free personal license", which writes `C:\ProgramData\Unity\Unity_lic.ulf` on Windows. Licenses aren't tied to the
-OS, so a `.ulf` activated on Windows works in the Linux container. Sources:
-[GameCI activation](https://game.ci/docs/github/activation),
-[GameCI getting started](https://game.ci/docs/github/getting-started),
-[unity-builder: activation needs email, password and a serial or a license](https://lightrun.com/answers/game-ci-unity-builder-license-activation-strategy-could-not-be-determined),
-[unity-builder: Personal needs a one-time manual activation per Unity version](https://github.com/benoitdion/unity-builder).
+**What changed (2026-10-28):**
+- Unity no longer offers manual (`.ulf`) activation for Personal: `license.unity3d.com/manual` redirects away, and
+  GameCI says so.
+- J's PC has no `Unity_lic.ulf`.
+- The first design (a `.ulf` in a secret) is therefore dropped.
 
-What the container does (`activate` in the entrypoint):
-- `UNITY_LICENSE` set: writes it to `~/.local/share/unity3d/Unity/Unity_lic.ulf` and runs
-  `unity-editor -batchmode -quit -manualLicenseFile <file>` (GameCI's Personal path). Nothing to return.
-- `UNITY_SERIAL` set (a Plus/Pro seat): `-serial -username -password`, and `-returnlicense` at the end, always.
-- Neither, or Unity says the license is invalid / not logged in / not entitled / 2FA: the build fails at once with
-  kind `license`, and Gen says **"Unity isn't licensed in the cloud build (...). Put the contents of Unity_lic.ulf in
-  the secret unity-license (docs/unity-cloudrun.md, "License"), then build again."** (the same words and kind Studio
-  already handles for the build server).
-- Secret names: **`unity-license`** (→ `UNITY_LICENSE`), **`github-token`** (→ `GITHUB_TOKEN`), and only with a seat
-  **`unity-serial`**, **`unity-email`**, **`unity-password`**. Never printed; `.ulf` deleted at the end.
+**What the build does now: Personal activation through the Unity Licensing Client, signed in with the account's email
+and password, at the start of every build, returned at the end.**
 
-Risks: a Personal `.ulf` can stop being accepted (Unity changes entitlement checks, or the file is for an older major
-version); then J makes a new one in Unity Hub and adds it as a new secret version. The license check below proves it
-before any real build.
+- **The client and the call:** the Unity Licensing Client (`Unity.Licensing.Client`) ships inside the editor. The
+  entrypoint finds it under `/opt/unity`, or uses `UNITY_LICENSING_CLIENT_PATH`, and runs:
+  `Unity.Licensing.Client --activate-ulf --include-personal --username "$UNITY_EMAIL" --password "$UNITY_PASSWORD"`.
+  - This is what RageAgainstThePixel's `unity-cli` (`activate-license --license personal`) runs.
+  - GameCI's personal path (cli PR #246, merged 2026-09-05) does the same with `--activate-all --include-personal`.
+  - The entrypoint tries `--activate-ulf` first and falls back to `--activate-all` when the client doesn't know the
+    first flag. Network timeouts are retried 3 times.
+- **Returning the license:** `Unity.Licensing.Client --return-ulf`, in the exit trap, so a failed or timed-out build
+  returns it too. Only a container killed outright (out of memory) can't, and that activation frees itself later.
+- **Why not the alternatives:**
+  - `unity-editor -username -password` without a serial is the Plus/Pro path. Unity documents that it does not
+    apply to Personal, and GameCI says the same.
+  - The Unity Hub CLI (`unity license activate --personal`) needs a cached sign-in from a desktop session.
+  - Manual `.ulf` activation is gone.
+  - A Plus/Pro serial still works: set the secret `unity-serial` (`deploy-job.mjs --serial`) and the editor's
+    `-serial` path is used, with `-returnlicense` at the end.
+- **When activation fails**, the build fails at once with kind **`license`** and one of these reasons. Gen says
+  "Unity isn't licensed in the cloud build: <reason>. The build signs in to Unity with the secrets unity-email and
+  unity-password …".
+  - "the Unity account asks for two-factor or device verification, which a headless build can't answer"
+  - "Unity refused the email or password (secrets unity-email, unity-password)": the client's exit code 2, or the
+    words.
+  - "the Unity account has no free Personal activation (seat limit) …"
+  - "the secrets unity-email and unity-password … are empty"
+  - otherwise, the client's own error line
+- **Secrets are never printed:**
+  - The test (`test/unity-license.test.ts`, against a fake client) checks that the password never reaches the output.
+  - The password does appear in the container's own process list, because the client has no stdin option. That is
+    the same in GameCI, and nobody else can see that container.
+- **Secret names:** `unity-email` → `UNITY_EMAIL`, `unity-password` → `UNITY_PASSWORD`, `github-token` →
+  `GITHUB_TOKEN`, and optionally `unity-serial`. Cloud Run mounts them; the build VM reads them from Secret Manager.
+
+**Risks, honestly:**
+- **Undocumented flags:** Unity documents neither the Licensing Client's flags nor its messages (GameCI's PR says
+  so). An editor update could change them. The license check below catches that before any real build.
+- **No 2FA on the build account:** the account must not have two-factor sign-in, because nothing headless can answer
+  it. That is a real security trade-off. The safest form is a **separate Unity account used only for builds**, with
+  a long random password that lives only in Secret Manager.
+- **Unity's terms:**
+  - Unity Personal is for individuals and small companies under Unity's revenue and funding threshold. Each person
+    or entity using it must qualify.
+  - Unity sells Build Server licenses for headless CI machines, which shows that Unity sees automated builds as a
+    paid use case.
+  - Using a Personal seat on ephemeral CI machines is what GameCI's whole Personal path does, but Unity has never
+    explicitly blessed it.
+  - If Hawkes ever passes the Personal threshold, or Unity objects, the answer is a Plus/Pro or Build Server seat
+    (`unity-serial`). No code changes: the entrypoint already has that path.
+- **Seat limits:** each build activates and returns a seat. Two builds at once (the default `concurrency` 2), plus
+  J's own editor, plus a VM build, could hit the account's activation limit. If builds start failing with "seat
+  limit", set `settings.unityBuild.concurrency` to 1.
+
+**Sources:**
+- [game-ci/cli PR #246, Personal activation via the Unity Licensing Client](https://github.com/game-ci/cli/pull/246):
+  merged; uses `--activate-all --include-personal --username --password`; says the flags are undocumented, that 2FA
+  can't be answered headless, and that `unity-editor -serial -username -password` is the serial path only.
+- [RageAgainstThePixel/unity-cli](https://github.com/RageAgainstThePixel/unity-cli) and its
+  [`license-client.ts`](https://raw.githubusercontent.com/RageAgainstThePixel/unity-cli/main/src/license-client.ts):
+  `--activate-ulf --username --password --include-personal`, return with `--return-ulf`, exit code 2 = invalid
+  credentials.
+- [Running Unity 6000.x headless builds in a Linux container](https://dev.to/nydjustin/running-unity-6000x-headless-builds-in-a-linux-container-a-field-report-including-licensing-519b)
+  (the Hub CLI needs a cached sign-in; the manual `.alf` flow fails for Personal).
+- [GameCI activation docs](https://game.ci/docs/github/activation).
 
 ## What J sets up
 
-1. **Install the Google Cloud CLI** and sign in: `gcloud auth login`. Pick or make a project (billing on).
-2. **The Unity license file:** in Unity Hub on this PC, Preferences > Licenses > Add > Get a free personal license (if
-   `C:\ProgramData\Unity\Unity_lic.ulf` isn't already there).
-3. **A GitHub token** for the builds: fine-grained, read-only **Contents** on `breakingthrough`, `YoobaLand`,
-   `sickofitgame-unity`, `hawkesgen`, `hawkesstudio` (and LFS, which Contents covers). The control server's existing
-   `GITHUB_TOKEN` works too if J prefers one token.
-4. Run, in order (each prints first; add `--apply` to do it):
+1. **Install the Google Cloud CLI** and sign in: `gcloud auth login`. Pick or make a project with billing on.
+2. **The build account (recommended):**
+   - Make a separate Unity account for builds at id.unity.com and leave two-factor sign-in **off** on it.
+   - Sign in to Unity Hub with it once and accept the Personal terms, so the account has a Personal entitlement.
+   - J's own account works too, if 2FA is off on it.
+3. **A GitHub token** for the builds:
+   - Fine-grained, with read-only **Contents** on breakingthrough, YoobaLand, sickofitgame-unity, hawkesgen and
+     hawkesstudio. LFS is covered by Contents.
+   - The control server's existing `GITHUB_TOKEN` works too.
+4. **Image, job and secrets.** Each script prints first; add `--apply` to do it.
    ```
-   node tools/unity-cloudrun/build-image.mjs --project <gcp-project>
-   node tools/unity-cloudrun/deploy-job.mjs --project <gcp-project> --bucket hawkes-unity-<gcp-project> --image <printed image>
-   gcloud secrets versions add unity-license --data-file="C:\ProgramData\Unity\Unity_lic.ulf" --project <gcp-project>
-   gcloud secrets versions add github-token --data-file=<token file> --project <gcp-project>
-   node tools/unity-cloudrun/deploy-job.mjs ... --apply        (again, now that the secrets have values)
+   node tools/unity-cloudrun/build-image.mjs --project <gcp-project> --apply
+   node tools/unity-cloudrun/deploy-job.mjs --project <gcp-project> --bucket hawkes-unity-<gcp-project> --image <printed image> --apply
+   powershell -ExecutionPolicy Bypass -File tools\unity-cloudrun\add-secrets.ps1 -Project <gcp-project>
+   node tools/unity-cloudrun/deploy-job.mjs --project <gcp-project> --bucket hawkes-unity-<gcp-project> --image <printed image> --apply
    ```
-5. **Gen's credentials:** `gcloud iam service-accounts keys create hawkes-gen-gcp.json --iam-account=hawkes-gen@<gcp-project>.iam.gserviceaccount.com`,
-   put the file on the control server (next to Gen's `.env`, never in git) and set `GOOGLE_APPLICATION_CREDENTIALS` to
-   its path in `.env`. (On J's PC, `gcloud auth application-default login` works instead.)
-6. **Gen's settings** (owner): `POST /v1/settings` with
+   - The first deploy-job run makes the secrets `unity-email`, `unity-password` and `github-token` empty and stops
+     before the job.
+   - `add-secrets.ps1` asks for the three values without showing them. Leave an answer empty to keep the current
+     value; `-Serial` also asks for a Plus/Pro serial.
+   - The second deploy-job run makes the job.
+   - To set one secret by hand instead: write the value to a file with no newline at the end, run
+     `gcloud secrets versions add unity-password --data-file=<file> --project <gcp-project>`, then delete the file.
+5. **The license check**, about 2 minutes and about $0.02:
+   ```
+   gcloud run jobs execute hawkes-unity-build --region us-east4 --project <gcp-project> --update-env-vars HAWKES_LICENSE_CHECK=1 --wait
+   ```
+   - It activates, opens a throwaway project, and returns the seat.
+   - Its log (Cloud Run > Jobs > hawkes-unity-build > the execution > Logs) says
+     `license: OK, the editor opened a project licensed`, or `license: FAILED: <reason>`.
+   - A failed check also makes the execution fail, so `--wait` reports it.
+6. **Gen's credentials:**
+   - Run `gcloud iam service-accounts keys create hawkes-gen-gcp.json --iam-account=hawkes-gen@<gcp-project>.iam.gserviceaccount.com`.
+   - Put the file on the control server, next to Gen's `.env` and never in git.
+   - Set `GOOGLE_APPLICATION_CREDENTIALS` to its path in `.env`.
+   - On a Google control VM, its own service account (ADC) works instead.
+7. **Gen's settings** (owner): `POST /v1/settings` with
    `{"unityBuild": {"gcp": {"project": "<gcp-project>", "bucket": "hawkes-unity-<gcp-project>"}, "projects": {"breakingthrough": "cloudrun"}}}`.
+8. **For a big project** (Sick Of It), or when Gen says a project moved to its VM:
+   - Run `node tools/unity-cloudrun/vm.mjs --folder C:\Projects\sickofitgame-unity --image <image> --project <gcp-project> --apply`.
+   - Then set `"projects": {..., "sickofitgame-unity": "vm"}`.
 
 ## Pilot: breakingthrough first
 
-1. **License check** (no sources, ~2 min, ~$0.02):
-   `gcloud run jobs execute hawkes-unity-build --region us-east4 --update-env-vars HAWKES_LICENSE_CHECK=1 --wait`.
-   The log says `license: OK (ulf)` and `the editor opened a project licensed`, or why not. Stop here until it passes.
-2. **Seed** breakingthrough's cache (0.4 GB): `node tools/unity-cloudrun/seed-cache.mjs --folder C:\Projects\breakingthrough --project <p> --bucket <b> --apply`
-   (Unity closed). Optional: a clean first build costs a few minutes more, not more money worth worrying about.
-3. **One build from J's PC**, into a scratch copy: `hawkesgen run unity.build project=breakingthrough
-   site=theplacedepartmentwebsite method=WebGlBuild.FullDeploy backend=cloudrun siteDir=<a copy of the website>`.
-   Check: `result.version`, the files in the copy, `cloud.memoryPeakBytes`, `cloud.stages`, and that the game plays
-   (Studio's smoke playtest of The Place Department against the copy).
-4. **On beta:** set `projects.breakingthrough = "cloudrun"` on the control server; the next push to breakingthrough's
-   beta builds in the cloud and Studio playtests it as usual. Run a week; compare time, cost and failures with the
-   Windows box (Studio's build history has both).
-5. **YoobaLand** next (`WEBSITE_PATH` is already read by `YoobaWebBuild.FullDeploy`).
-6. **Sick Of It** last, and only after its deploy script stops hard-coding `C:\Projects\...` (below). Watch its
-   `memoryPeakBytes` and Addressables time; move it to the VM fallback if either is bad.
-7. When all three are happy for two weeks: `backend: "cloudrun"` as the default, stop the Windows box (keep it, stopped,
-   for Remote Desktop editing and as the fallback; terminating it is J's call).
+1. **License check:** step 5 above. Stop here until it passes.
+2. **Seed** breakingthrough's cache (0.4 GB), with Unity closed:
+   `node tools/unity-cloudrun/seed-cache.mjs --folder C:\Projects\breakingthrough --project <p> --bucket <b> --apply`.
+   This is optional: without it, the first cloud build is a full import.
+3. **One build into a scratch copy:**
+   `hawkesgen run unity.build project=breakingthrough site=theplacedepartmentwebsite method=WebGlBuild.FullDeploy backend=cloudrun siteDir=<a copy of the website>`.
+   - Check `result.version`, the files in the copy, `cloud.memoryPeakBytes` and `cloud.stages`.
+   - Check that the game plays (Studio's smoke playtest of The Place Department against the copy).
+4. **On beta:**
+   - Set `projects.breakingthrough = "cloudrun"` on the control server. The next push to breakingthrough's beta builds
+     in the cloud, and Studio playtests it as usual.
+   - Run it for a week and compare time, cost and failures with the Windows box.
+5. **YoobaLand** next. `YoobaWebBuild.FullDeploy` already reads `WEBSITE_PATH`.
+6. **Sick Of It:**
+   - Only after its deploy script stops hard-coding `C:\Projects\...` (below).
+   - Either Cloud Run with the trimmed cache (the 85% rule moves it to the VM by itself if it peaks too high), or its
+     VM from the start.
+7. **When all three have been fine for two weeks:**
+   - Make `backend: "cloudrun"` the default.
+   - Stop the Windows box, but keep it stopped for Remote Desktop editing and as the fallback. Terminating it is J's
+     call.
 
 ## Before each project can build in the cloud
 
@@ -239,4 +343,4 @@ Studio calls `unity.build` the same way and reads the same result. One change is
 build (`syncBuildServerCheckouts`, which starts the box). For a cloud build that is unnecessary (the container fetches
 the exact commits Gen's own checkouts are at, which `syncBuildPackages` already brings up to date) and it would start
 the Windows box for nothing. Studio should skip it when `GET /v1/builder/cloud` says the product's project builds on
-`cloudrun` (its `projects`, else `backend`).
+`cloudrun` or `vm` (its `projects`, else `backend`).

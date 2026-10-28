@@ -135,7 +135,12 @@ chosen one.
   (this box) or `cloudrun` (a Cloud Run job per build: exact commits from GitHub, the Library from a cache in Cloud
   Storage, `server/unity-cloudrun/`, `src/providers/builder/cloudrun.ts`, `cache.ts`, `gcp.ts`). Same result shape.
   Caches: `hawkesgen builder caches | clear-cache <project> [key]`. Setup scripts in `tools/unity-cloudrun/` print
-  first and change things only with `--apply`. Both backends stop a build at `settings.unityBuild.timeoutMinutes` (40).
+  first and change things only with `--apply`. Every backend stops a build at `settings.unityBuild.timeoutMinutes` (40).
+  A third backend, `vm` (per project, `src/providers/builder/vm.ts`, `tools/unity-cloudrun/vm.mjs`), runs the same
+  container on the project's own spot VM with a disk that keeps its Library; a Cloud Run build peaking over
+  `vmAt` (85%) of its memory moves its project there. Unity Personal is activated each build with the account's email and
+  password (secrets `unity-email`, `unity-password`) through the Unity Licensing Client, and returned after;
+  `HAWKES_LICENSE_CHECK=1` checks only that.
 
 ## Playtests
 
