@@ -42,7 +42,8 @@ console.log(`\nBuild context written to ${ctx} (${Object.keys(files).join(', ')}
 
 gcloud(args, [
   'builds', 'submit', ctx, `--project=${args.project}`, `--region=${args.region}`, `--tag=${tag}`,
-  `--machine-type=${machine}`, '--disk-size=200', '--timeout=3600s',
+  // 'default': Cloud Build's own machine (new projects may not use bigger ones until their quota is raised).
+  ...(machine === 'default' ? [] : [`--machine-type=${machine}`]), '--disk-size=200', `--timeout=${machine === 'default' ? 7200 : 3600}s`,
 ]);
 if (!args.apply) {
   console.log('\nDry run: nothing built. Add --apply to build (Cloud Build minutes, J\'s OK).');
