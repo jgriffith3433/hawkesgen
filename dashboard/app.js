@@ -14,8 +14,23 @@ const dur = (a, b) => (a ? `${Math.round(((b ?? Date.now()) - a) / 1000)}s` : ''
 async function api(path, opts = {}) {
   const r = await fetch(`/v1${path}`, { ...opts, headers: { ...(opts.body && !(opts.body instanceof Blob) ? { 'Content-Type': 'application/json' } : {}), ...(opts.headers ?? {}) } });
   const body = await r.json().catch(() => ({}));
+  if (r.status === 401 && !path.startsWith('/dashboard/')) signIn();
   if (!r.ok) throw Object.assign(new Error(body.error ?? `HTTP ${r.status}`), body);
   return body;
+}
+
+// Where Gen isn't on J's PC (Cloud Run), the dashboard signs in with an owner or admin key once: the server keeps it in
+// an HttpOnly cookie (auth.ts KEY_COOKIE), so links, images and the event stream work too.
+function signIn() {
+  if (signIn.open) return;
+  signIn.open = true;
+  const b = modal(`<h2>Sign in to Hawkes Gen</h2><p>Paste an owner or admin key (<code>hg_…</code>). On your PC it's <code>genKey</code> in <code>~/.hawkes/client.json</code>. This browser keeps you signed in for 30 days.</p>
+    <div class="row"><input id="sik" type="password" autocomplete="off" style="flex:1" placeholder="hg_…"><button class="primary" id="sigo">Sign in</button></div><p class="small muted" id="sierr"></p>`);
+  const go = () => fetch('/v1/dashboard/signin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: $('#sik', b).value }) })
+    .then(async (r) => { if (r.ok) location.reload(); else $('#sierr', b).textContent = (await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`; });
+  $('#sigo', b).onclick = go;
+  $('#sik', b).onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  $('#modal').addEventListener('close', () => { signIn.open = false; }, { once: true });
 }
 const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body ?? {}) });
 
@@ -846,6 +861,8 @@ render.settings = async () => {
       <label><span>Claude call time limit, minutes (Max plan)</span><input type="number" id="sct" value="${s.claude.timeoutMinutes}" min="1" max="60"></label>
       <label><span>ElevenLabs $ per 1,000 characters (for usage reports)</span><input type="number" step="any" id="sre" value="${s.rates.elevenlabsPer1kChars}"></label>
     </div><div class="row" style="margin-top:10px"><button class="primary" id="ssave">Save</button></div></div>
+    ${me.role === 'owner' ? '<div class="card" id="claudeAccounts"><h3>🔑 Claude accounts</h3><p class="muted small">Loading…</p></div>' : ''}
+    <div class="card"><h3>Signed in</h3><p class="muted small">As <b>${esc(me.name)}</b> (${esc(me.role)}).</p><div class="row"><button id="sout">Sign out</button></div></div>
     <div class="card"><h3>Adopt GPU servers</h3><p class="muted small">Take over servers another project launched (their tokens and SSH keys), e.g. Dose Of Destruction's <code>.cache/gpu</code>.</p>
       <div class="row"><input id="adf" style="flex:1" value="C:\\Projects\\doseofdestructionwebsite\\.cache\\gpu"><button id="adgo">Adopt</button></div></div>`;
   $('#cadd').onclick = () => post('/clients', { name: $('#cn').value, role: $('#cr').value, projects: $('#cp').value.split(',').map((x) => x.trim()).filter(Boolean) })
@@ -853,7 +870,41 @@ render.settings = async () => {
   for (const b of document.querySelectorAll('[data-cl]')) b.onclick = () => post(`/clients/${b.dataset.cl}/${b.dataset.dis === '1' ? 'enable' : 'disable'}`).then(() => render.settings()).catch(fail);
   $('#ssave').onclick = () => post('/settings', { localOpen: $('#slo').value === 'true', brain: $('#sbrain').value, concurrency: { elevenlabs: Number($('#sce').value), anthropic: Number($('#sca').value), local: Number($('#scl').value) }, claude: { backend: $('#scb').value, concurrency: Number($('#scc').value), timeoutMinutes: Number($('#sct').value) }, rates: { elevenlabsPer1kChars: Number($('#sre').value) } }).then(() => toast('Saved')).catch(fail);
   $('#adgo').onclick = () => confirm('Copy that folder\'s server tokens and SSH keys into Hawkes Gen?') && post('/fleet/adopt', { confirm: true, from: $('#adf').value }).then((r) => toast(`Adopted ${r.servers.length} servers, ${r.keys.length} keys`)).catch(fail);
+  $('#sout').onclick = () => post('/dashboard/signout').then(() => location.reload()).catch(fail);
+  if (me.role === 'owner') claudeAccounts().catch(fail);
 };
+
+// The Claude logins Gen's Claude calls run with on the Max plan (src/claude-accounts.ts): sign in like Hawkes Studio's
+// Settings (open Claude's link, sign in, paste the code back), keep several, switch, check one still answers.
+async function claudeAccounts(list) {
+  const box = $('#claudeAccounts');
+  if (!box) return;
+  const l = list ?? await api('/claude/accounts');
+  const day = (t) => (t ? new Date(t).toLocaleDateString() : '—');
+  const si = l.signin;
+  box.innerHTML = `<h3>🔑 Claude accounts</h3>
+    <p class="muted small">Gen's writing, reviews and assistant run Claude Code on these Max-plan logins ($0 a call). The one in use is what every call gets; switching takes effect at once. Tokens never leave Gen: you see a name and the last 4 characters.</p>
+    ${l.accounts.length ? `<table><thead><tr><th>Name</th><th>Token</th><th>Added</th><th>Expires</th><th>Last check</th><th></th></tr></thead><tbody>${l.accounts.map((a) => `<tr>
+      <td>${a.active ? '<b>● </b>' : ''}${esc(a.label)}</td><td><code>…${esc(a.tail)}</code></td><td>${esc(day(a.added))}</td><td>${esc(day(a.expires))}</td>
+      <td class="small">${a.check ? `${a.check.ok ? '✓' : '✗'} ${esc(a.check.note)} <span class="muted">${esc(ago(a.check.at))}</span>` : '<span class="muted">not checked</span>'}</td>
+      <td class="row">${a.active ? '<span class="muted small">in use</span>' : `<button data-ca-use="${a.id}">Use</button>`}<button data-ca-check="${a.id}">Check</button><button data-ca-rename="${a.id}">Rename</button>${a.active ? '' : `<button class="danger" data-ca-del="${a.id}">Remove</button>`}</td></tr>`).join('')}</tbody></table>`
+      : '<p class="muted">No Claude account yet: sign in below.</p>'}
+    ${si && ['waiting', 'finishing'].includes(si.state) ? `<div style="margin-top:12px">
+        <p><b>1.</b> <a href="${esc(si.url)}" target="_blank" rel="noopener">Open Claude's sign-in page</a> and sign in to the account${si.label ? ` (“${esc(si.label)}”)` : ''}.</p>
+        <p><b>2.</b> Claude shows a code (it has a # in the middle). Paste it here:</p>
+        <div class="row"><input id="cacode" autocomplete="off" style="flex:1" placeholder="code#…"><button class="primary" id="cafinish">Finish</button><button id="cacancel">Cancel</button></div></div>`
+      : `<div class="row" style="margin-top:12px"><input id="calabel" style="flex:1" placeholder="A name for it (e.g. jgriffith personal)"><button class="primary" id="castart">Sign in to a Claude account</button></div>
+         ${si?.state === 'failed' && si.error ? `<p class="small" style="color:var(--bad, #c33)">${esc(si.error)}</p>` : ''}`}`;
+  // A failure redraws the card too: its buttons come back and a failed sign-in shows why in place.
+  const again = (p) => p.then((r) => claudeAccounts(r)).catch((e) => { fail(e); claudeAccounts().catch(() => {}); });
+  $('#castart', box)?.addEventListener('click', (e) => { e.target.disabled = true; e.target.textContent = 'Starting Claude Code…'; again(post('/claude/signin', { label: $('#calabel', box).value })); });
+  $('#cafinish', box)?.addEventListener('click', (e) => { e.target.disabled = true; e.target.textContent = 'Signing in…'; again(post('/claude/signin/code', { code: $('#cacode', box).value }).then((r) => { toast(`Signed in: ${r.account.label}`); return r; })); });
+  $('#cacancel', box)?.addEventListener('click', () => again(post('/claude/signin/cancel')));
+  for (const b of box.querySelectorAll('[data-ca-use]')) b.onclick = () => again(post(`/claude/accounts/${b.dataset.caUse}/use`));
+  for (const b of box.querySelectorAll('[data-ca-check]')) b.onclick = () => { b.disabled = true; b.textContent = 'Checking…'; again(post(`/claude/accounts/${b.dataset.caCheck}/check`)); };
+  for (const b of box.querySelectorAll('[data-ca-rename]')) b.onclick = () => { const n = prompt('A new name'); if (n) again(post(`/claude/accounts/${b.dataset.caRename}/rename`, { label: n })); };
+  for (const b of box.querySelectorAll('[data-ca-del]')) b.onclick = () => confirm('Remove this Claude account from Gen?') && again(api(`/claude/accounts/${b.dataset.caDel}`, { method: 'DELETE' }));
+}
 
 // ---------------------------------------------------------------- start
 api('/tools').then((r) => { state.tools = r.tools; }).catch(() => {}).finally(() => { connect(); show(current); });

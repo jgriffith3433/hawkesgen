@@ -44,10 +44,28 @@ export function setClientDisabled(clientId: string, disabled: boolean) {
 
 const isLoopback = (addr = '') => addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 
+/** The dashboard's sign-in (api.ts /v1/dashboard/signin): an owner or admin key in an HttpOnly, SameSite=Strict cookie,
+ *  so the dashboard's links, images and event stream (which can't send a header) work where "this machine" isn't J's PC. */
+export const KEY_COOKIE = 'hg_key';
+const cookieKey = (req: IncomingMessage) => {
+  const m = new RegExp(`(?:^|;\\s*)${KEY_COOKIE}=([^;]+)`).exec(String(req.headers.cookie ?? ''));
+  try { return m ? decodeURIComponent(m[1]).trim() : ''; } catch { return ''; }
+};
+
+/** A dashboard key: an enabled owner or admin key, else null. */
+export function dashboardClient(key: string): Client | null {
+  const row: any = db.prepare('SELECT * FROM clients WHERE key_hash = ?').get(sha256(String(key ?? '').trim()));
+  if (!row || row.disabled || !['owner', 'admin'].includes(row.role)) return null;
+  return { id: row.id, name: row.name, role: row.role, projects: JSON.parse(row.projects) };
+}
+
 /** The client a request comes from, or null. */
 export function authenticate(req: IncomingMessage): Client | null {
   const header = String(req.headers.authorization ?? '');
-  const key = header.startsWith('Bearer ') ? header.slice(7).trim() : String(req.headers['x-hawkesgen-key'] ?? '').trim();
+  const sent = header.startsWith('Bearer ') ? header.slice(7).trim() : String(req.headers['x-hawkesgen-key'] ?? '').trim();
+  const fromCookie = sent ? '' : cookieKey(req);
+  if (fromCookie && !dashboardClient(fromCookie)) return null;
+  const key = sent || fromCookie;
   if (key) {
     const row: any = db.prepare('SELECT * FROM clients WHERE key_hash = ?').get(sha256(key));
     if (!row || row.disabled) return null;

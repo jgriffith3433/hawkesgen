@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { ROOT, env, loadSettings, paths } from '../config.ts';
+import { ROOT, DATA_DIR, env, loadSettings, paths } from '../config.ts';
 import { GenError, id, mimeOf, sleep } from '../util.ts';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -54,24 +54,35 @@ export const load = () => ({ running, waiting: waiting.length, cap: cap() });
 
 // -------------------------------------------------------------------- login
 /**
- * The account in use: Gen's own token if it has one, else the Claude account J picked in Studio's Settings
- * (hawkesstudio/.data/claude/active.env, written by Studio's claude-accounts.ts; read on every call, so switching needs
- * no restart), else the server's secret (/run/hawkes/claude.env). HAWKESGEN_CLAUDE_ENV names one file instead.
+ * The account in use, read on every call (switching needs no restart): the one picked in Gen's own Settings
+ * (.data/claude/active.env, src/claude-accounts.ts; it also adopts the environment's token as an account), else
+ * CLAUDE_CODE_OAUTH_TOKEN, else the one picked in Studio's Settings on the same machine
+ * (hawkesstudio/.data/claude/active.env), else the server's secret (/run/hawkes/claude.env). HAWKESGEN_CLAUDE_ENV names
+ * one file instead.
  */
 export function claudeEnvFiles() {
   const one = env('HAWKESGEN_CLAUDE_ENV');
-  return one ? [one] : [path.resolve(ROOT, '..', 'hawkesstudio', '.data', 'claude', 'active.env'), '/run/hawkes/claude.env'];
+  return one ? [one] : [path.join(DATA_DIR, 'claude', 'active.env'), path.resolve(ROOT, '..', 'hawkesstudio', '.data', 'claude', 'active.env'), '/run/hawkes/claude.env'];
 }
 
-function subscriptionToken(): string | undefined {
+const tokenIn = (file: string) => {
+  try {
+    const m = /^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.*?)\s*$/m.exec(fs.readFileSync(file, 'utf8'));
+    return m?.[1].replace(/^['"]|['"]$/g, '') || undefined;
+  } catch { return undefined; }
+};
+
+export function subscriptionToken(): string | undefined {
+  const [first, ...rest] = claudeEnvFiles();
+  if (!env('HAWKESGEN_CLAUDE_ENV')) {
+    const picked = tokenIn(first);
+    if (picked) return picked;
+  }
   const own = env('CLAUDE_CODE_OAUTH_TOKEN');
   if (own) return own;
-  for (const file of claudeEnvFiles()) {
-    try {
-      const m = /^\s*CLAUDE_CODE_OAUTH_TOKEN\s*=\s*(.*?)\s*$/m.exec(fs.readFileSync(file, 'utf8'));
-      const token = m?.[1].replace(/^['"]|['"]$/g, '');
-      if (token) return token;
-    } catch { /* not there */ }
+  for (const file of env('HAWKESGEN_CLAUDE_ENV') ? [first] : rest) {
+    const token = tokenIn(file);
+    if (token) return token;
   }
   return undefined;
 }

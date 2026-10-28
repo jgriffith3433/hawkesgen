@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
-import { authenticate, canProject, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
+import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
 import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workflows/registry.ts';
 import { objectInfo, refreshCatalog, templates, templateWorkflow, templateThumb, importWorkflow } from './workflows/catalog.ts';
@@ -368,6 +368,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/users/logout' && method === 'POST') {
       deleteSession(getSessionToken(req));
       clearSessionCookie(res, req);
+      return send(res, 200, { ok: true });
+    }
+
+    // The dashboard's sign-in: an owner or admin key, kept in an HttpOnly cookie (auth.ts KEY_COOKIE) for 30 days.
+    if (route === '/v1/dashboard/signin' && method === 'POST') {
+      const { key } = await readJson(req);
+      const who = dashboardClient(String(key ?? ''));
+      if (!who) return send(res, 401, { error: 'That key isn\'t an owner or admin key of this Gen.' });
+      const secure = String(req.headers['x-forwarded-proto'] ?? '').toLowerCase() === 'https' || process.env.K_SERVICE ? '; Secure' : '';
+      res.setHeader('Set-Cookie', `${KEY_COOKIE}=${encodeURIComponent(String(key).trim())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86400}${secure}`);
+      return send(res, 200, { name: who.name, role: who.role });
+    }
+    if (route === '/v1/dashboard/signout' && method === 'POST') {
+      res.setHeader('Set-Cookie', `${KEY_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
       return send(res, 200, { ok: true });
     }
 
@@ -1377,6 +1391,21 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/settings' && method === 'POST') {
       requireRole(client, 'owner');
       return send(res, 200, saveSettings(await readJson(req)));
+    }
+    // Claude accounts (src/claude-accounts.ts): the Max-plan logins Gen's Claude calls run with. Owner only; tokens never
+    // leave the server (the list shows a label and the last 4 characters).
+    if (route.startsWith('/v1/claude/')) {
+      requireRole(client, 'owner');
+      const ca = await import('./claude-accounts.ts');
+      if (route === '/v1/claude/accounts' && method === 'GET') return send(res, 200, ca.listAccounts());
+      if (route === '/v1/claude/signin' && method === 'POST') return send(res, 200, await ca.startSignin(String((await readJson(req)).label ?? ''), client.name));
+      if (route === '/v1/claude/signin/code' && method === 'POST') return send(res, 200, await ca.finishSignin(String((await readJson(req)).code ?? '')));
+      if (route === '/v1/claude/signin/cancel' && method === 'POST') return send(res, 200, ca.cancelSignin());
+      const am = /^\/v1\/claude\/accounts\/(ca_[0-9a-f]+)(?:\/(use|check|rename))?$/.exec(route);
+      if (am && method === 'POST' && am[2] === 'use') return send(res, 200, ca.useAccount(am[1]));
+      if (am && method === 'POST' && am[2] === 'check') return send(res, 200, { check: await ca.checkAccount(am[1]), ...ca.listAccounts() });
+      if (am && method === 'POST' && am[2] === 'rename') return send(res, 200, ca.renameAccount(am[1], String((await readJson(req)).label ?? '')));
+      if (am && method === 'DELETE' && !am[2]) return send(res, 200, ca.removeAccount(am[1]));
     }
     if (route === '/v1/clients' && method === 'GET') {
       requireRole(client, 'owner');
