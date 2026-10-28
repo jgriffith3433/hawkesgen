@@ -29,7 +29,7 @@ import {
   StartInstancesCommand, StopInstancesCommand, TerminateInstancesCommand,
 } from '@aws-sdk/client-ec2';
 import { awsConfig, myIp, classify, lockKey, allowOnly as fleetAllowOnly } from '../comfy/fleet.ts';
-import { env, paths } from '../../config.ts';
+import { env, paths, loadSettings } from '../../config.ts';
 import { GenError } from '../../util.ts';
 import { parsePoll, pollLengthOf, type PollAnswer } from './poll.ts';
 import { fetchOrigin, repoIsPrivate, withRepoLock } from './gitfetch.ts';
@@ -49,7 +49,7 @@ const NAME = 'hawkesgen-builder';
 const PROJECT = 'hawkes-gen';
 const SG = 'hawkesgen-builder';
 const USER = 'Administrator';
-const TAR = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+export const TAR = process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
 
 /** Top-level folders never sent to the server. Unity makes these itself (Library is the point of the server). */
 export const UNITY_EXCLUDE = ['Library', 'Temp', 'Logs', 'obj', 'UserSettings', 'Build', 'Builds', 'ServerData', 'MemoryCaptures', 'Recordings', '.git', '.vs', '.vscode', '.idea', '.utmp', '.hawkes'];
@@ -332,7 +332,7 @@ async function addressOf(found?: Found | null) {
 
 const sshBase = () => ['-i', KEY(), '-o', 'StrictHostKeyChecking=accept-new', '-o', `UserKnownHostsFile=${path.join(paths.builder, 'known_hosts')}`, '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', '-o', 'ServerAliveInterval=15'];
 
-function proc(cmd: string, args: string[], timeoutMs: number, what: string): Promise<string> {
+export function proc(cmd: string, args: string[], timeoutMs: number, what: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { windowsHide: true });
     const timer = setTimeout(() => child.kill(), timeoutMs);
@@ -415,7 +415,7 @@ export function walk(root: string, exclude: string[], from?: string): Manifest {
 }
 
 /** Where a <root>/... key is on this machine. */
-const localFile = (root: string, key: string, from?: string) => (from ? path.join(from, key.slice(root.length + 1)) : path.join(paths.projects, key));
+export const localFile = (root: string, key: string, from?: string) => (from ? path.join(from, key.slice(root.length + 1)) : path.join(paths.projects, key));
 
 /** A folder to run tar in so <root>/... names read from `from`: <tmp>/<root> is a link to it. */
 function tarBase(root: string, from: string | undefined, tmp: string) {
@@ -439,7 +439,7 @@ function dropLink(root: string, from: string | undefined, tmp: string) {
 }
 
 /** A stand-in folder for a root: it must be inside C:\Projects (the API takes it from callers). */
-function standIn(dir: string | undefined, what: string) {
+export function standIn(dir: string | undefined, what: string) {
   if (!dir) return undefined;
   const full = path.resolve(paths.projects, dir);
   const rel = path.relative(paths.projects, full);
@@ -537,7 +537,7 @@ export async function syncRoot(root: string, exclude: string[], log: (s: string)
   return { root, files: changed.length, bytes: total, deleted: deleted.length };
 }
 
-const mb = (n: number) => (n > 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
+export const mb = (n: number) => (n > 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
 
 // --------------------------------------------------------- git seeding
 //
@@ -549,7 +549,7 @@ const mb = (n: number) => (n > 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GB` : 
 const GIT = `& 'C:\\Program Files\\Git\\cmd\\git.exe'`;
 const GH_KEY = 'C:/hawkes/github_ed25519';
 
-function localGit(dir: string, args: string[]) {
+export function localGit(dir: string, args: string[]) {
   const r = spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8', windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
   return { ok: r.status === 0, out: (r.stdout ?? '').replace(/\r?\n$/, ''), err: (r.stderr ?? '').trim() };
 }
@@ -785,7 +785,7 @@ const parseSnapshot = (text: string): Manifest => {
   return out;
 };
 
-function unityVersionOf(project: string, from?: string) {
+export function unityVersionOf(project: string, from?: string) {
   const file = path.join(from ?? path.join(paths.projects, project), 'ProjectSettings', 'ProjectVersion.txt');
   const m = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').match(/m_EditorVersion:\s*(\S+)/) : null;
   if (!m) throw fail(`${project} isn't a Unity project (no ProjectSettings/ProjectVersion.txt).`);
@@ -793,7 +793,7 @@ function unityVersionOf(project: string, from?: string) {
 }
 
 /** What Unity said that's worth showing as progress. */
-function progressOf(line: string): string | null {
+export function progressOf(line: string): string | null {
   const l = line.trim();
   if (!l) return null;
   if (/^\[Licensing::|Licensing::|license/i.test(l) && /error|fail|no valid|not activated|expired/i.test(l)) return `license: ${l}`;
@@ -801,9 +801,12 @@ function progressOf(line: string): string | null {
   return null;
 }
 
-const LICENSE_RE = /No valid Unity Editor license found|Licensing::Module.*(error|failed)|LicensingClient has failed|User is not logged in|Unity license is not valid|not entitled/i;
+/** The hard limit on one Unity build (both backends). */
+export const buildTimeoutMinutes = () => loadSettings().unityBuild.timeoutMinutes;
+
+export const LICENSE_RE =/No valid Unity Editor license found|Licensing::Module.*(error|failed)|LicensingClient has failed|User is not logged in|Unity license is not valid|not entitled/i;
 /** License lines that do stop a build (unlike "Access token is unavailable", which successful builds log too). */
-const HARD_LICENSE_RE = /No valid Unity Editor license found|User is not logged in|Unity license is not valid|not entitled/i;
+export const HARD_LICENSE_RE = /No valid Unity Editor license found|User is not logged in|Unity license is not valid|not entitled/i;
 
 /**
  * Builds a Unity project on the build server. Starts the server if it is stopped (it stops itself
@@ -862,10 +865,18 @@ export async function runBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks
   let badPolls = 0;
   const decoder = new TextDecoder();
   hooks.step('Unity is opening the project');
+  // A hard limit (settings.unityBuild.timeoutMinutes, counted from here; a followed build after a restart gets a fresh
+  // window): a hung Unity is stopped instead of holding the build lane for hours.
+  const limitMs = buildTimeoutMinutes() * 60_000;
+  const followStart = Date.now();
   for (;;) {
     if (hooks.signal?.aborted) {
       await ssh(`Get-Process Unity -ErrorAction SilentlyContinue | Stop-Process -Force; 'stopped'`).catch(() => {});
       throw fail('cancelled', 'cancelled');
+    }
+    if (Date.now() - followStart > limitMs) {
+      await ssh(`Get-Process Unity -ErrorAction SilentlyContinue | Stop-Process -Force; 'stopped'`).catch(() => {});
+      throw fail(`The build ran past its ${Math.round(limitMs / 60_000)}-minute limit and was stopped (last step: ${lastStep}). Unity may have hung; settings.unityBuild.timeoutMinutes sets the limit.`, 'timeout');
     }
     let raw: string;
     try {
@@ -913,6 +924,54 @@ export async function runBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks
       return await finishBuild(jobId, spec, hooks, { exit: p.exit, licenseProblem, t0, type: f.instance.InstanceType });
     }
     await new Promise((r) => setTimeout(r, 8_000));
+  }
+}
+
+/**
+ * Lays a build's website changes into the site folder here (or its stand-in, siteDir): unpacks `tgz` (entries named
+ * <site>/..., listed in `changed`), deletes `deleted` files and whole `deletedDirs`, and prunes folders left empty.
+ * Shared by the build server and the cloud builds (cloudrun.ts).
+ */
+export async function applyPulledSite(spec: BuildSpec & { site: string }, tmp: string, tgz: string | null, changed: string[], deleted: string[], deletedDirs: string[] = []) {
+  const siteLocal = spec.siteDir ?? path.join(paths.projects, spec.site);
+  if (tgz && changed.length) {
+    if (!spec.siteDir) {
+      await proc(TAR, ['-xzf', tgz, '-C', paths.projects], 1_800_000, 'tar');
+    } else {
+      // Into the stand-in: unpack beside it, then move each file over (tar won't extract through a link).
+      const out = path.join(tmp, 'pulled');
+      fs.mkdirSync(out, { recursive: true });
+      await proc(TAR, ['-xzf', tgz, '-C', out], 1_800_000, 'tar');
+      for (const k of changed) {
+        const dest = localFile(spec.site, k, siteLocal);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.rmSync(dest, { force: true }); // a hard link from a preview must not be written through
+        try {
+          fs.renameSync(path.join(out, k), dest);
+        } catch {
+          fs.copyFileSync(path.join(out, k), dest); // another disk
+        }
+      }
+    }
+  }
+  for (const rel of deleted) fs.rmSync(localFile(spec.site, rel, spec.siteDir), { force: true });
+  for (const rel of deletedDirs) {
+    const dir = localFile(spec.site, rel, spec.siteDir);
+    // Only folders inside the site, never the site itself.
+    if (path.resolve(dir).startsWith(path.resolve(siteLocal) + path.sep)) fs.rmSync(dir, { recursive: true, force: true });
+  }
+  // Prune folders the build emptied (an old Game/v<n>).
+  for (const rel of new Set([...deleted, ...deletedDirs].map((d) => path.dirname(localFile(spec.site, d, spec.siteDir))))) {
+    let dir = rel;
+    while (dir.startsWith(siteLocal) && dir !== siteLocal) {
+      try {
+        if (fs.readdirSync(dir).length) break;
+        fs.rmdirSync(dir);
+      } catch {
+        break;
+      }
+      dir = path.dirname(dir);
+    }
   }
 }
 
@@ -971,38 +1030,9 @@ async function finishBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks, { 
       hooks.log(`downloading ${changed.length} files (${mb(bytes)}) into ${spec.siteDir ? path.relative(paths.projects, siteLocal).replace(/\\/g, '/') : spec.site}`);
       const tgz = path.join(tmp, 'pull.tgz');
       await scpDown(`${remoteJob}/pull.tgz`, tgz);
-      if (!spec.siteDir) {
-        await proc(TAR, ['-xzf', tgz, '-C', paths.projects], 1_800_000, 'tar');
-      } else {
-        // Into the stand-in: unpack beside it, then move each file over (tar won't extract through a link).
-        const out = path.join(tmp, 'pulled');
-        fs.mkdirSync(out);
-        await proc(TAR, ['-xzf', tgz, '-C', out], 1_800_000, 'tar');
-        for (const k of changed) {
-          const dest = localFile(spec.site, k, siteLocal);
-          fs.mkdirSync(path.dirname(dest), { recursive: true });
-          fs.rmSync(dest, { force: true }); // a hard link from a preview must not be written through
-          try {
-            fs.renameSync(path.join(out, k), dest);
-          } catch {
-            fs.copyFileSync(path.join(out, k), dest); // another disk
-          }
-        }
-      }
-    }
-    for (const rel of deleted) fs.rmSync(localFile(spec.site, rel, spec.siteDir), { force: true });
-    // Prune folders the build emptied (an old Game/v<n>).
-    for (const rel of new Set(deleted.map((d) => path.dirname(localFile(spec.site!, d, spec.siteDir))))) {
-      let dir = rel;
-      while (dir.startsWith(siteLocal) && dir !== siteLocal) {
-        try {
-          if (fs.readdirSync(dir).length) break;
-          fs.rmdirSync(dir);
-        } catch {
-          break;
-        }
-        dir = path.dirname(dir);
-      }
+      await applyPulledSite(spec as BuildSpec & { site: string }, tmp, tgz, changed, deleted);
+    } else {
+      await applyPulledSite(spec as BuildSpec & { site: string }, tmp, null, [], deleted);
     }
     // The checkout now matches the server: record it so these files aren't sent back.
     const sent = loadSent(spec.site);

@@ -1,11 +1,28 @@
-// Build tools: Unity WebGL builds on the build server (src/providers/builder/builder.ts).
+// Build tools: Unity WebGL builds on the build server (src/providers/builder/builder.ts) or on Google Cloud Run
+// (src/providers/builder/cloudrun.ts, docs/unity-cloudrun.md).
 
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
-import { runBuild } from '../providers/builder/builder.ts';
-import { paths } from '../config.ts';
+import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
+import { runCloudBuild, type BuildOptions } from '../providers/builder/cloudrun.ts';
+import { paths, loadSettings, unityBackendOf } from '../config.ts';
 import { GenError } from '../util.ts';
+
+/** Which backend runs a build: the param when given, else the project's own (settings.unityBuild.projects), else settings.unityBuild.backend. */
+export function buildBackend(param?: unknown, project?: string, u = loadSettings().unityBuild): 'builder' | 'cloudrun' {
+  return unityBackendOf({ backend: param, project }, u);
+}
+
+/** One Unity batch run on the chosen backend (the same result shape from both). */
+async function build(jobId: string, spec: BuildSpec, hooks: BuildHooks, backend: 'builder' | 'cloudrun', opts: BuildOptions = {}) {
+  if (backend === 'cloudrun') {
+    const r = await runCloudBuild(jobId, spec, hooks, opts);
+    return { ...r, backend, usage: 'gcp-cloudrun' };
+  }
+  const r = await runBuild(jobId, spec, hooks);
+  return { ...r, backend, usage: 'aws-builder', cloud: undefined };
+}
 
 export const unityBuild: Tool = {
   id: 'unity.build',
@@ -29,16 +46,20 @@ export const unityBuild: Tool = {
     siteDir: { type: 'string', description: 'A folder under C:\\Projects that gets the build instead of the website folder (a scratch copy of it), so the real site is untouched', advanced: true },
     env: { type: 'json', description: 'Environment variables for the build (e.g. {"BUILD_VERSION": "12"})', advanced: true },
     args: { type: 'json', description: 'Extra Unity command-line arguments (a list)', advanced: true },
+    backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun'], default: 'auto', description: 'Where to build: auto uses settings.unityBuild.backend', advanced: true },
+    cache: { type: 'string', description: 'Cloud builds: the Library cache to restore and save (default: the branch, beta or main; other branches restore beta and save nothing)', advanced: true },
+    clean: { type: 'boolean', default: false, description: 'Cloud builds: build without the Library cache (a full import); a success saves a fresh cache', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;
-    const r = await runBuild(ctx.job.id, {
+    const backend = buildBackend(p.backend, p.project);
+    const r = await build(ctx.job.id, {
       project: p.project, site: p.site || undefined, method: p.method || undefined, target: p.target,
       projectDir: p.projectDir || undefined, siteDir: p.siteDir || undefined,
       env: p.env && typeof p.env === 'object' ? p.env : undefined, args: Array.isArray(p.args) ? p.args.map(String) : undefined,
-    }, { step: ctx.step, log: ctx.log, signal: ctx.signal });
+    }, { step: ctx.step, log: ctx.log, signal: ctx.signal }, backend, { cache: p.cache || undefined, clean: p.clean === true });
     try {
-      ctx.usage({ provider: 'aws-builder', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: p.project });
+      ctx.usage({ provider: r.usage, unit: 'seconds', amount: r.seconds, cost: r.cost, detail: p.project });
       await ctx.emit({ data: r.log, ext: 'log', mime: 'text/plain', title: `Unity log (${p.project})` });
       const version = r.site?.changed.map((f) => f.match(/\/Game\/v(\d+)\//)?.[1]).find(Boolean) ?? null;
       ctx.result({
@@ -47,6 +68,8 @@ export const unityBuild: Tool = {
         projectFilesChangedOnServer: r.project?.length ?? 0,
         errors: (r as any).errors ?? [],
         logTail: r.ok ? undefined : r.logTail,
+        backend,
+        ...(r.cloud ? { cloud: r.cloud } : {}),
       });
       if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });
       ctx.log(`built in ${Math.round(r.seconds / 60)} min${version ? `: Game/v${version}` : ''}, about $${r.cost.toFixed(2)}`);
@@ -87,6 +110,7 @@ export const unityTest: Tool = {
     platform: { type: 'enum', values: ['EditMode', 'PlayMode'], default: 'EditMode' },
     category: { type: 'string', description: 'Only tests in this category (-testCategory), e.g. Playtest or HawkesGen.Humanoid' },
     target: { type: 'enum', values: ['WebGL', 'StandaloneWindows64'], default: 'WebGL', advanced: true },
+    backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun'], default: 'auto', description: 'Where to run: auto uses settings.unityBuild.backend (an fbx check always runs on the build server)', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;
@@ -100,9 +124,11 @@ export const unityTest: Tool = {
       ctx.step('FBX ready for EditMode Humanoid check');
     }
     const category = p.category || (fbx ? 'HawkesGen.Humanoid' : undefined);
-    const r = await runBuild(ctx.job.id, { project: p.project, target: p.target, tests: p.platform, testFilter: category }, { step: ctx.step, log: ctx.log, signal: ctx.signal });
+    // The FBX is placed in the project folder here, which only the build server mirrors: that check stays there.
+    const backend = fbx ? 'builder' : buildBackend(p.backend, p.project);
+    const r = await build(ctx.job.id, { project: p.project, target: p.target, tests: p.platform, testFilter: category }, { step: ctx.step, log: ctx.log, signal: ctx.signal }, backend);
     try {
-      ctx.usage({ provider: 'aws-builder', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${p.project} tests` });
+      ctx.usage({ provider: r.usage, unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${p.project} tests` });
       await ctx.emit({ data: r.log, ext: 'log', mime: 'text/plain', title: `Unity log (${p.project} ${p.platform} tests)` });
       if (!r.ok || !r.results) throw new GenError(r.error ?? `the test run produced no results (Unity exit ${r.exitCode})`, { kind: r.kind ?? 'build' });
       await ctx.emit({ data: r.results, ext: 'xml', mime: 'application/xml', title: 'Test results (NUnit)' });

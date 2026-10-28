@@ -27,6 +27,8 @@ import * as fleet from './providers/comfy/fleet.ts';
 import * as fleetImage from './providers/comfy/image.ts';
 import * as builder from './providers/builder/builder.ts';
 import { requesterIp } from './providers/builder/rdp.ts';
+import * as cloudrun from './providers/builder/cloudrun.ts';
+import * as cloudCache from './providers/builder/cache.ts';
 import * as playtester from './providers/playtester/playtester.ts';
 import * as machines from './machines.ts';
 import * as games from './games.ts';
@@ -1070,6 +1072,22 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (!r.ready) return send(res, 409, { error: `The build server is ${r.state}. Start it first.`, ready: false, state: r.state });
       res.writeHead(200, { 'Content-Type': 'application/x-rdp', 'Content-Disposition': `attachment; filename="${r.filename}"`, 'Cache-Control': 'no-store' });
       return void res.end(r.content);
+    }
+    // Unity cloud builds (docs/unity-cloudrun.md): the settings, the Library caches, and "clear cache".
+    if (route === '/v1/builder/cloud' && method === 'GET') {
+      const u = loadSettings().unityBuild;
+      return send(res, 200, { backend: u.backend, projects: u.projects, timeoutMinutes: u.timeoutMinutes, cleanAfterFailures: u.cleanAfterFailures, concurrency: u.concurrency, gcp: u.gcp, state: cloudCache.loadCacheState() });
+    }
+    if (route === '/v1/builder/caches' && method === 'GET') {
+      requireRole(client, 'admin');
+      return send(res, 200, { caches: await cloudrun.listCaches() });
+    }
+    if (route === '/v1/builder/caches/clear' && method === 'POST') {
+      requireRole(client, 'admin');
+      const body = await readJson(req);
+      if (body.confirm !== true) throw new GenError('clearing a cache needs { "confirm": true } (the next build of that project is a full import)');
+      if (!body.repo) throw new GenError('repo is required (the project folder, e.g. breakingthrough or YoobaLand/YoobaLand)');
+      return send(res, 200, { ok: true, ...(await cloudrun.clearCache(String(body.repo), body.key ? cloudCache.cacheName(String(body.key)) : undefined)) });
     }
     // The password is returned only here, on demand, and never logged.
     if (route === '/v1/builder/password' && method === 'POST') {

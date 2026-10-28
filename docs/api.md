@@ -218,6 +218,9 @@ over 15 s old.
 | `GET /v1/fleet/connect?id=` | owner; a GPU server's ssh command `{ ready, ip, user, keyFile, command }` after letting the caller's IP in. GPU servers are Linux: SSH only, no Remote Desktop |
 | `POST /v1/builder/idle` `{ minutes }` | How long it waits idle before powering off |
 | `POST /v1/builder/ssh` `{ command, confirm: true }` | owner; runs PowerShell on it |
+| `GET /v1/builder/cloud` | Unity cloud builds (docs/unity-cloudrun.md): `{ backend, projects, timeoutMinutes, cleanAfterFailures, concurrency, gcp, state }` (`state`: per `<repo>/<key>` the cache-failure streak, `cleanNext`, the last build) |
+| `GET /v1/builder/caches` | admin; `{ caches: [{ repo, key, bytes, libraryBytes, files, savedAt, ageDays, unity, commit, streak, cleanNext, lastBuild }] }` from the bucket |
+| `POST /v1/builder/caches/clear` `{ repo, key?, confirm: true }` | admin; deletes that project's Library caches (or one key); its next cloud build is a full import |
 
 `POST /v1/builder/start` and `access` also let the caller's IP in (not only this machine's). The dashboard's Unity build server card and Machines tab have **Remote Desktop** (downloads the file, or offers Start if the server is stopped) and **Show password** (copy); GPU server cards have **Copy ssh command**.
 

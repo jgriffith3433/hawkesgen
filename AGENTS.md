@@ -131,6 +131,11 @@ chosen one.
   `.data/builder/`). A build that fails with a license error says so.
 - SSH commands run in PowerShell. Avoid double quotes in commands sent over SSH (Windows quoting); upload a script
   instead.
+- **Google Cloud Run backend** (`docs/unity-cloudrun.md`): `settings.unityBuild.backend` / `.projects` pick `builder`
+  (this box) or `cloudrun` (a Cloud Run job per build: exact commits from GitHub, the Library from a cache in Cloud
+  Storage, `server/unity-cloudrun/`, `src/providers/builder/cloudrun.ts`, `cache.ts`, `gcp.ts`). Same result shape.
+  Caches: `hawkesgen builder caches | clear-cache <project> [key]`. Setup scripts in `tools/unity-cloudrun/` print
+  first and change things only with `--apply`. Both backends stop a build at `settings.unityBuild.timeoutMinutes` (40).
 
 ## Playtests
 
