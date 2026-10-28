@@ -60,12 +60,14 @@ export function buildContext(root = ROOT) {
   const missing = packages.filter((p) => !NODE_PACKAGES.includes(p));
   if (missing.length) throw new Error(`the service imports ${missing.join(', ')}, which tools/cpu-cloudrun/lib.mjs NODE_PACKAGES doesn't install`);
   const post = fs.readdirSync(path.join(root, 'post')).filter((f) => f.endsWith('.py')).sort().map((f) => `post/${f}`);
+  // Text with LF line ends: a Windows checkout (CRLF) and a Linux one give the same image and the same tag.
+  const text = (file) => Buffer.from(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n'));
   const out = {
-    Dockerfile: fs.readFileSync(path.join(DIR, 'Dockerfile')),
-    'requirements.txt': fs.readFileSync(path.join(DIR, 'requirements.txt')),
+    Dockerfile: text(path.join(DIR, 'Dockerfile')),
+    'requirements.txt': text(path.join(DIR, 'requirements.txt')),
     'package.json': Buffer.from(packageJson(root)),
   };
-  for (const f of [...files, ...post]) out[`app/${f}`] = fs.readFileSync(path.join(root, f));
+  for (const f of [...files, ...post]) out[`app/${f}`] = text(path.join(root, f));
   const h = crypto.createHash('sha256');
   for (const name of Object.keys(out).sort()) h.update(name).update('\0').update(out[name]);
   return { files: out, sources: files, hash: h.digest('hex').slice(0, 12) };
