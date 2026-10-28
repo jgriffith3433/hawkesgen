@@ -57,7 +57,7 @@ export function die(msg) {
 const quote = (a) => (/[\s"&|<>^]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
 
 /** Prints a gcloud command; with --apply runs it (stops on failure unless `okToFail`). */
-export function gcloud(args, { okToFail = false, capture = false } = {}) {
+export function gcloud(args, { okToFail = false, capture = false, retries = 0 } = {}) {
   console.log(`${APPLY ? '>' : '  (dry run)'} gcloud ${args.map(quote).join(' ')}`);
   if (!APPLY) return { ok: true, out: '' };
   const [bin, pre] = gcloudBin();
