@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { gcloudBin } from '../gcloud-bin.mjs';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -45,5 +46,7 @@ if (!apply) {
   console.log('Dry run: nothing submitted. Add --apply (Cloud Build minutes, about $0.02 a minute; storage as models-sync.mjs prints).');
   process.exit(0);
 }
-const r = spawnSync(`"${gcloud}"`, submit, { stdio: 'inherit', shell: true });
+void gcloud;
+const [bin, pre] = gcloudBin();
+const r = spawnSync(bin, [...pre, ...submit], { stdio: 'inherit' });
 process.exit(r.status ?? 1);

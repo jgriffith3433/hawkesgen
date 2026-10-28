@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { gcloudBin } from '../gcloud-bin.mjs';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -54,7 +55,8 @@ const quote = (a) => (/[\s"&|<>^]/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a);
 export function gcloud(args, { okToFail = false, capture = false } = {}) {
   console.log(`${APPLY ? '>' : '  (dry run)'} gcloud ${args.map(quote).join(' ')}`);
   if (!APPLY) return { ok: true, out: '' };
-  const r = spawnSync('gcloud', args, { stdio: capture ? ['inherit', 'pipe', 'inherit'] : 'inherit', shell: process.platform === 'win32', encoding: 'utf8' });
+  const [bin, pre] = gcloudBin();
+  const r = spawnSync(bin, [...pre, ...args], { stdio: capture ? ['inherit', 'pipe', 'inherit'] : 'inherit', encoding: 'utf8' });
   if (r.error) die(`Couldn't run gcloud (${r.error.message}). Install the Google Cloud CLI and run "gcloud auth login".`);
   if (r.status !== 0 && !okToFail) die(`gcloud failed (exit ${r.status}).`);
   return { ok: r.status === 0, out: r.stdout ?? '' };
@@ -63,7 +65,8 @@ export function gcloud(args, { okToFail = false, capture = false } = {}) {
 /** Runs a read-only gcloud query even without --apply (to show what exists); null when it fails. */
 export function gcloudQuery(args) {
   if (process.argv.includes('--offline')) return null; // print the whole plan without asking Google anything
-  const r =spawnSync('gcloud', args, { stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32', encoding: 'utf8' });
+  const [bin2, pre2] = gcloudBin();
+  const r = spawnSync(bin2, [...pre2, ...args], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
   return r.status === 0 ? (r.stdout ?? '').trim() : null;
 }
 

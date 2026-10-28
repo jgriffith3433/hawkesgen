@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { gcloudBin } from '../../tools/gcloud-bin.mjs';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
@@ -88,17 +89,19 @@ export function header(title) {
 
 // ------------------------------------------------------------------ gcloud
 const GCLOUD_WIN = path.join(process.env.LOCALAPPDATA ?? '', 'Google', 'Cloud SDK', 'google-cloud-sdk', 'bin', 'gcloud.cmd');
-const gcloudBin = () => (process.platform === 'win32' && fs.existsSync(GCLOUD_WIN) ? GCLOUD_WIN : 'gcloud');
+const oldGcloudBin = () => (process.platform === 'win32' && fs.existsSync(GCLOUD_WIN) ? GCLOUD_WIN : 'gcloud');
 /** The command line as J would type it (for the plan). */
 export const gcloudLine = (a) => `gcloud ${a.map((x) => (/[\s"*;|&<>]/.test(x) ? `"${x.replace(/"/g, '\\"')}"` : x)).join(' ')}`;
 
 /** Runs gcloud (values on stdin only, never on the command line). Returns { status, stdout, stderr }. */
 export function gcloud(a, { input, quiet = true, ok = false } = {}) {
-  const bin = gcloudBin();
+  const bin = oldGcloudBin();
   // gcloud on Windows is a .cmd under "Cloud SDK" (a space): through the shell with the path quoted.
   const win = process.platform === 'win32';
   const quoted = win ? a.map((x) => (/[\s"&|<>^()]/.test(x) ? `"${x.replace(/"/g, '\\"')}"` : x)) : a;
-  const r = spawnSync(win ? `"${bin}"` : bin, quoted, { input, encoding: 'utf8', shell: win, windowsHide: true, maxBuffer: 64 * 1024 * 1024, stdio: quiet ? 'pipe' : ['pipe', 'inherit', 'inherit'] });
+  void bin; void quoted;
+  const [exe, pre] = gcloudBin();
+  const r = spawnSync(exe, [...pre, ...a], { input, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, stdio: quiet ? 'pipe' : ['pipe', 'inherit', 'inherit'] });
   if (r.status !== 0 && !ok) throw new Error(`${gcloudLine(a.slice(0, 4))}… failed (${r.status}): ${(r.stderr || '').trim().split('\n').slice(-2).join(' | ')}`);
   return r;
 }

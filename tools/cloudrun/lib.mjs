@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { gcloudBin } from '../gcloud-bin.mjs';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -130,7 +131,9 @@ export function gcloud(args, cmd, { read = false, quiet = false } = {}) {
   }
   if (!quiet && !read) console.log(`  running: ${show(full)}`);
   const win = process.platform === 'win32';
-  const r = spawnSync(win ? 'gcloud.cmd' : 'gcloud', cmd.map((c) => (win ? q(c) : c)), { encoding: 'utf8', shell: win, stdio: read ? ['ignore', 'pipe', 'pipe'] : 'inherit' });
+  void win; void q;
+  const [bin, pre] = gcloudBin();
+  const r = spawnSync(bin, [...pre, ...cmd], { encoding: 'utf8', stdio: read ? ['ignore', 'pipe', 'pipe'] : 'inherit' });
   if (r.error) {
     if (read) return null;
     throw new Error(`gcloud isn't installed or not on PATH (${r.error.message}); install the Google Cloud CLI`);
