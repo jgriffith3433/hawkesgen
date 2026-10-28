@@ -7,13 +7,13 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-autostart-'));
-const { autoStartRound, BACKOFF_MS, BACKOFF_MIN_MS, BOOT_SECONDS, backoffMs } = await import('../src/autostart.ts');
+const { autoStartRound, offRound, BACKOFF_MS, BACKOFF_MIN_MS, BOOT_SECONDS, backoffMs } = await import('../src/autostart.ts');
 const { loadSettings, saveSettings, paths } = await import('../src/config.ts');
 
 type S = { id: string; region: string; zone: string; state: string; purpose?: string; imageSource?: string };
 const sv = (id: string, zone: string, state = 'stopped', extra: Partial<S> = {}): S => ({ id, region: zone.slice(0, -1), zone, state, ...extra });
 
-function fakeFleet(servers: S[], fail: Record<string, string> = {}, image = true) {
+function fakeFleet(servers: S[], fail: Record<string, string> = {}, image = true, launchFail: { kind: string; message: string } | null = null) {
   const calls = { start: [] as string[], launch: 0 };
   return {
     calls,
@@ -26,6 +26,7 @@ function fakeFleet(servers: S[], fail: Record<string, string> = {}, image = true
       },
       launch: async () => {
         calls.launch += 1;
+        if (launchFail) throw Object.assign(new Error(launchFail.message), { kind: launchFail.kind });
         return { id: 'i-new', region: 'us-west-2' };
       },
       imageAvailable: async () => image,
@@ -128,6 +129,55 @@ test('launches from the image only with autoLaunch, and only when no stopped ser
   const r2 = await autoStartRound(2, { servers: 4, autoLaunch: true }, on.fleet, new Map());
   assert.equal(on.calls.launch, 1);
   assert.deepEqual(r2.launched, { id: 'i-new', region: 'us-west-2' });
+});
+
+test('an empty fleet with no matching image still launches (from a fresh install), and says so', async () => {
+  const f = fakeFleet([], {}, false);
+  const r = await autoStartRound(1, { servers: 4, autoLaunch: true }, f.fleet, new Map());
+  assert.equal(f.calls.launch, 1);
+  assert.equal(r.imageStale, true);
+  assert.match(r.note, /launched server i-new from a fresh install because the fleet image is out of date/);
+});
+
+test('an image check that throws does not stop the launch', async () => {
+  const f = fakeFleet([], {}, true);
+  f.fleet.imageAvailable = async () => { throw new Error('aws down'); };
+  const r = await autoStartRound(1, { servers: 4, autoLaunch: true }, f.fleet, new Map());
+  assert.equal(f.calls.launch, 1);
+  assert.ok(r.launched);
+});
+
+test('a failed launch backs off (doubling), is reported, and is not retried every round', async () => {
+  const f = fakeFleet([], {}, true, { kind: 'capacity', message: 'no g6e in any zone' });
+  const backoff = new Map();
+  const now = 9_000_000;
+  const o = { servers: 4, autoLaunch: true };
+  const r = await autoStartRound(1, o, f.fleet, backoff, now);
+  assert.equal(f.calls.launch, 1);
+  assert.deepEqual(r.failed.map((x) => [x.id, x.kind]), [['launch', 'capacity']]);
+  assert.equal(backoff.get('launch').until, now + BACKOFF_MIN_MS);
+  assert.match(r.note, /no GPU server running; launching a new one failed: capacity: no g6e in any zone, next try in 2 min/);
+  // Within the backoff: no new launch, but the note still says why.
+  const r2 = await autoStartRound(1, o, f.fleet, backoff, now + 30_000);
+  assert.equal(f.calls.launch, 1);
+  assert.match(r2.note, /launching a new one failed: capacity/);
+  assert.equal(r2.nextTry, now + BACKOFF_MIN_MS);
+  // After it: tried again, and the wait doubles.
+  const later = now + BACKOFF_MIN_MS + 1;
+  await autoStartRound(1, o, f.fleet, backoff, later);
+  assert.equal(f.calls.launch, 2);
+  assert.equal(backoff.get('launch').until, later + 2 * BACKOFF_MIN_MS);
+});
+
+test('auto start off and fleet cap reached both say so', async () => {
+  assert.match(offRound().note, /auto start is off/);
+  const f = fakeFleet([sv('i-1', 'us-east-1a', 'running'), sv('i-eu', 'eu-north-1a'), sv('i-eu2', 'eu-north-1b')]);
+  const r = await autoStartRound(5, { servers: 3, autoLaunch: true }, f.fleet, new Map());
+  assert.equal(f.calls.launch, 0);
+  assert.match(r.note, /fleet cap reached/);
+  const g = fakeFleet([sv('i-1', 'us-east-1a', 'running')]);
+  const r2 = await autoStartRound(1, { servers: 2, autoLaunch: true }, g.fleet, new Map());
+  assert.ok(r2.note); // enough servers up: still a reason
 });
 
 test('settings: auto start on, launching off; old settings files are moved over once, then J\'s choice sticks', () => {
