@@ -28,6 +28,6 @@ if (gcloudQuery(['artifacts', 'docker', 'images', 'describe', image, `--project=
   console.log(`Deploy it: node tools/unity-cloudrun/deploy-job.mjs --project ${c.project} --image ${image}`);
   process.exit(0);
 }
-gcloud(['builds', 'submit', dir, `--project=${c.project}`, `--region=${c.region}`, `--tag=${image}`, '--machine-type=e2-highcpu-8', '--disk-size=100', '--timeout=3600s']);
+gcloud(['builds', 'submit', dir, `--project=${c.project}`, `--region=${c.region}`, `--tag=${image}`, '--disk-size=100', '--timeout=3600s']);
 console.log(`\nNext: node tools/unity-cloudrun/deploy-job.mjs --project ${c.project} --image ${image}${APPLY ? '' : ' (after this runs with --apply)'}`);
 done();
