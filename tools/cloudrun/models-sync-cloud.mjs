@@ -34,7 +34,6 @@ fs.writeFileSync(path.join(dir, 'cloudbuild.yaml'), [
   `    env: ['GOOGLE_CLOUD_PROJECT=${project}']`,
   'timeout: 7200s',
   'options:',
-  '  machineType: E2_HIGHCPU_8',
   '  logging: CLOUD_LOGGING_ONLY',
   '',
 ].join('\n'));
