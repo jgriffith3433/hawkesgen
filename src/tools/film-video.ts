@@ -128,7 +128,7 @@ export const videoMatteTool: Tool = {
   id: 'video.matte',
   version: 1,
   title: 'Cut a video to a matte',
-  description: 'Keeps a video only where a character\'s matte is (black elsewhere), with an optional soft grow and feather. Use it on a blender.render control video (depth, pose, edges) and a layer matte (passes: ["layers"]) so the video model repaints one character only. ffmpeg on this machine, free.',
+  description: 'Keeps a video only where a character\'s matte is (black elsewhere), with an optional soft grow and feather. Use it on a blender.render control video (depth, pose, edges) and a layer matte (passes: ["layers"]) so the video model repaints one character only. ffmpeg, CPU only, free.',
   provider: 'local',
   output: 'video',
   inputs: {
@@ -158,7 +158,7 @@ export const videoCompositeTool: Tool = {
   id: 'video.composite',
   version: 1,
   title: 'Layered VFX composite',
-  description: 'Puts an effect layer on a base shot only inside one character\'s matte, with glow and bloom, never over the protected matte (the other character, so effects don\'t muddy their face). Render both characters on layers (blender.render passes ["layers"]), run the effect (aura, fire, lightning) on one character through the video model, then composite it here. Output keeps the base shot\'s sound. ffmpeg on this machine, free.',
+  description: 'Puts an effect layer on a base shot only inside one character\'s matte, with glow and bloom, never over the protected matte (the other character, so effects don\'t muddy their face). Render both characters on layers (blender.render passes ["layers"]), run the effect (aura, fire, lightning) on one character through the video model, then composite it here. Output keeps the base shot\'s sound. ffmpeg, CPU only, free.',
   provider: 'local',
   output: 'video',
   inputs: {
@@ -195,7 +195,7 @@ export const videoControlMixTool: Tool = {
   id: 'video.control-mix',
   version: 1,
   title: 'Mix control videos (depth + pose + edges)',
-  description: 'Lays several control videos from blender.render into one (the brightest wins: depth keeps the layout, the pose skeleton and the edges draw over it), because video.control takes one control video. Weights dim a control. The mix is built to keep depth\'s layout and add the lines; if a repaint drifts, fall back to depth alone. ffmpeg on this machine, free.',
+  description: 'Lays several control videos from blender.render into one (the brightest wins: depth keeps the layout, the pose skeleton and the edges draw over it), because video.control takes one control video. Weights dim a control. The mix is built to keep depth\'s layout and add the lines; if a repaint drifts, fall back to depth alone. ffmpeg, CPU only, free.',
   provider: 'local',
   output: 'video',
   inputs: { videos: { kind: 'video', multiple: true, required: true, max: 6, description: 'depth, pose, edges... in that order.' } },

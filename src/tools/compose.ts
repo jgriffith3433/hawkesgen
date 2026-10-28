@@ -1,4 +1,4 @@
-// video.compose: shots into a finished cut on this machine with ffmpeg (free). The edit order, trims, cuts and
+// video.compose: shots into a finished cut with ffmpeg on the CPU (free). The edit order, trims, cuts and
 // transitions, each clip's own sound, music and voice tracks (ducked under dialogue), captions (burned in or a .vtt),
 // fades from and to black, then a web H.264 mp4 and a poster. Mixed sizes and frame rates are normalized first.
 //
@@ -349,7 +349,7 @@ export const composeTool: Tool = {
   id: 'video.compose',
   version: 2,
   title: 'Compose a cut',
-  description: 'Puts shots together into a finished video with ffmpeg on this machine (free): edit order, trims, cuts or crossfades, each clip\'s own sound, music and voice tracks (ducked under dialogue), captions (a .vtt, or burned in), fades. Mixed sizes and frame rates are normalized. Returns a web H.264 mp4, the .vtt and a poster PNG. The timeline format is in docs/blender.md.',
+  description: 'Puts shots together into a finished video with ffmpeg (free, CPU only): edit order, trims, cuts or crossfades, each clip\'s own sound, music and voice tracks (ducked under dialogue), captions (a .vtt, or burned in), fades. Mixed sizes and frame rates are normalized. Returns a web H.264 mp4, the .vtt and a poster PNG. The timeline format is in docs/blender.md.',
   provider: 'local',
   output: 'video',
   inputs: {

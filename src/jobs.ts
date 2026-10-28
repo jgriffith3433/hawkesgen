@@ -33,6 +33,7 @@ import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable,
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { cloudRoute, cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
+import { cpuRoute, cpuCloudEnabled, runCpuRemote, type CpuService } from './providers/cloudrun/cpu.ts';
 import { cloudPlaytestFor, cloudLanes } from './providers/playtester/cloudrun.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
@@ -600,11 +601,13 @@ class Queue {
       const cloudBuild = unityBackend === 'cloudrun';
       // So do playtests on Cloud Run (settings.playtest, docs/playtest-cloudrun.md): max instances x tabs per instance.
       const cloudPlay = provider === 'playtest' ? cloudPlaytestLanes(j, settings) : null;
-      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : unityBackend === 'vm' ? 'builder-vm' : cloudPlay ? 'playtest-cloud' : provider;
+      // So does the CPU suite on Cloud Run (settings.cpu, docs/cpu-cloudrun.md): this machine's CPU isn't what limits it.
+      const cpuCloud = provider === 'local' && !own && cpuCloudEnabled(settings) ? cpuRoute(j.tool, settings).service : null;
+      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : unityBackend === 'vm' ? 'builder-vm' : cloudPlay ? 'playtest-cloud' : cpuCloud ? 'local-cloud' : provider;
       const lane = this.lanes.get(key) ?? new Set();
       this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
-      const limit = own ? own.limit() : nested ? Infinity : cloudBuild ? settings.unityBuild.concurrency : cloudPlay ? cloudPlay : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
+      const limit = own ? own.limit() : nested ? Infinity : cloudBuild ? settings.unityBuild.concurrency : cloudPlay ? cloudPlay : cpuCloud ? settings.cpu.cloudrun.concurrent : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
       // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
       const weight = provider === 'playtest' ? tabsOf(j) : 1;
       const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;
@@ -620,7 +623,7 @@ class Queue {
       }
       lane.add(j.id);
       if (provider === 'playtest') this.tabs.set(j.id, weight);
-      void this.runJob(j, null).finally(() => {
+      void this.runJob(j, null, null, cpuCloud).finally(() => {
         lane.delete(j.id);
         this.tabs.delete(j.id);
         this.pump();
@@ -828,7 +831,7 @@ class Queue {
     }
   }
 
-  async runJob(job: Job, ep: Endpoint | null, cloud: CloudService | null = null) {
+  async runJob(job: Job, ep: Endpoint | null, cloud: CloudService | null = null, cpu: CpuService | null = null) {
     const tool = getTool(job.tool)!;
     const abort = new AbortController();
     this.aborts.set(job.id, abort);
@@ -837,8 +840,8 @@ class Queue {
     // Instance seconds this attempt used on Cloud Run (and the cold starts it paid for), for its cost.
     const cloudUse = { seconds: 0, startup: 0, runs: 0, cold: 0 };
     Object.assign(job, {
-      status: 'running', started: Date.now(), server: cloud ? `cloudrun:${cloud.name}` : ep?.id ?? null,
-      detail: cloud ? `starting on Cloud Run (${cloud.name}, ${cloud.gpu})` : ep ? `connecting to the GPU server in ${ep.region}` : 'starting',
+      status: 'running', started: Date.now(), server: cloud ? `cloudrun:${cloud.name}` : cpu ? `cloudrun:${cpu.name}` : ep?.id ?? null,
+      detail: cloud ? `starting on Cloud Run (${cloud.name}, ${cloud.gpu})` : cpu ? `starting on Cloud Run (${cpu.name})` : ep ? `connecting to the GPU server in ${ep.region}` : 'starting',
     });
     save(job, ['status', 'started', 'server', 'detail']);
     const step = (detail: string) => {
@@ -879,7 +882,7 @@ class Queue {
       },
       // On Cloud Run a job without a seed gets seeds derived from its id, so a job picked up again after a restart
       // rebuilds the same graphs (the same run keys) and takes the answers its runs already left in the bucket.
-      seed: (n) => (job.params.seed ? Number(job.params.seed) + n : cloud ? jobSeed(job.id, n) : crypto.randomInt(1, 2 ** 31)),
+      seed: (n) => (job.params.seed ? Number(job.params.seed) + n : cloud || cpu ? jobSeed(job.id, n) : crypto.randomInt(1, 2 ** 31)),
       usage: (u) => {
         recordUsage({ client: job.client, project: job.project, job: job.id, ...u });
         job.cost = Math.round((job.cost + (u.cost ?? 0)) * 10000) / 10000;
@@ -913,7 +916,21 @@ class Queue {
           signal: abort.signal,
         });
       }
-      await tool.run(ctx);
+      // The CPU suite on Cloud Run: the same tool code runs there; if the service can't take the job, it runs here.
+      const remote = cpu
+        ? await runCpuRemote(job, tool, ctx, cpu, {
+          addSeconds: (seconds, cold, startup) => {
+            cloudUse.seconds += seconds + startup;
+            cloudUse.startup += startup;
+            cloudUse.runs += 1;
+            if (cold) cloudUse.cold += 1;
+          },
+        })
+        : false;
+      if (!remote) {
+        if (cpu) Object.assign(job, { server: null });
+        await tool.run(ctx);
+      }
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
       // The LOD system: low copies this job made are linked to their models, and its images and models get their
       // levels made (src/lod.ts; a low-priority CPU job of Gen's own, never charged).
@@ -959,6 +976,16 @@ class Queue {
       // Cloud Run bills the instance (GPU, vCPUs and memory) per second: the seconds its runs took, plus the cold start
       // when this job's request started the instance. The idle minutes before Cloud Run scales an instance down aren't
       // any one job's; docs/cloudrun.md says how to read them from the billing export.
+      // The CPU services bill vCPUs and memory while a request runs (request-based billing), and the start of an
+      // instance the request had to wait for.
+      if (cpu && cloudUse.seconds) {
+        const cost = cloudUse.seconds * cpu.pricePerSecond;
+        recordUsage({
+          client: job.client, project: job.project, job: job.id, provider: 'gcp-cpu', unit: 'instance_seconds', amount: Math.round(cloudUse.seconds * 10) / 10, cost,
+          detail: `${cpu.name}${cloudUse.cold ? `, cold start (${Math.round(cloudUse.startup)} s)` : ''}`,
+        });
+        job.cost = Math.round((job.cost + cost) * 10000) / 10000;
+      }
       if (cloud && cloudUse.seconds) {
         const cost = cloudUse.seconds * cloud.pricePerSecond;
         recordUsage({

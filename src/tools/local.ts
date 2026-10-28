@@ -1,4 +1,5 @@
-// Tools that run on this machine: no GPU server, no API key.
+// The CPU suite's tools: no GPU server, no API key. They run on Gen's machine or, with settings.cpu, on the gen-cpu
+// Cloud Run service, the same code either way (src/cpu/suite.ts, docs/cpu-cloudrun.md).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,7 +10,7 @@ export const cutoutTool: Tool = {
   id: 'image.cutout',
   version: 1,
   title: 'Cut out the subject',
-  description: 'Removes the background with a segmentation model (BiRefNet by default; ISNet, or both combined for wispy edges). Glow mode keeps fire and light on a black backdrop as soft light. Runs on this PC (about a minute on the CPU).',
+  description: 'Removes the background with a segmentation model (BiRefNet by default; ISNet, or both combined for wispy edges). Glow mode keeps fire and light on a black backdrop as soft light. CPU only: 10 to 60 seconds an image.',
   provider: 'local',
   output: 'image',
   inputs: { image: { kind: 'image', required: true } },
@@ -81,7 +82,7 @@ export const tileTool: Tool = {
   id: 'image.tile',
   version: 1,
   title: 'Make seamless',
-  description: 'Makes an image tile seamlessly (crossfades it with a half-shifted copy).',
+  description: 'Makes a texture tile without visible seams: crossfades it with a copy shifted by half its size, so the edges wrap. For ground, wall and fabric textures you already have; to make a new one, image.generate with seamless: true is better. CPU only, free.',
   provider: 'local',
   output: 'image',
   inputs: { image: { kind: 'image', required: true } },
@@ -115,7 +116,7 @@ export const probeTool: Tool = {
   id: 'media.probe',
   version: 1,
   title: 'Probe media',
-  description: 'Size, length, frame rate and codecs of an image, video or audio file (ffprobe).',
+  description: 'Size, length, frame rate and codecs of an image, video or audio file (ffprobe), as JSON. Use it to check a file before cutting or composing it. CPU only, free.',
   provider: 'local',
   output: 'json',
   inputs: { file: { kind: 'file', required: true } },
@@ -152,7 +153,7 @@ export const splatBuildTool: Tool = {
   description:
     'Builds a 3D Gaussian Splat (.splat, 32 bytes per splat for Babylon.js GaussianSplattingMesh) and a rendered 2D preview PNG ' +
     'from an input image (+ optional depth map) or a procedural/parametric scene recipe (subway-tunnel, subway-station, or subway-car-full ' +
-    'matching PH Origins Level 7 coordinates). Runs locally on the CPU.',
+    'matching PH Origins Level 7 coordinates). CPU only.',
   provider: 'local',
   output: 'mesh',
   inputs: {
@@ -354,7 +355,7 @@ export const transformTool: Tool = {
   id: 'image.transform',
   version: 1,
   title: 'Transform an image',
-  description: 'Everyday fixes for game art, free and fast (Pillow on this machine), as steps applied in order: resize (contain, cover, stretch; pixel: true for nearest-neighbour), scale, crop, trim to the visible pixels, pad, square, pot (power-of-two sides), flip, rotate, pixelate (pixel art: size, palette colors, upscale), colors (palette), outline (sprite outline), tint, grayscale. Out as PNG, WebP or JPEG.',
+  description: 'Everyday fixes for game art, free and fast (Pillow, CPU only), as steps applied in order: resize (contain, cover, stretch; pixel: true for nearest-neighbour), scale, crop, trim to the visible pixels, pad, square, pot (power-of-two sides), flip, rotate, pixelate (pixel art: size, palette colors, upscale), colors (palette), outline (sprite outline), tint, grayscale. Out as PNG, WebP or JPEG.',
   provider: 'local',
   output: 'image',
   inputs: { image: { kind: 'image', required: true } },

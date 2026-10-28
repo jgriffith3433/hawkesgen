@@ -218,6 +218,7 @@ over 15 s old.
 | `GET /v1/fleet/connect?id=` | owner; a GPU server's ssh command `{ ready, ip, user, keyFile, command }` after letting the caller's IP in. GPU servers are Linux: SSH only, no Remote Desktop |
 | `POST /v1/builder/idle` `{ minutes }` | How long it waits idle before powering off |
 | `POST /v1/builder/ssh` `{ command, confirm: true }` | owner; runs PowerShell on it |
+| `GET /v1/cpu` | The CPU suite (docs/cpu-cloudrun.md): `{ backend, tools, bucket, concurrent, services: { light, heavy }, prices, suite: [{ id, title, description, area, weight, typicalSeconds, inputs, params, runs, why, class }], lod, staysLocal, recent }` (`runs`: `local` or `cloudrun:<service>`; `recent`: the last requests' median wall and billed seconds, cold starts, failures) |
 | `GET /v1/builder/cloud` | Unity cloud builds (docs/unity-cloudrun.md): `{ backend, projects, timeoutMinutes, cleanAfterFailures, concurrency, gcp, state }` (`state`: per `<repo>/<key>` the cache-failure streak, `cleanNext`, the last build) |
 | `GET /v1/builder/caches` | admin; `{ caches: [{ repo, key, bytes, libraryBytes, files, savedAt, ageDays, unity, commit, streak, cleanNext, lastBuild }] }` from the bucket |
 | `POST /v1/builder/caches/clear` `{ repo, key?, confirm: true }` | admin; deletes that project's Library caches (or one key); its next cloud build is a full import |

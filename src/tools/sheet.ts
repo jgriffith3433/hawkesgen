@@ -17,7 +17,7 @@ export const sheetTool: Tool = {
   id: 'image.sheet',
   version: 1,
   title: 'Turnaround sheet',
-  description: 'Lays 2-6 views of one character side by side in equal square cells (free, on this machine). Give them front, back, left, right in that order to make the sheet mesh.views3d reads. Views should share scale, framing and a plain background (use image.cutout first).',
+  description: 'Lays 2-6 views of one character side by side in equal square cells (free, CPU only). Give them front, back, left, right in that order to make the sheet mesh.views3d reads. Views should share scale, framing and a plain background (use image.cutout first).',
   provider: 'local',
   output: 'image',
   inputs: { views: { kind: 'image', required: true, multiple: true, max: 6, description: 'The views, left to right.' } },

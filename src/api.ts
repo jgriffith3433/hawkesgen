@@ -29,6 +29,7 @@ import * as builder from './providers/builder/builder.ts';
 import { requesterIp } from './providers/builder/rdp.ts';
 import * as cloudrun from './providers/builder/cloudrun.ts';
 import * as cloudCache from './providers/builder/cache.ts';
+import { cpuStatus } from './providers/cloudrun/cpu.ts';
 import * as playtester from './providers/playtester/playtester.ts';
 import * as machines from './machines.ts';
 import * as games from './games.ts';
@@ -1073,6 +1074,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       res.writeHead(200, { 'Content-Type': 'application/x-rdp', 'Content-Disposition': `attachment; filename="${r.filename}"`, 'Cache-Control': 'no-store' });
       return void res.end(r.content);
     }
+    // The CPU suite (docs/cpu-cloudrun.md): every CPU tool, where it runs now (here or a Cloud Run service) and why,
+    // the services' sizes and prices, and the last requests (latency, cold starts, failures).
+    if (route === '/v1/cpu' && method === 'GET') return send(res, 200, cpuStatus(loadSettings()));
     // Unity cloud builds (docs/unity-cloudrun.md): the settings, the Library caches, and "clear cache".
     if (route === '/v1/builder/cloud' && method === 'GET') {
       const u = loadSettings().unityBuild;

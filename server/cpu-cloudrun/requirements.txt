@@ -1,0 +1,6 @@
+# The CPU suite's Python (post/*.py), at the versions Gen's .venv runs (2026-10-28): rembg for image.cutout, Pillow and
+# numpy for the rest. onnxruntime is the CPU build.
+rembg==2.0.86
+onnxruntime==1.31.0
+pillow==13.0.0
+numpy==2.5.4

@@ -148,6 +148,19 @@ export type Settings = {
     projects: Record<string, 'ec2' | 'cloudrun'>;
     cloudrun: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here' };
   };
+  /**
+   * Where the CPU suite runs (docs/cpu-cloudrun.md): "local" is this machine; "cloudrun" is Cloud Run, one request per
+   * job (server/cpu-cloudrun/, src/providers/cloudrun/cpu.ts). `tools` overrides it per tool ("asset.lod": "cloudrun"
+   * sends the LOD system's image and model work there too). Two services of one image: `light` (gen-cpu: small
+   * instances, many requests each) and `heavy` (gen-cpu-heavy: one request per instance); their sizes are in
+   * server/cpu-cloudrun/service.json. A tool goes to its class's URL, else the other one; with neither URL, or no
+   * `bucket`, it runs here. `concurrent`: jobs sent to Cloud Run at once (their own lane, apart from the local one).
+   */
+  cpu: {
+    backend: 'local' | 'cloudrun';
+    tools: Record<string, 'local' | 'cloudrun'>;
+    cloudrun: { urls: { light?: string; heavy?: string }; bucket: string | null; concurrent: number };
+  };
 };
 
 export type UnityBackend = 'builder' | 'cloudrun' | 'vm';
@@ -174,7 +187,30 @@ export const SETTINGS_DEFAULTS: Settings = {
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' } },
+  cpu: { backend: 'local', tools: {}, cloudrun: { urls: {}, bucket: null, concurrent: 16 } },
 };
+
+/** settings.cpu, checked: known backends, tool ids, an https URL, a bucket name, sizes Cloud Run allows. */
+function cleanCpu(c: Partial<Settings['cpu']> | undefined): Settings['cpu'] {
+  const d = SETTINGS_DEFAULTS.cpu;
+  const be = (v: unknown): 'local' | 'cloudrun' | null => (v === 'cloudrun' ? 'cloudrun' : v === 'local' ? 'local' : null);
+  const n = (v: unknown, lo: number, hi: number, def: number) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || def));
+  const tools: Record<string, 'local' | 'cloudrun'> = {};
+  for (const [k, v] of Object.entries(c?.tools ?? {})) if (/^[a-z0-9][a-z0-9.-]{0,62}$/.test(k) && be(v)) tools[k] = be(v)!;
+  const r: Partial<Settings['cpu']['cloudrun']> = c?.cloudrun ?? {};
+  const url = (v: unknown) => (typeof v === 'string' && /^https:\/\/[a-z0-9.-]+\/?$/.test(v) ? v.replace(/\/$/, '') : undefined);
+  const urls: Settings['cpu']['cloudrun']['urls'] = {};
+  for (const k of ['light', 'heavy'] as const) if (url(r.urls?.[k])) urls[k] = url(r.urls?.[k]);
+  return {
+    backend: be(c?.backend) ?? d.backend,
+    tools,
+    cloudrun: {
+      urls,
+      bucket: typeof r.bucket === 'string' && /^[a-z0-9][a-z0-9._-]{2,62}$/.test(r.bucket) ? r.bucket : null,
+      concurrent: n(r.concurrent, 1, 200, d.cloudrun.concurrent),
+    },
+  };
+}
 
 /** settings.playtest, checked: known backends only, an https run.app-style URL, sane sizes. */
 function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['playtest'] {
@@ -262,6 +298,7 @@ function clean(s: Settings): Settings {
     },
     gpu: cleanGpu(s.gpu),
     playtest: cleanPlaytest(s.playtest),
+    cpu: cleanCpu(s.cpu),
   };
 }
 
@@ -311,7 +348,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun } } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -333,6 +370,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
     unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) }, vm: { ...cur.unityBuild.vm, ...(patch.unityBuild?.vm ?? {}) } },
     playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) } },
+    cpu: { ...cur.cpu, ...(patch.cpu ?? {}), tools: { ...cur.cpu.tools, ...(patch.cpu?.tools ?? {}) }, cloudrun: { ...cur.cpu.cloudrun, ...(patch.cpu?.cloudrun ?? {}), urls: { ...cur.cpu.cloudrun.urls, ...(patch.cpu?.cloudrun?.urls ?? {}) } } },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
   return next;

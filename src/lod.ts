@@ -289,24 +289,45 @@ function setState(id: string, state: string, extra: Record<string, unknown> = {}
   db.prepare(`UPDATE asset_lod_state SET state = ?, version = ?, updated = ?${cols.map((c) => `, ${c} = ?`).join('')} WHERE asset = ?`).run(state, LOD_VERSION, Date.now(), ...(Object.values(extra) as any[]), id);
 }
 
-/** Makes images' levels, a batch in one Python process. */
-async function makeImages(list: Asset[], signal?: AbortSignal, log?: (s: string) => void) {
-  if (!list.length) return;
+/**
+ * Runs one of the two level-making commands: on the CPU service when settings.cpu sends asset.lod there
+ * (docs/cpu-cloudrun.md; the levels come back to the same `<stem><suffix>` files), else here at the lowest priority.
+ * A service that fails falls back to here, so the levels still get made.
+ */
+async function levelCommand(kind: 'lod-images' | 'lod-mesh', plan: any, signal?: AbortSignal, log?: (s: string) => void): Promise<any> {
+  const { cpuRoute, cpuExec } = await import('./providers/cloudrun/cpu.ts');
+  const svc = cpuRoute('asset.lod', loadSettings()).service;
+  if (svc) {
+    try {
+      return await cpuExec(kind, plan, svc, { signal, log });
+    } catch (e: any) {
+      if (signal?.aborted) throw e;
+      log?.(`${svc.name}: ${e.message}; making them here instead`);
+    }
+  }
   const planFile = path.join(paths.tmp, `lod-${crypto.randomBytes(6).toString('hex')}.json`);
-  fs.writeFileSync(planFile, JSON.stringify({ images: list.map((a) => ({ in: a.path, out: stemOf(a) })) }));
+  fs.writeFileSync(planFile, JSON.stringify(plan));
   try {
-    const res = lastJson(await runLow(PYTHON, [path.join(paths.post, 'lod.py'), planFile], signal)).images as any[];
-    list.forEach((a, i) => {
-      const r = res[i] ?? { error: 'no answer' };
-      if (r.error) { setState(a.id, 'failed', { error: String(r.error).slice(0, 300), tries: tries(a.id) + 1 }); log?.(`${a.id}: ${r.error}`); return; }
-      if (r.skipped) { setState(a.id, 'skipped', { error: String(r.skipped).slice(0, 300), width: r.width ?? null, height: r.height ?? null }); return; }
-      saveLevels(a, (r.levels as any[]).map((l) => ({ level: l.level, mime: 'image/webp', path: l.path, width: l.width, height: l.height })));
-      setState(a.id, r.levels.length ? 'done' : 'skipped', { width: r.width, height: r.height, error: r.levels.length ? null : 'small already' });
-      log?.(`${a.id}: ${r.width}x${r.height}, ${r.levels.length} level${r.levels.length === 1 ? '' : 's'}`);
-    });
+    return kind === 'lod-images'
+      ? lastJson(await runLow(PYTHON, [path.join(paths.post, 'lod.py'), planFile], signal))
+      : lastJson(await runLow(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(ROOT, 'src', 'lod-mesh.ts'), planFile], signal));
   } finally {
     fs.rmSync(planFile, { force: true });
   }
+}
+
+/** Makes images' levels, a batch in one Python process. */
+async function makeImages(list: Asset[], signal?: AbortSignal, log?: (s: string) => void) {
+  if (!list.length) return;
+  const res = (await levelCommand('lod-images', { images: list.map((a) => ({ in: a.path, out: stemOf(a) })) }, signal, log)).images as any[];
+  list.forEach((a, i) => {
+    const r = res[i] ?? { error: 'no answer' };
+    if (r.error) { setState(a.id, 'failed', { error: String(r.error).slice(0, 300), tries: tries(a.id) + 1 }); log?.(`${a.id}: ${r.error}`); return; }
+    if (r.skipped) { setState(a.id, 'skipped', { error: String(r.skipped).slice(0, 300), width: r.width ?? null, height: r.height ?? null }); return; }
+    saveLevels(a, (r.levels as any[]).map((l) => ({ level: l.level, mime: 'image/webp', path: l.path, width: l.width, height: l.height })));
+    setState(a.id, r.levels.length ? 'done' : 'skipped', { width: r.width, height: r.height, error: r.levels.length ? null : 'small already' });
+    log?.(`${a.id}: ${r.width}x${r.height}, ${r.levels.length} level${r.levels.length === 1 ? '' : 's'}`);
+  });
 }
 const tries = (id: string) => Number((db.prepare('SELECT tries FROM asset_lod_state WHERE asset = ?').get(id) as { tries: number } | undefined)?.tries ?? 0);
 
@@ -314,18 +335,14 @@ const tries = (id: string) => Number((db.prepare('SELECT tries FROM asset_lod_st
 async function makeMesh(a: Asset, signal?: AbortSignal, log?: (s: string) => void) {
   const low = db.prepare('SELECT low FROM asset_lod_links WHERE asset = ? LIMIT 1').get(a.id) as { low: string } | undefined;
   const source = low ? getAsset(low.low)?.path : undefined;
-  const planFile = path.join(paths.tmp, `lod-${crypto.randomBytes(6).toString('hex')}.json`);
-  fs.writeFileSync(planFile, JSON.stringify({ in: a.path, out: stemOf(a), python: PYTHON, script: path.join(paths.post, 'lod.py'), source }));
   try {
-    const r = lastJson(await runLow(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(ROOT, 'src', 'lod-mesh.ts'), planFile], signal));
+    const r = await levelCommand('lod-mesh', { in: a.path, out: stemOf(a), python: PYTHON, script: path.join(paths.post, 'lod.py'), source }, signal, log);
     saveLevels(a, (r.levels as any[]).map((l) => ({ level: l.level, role: l.role, mime: 'model/gltf-binary', path: l.path, triangles: l.level, texture: l.texture })));
     setState(a.id, r.levels.length ? 'done' : 'skipped', { triangles: r.triangles, texture: r.texture, error: r.levels.length ? null : 'small already' });
     log?.(`${a.id}: ${r.triangles} triangles, ${r.texture} px textures -> ${r.levels.map((l: any) => `${l.role} ${l.level}`).join(', ') || 'nothing to make'}${source ? ' (low from the job\'s own copy)' : ''}`);
   } catch (e: any) {
     setState(a.id, 'failed', { error: String(e?.message ?? e).slice(0, 300), tries: tries(a.id) + 1 });
     log?.(`${a.id}: ${e?.message ?? e}`);
-  } finally {
-    fs.rmSync(planFile, { force: true });
   }
 }
 

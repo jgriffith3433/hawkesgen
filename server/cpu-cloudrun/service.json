@@ -1,0 +1,34 @@
+{
+  "repository": "hawkes-gen",
+  "image": "gen-cpu",
+  "region": "us-east4",
+  "prices": {
+    "billing": "request",
+    "cpuPerVcpuSecond": 0.000024,
+    "memoryPerGibSecond": 0.0000025,
+    "perMillionRequests": 0.4,
+    "freePerMonth": { "vcpuSeconds": 180000, "gibSeconds": 360000, "requests": 2000000 },
+    "verified": false,
+    "source": "cloud.google.com/run/pricing, request-based billing (CPU only during requests), Tier 1 regions (us-east4) as known 2026; the free tier is per billing account. Check before relying on them."
+  },
+  "classes": {
+    "light": {
+      "name": "gen-cpu",
+      "cpu": 2,
+      "memoryGi": 4,
+      "concurrency": 4,
+      "maxInstances": 10,
+      "timeoutSeconds": 900,
+      "why": "seconds-long image and probe work: a small instance serves several at once, so a burst of resizes costs one instance"
+    },
+    "heavy": {
+      "name": "gen-cpu-heavy",
+      "cpu": 4,
+      "memoryGi": 8,
+      "concurrency": 1,
+      "maxInstances": 10,
+      "timeoutSeconds": 3600,
+      "why": "cutouts (BiRefNet), video encodes and splats want every core; one request per instance makes each job's seconds its own and its cost exact"
+    }
+  }
+}
