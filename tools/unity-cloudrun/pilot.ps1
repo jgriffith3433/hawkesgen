@@ -12,6 +12,7 @@ $image = 'us-east4-docker.pkg.dev/hawkes-staging/hawkes/unity-build:6000.3.7f1-a
 $bucket = "hawkes-unity-$Project"
 Write-Host "1/4 accounts, permissions, bucket, empty secrets" -ForegroundColor Cyan
 node tools/unity-cloudrun/deploy-job.mjs --project $Project --bucket $bucket --image $image --apply
+if ($LASTEXITCODE -ne 0) { throw "step 1 failed (above); run this script again, every step is safe to repeat" }
 Write-Host "2/4 your Unity sign-in and the GitHub token" -ForegroundColor Cyan
 $g = "$env:LOCALAPPDATA\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
 function Put([string]$name, [string]$prompt) {
@@ -23,8 +24,11 @@ function Put([string]$name, [string]$prompt) {
   }
   if (-not $v) { throw "${name}: nothing entered" }
   $tmp = New-TemporaryFile
-  try { [IO.File]::WriteAllText($tmp, $v); & $g secrets versions add $name --data-file=$tmp --project $Project 2>$null | Out-Null }
-  finally { Remove-Item $tmp -Force }
+  # gcloud writes its progress to stderr, which Windows PowerShell turns into errors under 'Stop': judge it by its exit code.
+  $ErrorActionPreference = 'Continue'
+  try { [IO.File]::WriteAllText($tmp, $v); $err = & $g secrets versions add $name --data-file=$tmp --project $Project 2>&1 | Out-String }
+  finally { Remove-Item $tmp -Force; $ErrorActionPreference = 'Stop' }
+  if ($LASTEXITCODE -ne 0) { Write-Host ($err -replace [regex]::Escape($v), '***') -ForegroundColor Red }
   if ($LASTEXITCODE -eq 0) { Write-Host "  ok  $name" -ForegroundColor Green } else { throw "${name}: could not be saved" }
 }
 Put 'unity-email' 'Unity email'
@@ -32,6 +36,7 @@ Put 'unity-password' 'Unity password'
 Put 'github-token' 'GitHub token (Enter = the one git on this PC already uses)'
 Write-Host "3/4 the Cloud Run job" -ForegroundColor Cyan
 node tools/unity-cloudrun/deploy-job.mjs --project $Project --bucket $bucket --image $image --apply
+if ($LASTEXITCODE -ne 0) { throw "step 3 failed (above); run this script again" }
 Write-Host "4/4 license check (about a minute)" -ForegroundColor Cyan
 & $g run jobs execute hawkes-unity-build --region us-east4 --project $Project --update-env-vars HAWKES_LICENSE_CHECK=1 --wait
 Write-Host "Done. Tell Claude: it reads the job's log for 'license: OK' or the reason it failed." -ForegroundColor Green

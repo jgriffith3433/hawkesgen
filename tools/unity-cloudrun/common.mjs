@@ -61,7 +61,12 @@ export function gcloud(args, { okToFail = false, capture = false } = {}) {
   console.log(`${APPLY ? '>' : '  (dry run)'} gcloud ${args.map(quote).join(' ')}`);
   if (!APPLY) return { ok: true, out: '' };
   const [bin, pre] = gcloudBin();
-  const r = spawnSync(bin, [...pre, ...args], { stdio: capture ? ['inherit', 'pipe', 'inherit'] : 'inherit', encoding: 'utf8' });
+  let r = spawnSync(bin, [...pre, ...args], { stdio: capture ? ['inherit', 'pipe', 'inherit'] : 'inherit', encoding: 'utf8' });
+  for (let i = 0; i < retries && !r.error && r.status !== 0; i++) {
+    console.log(`  (not yet: trying again in 10 s, ${retries - i} left)`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000);
+    r = spawnSync(bin, [...pre, ...args], { stdio: capture ? ['inherit', 'pipe', 'inherit'] : 'inherit', encoding: 'utf8' });
+  }
   if (r.error) die(`Couldn't run gcloud (${r.error.message}). Install the Google Cloud CLI and run "gcloud auth login".`);
   if (r.status !== 0 && !okToFail) die(`gcloud failed (exit ${r.status}).`);
   return { ok: r.status === 0, out: r.stdout ?? '' };
