@@ -21,11 +21,11 @@ function Put([string]$name, [string]$prompt) {
     $line = Get-Content "$env:USERPROFILE\.git-credentials" | Where-Object { $_ -match 'github\.com' } | Select-Object -First 1
     if ($line -match 'https://[^:]+:([^@]+)@github\.com') { $v = [uri]::UnescapeDataString($Matches[1]) }
   }
-  if (-not $v) { throw "$name: nothing entered" }
+  if (-not $v) { throw "${name}: nothing entered" }
   $tmp = New-TemporaryFile
   try { [IO.File]::WriteAllText($tmp, $v); & $g secrets versions add $name --data-file=$tmp --project $Project 2>$null | Out-Null }
   finally { Remove-Item $tmp -Force }
-  if ($LASTEXITCODE -eq 0) { Write-Host "  ok  $name" -ForegroundColor Green } else { throw "$name: could not be saved" }
+  if ($LASTEXITCODE -eq 0) { Write-Host "  ok  $name" -ForegroundColor Green } else { throw "${name}: could not be saved" }
 }
 Put 'unity-email' 'Unity email'
 Put 'unity-password' 'Unity password'
