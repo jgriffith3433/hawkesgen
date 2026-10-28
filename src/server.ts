@@ -52,6 +52,8 @@ server.listen(PORT, HOST, () => {
     void refresh();
     setInterval(refresh, 6 * 3600 * 1000).unref();
   });
+  // On Cloud Run there are no machines of ours to watch or images to build (src/cloudhost.ts).
+  if (process.env.K_SERVICE) return;
   // The Machines tab's history: running machines measured every minute (EC2 Describe and one SSH command each).
   void import('./machines.ts').then((m) => m.startMonitor()).catch((e) => console.warn(`[machines] ${e.message}`));
   void import('./providers/comfy/image.ts').then((m) => m.resumeImageBuild()).catch((e) => console.warn(`[image] ${e.message}`));
@@ -67,8 +69,10 @@ server.listen(PORT, HOST, () => {
 });
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => {
+  process.on(sig, async () => {
     console.log('stopping (running jobs resume on the next start)');
+    // Cloud Run: the state files go up first (the databases are Litestream's).
+    if (process.env.K_SERVICE) await import('./cloudhost.ts').then((m) => m.flushOnStop()).catch(() => {});
     process.exit(0);
   });
 }

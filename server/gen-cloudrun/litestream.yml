@@ -1,0 +1,17 @@
+# Gen's two SQLite databases, streamed to Cloud Storage (the bucket comes from the environment). Credentials are the
+# service's own account (the metadata server). One instance at most writes them: the service runs with max-instances 1.
+dbs:
+  - path: /data/hawkesgen.db
+    replicas:
+      - type: gcs
+        bucket: ${HAWKESGEN_STATE_BUCKET}
+        path: db/hawkesgen.db
+        sync-interval: 1s
+        retention: 168h
+  - path: /data/analytics.db
+    replicas:
+      - type: gcs
+        bucket: ${HAWKESGEN_STATE_BUCKET}
+        path: db/analytics.db
+        sync-interval: 10s
+        retention: 168h

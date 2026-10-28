@@ -59,7 +59,8 @@ export function authenticate(req: IncomingMessage): Client | null {
     if (only) return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(only) && canProject(c, only) ? { ...c, projects: [only] } : null;
     return c;
   }
-  if (loadSettings().localOpen && isLoopback(req.socket.remoteAddress)) return LOCAL_OWNER;
+  // Never on Cloud Run: "this machine" is the platform's front end there, not J's PC.
+  if (loadSettings().localOpen && !process.env.K_SERVICE && isLoopback(req.socket.remoteAddress)) return LOCAL_OWNER;
   return null;
 }
 
