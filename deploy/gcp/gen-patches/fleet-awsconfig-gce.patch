@@ -1,0 +1,32 @@
+diff --git a/src/providers/comfy/fleet.ts b/src/providers/comfy/fleet.ts
+index 05dcbd2..0521f20 100644
+--- a/src/providers/comfy/fleet.ts
++++ b/src/providers/comfy/fleet.ts
+@@ -40,6 +40,7 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
+ import { env, paths, loadSettings } from '../../config.ts';
+ import { installScript as blenderInstall } from '../blender/install.ts';
+ import { GenError } from '../../util.ts';
++import { federationOn, gceAwsCredentials } from '../gceaws.ts';
+ 
+ /**
+  * Instance types that fit the models (a 48 GB+ GPU and 32 GB+ memory). Prices
+@@ -83,6 +84,9 @@ export function awsConfig() {
+   const secret = env('AWS_SECRET_ACCESS_KEY');
+   const region = env('AWS_DEFAULT_REGION') || 'us-east-1';
+   if (key && secret) return { region, credentials: { accessKeyId: key, secretAccessKey: secret } };
++  // On the Google control server (GCE): the VM's identity token traded with STS for hawkes/hawkes-control-gce, renewed
++  // before it expires (gceaws.ts). HAWKES_AWS_FEDERATION=gce says so; no keys on disk.
++  if (federationOn(process.env)) return { region, credentials: gceAwsCredentials };
+   // On the AWS control server the instance role provides credentials (no keys on disk); HAWKES_AWS_ROLE says so.
+   if (env('HAWKES_AWS_ROLE')) return { region };
+   throw new GenError('AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not in hawkesgen/.env', { status: 503, kind: 'auth' });
+@@ -180,6 +184,9 @@ function homeRegion() {
+ }
+ 
+ export async function myIp() {
++  // A fixed public address (the Google control server's static IP, set by its unit) needs no lookup.
++  const fixed = env('HAWKES_PUBLIC_IP')?.trim();
++  if (fixed && /^\d+\.\d+\.\d+\.\d+$/.test(fixed)) return fixed;
+   const r = await fetch('https://checkip.amazonaws.com');
+   const ip = (await r.text()).trim();
+   if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) throw new GenError(`Could not work out this machine's public IP (got "${ip}")`);
