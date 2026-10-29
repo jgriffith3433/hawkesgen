@@ -38,7 +38,7 @@ jobs:
       - name: Build and push
         run: |
           img=ghcr.io/jgriffith3433/hawkes-gen-gpu
-          docker build "$RUNNER_TEMP/gpu" \
+          docker build "$RUNNER_TEMP/gpu" --provenance=false \
             --build-arg COMFY_REPO="${{ steps.ctx.outputs.COMFY_REPO }}" --build-arg COMFY_TAG="${{ steps.ctx.outputs.COMFY_TAG }}" \
             --label org.opencontainers.image.source=https://github.com/jgriffith3433/hawkesgen \
             -t "$img:${{ steps.ctx.outputs.TAG }}" -t "$img:latest"
