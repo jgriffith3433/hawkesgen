@@ -106,12 +106,7 @@ export type Settings = {
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
    * (billed per token), "bedrock" uses AWS Bedrock (billed per token to AWS). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
    * (inside every job: reviews, judges, captions) and how long one may take. */
-  claude: {
-    backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number;
-    /** Customers' jobs (hawkesgen.ai accounts): "api" (the API key, else Bedrock; never J's Max plan, Cursor or Copilot)
-     *  or "as-set" (the backend above, the old behavior; only until the API key is in place). */
-    customers: 'api' | 'as-set';
-  };
+  claude: { backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number };
   /**
    * Which harness answers writing, review and JSON calls, and (via Studio) the coding agents.
    * "claude" is Claude Code (the Max plan or the API key above). "cursor" is Cursor's agent on the Cursor plan.
@@ -259,7 +254,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   lod: { projects: ['usr_*', 'ubeta_*'] },
   queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'] },
   platform: { issuer: '', freeOrgs: [] },
-  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10, customers: 'api' },
+  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
   brain: 'claude',
   model: '',
   localOpen: true,
@@ -431,7 +426,6 @@ function clean(s: Settings): Settings {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
       timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
-      customers: s.claude?.customers === 'as-set' ? 'as-set' : 'api',
     },
     brain: s.brain === 'cursor' || (s.brain as string) === 'grok' ? 'cursor' : s.brain === 'copilot' ? 'copilot' : 'claude',
     model: typeof (s as { model?: string }).model === 'string' ? (s as { model?: string }).model : '',

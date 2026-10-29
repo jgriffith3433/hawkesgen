@@ -181,9 +181,18 @@ case there whenever you add a route or an input kind.
     submit (402 otherwise)
 
   `settings.platform.issuer` names the portal (empty: hawkesgen.ai, or beta.hawkesgen.ai when `HAWKESGEN_LANE=beta`).
-- **Claude:** a customer's job runs inside `callScope` (`providers/anthropic.ts`). Its Claude calls go to the API key,
-  else Bedrock, never J's Max plan, Cursor or Copilot (`settings.claude.customers`: `api`; `as-set` is the old
-  behavior). Customers' playtest reviews default to Sonnet and may only review their own project's playtests.
+- **Claude: the customer's own, never ours** (J, 2026-10-29). A customer's job runs inside `callScope`
+  (`providers/anthropic.ts`, with the job's org from `orgOfProject`: `org_<hex>`, `org_<hex>.*`, and a portal
+  account's `usr_<hex>` / `ustg_<hex>` as its personal org).
+  - Its Claude calls run on the org's own Anthropic API key, else its own Claude subscription (a `claude setup-token`
+    sign-in token: Claude Code runs on their plan).
+  - With neither, the call fails with a 402 saying how to add one. Never Gen's key, Bedrock, J's Max plan, Cursor or
+    Copilot.
+  - Both are stored encrypted per org (`src/orgsecrets.ts`, AES-256-GCM with `HAWKESGEN_SECRETS_KEY`) and set by the
+    org's owners and admins: `GET/PUT/DELETE /v1/org/keys/anthropic|claude-subscription`, with a platform token. Only
+    "set" and the last 4 characters come back.
+  - Usage is recorded as `anthropic-byok` or `claude-subscription` (not ours to bill).
+  - Customers' playtest reviews default to Sonnet and may only review their own project's playtests.
 
 ## Playtests
 

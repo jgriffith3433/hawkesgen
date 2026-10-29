@@ -16,6 +16,7 @@ import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
 import * as bedrock from './bedrock.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { orgSecret } from '../orgsecrets.ts';
 import { GenError, mimeOf } from '../util.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
@@ -37,7 +38,18 @@ export function costOf(model: string, usage: any) {
 }
 
 let client: Anthropic | null = null;
-function anthropic() {
+const orgClients = new Map<string, Anthropic>();
+/** Gen's own API client, or (`apiKey`) one for an org's own key (orgsecrets.ts), kept per key. */
+function anthropic(apiKey?: string) {
+  if (apiKey) {
+    let c = orgClients.get(apiKey);
+    if (!c) {
+      if (orgClients.size > 200) orgClients.clear();
+      c = new Anthropic({ apiKey });
+      orgClients.set(apiKey, c);
+    }
+    return c;
+  }
   const key = env('ANTHROPIC_API_KEY');
   if (!key) throw new GenError('ANTHROPIC_API_KEY is not in hawkesgen/.env', { status: 503, kind: 'auth' });
   client ??= new Anthropic({ apiKey: key });
@@ -46,12 +58,11 @@ function anthropic() {
 
 export const backend = () => loadSettings().claude.backend;
 
-/** Who a job's Claude calls are for (src/jobs.ts sets it around every tool run). A customer's calls never go to J's
- *  Max plan, Cursor or Copilot (those are J's own subscriptions): they run on the API key, else Bedrock, billed per token. */
-export const callScope = new AsyncLocalStorage<{ customer: boolean }>();
+/** Who a job's Claude calls are for (src/jobs.ts sets it around every tool run): a customer's run on its org's own key or
+ *  subscription only (ask() below), never Gen's key, J's Max plan, Cursor or Copilot. */
+export const callScope = new AsyncLocalStorage<{ customer: boolean; org?: string | null }>();
 /** Whether the running job is a customer's (whatever the Claude setting). */
 export const customerJob = () => callScope.getStore()?.customer === true;
-export const forCustomer = () => callScope.getStore()?.customer === true && loadSettings().claude.customers === 'api';
 
 /** The API path needs its key; the Max plan path needs only the CLI. Cursor needs CURSOR_API_KEY. Bedrock needs AWS creds. */
 export const configured = () => {
@@ -63,10 +74,11 @@ export const configured = () => {
     : true;
 };
 
-type Billing = 'max-plan' | 'api' | 'bedrock' | 'xai' | 'cursor' | 'copilot';
+type Billing = 'max-plan' | 'api' | 'bedrock' | 'xai' | 'cursor' | 'copilot' | 'byok' | 'subscription';
 /** A call's usage record: "max-plan", "cursor" or "copilot" at $0, "xai" for a direct xAI call, "bedrock" for AWS Bedrock, or "anthropic" billed per token. */
 export function usageOf(r: { model: string; usage: any; cost: number; billing: Billing }, detail: string = r.model) {
-  const provider = r.billing === 'max-plan' ? 'max-plan' : r.billing === 'cursor' ? 'cursor' : r.billing === 'copilot' ? 'copilot' : r.billing === 'xai' ? 'xai' : r.billing === 'bedrock' ? 'bedrock' : 'anthropic';
+  // byok: the org's own Anthropic key (Anthropic bills them); subscription: the org's own Claude plan ($0 to us).
+  const provider = r.billing === 'max-plan' ? 'max-plan' : r.billing === 'cursor' ? 'cursor' : r.billing === 'copilot' ? 'copilot' : r.billing === 'xai' ? 'xai' : r.billing === 'bedrock' ? 'bedrock' : r.billing === 'byok' ? 'anthropic-byok' : r.billing === 'subscription' ? 'claude-subscription' : 'anthropic';
   return { provider, unit: 'tokens', amount: (r.usage?.input_tokens ?? 0) + (r.usage?.output_tokens ?? 0), cost: r.cost, detail };
 }
 
@@ -80,18 +92,20 @@ type AskParams = {
 
 /** One request: text (and images) in, text or schema-valid JSON out. Routes by settings.brain and settings.claude.backend. */
 export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: Billing }> {
-  if (forCustomer()) {
-    if (env('ANTHROPIC_API_KEY')) {
-      const r = await askApi(p, signal);
-      return p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r;
-    }
-    if (bedrock.configured()) {
-      const { onText, ...q } = p;
-      const r = await bedrock.ask(q, signal);
-      onText?.(r.text);
-      return p.schema ? { ...r, text: bedrock.extractJson(r.text) } : r;
-    }
-    throw new GenError('Claude for customers runs on the API: put ANTHROPIC_API_KEY in hawkesgen/.env (or set up Bedrock)', { status: 503, kind: 'auth' });
+  // A customer's job never runs on our key or J's plan (J, 2026-10-29: "they can use their own key or log into claude
+  // and use their subscription (not our key/plan)"): its org's own Anthropic API key, else its own Claude subscription
+  // (orgsecrets.ts), else it's refused with what to do.
+  const scope = callScope.getStore();
+  const org = scope?.org ?? null;
+  const ownKey = org ? orgSecret(org, 'anthropic') : null;
+  if (ownKey) {
+    const r = await askApi(p, signal, ownKey);
+    return { ...(p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r), billing: 'byok' as const };
+  }
+  const ownSub = org ? orgSecret(org, 'claude-subscription') : null;
+  if (ownSub) return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal, { token: ownSub });
+  if (scope?.customer) {
+    throw new GenError('Claude needs your own access: add your Anthropic API key, or sign in with your Claude subscription, in your hawkesgen.ai settings.', { status: 402, kind: 'auth' });
   }
   const brain = loadSettings().brain;
   if (brain === 'cursor' || brain === 'copilot') {
@@ -115,7 +129,7 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
 }
 
 /** The API key path: billed per token. */
-async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema, onText }: AskParams, signal?: AbortSignal) {
+async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema, onText }: AskParams, signal?: AbortSignal, apiKey?: string) {
   const content: any[] = images.map((file) => {
     const mime = mimeOf(file);
     if (!IMAGE_TYPES.has(mime)) throw new GenError(`Claude reads PNG, JPEG, WebP or GIF images, not ${file}`);
@@ -124,7 +138,7 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
   content.push({ type: 'text', text: prompt });
   let response: any;
   try {
-    const stream = anthropic().beta.messages.stream({
+    const stream = anthropic(apiKey).beta.messages.stream({
       model,
       max_tokens: maxTokens,
       betas: ['server-side-fallback-2026-07-01'],
@@ -141,7 +155,7 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
     }
     response = await stream.finalMessage();
   } catch (e: any) {
-    if (e instanceof Anthropic.AuthenticationError) throw new GenError('The ANTHROPIC_API_KEY in .env was rejected.', { status: 502, kind: 'auth' });
+    if (e instanceof Anthropic.AuthenticationError) throw new GenError(apiKey ? "Your org's Anthropic API key was rejected: replace it in your hawkesgen.ai settings." : 'The ANTHROPIC_API_KEY in .env was rejected.', { status: 502, kind: 'auth' });
     if (e instanceof Anthropic.RateLimitError) throw new GenError('Claude is rate limited right now; try again in a minute.', { status: 429, kind: 'throttled' });
     if (e instanceof Anthropic.APIError) throw new GenError(`Claude API error ${e.status}: ${e.message}`, { status: 502 });
     throw e;

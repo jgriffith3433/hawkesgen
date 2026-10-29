@@ -24,6 +24,7 @@ import { afterJob } from './lod.ts';
 import { putAsset, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
+import { orgOfProject } from './orgsecrets.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
@@ -1007,7 +1008,7 @@ class Queue {
       if (!remote) {
         if (cpu) Object.assign(job, { server: null });
         // A customer's job never spends J's Max plan (providers/anthropic.ts callScope).
-        await callScope.run({ customer: !exemptCheck()(job) }, () => tool.run(ctx));
+        await callScope.run({ customer: !exemptCheck()(job), org: orgOfProject(job.project) }, () => tool.run(ctx));
       }
       if (cloud) markUp(cloud.lane ?? cloud.name);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
@@ -1183,7 +1184,8 @@ function exemptCheck(): (j: { project: string; client: string }) => boolean {
   const globs = loadSettings().queue.projects;
   const roles = new Map<string, string | null>();
   const roleOf = (id: string) => {
-    if (!roles.has(id)) roles.set(id, (db.prepare('SELECT role FROM clients WHERE id = ?').get(id) as { role: string } | undefined)?.role ?? null);
+    // A platform token's caller (src/platform.ts: client id org:<org>:<user>) is always a customer: it has no key row.
+    if (!roles.has(id)) roles.set(id, id.startsWith('org:') ? 'user' : (db.prepare('SELECT role FROM clients WHERE id = ?').get(id) as { role: string } | undefined)?.role ?? null);
     return roles.get(id);
   };
   return (j) => !globs.some((g) => (g.endsWith('*') ? j.project.startsWith(g.slice(0, -1)) : j.project === g)) || roleOf(j.client) !== 'user';

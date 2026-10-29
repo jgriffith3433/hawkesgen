@@ -445,6 +445,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
 
     if (route === '/v1/me') return send(res, 200, client);
+    // An org's own Claude access (orgsecrets.ts): its Anthropic API key or its Claude subscription's sign-in token. Its
+    // owners and admins set them with a platform token; Gen's owner for any org (?org=). Never returned: whether one is
+    // set and its last 4 characters.
+    const ok_ = /^\/v1\/org\/keys\/(anthropic|claude-subscription)$/.exec(route);
+    if (ok_) {
+      const org = client.org ?? (client.role === 'owner' ? String(q('org') ?? '') : '');
+      if (!org) throw new GenError('Use a hawkesgen.ai platform token for your org', { status: 403 });
+      if (method !== 'GET' && client.org && !['owner', 'admin'].includes(String(client.orgRole))) throw new GenError("Only the org's owners and admins can change its keys", { status: 403 });
+      const os_ = await import('./orgsecrets.ts');
+      const kind = ok_[1] as 'anthropic' | 'claude-subscription';
+      if (method === 'GET') return send(res, 200, os_.orgSecretInfo(org, kind));
+      if (method === 'PUT' || method === 'POST') return send(res, 200, os_.setOrgSecret(org, kind, String((await readJson(req)).key ?? ''), client.name));
+      if (method === 'DELETE') return send(res, 200, os_.deleteOrgSecret(org, kind));
+    }
     // The studio's machinery is for admins: customers' keys (role user) never see the fleet, machines, settings, storage,
     // Claude logins, workflows or everyone's live playtests, whatever each route below checks itself.
     if (isCustomer(client) && OPS_ROUTES.test(route)) return send(res, 403, { error: 'This needs the admin role' });

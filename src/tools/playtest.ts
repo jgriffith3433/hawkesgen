@@ -11,7 +11,7 @@ import type { Tool, RunContext } from './types.ts';
 import { GenError, run as runProc, sleep } from '../util.ts';
 import { listAssets, getAsset } from '../library.ts';
 import { db } from '../db.ts';
-import { ask, DEFAULT_MODEL, usageOf, forCustomer, customerJob } from '../providers/anthropic.ts';
+import { ask, DEFAULT_MODEL, usageOf, customerJob } from '../providers/anthropic.ts';
 import { openGpuHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
 
 /** The GPU host's browser: Cloud Run's is already connected (a connection per tab); a playtester's is over the tunnel. */
@@ -1577,8 +1577,8 @@ export const playtestReviewTool: Tool = {
     const row = db.prepare('SELECT tool, status, result, project FROM jobs WHERE id = ?').get(p.job) as any;
     // A customer reviews only its own project's playtests.
     if (!row || (customerJob() && row.project !== ctx.job.project)) throw new GenError(`No job ${p.job}`);
-    // Customers' reviews run on Sonnet unless they ask for another model (a few cents each; J's stay as set).
-    if (forCustomer() && p.model === DEFAULT_MODEL) p.model = 'claude-sonnet-5-5';
+    // Customers' reviews run on Sonnet unless they ask for another model (on their own key or plan; J's stay as set).
+    if (customerJob() && p.model === DEFAULT_MODEL) p.model = 'claude-sonnet-5-5';
     if (row.tool !== 'playtest.run') throw new GenError(`${p.job} is a ${row.tool} job, not playtest.run`);
     if (row.status !== 'done') throw new GenError(`${p.job} is ${row.status}; review it once it's done`);
     const result = JSON.parse(row.result ?? 'null');

@@ -26,7 +26,11 @@ export type AskInput = {
   /** The answer's text so far, each time more arrives (--include-partial-messages). A retry starts it again from "". */
   onText?: (soFar: string) => void;
 };
-export type AskOptions = { timeoutMs?: number; retryDelaysMs?: number[] };
+export type AskOptions = {
+  timeoutMs?: number; retryDelaysMs?: number[];
+  /** A customer org's own Claude subscription token (orgsecrets.ts), instead of J's. */
+  token?: string;
+};
 
 // ------------------------------------------------------------- calls at once
 let running = 0;
@@ -87,10 +91,11 @@ export function subscriptionToken(): string | undefined {
   return undefined;
 }
 
-function cliEnv(): NodeJS.ProcessEnv {
+/** The CLI's environment: J's subscription, or (`own`) a customer org's own subscription token (orgsecrets.ts). */
+function cliEnv(own?: string): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...process.env };
   delete out.ANTHROPIC_API_KEY;
-  const token = subscriptionToken();
+  const token = own ?? subscriptionToken();
   if (token) out.CLAUDE_CODE_OAUTH_TOKEN = token;
   return out;
 }
@@ -133,13 +138,13 @@ export function userMessage(prompt: string, images: string[] = []) {
 
 type Outcome = { result?: any; model?: string; stderr: string; code: number | null };
 
-function runOnce(input: AskInput, timeoutMs: number, signal?: AbortSignal): Promise<Outcome> {
+function runOnce(input: AskInput, timeoutMs: number, signal?: AbortSignal, token?: string): Promise<Outcome> {
   const cwd = path.join(paths.tmp, 'claude', id('c'));
   fs.mkdirSync(cwd, { recursive: true });
   const { file, args } = cliArgs(input, cwd);
   const stdin = userMessage(input.prompt, input.images);
   return new Promise<Outcome>((resolve, reject) => {
-    const child = spawn(file, args, { cwd, env: cliEnv(), windowsHide: true });
+    const child = spawn(file, args, { cwd, env: cliEnv(token), windowsHide: true });
     let buf = '';
     let stderr = '';
     let result: any;
@@ -272,14 +277,15 @@ export async function ask(input: AskInput, signal?: AbortSignal, opts: AskOption
     await acquire(signal);
     let o: Outcome;
     try {
-      o = await runOnce(input, timeoutMs, signal);
+      o = await runOnce(input, timeoutMs, signal, opts.token);
     } finally {
       release();
     }
     const err = failureOf(o);
+    if (err && opts.token && err.kind === 'auth') throw new GenError("Your Claude subscription sign-in didn't work (it may have expired): sign in again in your hawkesgen.ai settings.", { status: 502, kind: 'auth' });
     if (!err) {
       const r = o.result;
-      return { text: answerText(r, input.schema), model: o.model ?? input.model, usage: r.usage ?? {}, cost: 0, billing: 'max-plan' as const };
+      return { text: answerText(r, input.schema), model: o.model ?? input.model, usage: r.usage ?? {}, cost: 0, billing: opts.token ? ('subscription' as const) : ('max-plan' as const) };
     }
     if (err.kind !== 'throttled' || attempt >= delays.length) throw err;
     await Promise.race([sleep(delays[attempt]), new Promise((resolve) => signal?.addEventListener('abort', resolve, { once: true }))]);

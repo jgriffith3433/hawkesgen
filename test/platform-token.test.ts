@@ -10,6 +10,7 @@ import path from 'node:path';
 import http from 'node:http';
 
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-platform-'));
+process.env.HAWKESGEN_SECRETS_KEY = crypto.randomBytes(32).toString('base64');
 const { handle } = await import('../src/api.ts');
 const { setPlatformKeys, issuer, orgProjects } = await import('../src/platform.ts');
 const { saveSettings } = await import('../src/config.ts');
@@ -34,8 +35,8 @@ const sign = (claims: Record<string, unknown>, o: { key?: crypto.KeyObject; kid?
   const sig = crypto.sign(null, Buffer.from(`${head}.${body}`), o.key ?? privateKey).toString('base64url');
   return `${head}.${body}.${sig}`;
 };
-const call = (token: string, route: string, init: { body?: any; project?: string } = {}) => fetch(base + route, {
-  method: init.body ? 'POST' : 'GET',
+const call = (token: string, route: string, init: { body?: any; project?: string; method?: string } = {}) => fetch(base + route, {
+  method: init.method ?? (init.body ? 'POST' : 'GET'),
   headers: { authorization: `Bearer ${token}`, ...(init.project ? { 'x-hawkesgen-project': init.project } : {}), ...(init.body ? { 'content-type': 'application/json' } : {}) },
   body: init.body ? JSON.stringify(init.body) : undefined,
 });
@@ -91,4 +92,47 @@ test('jobs: the token\'s scopes, viewers, and billing (free orgs only for now)',
   assert.equal((await call(sign({ org: A, role: 'viewer' }), '/v1/jobs', { body: job })).status, 403);
   // Another org's project is refused whatever the token says it may do.
   assert.notEqual((await call(sign({ org: A }), '/v1/jobs', { body: { ...job, project: B } })).status, 200);
+});
+
+test('an org brings its own Anthropic key: owners and admins set it, nobody reads it back', async () => {
+  const { orgSecret, orgOfProject } = await import('../src/orgsecrets.ts');
+  const key = `sk-ant-api03-${'x'.repeat(40)}WXYZ`;
+  assert.equal((await call(sign({ org: A, role: 'member' }), '/v1/org/keys/anthropic', { method: 'PUT', body: { key } })).status, 403);
+  assert.equal((await call(sign({ org: A }), '/v1/org/keys/anthropic', { method: 'PUT', body: { key: 'not-a-key' } })).status, 400);
+  const set = await call(sign({ org: A }), '/v1/org/keys/anthropic', { method: 'PUT', body: { key } });
+  assert.equal(set.status, 200);
+  const info = await set.json() as any;
+  assert.deepEqual([info.set, info.last4], [true, 'WXYZ']);
+  assert.ok(!JSON.stringify(info).includes(key.slice(0, 20)));
+  // Members may see whether one is set; another org sees its own (none).
+  assert.equal(((await (await call(sign({ org: A, role: 'member' }), '/v1/org/keys/anthropic')).json()) as any).set, true);
+  assert.equal(((await (await call(sign({ org: B }), '/v1/org/keys/anthropic')).json()) as any).set, false);
+  // Stored encrypted; only Gen's jobs for that org read it.
+  assert.equal(orgSecret(A, 'anthropic'), key);
+  assert.equal(orgSecret(B, 'anthropic'), null);
+  assert.equal(orgOfProject(`${A}.game`), A);
+  assert.equal(orgOfProject('usr_aaaaaaaa'), A, 'an account own project belongs to its personal org');
+  assert.equal(orgOfProject('doseofdestruction'), null);
+  assert.equal(((await (await call(sign({ org: A }), '/v1/org/keys/anthropic', { method: 'DELETE' })).json()) as any).set, false);
+});
+
+test('a customer\'s Claude: its own subscription works as a key does; with neither, jobs say what to do', async () => {
+  const { orgSecret } = await import('../src/orgsecrets.ts');
+  assert.equal((await call(sign({ org: A }), '/v1/org/keys/claude-subscription', { method: 'PUT', body: { key: `sk-ant-api03-${'x'.repeat(40)}` } })).status, 400, 'an API key is not a sign-in token');
+  const sub = `sk-ant-oat01-${'y'.repeat(40)}ABCD`;
+  const r = await call(sign({ org: A }), '/v1/org/keys/claude-subscription', { method: 'PUT', body: { key: sub } });
+  assert.equal(r.status, 200);
+  assert.equal(orgSecret(A, 'claude-subscription'), sub);
+  await call(sign({ org: A }), '/v1/org/keys/claude-subscription', { method: 'DELETE' });
+  // No key and no subscription: an org's Claude job fails with the way to fix it (never our key or J's plan).
+  const sub_ = await (await call(sign({ org: A }), '/v1/jobs', { body: { tool: 'llm.text', project: `${A}.game`, params: { prompt: 'hi' } } })).json() as any;
+  const id = sub_.jobs[0].id;
+  let job: any;
+  for (let i = 0; i < 50; i++) {
+    job = await (await call(sign({ org: A }), `/v1/jobs/${id}`)).json();
+    if (['failed', 'done'].includes(job.status)) break;
+    await new Promise((res) => setTimeout(res, 100));
+  }
+  assert.equal(job.status, 'failed');
+  assert.match(String(job.error), /your own access|Anthropic API key|Claude subscription/);
 });
