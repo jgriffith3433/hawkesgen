@@ -163,8 +163,12 @@ It is the Cloud Run GPU image (`server/cloudrun/`, built by `tools/cloudrun/buil
 and its custom nodes, no models and no secrets. Models come per request through the broker, or from a network volume
 mounted at `MODELS_MOUNT`.
 
-RunPod and Modal can't read Google's Artifact Registry without a Google key, so copy it once to a registry they can read.
-GHCR is the simplest: public, or private with a read token stored at the provider. With `crane`:
+RunPod and Modal can't read Google's Artifact Registry without a Google key, so they pull it from GHCR. **Build it
+there by pushing a tag** `gpu-image-<anything>` (or run the "GPU image" workflow by hand):
+`.github/workflows/gpu-image.yml` writes the same build folder (`tools/gpu-providers/image-context.mjs`) and pushes
+`ghcr.io/jgriffith3433/hawkes-gen-gpu:<comfy tag>-<context hash>` and `:latest` with GitHub's own token. The package
+starts private: give RunPod/Modal a GitHub read token (`read:packages`) as registry auth, or make the package public
+(it holds no keys and no models). Or copy an image Cloud Build already made, with `crane`:
 
 ```bash
 crane copy us-east4-docker.pkg.dev/hawkes-staging/hawkes-gen/gen-gpu:<tag> ghcr.io/jgriffith3433/hawkes-gen-gpu:<tag>
