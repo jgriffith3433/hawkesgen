@@ -12,7 +12,12 @@ RUN apt-get update \
  && git lfs install --system \
  && rm -rf /var/lib/apt/lists/*
 
-COPY entrypoint.sh github.sh /hawkes/
+# Node for r2.mjs (builds in R2): Unity's own (Emscripten's) is Node 12, too old for fetch, and curl 7.81 signs S3
+# uploads wrongly (R2 answered 403, 2026-10-29). A pinned official build.
+RUN curl -fsSL https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.gz | tar -xz -C /opt \
+ && ln -s /opt/node-v22.11.0-linux-x64/bin/node /usr/local/bin/node && node --version
+
+COPY entrypoint.sh github.sh r2.mjs /hawkes/
 RUN chmod 755 /hawkes/entrypoint.sh /hawkes/github.sh
 
 ENV HAWKES_WORK=/work \
