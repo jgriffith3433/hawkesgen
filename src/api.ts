@@ -1193,13 +1193,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // The settings, the lanes and the price; ?selftest=1 also asks the service how WebGL reaches its GPU (that may start
     // an instance: about $0.03 for its cold start and test, plus its idle tail). fresh=1 reruns it, all=1 tries every path.
     // ?variant=cpu: the CPU service (gen-playtest-cpu, software WebGL; its self-test also times a WebGL loop).
+    // ?variant=runpod: the RunPod endpoint (docs/playtest-runpod.md; a self-test there starts a worker, about $0.01).
     if (route === '/v1/playtester/cloud' && method === 'GET') {
       requireRole(client, 'owner');
       const pc = await import('./providers/playtester/cloudrun.ts');
       const s = loadSettings();
       const project = url.searchParams.get('project');
-      const variant = url.searchParams.get('variant') === 'cpu' ? 'cpu' : 'gpu';
-      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, projects: {}, backend: variant === 'cpu' ? 'cloudrun-cpu' : 'cloudrun' } });
+      const variant = url.searchParams.get('variant') === 'cpu' ? 'cpu' : url.searchParams.get('variant') === 'runpod' ? 'runpod' : 'gpu';
+      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, projects: {}, backend: variant === 'cpu' ? 'cloudrun-cpu' : variant === 'runpod' ? 'runpod' : 'cloudrun' } });
       const out: any = { settings: s.playtest, backendFor: project ? pc.playtestBackendOf(project, s.playtest) : s.playtest.backend, deployed: Boolean(c) };
       if (c) Object.assign(out, { service: c.name, variant: c.variant, region: c.region, lanes: pc.cloudLanes(c), pricePerHour: Math.round(c.pricePerSecond * 3600 * 100) / 100, perTabMinute: Math.round(pc.tabCost(c, 60) * 10_000) / 10_000 });
       if (c && url.searchParams.get('selftest') === '1') out.selftest = await pc.cloudSelfTest(c, { fresh: url.searchParams.get('fresh') === '1', all: url.searchParams.get('all') === '1' });

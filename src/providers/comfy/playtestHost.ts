@@ -72,7 +72,7 @@ export type PlaytestHost = {
   /** The playtester it runs on (null on a GPU fleet server), and the lanes it holds there until close(). */ playtester: string | null;
   /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
   /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). Null on Cloud Run. */ ssh: { args: string[]; dest: string } | null;
-  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu';
+  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu' | 'runpod';
   /** Set when the browser has no GPU (the Cloud Run CPU service): why, for the result's softwareBecause. */ software?: string | null;
   /** How much slower than a GPU browser to allow for (the boot wait and the default scenario limit): 1 on a GPU. */ slow?: number;
   /** A browser already connected (Cloud Run: a pool with a connection per tab); else playtest.ts connects to wsEndpoint. */ browser?: any;
@@ -97,7 +97,8 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
       return [];
     }
   })();
-  // In order: the L4 service, then the CPU service (software WebGL) in each of its regions, then the playtesters. Each
+  // In order: the GPU browser (the RunPod endpoint, docs/playtest-runpod.md, or the L4 service), then the CPU service
+  // (software WebGL) in each of its regions, then the playtesters. Each
   // step says why it moved on. With more than one service, each try is short (a full region is skipped, not waited on)
   // and the list is gone round again until one has room, for up to 6 minutes, as one service alone would wait.
   const many = clouds.length > 1;
@@ -105,10 +106,12 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
   for (let round = 1; clouds.length; round++) {
     for (const [i, cloud] of clouds.entries()) {
       try {
-        return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, step, onUsage, ...(many ? { connectTimeoutMs: 40_000 } : {}) });
+        // RunPod gets its full wait on the first round: its cold start pulls the image on a new machine (minutes), and
+        // moving on to software WebGL would leave the worker it started idle.
+        return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, step, onUsage, ...(many ? { connectTimeoutMs: cloud.variant === 'runpod' && round === 1 ? 5 * 60_000 : 40_000 } : {}) });
       } catch (e: any) {
         const nxt = clouds[i + 1] ?? (many && Date.now() < end ? clouds[0] : null);
-        step(`no Cloud Run browser on ${cloud.name} in ${cloud.region} (${String(e?.message ?? e).slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : 'using the playtesters'}`);
+        step(`no browser on ${cloud.name} in ${cloud.region} (${String(e?.message ?? e).slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : 'using the playtesters'}`);
       }
     }
     if (!many || Date.now() >= end) break;

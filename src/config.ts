@@ -184,6 +184,13 @@ export type Settings = {
        *  regions"): Cloud Run's CPU quota is per region, so each adds its own instances. Their tabs add to the lane. */
       extra: { url: string; region: string; maxInstances: number }[];
     };
+    /**
+     * A RunPod serverless load-balancer endpoint running the same browser image on a real NVIDIA GPU
+     * (docs/playtest-runpod.md; tools/playtest-runpod/setup.mjs makes it). Backend "runpod" tries it first, then the
+     * CPU service. `url` is https://<endpoint id>.api.runpod.ai; `maxInstances` is the endpoint's max workers;
+     * `pricePerHour` is a worker's price (RunPod bills from the worker's start to its idle timeout, `idleSeconds`).
+     */
+    runpod: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here'; gpu: string; pricePerHour: number; idleSeconds: number };
   };
   /**
    * Where the CPU suite runs (docs/cpu-cloudrun.md): "local" is this machine; "cloudrun" is Cloud Run, one request per
@@ -229,8 +236,8 @@ export type GpuEndpoint = {
 };
 
 /** Where playtest.run's browser runs (settings.playtest): the EC2 playtesters, the L4 service, the CPU service. */
-export type PlaytestBackend = 'ec2' | 'cloudrun' | 'cloudrun-cpu';
-export const PLAYTEST_BACKENDS: readonly PlaytestBackend[] = ['ec2', 'cloudrun', 'cloudrun-cpu'];
+export type PlaytestBackend = 'ec2' | 'cloudrun' | 'cloudrun-cpu' | 'runpod';
+export const PLAYTEST_BACKENDS: readonly PlaytestBackend[] = ['ec2', 'cloudrun', 'cloudrun-cpu', 'runpod'];
 export type UnityBackend = 'builder' | 'cloudrun' | 'vm';
 const isUnityBackend = (v: unknown): v is UnityBackend => v === 'builder' || v === 'cloudrun' || v === 'vm';
 
@@ -254,7 +261,8 @@ export const SETTINGS_DEFAULTS: Settings = {
     gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32 },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
-  playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] } },
+  playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
+    runpod: { url: null, maxInstances: 2, tabsPerInstance: 2, encode: 'service', gpu: 'RTX A4000', pricePerHour: 0.58, idleSeconds: 60 } },
   cpu: { backend: 'local', tools: {}, cloudrun: { urls: {}, bucket: null, concurrent: 16 } },
   dashboard: { googleClientId: null, googleEmails: [] },
 };
@@ -314,6 +322,19 @@ function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['
         .slice(0, 8)
         .map((x: any) => ({ url: String(x.url).replace(/\/$/, ''), region: String(x.region), maxInstances: n(x.maxInstances, 1, 20, d.cloudrunCpu.maxInstances) })),
     },
+    runpod: (() => {
+      const r: Partial<Settings['playtest']['runpod']> = t?.runpod ?? {};
+      // A RunPod load-balancer endpoint, a RunPod Pod's HTTP proxy (the same image on a Pod), or the container on this machine.
+      const url = typeof r.url === 'string' && (/^https:\/\/[a-z0-9]+\.api\.runpod\.ai\/?$/.test(r.url) || /^https:\/\/[a-z0-9]+-\d{2,5}\.proxy\.runpod\.net\/?$/.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
+      const price = Number(r.pricePerHour);
+      return {
+        ...service(r, d.runpod),
+        url,
+        gpu: typeof r.gpu === 'string' && /^[A-Za-z0-9 ._-]{1,60}$/.test(r.gpu) ? r.gpu : d.runpod.gpu,
+        pricePerHour: Number.isFinite(price) && price >= 0 && price <= 20 ? price : d.runpod.pricePerHour,
+        idleSeconds: Math.max(5, Math.min(3600, Math.round(Number(r.idleSeconds)) || d.runpod.idleSeconds)),
+      };
+    })(),
   };
 }
 export const FLEET_MAX = 16;
@@ -463,7 +484,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, ...raw.playtest?.cloudrunCpu } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } }, dashboard: { ...SETTINGS_DEFAULTS.dashboard, ...raw.dashboard } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, ...raw.playtest?.cloudrunCpu }, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, ...raw.playtest?.runpod } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } }, dashboard: { ...SETTINGS_DEFAULTS.dashboard, ...raw.dashboard } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -484,7 +505,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     storage: { ...cur.storage, ...(patch.storage ?? {}) },
     gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
     unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) }, vm: { ...cur.unityBuild.vm, ...(patch.unityBuild?.vm ?? {}) } },
-    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) }, cloudrunCpu: { ...cur.playtest.cloudrunCpu, ...(patch.playtest?.cloudrunCpu ?? {}) } },
+    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) }, cloudrunCpu: { ...cur.playtest.cloudrunCpu, ...(patch.playtest?.cloudrunCpu ?? {}) }, runpod: { ...cur.playtest.runpod, ...(patch.playtest?.runpod ?? {}) } },
     cpu: { ...cur.cpu, ...(patch.cpu ?? {}), tools: { ...cur.cpu.tools, ...(patch.cpu?.tools ?? {}) }, cloudrun: { ...cur.cpu.cloudrun, ...(patch.cpu?.cloudrun ?? {}), urls: { ...cur.cpu.cloudrun.urls, ...(patch.cpu?.cloudrun?.urls ?? {}) } } },
     dashboard: { ...cur.dashboard, ...(patch.dashboard ?? {}) },
   });
