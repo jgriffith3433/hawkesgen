@@ -9,6 +9,10 @@ playtesters.
 service runs on plain CPUs with WebGL on SwiftShader as `gen-playtest-cpu` (`backend: "cloudrun-cpu"`). See "The CPU
 service" below for what differs, what was measured, the cost (about $0.007 a playtest minute) and J's steps.
 
+**A real GPU on RunPod (2026-10-29):** the same image on a RunPod serverless load-balancer endpoint, `backend:
+"runpod"`, played DoD and Yooba Land at 52 to 55 fps, with this CPU service as its fallback. See
+`docs/playtest-runpod.md`.
+
 | Piece | Where |
 |---|---|
 | The service image (Playwright's image at Gen's version, ffmpeg, the NVIDIA EGL/Vulkan vendor files) | `server/playtest-cloudrun/Dockerfile`, `package.json`, `10_nvidia.json`, `nvidia_icd.json` |

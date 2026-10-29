@@ -132,7 +132,8 @@ Cloud Run, so gigabytes never pass through Gen.
 
 **Long graphs.** Both providers end an HTTP request before a long graph finishes:
 
-- RunPod's load balancer ends one at 5.5 minutes.
+- RunPod's load balancer ends one at 5.5 minutes. (A WebSocket is not cut there: one held 12 minutes in a test on
+  2026-10-29; playtests use that, docs/playtest-runpod.md.)
 - Modal's web endpoints end one at 150 s and answer a 303.
 
 The worker keeps running when the request ends. Gen then follows the run by its heartbeat and takes the manifest. That is
@@ -215,7 +216,8 @@ Each script prints what it would do. `--apply` changes things (J's call: provide
    - `WORKER_TOKEN`, when `GPU_WORKER_TOKEN` is in .env
 3. In RunPod's console, go to **Serverless > New Endpoint**:
    - import the template
-   - endpoint type **Load balancer** (RunPod's REST API has no field for this type, checked 2026-10-28)
+   - endpoint type **Load balancer** (RunPod's REST API has no field for this type, checked 2026-10-28; its GraphQL
+     `saveEndpoint` does take `type: "LB"`, as `tools/playtest-runpod/setup.mjs` uses, 2026-10-29)
    - GPU: L40S
    - workers 0 to 2, idle timeout 600 s, FlashBoot on
    - health path `/ping`
