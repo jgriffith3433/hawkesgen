@@ -13,8 +13,9 @@ import { db } from './db.ts';
 import { env } from './config.ts';
 import { recordUsage } from './usage.ts';
 
-/** The Hawkes Net service (HAWKESGEN_NET_URL to point elsewhere, e.g. a box on this PC). */
-export const netUrl = () => (env('HAWKESGEN_NET_URL') ?? 'https://net.hawkesgen.ai').replace(/\/+$/, '');
+/** The Hawkes Net service of this Gen's lane (HAWKESGEN_NET_URL to point elsewhere, e.g. a box on this PC): gen-beta
+ *  (HAWKESGEN_LANE=beta) sends to beta Net, live Gen to live Net, so beta never touches live (2026-10-29). */
+export const netUrl = () => (env('HAWKESGEN_NET_URL') ?? (env('HAWKESGEN_LANE') === 'beta' ? 'https://hawkesnet.hawkesgen.ai' : 'https://net.hawkesgen.ai')).replace(/\/+$/, '');
 /** What the relay costs per GB out (EC2 data transfer, us-east-1), for the usage rows. */
 const RELAY_GB_COST = () => Number(env('HAWKESNET_GB_COST') ?? 0.09);
 
