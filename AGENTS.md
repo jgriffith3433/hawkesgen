@@ -1,5 +1,7 @@
 # Hawkes Gen — agent guide
 
+**Lanes, local dev and deploys:** `LANES.md` (branches dev -> beta -> main; `dev.bat`, `deploy-beta.bat`, `deploy-prod.bat`, `status.bat`, `links.bat`, `sync.bat`; beta and live links).
+
 The shared generative-AI service for every Hawkes Biomedical game and site. Games describe **what** they want
 (edit this image, a clip from this pose, a material, a song, speak this line, answer as JSON). Hawkes Gen
 decides **how**: which GPU server, which ComfyUI workflow and models, which API. It keeps the result and the
