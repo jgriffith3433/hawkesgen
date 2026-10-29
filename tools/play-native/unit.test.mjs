@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { archiveKind, findExe, parseMangoHud, startProblem, runLimits } from '../../server/play-native/session.mjs';
 import { JpegSplitter, encoderArgs } from '../../server/play-native/capture.mjs';
-import { frameStats, frameDiff, isBlack, classifyRenderer } from '../../server/play-native/display.mjs';
+import { frameStats, frameDiff, isBlack, classifyRenderer, xorgConf } from '../../server/play-native/display.mjs';
 import { xorgBusId } from '../../server/play-native/driver.mjs';
 
 test('archiveKind reads the magic bytes', () => {
@@ -102,4 +102,11 @@ test('helpers: renderers, bus ids, encoders', () => {
   assert.equal(xorgBusId('nonsense'), null);
   assert.equal(encoderArgs(true)[0], 'h264_nvenc');
   assert.equal(encoderArgs(false)[0], 'libx264');
+});
+
+test('the Xorg config has every placeholder filled', () => {
+  const conf = xorgConf('PCI:59:0:0', 1280, 720);
+  assert.doesNotMatch(conf, /__\w+__/);
+  assert.match(conf, /^\s*BusID "PCI:59:0:0"/m);
+  assert.match(conf, /^\s*Virtual 1280 720/m);
 });

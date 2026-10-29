@@ -297,7 +297,10 @@ has the SDK. The result JSON and the uploads land in `--out`.
    - Then run `node tools/play-native/setup.mjs --apply`.
    - It makes the template (40 GB disk) and a load-balancer endpoint:
      - workers min 0, max 2, one run per worker
-     - the same graphics-capable GPU models as the browser runner (never a MIG slice)
+     - the browser runner's four graphics-capable GPU models (RTX A4000, A4500, RTX 4000 Ada, RTX 2000 Ada). Adding
+       A5000, L4 and 3090 brought RTX PRO 6000 MIG slices (no graphics) on two endpoints in a row, 2026-10-29
+     - made with no workers allowed until the models are set; `--recreate` deletes and remakes it (a worker stays on
+       the machine it was first placed on, so a new GPU list needs a new endpoint)
      - 60 s idle
    - Free until a worker starts.
    - Token: `PLAY_NATIVE_TOKEN` in `.env`, else the browser runner's.

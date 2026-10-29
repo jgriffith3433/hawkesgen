@@ -61,6 +61,13 @@ export function grabJpeg(display, file) {
   return r.status === 0;
 }
 
+/** xorg-nvidia.conf filled in. Every placeholder: the file's own comment names them too (the first RunPod worker's
+ * Xorg read "Virtual __W__ __H__" when only the first of each was replaced). */
+export function xorgConf(busId, width, height) {
+  return fs.readFileSync(new URL('./xorg-nvidia.conf', import.meta.url), 'utf8')
+    .replaceAll('__BUSID__', busId).replaceAll('__W__', String(width)).replaceAll('__H__', String(height));
+}
+
 async function waitForX(display, proc, ms = 15_000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) {
@@ -87,8 +94,7 @@ export async function startDisplay(kind, { num = 0, width = 1280, height = 720, 
     if (!gpu?.busId) return { error: 'no NVIDIA GPU bus id (nvidia-smi)' };
     const modules = xorgModules();
     if (!modules) return { error: 'no NVIDIA Xorg driver (driver.mjs ensureDriver)' };
-    const conf = fs.readFileSync(new URL('./xorg-nvidia.conf', import.meta.url), 'utf8')
-      .replace('__BUSID__', gpu.busId).replace('__W__', String(width)).replace('__H__', String(height));
+    const conf = xorgConf(gpu.busId, width, height);
     // The config by a name relative to /etc/X11 (Xorg takes absolute ones only when it is sure it runs as root), and
     // the NVIDIA modules first on the module path (/opt/nvidia-gl/xorg when driver.mjs fetched them). vt7 with
     // -sharevts -novtswitch -keeptty: a container has no console to take (checked in Docker with the dummy driver).

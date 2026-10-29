@@ -7,7 +7,7 @@
 //   node tools/play-native/setup.mjs                      print the plan (changes nothing)
 //   node tools/play-native/setup.mjs --apply              create or update the template and the endpoint
 //   options: --image ghcr.io/jgriffith3433/hawkes-play-native:latest  --name hawkes-play-native
-//            --gpu AMPERE_16,AMPERE_24  --gpu-types "NVIDIA RTX A4000,..."  --max 2  --idle 60  --max-seconds 3600
+//            --gpu AMPERE_16  --gpu-types "NVIDIA RTX A4000,..."  --max 2  --idle 60  --max-seconds 3600
 //            --recreate   delete the endpoint of this name first and make a new one (a new GPU list needs one)
 //
 // A new endpoint is made with no workers allowed (workersMax 0), given its exact GPU models, and only then opened to
@@ -28,12 +28,14 @@ const flag = (n) => process.argv.includes(`--${n}`);
 // worker hour, 2026-10-29.
 const POOL_PRICES = { AMPERE_16: 0.58, AMPERE_24: 0.69, ADA_24: 1.10, AMPERE_48: 1.22, ADA_48_PRO: 1.75 };
 const POOL_GPUS = { AMPERE_16: 'RTX A4000 class (16 GB)', AMPERE_24: 'L4 / A5000 class (24 GB)', ADA_24: 'RTX 4090 (24 GB)', AMPERE_48: 'A6000 / A40 (48 GB)', ADA_48_PRO: 'L40S class (48 GB)' };
-const GRAPHICS_GPUS = ['NVIDIA RTX A4000', 'NVIDIA RTX A4500', 'NVIDIA RTX 4000 Ada Generation', 'NVIDIA RTX 2000 Ada Generation', 'NVIDIA RTX A5000', 'NVIDIA L4', 'NVIDIA GeForce RTX 3090'];
+// Only the browser runner's four: with A5000, L4 and 3090 in the list as well (the 24 GB pool), two endpoints in a row
+// got an RTX PRO 6000 Blackwell MIG slice (2026-10-29), which has no graphics.
+const GRAPHICS_GPUS = ['NVIDIA RTX A4000', 'NVIDIA RTX A4500', 'NVIDIA RTX 4000 Ada Generation', 'NVIDIA RTX 2000 Ada Generation'];
 
 const GQL = 'https://api.runpod.io/graphql';
 const image = arg('image', 'ghcr.io/jgriffith3433/hawkes-play-native:latest');
 const name = arg('name', 'hawkes-play-native');
-const gpus = arg('gpu', 'AMPERE_16,AMPERE_24');
+const gpus = arg('gpu', 'AMPERE_16');
 const max = Math.max(1, Math.min(10, Number(arg('max', '2')) || 2));
 const idle = Math.max(5, Math.min(3600, Number(arg('idle', '60')) || 60));
 const maxSeconds = Math.max(60, Math.min(7200, Number(arg('max-seconds', '3600')) || 3600));
