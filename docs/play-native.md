@@ -258,6 +258,24 @@ MangoHud measured 84 fps on average (1% low 2.4 fps) and the game reported 50 fp
 - **The real services:** uploads to real Cloud Storage signed URLs, RunPod itself, the GHCR workflow and `setup.mjs
   --apply`.
 
+## On a RunPod GPU (2026-10-29, endpoint `jcttiz8lw75vca`, image `play-native-3-fd0ae30`)
+
+`/selftest` on an **RTX A4500** (driver 595.91.07): `ok`, not software.
+- **Display: Xvfb**, with **Vulkan on the NVIDIA card** (API 1.4.329): vkcube drew moving frames. DXVK and VKD3D
+  (Windows games under Proton) and Vulkan Linux games run on the GPU.
+- **NVENC works.** MangoHud is there, GE-Proton11-10 too, and the Wine prefix warmed in 4 s. XTEST input works.
+- **OpenGL is Mesa's llvmpipe** (software) on Xvfb. A native Linux game that renders with OpenGL runs on the CPU.
+- **Xorg on the driver can't run on RunPod serverless.** The driver loads and finds the card, then stops: "No path to
+  DRM device: Direct render devices found but access was denied" and "Failed to acquire modesetting permission"
+  (no `/dev/nvidia-modeset` or `/dev/dri` in the container). The runner falls back to Xvfb by itself. GPU OpenGL would
+  need RunPod Pods (more device access) or VirtualGL's EGL back end on Xvfb (not tried).
+- **No gamepad:** there's no `/dev/uinput` either.
+- Driver step: the runtime mounts the graphics libraries (EGL, GLX, Vulkan and their loader files). Only the Xorg modules
+  were fetched (17 s), into `/opt/nvidia-gl/xorg`.
+- The first two endpoints (`xkhpihvfrfsx6g`, `i29ra9sbdk7lw6`, deleted) got an RTX PRO 6000 Blackwell **MIG slice**,
+  where NVIDIA Vulkan fails (`ERROR_INCOMPATIBLE_DRIVER`) and Xvfb with GLX crashed. Narrowing the list to the
+  browser runner's four models fixed it.
+
 ## Local test
 
 ```bash
@@ -277,12 +295,14 @@ has the SDK. The result JSON and the uploads land in `--out`.
 **Done 2026-10-29:**
 - **The image:** tag `play-native-image-1` built `ghcr.io/jgriffith3433/hawkes-play-native:1-92e7c20` and the public copy
   `ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-1-92e7c20`.
-- **The endpoint:** `setup.mjs --apply --image <that public copy>` made template `fd6cq6xkcb` and the load-balancer
-  endpoint `xkhpihvfrfsx6g` (`https://xkhpihvfrfsx6g.api.runpod.ai`; workers 0–2, `GPU_WORKER_TOKEN` as its
-  `HAWKES_TOKEN`).
+- **The endpoint:** `setup.mjs --apply --recreate --image ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-3-fd0ae30`
+  (template `fd6cq6xkcb`) made the load-balancer endpoint `jcttiz8lw75vca` (`https://jcttiz8lw75vca.api.runpod.ai`;
+  workers 0–2, `GPU_WORKER_TOKEN` as its `HAWKES_TOKEN`). The earlier `xkhpihvfrfsx6g` and `i29ra9sbdk7lw6` are
+  deleted.
+- **The first GPU check** passed (above, "On a RunPod GPU").
 
 **Still to do:**
-- **The first GPU check.**
+- **A real game on the GPU** (the Unity Win64 test build through `test.mjs`, from a public https URL).
 - **Gen's runner list.** It needs a Gen that has the router (dev today; beta after the next deploy-beta). It lists the
   web runners too: a runner list replaces the default browser services.
 
