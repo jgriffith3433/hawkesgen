@@ -97,14 +97,21 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
       return [];
     }
   })();
-  // In order: the L4 service, then the CPU service (software WebGL), then the playtesters. Each step says why it moved on.
-  for (const [i, cloud] of clouds.entries()) {
-    try {
-      return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, step, onUsage });
-    } catch (e: any) {
-      const nxt = clouds[i + 1];
-      step(`no Cloud Run browser on ${cloud.name} (${String(e?.message ?? e).slice(0, 200)}); ${nxt ? `trying ${nxt.name}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : 'using the playtesters'}`);
+  // In order: the L4 service, then the CPU service (software WebGL) in each of its regions, then the playtesters. Each
+  // step says why it moved on. With more than one service, each try is short (a full region is skipped, not waited on)
+  // and the list is gone round again until one has room, for up to 6 minutes, as one service alone would wait.
+  const many = clouds.length > 1;
+  const end = Date.now() + 6 * 60_000;
+  for (let round = 1; clouds.length; round++) {
+    for (const [i, cloud] of clouds.entries()) {
+      try {
+        return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, step, onUsage, ...(many ? { connectTimeoutMs: 40_000 } : {}) });
+      } catch (e: any) {
+        const nxt = clouds[i + 1] ?? (many && Date.now() < end ? clouds[0] : null);
+        step(`no Cloud Run browser on ${cloud.name} in ${cloud.region} (${String(e?.message ?? e).slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : 'using the playtesters'}`);
+      }
     }
+    if (!many || Date.now() >= end) break;
   }
   return openPlaytestHost(localPortsOf(pageUrl), step, { startPlaytester, tabs });
 }

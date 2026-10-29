@@ -37,7 +37,7 @@ import { gpuCandidates, triedOf, orderFor } from './providers/gpu/route.ts';
 import { markDown, markUp, isDown, awsRefused, COOLDOWN } from './providers/gpu/health.ts';
 import { fleetBlocked } from './providers/gpu/egress.ts';
 import { cpuRoute, cpuCloudEnabled, runCpuRemote, type CpuService } from './providers/cloudrun/cpu.ts';
-import { cloudPlaytestFor, cloudLanes, cloudLaneKey } from './providers/playtester/cloudrun.ts';
+import { cloudPlaytestsFor, cloudLanes, cloudLaneKey } from './providers/playtester/cloudrun.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
@@ -578,8 +578,10 @@ class Queue {
       const gpuHost = j.params.gpu === 'require' || (j.params.gpu !== 'off' && process.platform !== 'win32');
       if (!gpuHost || (s.playtest.backend === 'ec2' && !Object.values(s.playtest.projects).some((b) => b !== 'ec2'))) return null;
       try {
-        const c = cloudPlaytestFor(j.project, s);
-        return c ? { key: cloudLaneKey(c), limit: cloudLanes(c) } : null;
+        // The lane holds the tabs of every region of the first service's kind (the CPU service may run in several).
+        const all = cloudPlaytestsFor(j.project, s);
+        const c = all[0];
+        return c ? { key: cloudLaneKey(c), limit: all.filter((x) => x.variant === c.variant).reduce((n, x) => n + cloudLanes(x), 0) } : null;
       } catch {
         return null;
       }

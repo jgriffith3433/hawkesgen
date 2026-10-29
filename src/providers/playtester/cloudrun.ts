@@ -72,10 +72,11 @@ export function cloudPlaytestsFor(project: string | null | undefined, settings: 
     const conf = v === 'cpu' ? t.cloudrunCpu : t.cloudrun;
     if (!conf?.url) continue;
     const spec = specs[v] ?? loadSpec(SPEC_FILE(v));
-    out.push({
-      ...conf, url: conf.url, pricePerSecond: specPricePerSecond(spec), region: spec.region, name: spec.name, variant: v,
-      slow: v === 'cpu' ? Math.max(1, Number(spec.slow) || 2) : 1, software: v === 'cpu' ? CPU_SOFTWARE_WHY : null,
-    });
+    const one = { ...conf, url: conf.url, pricePerSecond: specPricePerSecond(spec), region: spec.region, name: spec.name, variant: v,
+      slow: v === 'cpu' ? Math.max(1, Number(spec.slow) || 2) : 1, software: v === 'cpu' ? CPU_SOFTWARE_WHY : null };
+    out.push(one);
+    // The CPU service's other regions, in order: each has its own Cloud Run CPU quota (settings.playtest.cloudrunCpu.extra).
+    if (v === 'cpu') for (const x of t.cloudrunCpu.extra ?? []) out.push({ ...one, url: x.url, region: x.region, maxInstances: x.maxInstances });
   }
   return out;
 }
@@ -290,10 +291,12 @@ export class BrowserPool {
  * are made here (so a failure falls back to the playtesters before the run starts), local origins are served through
  * each context, the video encodes on the service, and close() records the tab-seconds as a gcp-playtest usage row.
  */
-export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 1, job, step = (_s: string) => {}, onUsage, chromium, connectDeps, proxyDeps }: {
+export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 1, job, step = (_s: string) => {}, onUsage, chromium, connectDeps, proxyDeps, connectTimeoutMs }: {
   pageUrl: string; tabs?: number; job?: string; step?: (s: string) => void;
   onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void;
   chromium?: any; connectDeps?: ConnectDeps; proxyDeps?: ProxyDeps;
+  /** How long to wait for a browser here before giving up (another region may have room); connectOne's default otherwise. */
+  connectTimeoutMs?: number;
 }): Promise<PlaytestHost> {
   const pw = chromium ?? (await import('playwright')).chromium;
   const ports = localPortsOf(pageUrl);
@@ -301,7 +304,7 @@ export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 
   const cpu = c.variant === 'cpu';
   step(`opening ${n === 1 ? 'a browser' : `${n} browsers`} on Cloud Run (${c.name}, ${c.region}${cpu ? ', software WebGL' : ''}; a cold start takes ${cpu ? 'about half a minute' : 'a minute or two'})`);
   const t0 = Date.now();
-  const pool = await new BrowserPool(() => connectOne(pw, c, { job, onStep: step, deps: connectDeps })).open(n);
+  const pool = await new BrowserPool(() => connectOne(pw, c, { job, onStep: step, deps: connectDeps, ...(connectTimeoutMs ? { timeoutMs: connectTimeoutMs } : {}) })).open(n);
   const connectedAt = Date.now();
   let closed = false;
   return {

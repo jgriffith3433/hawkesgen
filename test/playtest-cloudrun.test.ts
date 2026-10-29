@@ -432,7 +432,7 @@ test('end to end: a local page and its WebSocket through the service, served fro
 const CPU_URL = 'https://gen-playtest-cpu-abc123-uk.a.run.app';
 
 test('CPU service settings: the cloudrun-cpu backend, its own URL and sizes, a local service URL allowed', () => {
-  assert.deepEqual(SETTINGS_DEFAULTS.playtest.cloudrunCpu, { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service' });
+  assert.deepEqual(SETTINGS_DEFAULTS.playtest.cloudrunCpu, { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] });
   const s = saveSettings({ playtest: { backend: 'cloudrun-cpu', projects: { phorigins: 'cloudrun-cpu' }, cloudrunCpu: { url: `${CPU_URL}/`, maxInstances: 50, tabsPerInstance: 3 } } } as any);
   assert.equal(s.playtest.backend, 'cloudrun-cpu');
   assert.equal(s.playtest.projects.phorigins, 'cloudrun-cpu');
@@ -446,6 +446,25 @@ test('CPU service settings: the cloudrun-cpu backend, its own URL and sizes, a l
   saveSettings({ playtest: { cloudrunCpu: { url: CPU_URL } } } as any);
   assert.equal(saveSettings({ playtest: { cloudrun: { maxInstances: 1 } } } as any).playtest.cloudrunCpu.url, CPU_URL);
   saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null } } } as any);
+});
+
+test('the CPU service in more regions: extra entries follow the first in order, each with its region and size; bad ones are dropped', () => {
+  const C2 = 'https://gen-playtest-cpu-388576319982.us-central1.run.app';
+  try {
+  const s = saveSettings({ playtest: { backend: 'cloudrun-cpu', cloudrunCpu: { url: CPU_URL, maxInstances: 4, tabsPerInstance: 1, extra: [
+    { url: C2, region: 'us-central1', maxInstances: 5 },
+    { url: 'http://10.0.0.5:8095', region: 'us-west1' },
+    { url: C2, region: 'not a region' },
+  ] } } } as any);
+  assert.deepEqual(s.playtest.cloudrunCpu.extra, [{ url: C2, region: 'us-central1', maxInstances: 5 }]);
+  const list = pc.cloudPlaytestsFor('x', s);
+  assert.deepEqual(list.map((c) => [c.url, c.region, c.maxInstances]), [[CPU_URL, 'us-east4', 4], [C2, 'us-central1', 5]]);
+  assert.ok(list.every((c) => c.variant === 'cpu' && c.slow === 2));
+  // The queue's lane is every region's tabs together: 4 + 5.
+  assert.equal(list.reduce((n, c) => n + pc.cloudLanes(c), 0), 9);
+  } finally {
+    saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null, extra: [] } } } as any);
+  }
 });
 
 test('cloudPlaytestsFor: cloudrun tries the L4 then the CPU service; cloudrun-cpu only the CPU one; prices, slowness, lanes', () => {

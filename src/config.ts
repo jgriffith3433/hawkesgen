@@ -178,7 +178,12 @@ export type Settings = {
     backend: PlaytestBackend;
     projects: Record<string, PlaytestBackend>;
     cloudrun: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here' };
-    cloudrunCpu: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here' };
+    cloudrunCpu: {
+      url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here';
+      /** More regions of the same CPU service, tried in order when one is full (J, 2026-10-29: "can't we utilize both
+       *  regions"): Cloud Run's CPU quota is per region, so each adds its own instances. Their tabs add to the lane. */
+      extra: { url: string; region: string; maxInstances: number }[];
+    };
   };
   /**
    * Where the CPU suite runs (docs/cpu-cloudrun.md): "local" is this machine; "cloudrun" is Cloud Run, one request per
@@ -249,7 +254,7 @@ export const SETTINGS_DEFAULTS: Settings = {
     gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32 },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
-  playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service' } },
+  playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] } },
   cpu: { backend: 'local', tools: {}, cloudrun: { urls: {}, bucket: null, concurrent: 16 } },
   dashboard: { googleClientId: null, googleEmails: [] },
 };
@@ -302,7 +307,13 @@ function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['
     backend: be(t?.backend) ?? d.backend,
     projects,
     cloudrun: service(t?.cloudrun ?? {}, d.cloudrun),
-    cloudrunCpu: service(t?.cloudrunCpu ?? {}, d.cloudrunCpu),
+    cloudrunCpu: {
+      ...service(t?.cloudrunCpu ?? {}, d.cloudrunCpu),
+      extra: (Array.isArray(t?.cloudrunCpu?.extra) ? t!.cloudrunCpu!.extra : [])
+        .filter((x: any) => okUrl(x?.url) && /^[a-z]+-[a-z]+\d$/.test(String(x?.region ?? '')))
+        .slice(0, 8)
+        .map((x: any) => ({ url: String(x.url).replace(/\/$/, ''), region: String(x.region), maxInstances: n(x.maxInstances, 1, 20, d.cloudrunCpu.maxInstances) })),
+    },
   };
 }
 export const FLEET_MAX = 16;

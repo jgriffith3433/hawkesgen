@@ -228,6 +228,13 @@ So the first playtest after an idle spell waits about **30-90 s** for its browse
 
 ## The CPU service (gen-playtest-cpu): software WebGL, no GPU
 
+**More regions** (J, 2026-10-29: "can't we utilize both regions? What if I wanted to scale"): Cloud Run's CPU quota is per
+region (20 vCPU each on a free-trial account, about 5 playtests at once), so the same service can run in several.
+`deploy-cpu.ps1 -Apply -Region us-central1` deploys another; add it to `settings.playtest.cloudrunCpu.extra`
+(`[{ "url": ..., "region": "us-central1", "maxInstances": 4 }]`). Gen tries the first service, then each extra one, ~40 s
+each when there are several (a full region is skipped, not waited on), round again for up to 6 minutes; the queue's
+lane holds all their tabs together. Each lane can also use its own region (beta in one, live in another).
+
 **Why.** AWS (and its T4 playtesters) was suspended on 2026-10-28, and Google refused the project GPU quota for lack
 of usage history, so the L4 service above can't run. Without a GPU nothing playtested. `gen-playtest-cpu` is the same
 service on plain Cloud Run CPUs: Chromium draws WebGL with **SwiftShader** (Chromium's own CPU implementation of
