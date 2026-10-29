@@ -106,8 +106,8 @@ live site, the `smoke` scenario, the screencast encoded on the worker with NVENC
 
 ## J's steps
 
-1. **Make the image public** (once): GitHub > Packages > `hawkes-gen-playtest` > Package settings > Change visibility >
-   Public. Until then the endpoint uses the public copy `hawkes-gen-gpu:playtest-...`.
+1. **The image is public** (done 2026-10-29: `ghcr.io/jgriffith3433/hawkes-gen-playtest:latest`, checked with an
+   anonymous pull; GitHub once flipped it back to private, so check that before blaming RunPod for a failed pull).
 2. **Endpoint** (`43vc12r3r5gj4n`, `hawkes-gen-playtest-gfx` (2026-10-29), exact GPU models: RTX A4000, A4500, RTX 4000 Ada, RTX 2000 Ada. Never a pool alone: RunPod put PRO 6000 MIG slices (CUDA, no graphics) in AMPERE_24, and workers stay on the machine they were first placed on, so a new GPU list needs a new endpoint. The old `wi67a2gkuwi9o5` is unused, max 2
    workers, idle 60 s). To make or update it: `node tools/playtest-runpod/setup.mjs` (prints the plan), then `--apply`
    (with `--image ghcr.io/jgriffith3433/hawkes-gen-playtest:latest` once the package is public). Free until a playtest

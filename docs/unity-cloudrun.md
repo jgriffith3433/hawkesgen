@@ -106,7 +106,7 @@ git tag build-2026-10-28 && git push origin build-2026-10-28     # in sickofitga
 
 | Key | Default | What |
 |---|---|---|
-| `backend` | `builder` | Where builds run unless a project says otherwise: `builder`, `cloudrun` or `vm` |
+| `backend` | `builder` | Where builds run unless a project says otherwise: `builder`, `cloudrun` or `vm`. **Set to `cloudrun` on both cloud Gens since 2026-10-29** (the AWS build server is gone) |
 | `projects` | `{}` | Per project: `{ "breakingthrough": "cloudrun", "sickofitgame-unity": "vm" }` |
 | `timeoutMinutes` | 40 | The hard limit on one build (every backend) |
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
