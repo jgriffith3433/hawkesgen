@@ -84,6 +84,7 @@ function fakeGoogle(result: unknown) {
     if (url.startsWith('https://storage.googleapis.com/storage/v1/b/')) {
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
       if (method === 'DELETE') return new Response(null, { status: 204 });
+      if (key.endsWith('/cloud-job.json') && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
       if (key.endsWith('/result.json')) return new Response(JSON.stringify(result));
       if (key.endsWith('/unity.log')) return new Response('[Hawkes] stage: unity\nBuild succeeded\n');
       return new Response('not found', { status: 404 });
@@ -124,7 +125,9 @@ test('a GitHub-mode build: the spec names the commit and the website branch, and
     assert.match(spec.github.message, /build-oct28/);
     assert.equal(spec.github.builds, null);
     // Only the spec went up; nothing came down (no site.tgz) and no checkout here was read.
-    assert.deepEqual([...g.writes.keys()], ['unity-builds/j1/spec.json']);
+    // The running execution is noted beside it, so a replaced Gen instance follows the build instead of starting it again.
+    assert.deepEqual([...g.writes.keys()], ['unity-builds/j1/spec.json', 'unity-builds/j1/cloud-job.json']);
+    assert.match(JSON.parse(g.writes.get('unity-builds/j1/cloud-job.json')!.toString('utf8')).execution, /executions\//);
     assert.ok(!g.calls.some((c) => c.includes('site.tgz')));
     assert.ok(g.calls.some((c) => c.endsWith('jobs/hawkes-unity-build:run')));
     assert.ok(logs.some((l) => /pushed jgriffith3433\/YoobaLandGame beta: fffffff -> eeeeeee/.test(l)), logs.join('\n'));
@@ -199,6 +202,25 @@ die() { echo "DIE $1: $2"; exit 3; }
 
 const hasJq = hasBash && spawnSync('bash', ['-c', 'jq --version'], { encoding: 'utf8' }).status === 0;
 const siteSpec = (branch = 'beta', slug = 'o/site') => ({ github: { owner: 'o', site: { slug, top: 'site', branch }, packages: { hawkesgen: 'main', hawkesstudio: 'main' }, message: 'Unity build: game 1234567 (build-x)' } });
+
+test('a replaced Gen instance follows the running build (noted in the bucket), never starts it again', async () => {
+  const pushed = { repo: 'jgriffith3433/YoobaLandGame', branch: 'beta', commit: 'e'.repeat(40), before: 'f'.repeat(40), source: SHA, files: 4 };
+  const g = fakeGoogle({ ok: true, project: 'YoobaLand/YoobaLand', version: '9', seconds: 400, unity: '6000.3.7f1', pushed, packages: {} });
+  try {
+    const github = gh.githubBuildOf(base, 'YoobaLand/YoobaLand', 'YoobaLandGame');
+    const spec = { project: 'YoobaLand/YoobaLand', site: 'YoobaLandGame', method: 'YoobaWebBuild.FullDeploy', github };
+    // The note as the first instance left it in the bucket; this instance's own disk has none (a new Cloud Run instance).
+    g.writes.set('unity-builds/j9/cloud-job.json', Buffer.from(JSON.stringify({ execution: 'projects/hawkes-test/locations/us-east4/jobs/hawkes-unity-build/executions/e-1', prefix: 'unity-builds/j9', started: Date.now(), repo: 'YoobaLand--YoobaLand', saveKey: 'beta', stateKey: 'x', clean: false })));
+    fs.rmSync(path.join(data, 'builder', 'cloud-jobs', 'j9.json'), { force: true });
+    const logs: string[] = [];
+    const r: any = await runCloudBuild('j9', spec, { step: () => {}, log: (s) => logs.push(s) });
+    assert.equal(r.ok, true, r.error);
+    assert.ok(logs.some((l) => /already started \(e-1\); following it/.test(l)), logs.join('\n'));
+    assert.ok(!g.calls.some((c) => c.endsWith('jobs/hawkes-unity-build:run')), 'no second execution');
+  } finally {
+    g.restore();
+  }
+});
 
 test('github.sh: beta is checked out without the old builds, the new one is pushed to beta, main is untouched', { skip: !hasJq }, () => {
   const fake = fakeGitHub();
