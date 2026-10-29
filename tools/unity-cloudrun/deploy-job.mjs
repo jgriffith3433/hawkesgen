@@ -60,7 +60,7 @@ gcloud(['projects', 'add-iam-policy-binding', c.project, `--member=serviceAccoun
 gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', rsa, P, `--member=serviceAccount:${gsa}`, '--role=roles/iam.serviceAccountUser', '--format=none'], { retries: 9 });
 
 console.log('\n# Secrets (values are J\'s to add; see docs/unity-cloudrun.md)');
-const secrets = [['unity-email', 'UNITY_EMAIL'], ['unity-password', 'UNITY_PASSWORD'], ['github-token', 'GITHUB_TOKEN'], ...(serial ? [['unity-serial', 'UNITY_SERIAL']] : [])];
+const secrets = [['unity-email', 'UNITY_EMAIL'], ['unity-password', 'UNITY_PASSWORD'], ['github-token', 'GITHUB_TOKEN'], ['r2-builds', 'R2_BUILDS_TOKEN'], ...(serial ? [['unity-serial', 'UNITY_SERIAL']] : [])];
 const missingValues = [];
 for (const [name] of secrets) {
   if (gcloudQuery(['secrets', 'describe', name, P, '--format=value(name)']) === null) {
