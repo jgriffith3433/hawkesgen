@@ -116,7 +116,7 @@ export type Settings = {
   /** Dollars per unit for usage reports, where the provider doesn't say. */
   rates: { elevenlabsPer1kChars: number };
   /** The library's files also go to this S3 bucket (src/storage.ts); null keeps them on this disk only. */
-  storage: { bucket: string | null; /** Which cloud the bucket is in: s3 (default) or gcs (Google Cloud Storage, src/storage.ts). */ provider?: 's3' | 'gcs'; /** The CDN's base URL (https://cdn.hawkesgen.ai), set by deploy/cdn.mjs; files are at <cdn>/sha256/<hash>. */ cdn?: string | null };
+  storage: { bucket: string | null; /** Which cloud the bucket is in: s3 (default) or gcs (Google Cloud Storage, src/storage.ts). */ provider?: 's3' | 'gcs'; /** The CDN's base URL (https://cdn.hawkesgen.ai), set by deploy/cdn.mjs; files are at <cdn>/sha256/<hash>. */ cdn?: string | null; /** Projects whose files the CDN serves: names, `prefix*`, or `*` (every project except customers' usr_ and ustg_ ones, which only their exact name or their own prefix lets in). Default ["*"]. */ cdnProjects?: string[] };
   /** The sound suite (docs/audio.md). `verified`: open models that passed their smoke test and audition; `provider: auto` uses
    *  only these, else ElevenLabs. `targetLufs`: loudness per project (and kind) for audio.process; "default" is the fallback. */
   audio: { verified: string[]; targetLufs: Record<string, number> };
@@ -233,7 +233,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   model: '',
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
-  storage: { bucket: null, provider: 's3', cdn: null },
+  storage: { bucket: null, provider: 's3', cdn: null, cdnProjects: ['*'] },
   gpu: { backend: 'fleet', families: {}, cloudrun: { bucket: null, urls: {}, services: {} }, providers: [], order: [], familyOrder: {} },
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
@@ -386,6 +386,7 @@ function clean(s: Settings): Settings {
       bucket: typeof s.storage?.bucket === 'string' && /^[a-z0-9][a-z0-9.-]{2,62}$/.test(s.storage.bucket) ? s.storage.bucket : null,
       provider: s.storage?.provider === 'gcs' ? 'gcs' : 's3',
       cdn: typeof s.storage?.cdn === 'string' && /^https:\/\/[a-z0-9.-]+$/.test(s.storage.cdn) ? s.storage.cdn : null,
+      cdnProjects: Array.isArray(s.storage?.cdnProjects) ? [...new Set(s.storage!.cdnProjects.map(String).filter((p) => /^(\*|[A-Za-z0-9._-]{1,64}\*?)$/.test(p)))] : ['*'],
     },
     gpu: cleanGpu(s.gpu),
     playtest: cleanPlaytest(s.playtest),

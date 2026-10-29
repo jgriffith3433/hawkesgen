@@ -236,7 +236,20 @@ export const inS3 = (sha: string) => isBackedUp(sha);
  *  otherwise undefined and callers keep the API's file route. Anyone holding the link can read the file. */
 export function cdnUrl(sha: string): string | undefined {
   const base = loadSettings().storage.cdn;
-  return base && isBackedUp(sha) ? `${base}/sha256/${sha}` : undefined;
+  return base && isBackedUp(sha) && cdnAllowed(sha) ? `${base}/sha256/${sha}` : undefined;
+}
+
+const CUSTOMER = /^(usr|ustg)_/;
+/** Does storage.cdnProjects let this project's files out through the CDN? `*` is every project but customers'. */
+export function cdnProject(project: string, patterns = loadSettings().storage.cdnProjects ?? ['*']): boolean {
+  return patterns.some((p) => p === '*' ? !CUSTOMER.test(project)
+    : p.endsWith('*') ? project.startsWith(p.slice(0, -1)) && (!CUSTOMER.test(project) || CUSTOMER.test(p))
+    : project === p);
+}
+/** May the CDN serve this content? Yes when any asset with these bytes belongs to an allowed project. */
+export function cdnAllowed(sha: string): boolean {
+  const rows = db.prepare('SELECT DISTINCT project FROM assets WHERE sha256 = ?').all(sha) as { project: string }[];
+  return rows.some((r) => cdnProject(r.project));
 }
 
 /** Queues every asset not backed up yet. -> how many were queued. */

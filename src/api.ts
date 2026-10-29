@@ -295,6 +295,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const st = await import('./storage.ts');
       const b = st.bucket();
       if (!b || st.provider() !== 'gcs') return send(res, 404, { error: 'No CDN origin here' });
+      // On Cloud Run only the cdn.hawkesgen.ai Worker may call this (Cloudflare's edge is the last hop), so nobody skips
+      // the cache to wake Gen; and only files of projects storage.cdnProjects lets out (never customers' by default).
+      const { CLOUDFLARE_EDGE } = await import('./analytics/collect.ts');
+      const { inCidrs } = await import('./analytics/datacenter.ts');
+      const hops = String(req.headers['x-forwarded-for'] ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+      if (process.env.K_SERVICE && !inCidrs(hops[hops.length - 1] ?? '', CLOUDFLARE_EDGE)) return send(res, 403, { error: 'Use https://cdn.hawkesgen.ai' });
+      if (!st.cdnAllowed(cdn[1])) return send(res, 404, { error: 'Not found' });
       const { gcs } = await import('./providers/gcp/gcs.ts');
       const r = await gcs().media(`gs://${b}/${st.keyOf(cdn[1])}`);
       if (!r) return send(res, 404, { error: 'Not found' });

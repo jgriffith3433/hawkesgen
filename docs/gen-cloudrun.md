@@ -63,6 +63,12 @@ Cloudflare's ranges (`src/analytics/collect.ts clientIp`).
 anywhere (the Google organization forbids service-account keys), the bucket stays private and can't be listed. Gen's
 `settings.storage.cdn` set to the address makes asset answers carry CDN links.
 
+What goes out: only files of projects in `settings.storage.cdnProjects` (default `["*"]`: every project except
+customers' `usr_`/`ustg_` ones, which get in only by exact name or a `usr_`/`ustg_` prefix). Other files get no CDN link
+and the route answers 404, so a leaked hash of a customer's private file shows nothing. On Cloud Run the route answers
+only Cloudflare's edge (the last hop in Cloud Run's X-Forwarded-For), so nobody can skip the cache and wake Gen.
+Anyone holding a hash of an allowed file can read it: that is what a CDN link is.
+
 ## Known limits
 
 - **One instance**: fine for Studio and a few customers; a crowd needs the database off SQLite first.
