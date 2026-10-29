@@ -79,3 +79,21 @@ test("a customer's own Hawkes Net usage: only their project, per day and in all"
   const other = await get(portal, 'usr_00000000000000bb');
   assert.equal(other.rows.length, 0);
 });
+
+test("the box is the lane's own: gen-beta sends to beta Net, live Gen to live Net (HAWKESGEN_NET_URL still wins)", async () => {
+  const { netUrl } = await import('../src/netbridge.ts');
+  const saved = { net: process.env.HAWKESGEN_NET_URL, lane: process.env.HAWKESGEN_LANE };
+  try {
+    delete process.env.HAWKESGEN_NET_URL;
+    process.env.HAWKESGEN_LANE = 'beta';
+    assert.equal(netUrl(), 'https://hawkesnet.hawkesgen.ai');
+    delete process.env.HAWKESGEN_LANE;
+    assert.equal(netUrl(), 'https://net.hawkesgen.ai');
+    process.env.HAWKESGEN_NET_URL = 'https://net.example/';
+    process.env.HAWKESGEN_LANE = 'beta';
+    assert.equal(netUrl(), 'https://net.example');
+  } finally {
+    if (saved.net === undefined) delete process.env.HAWKESGEN_NET_URL; else process.env.HAWKESGEN_NET_URL = saved.net;
+    if (saved.lane === undefined) delete process.env.HAWKESGEN_LANE; else process.env.HAWKESGEN_LANE = saved.lane;
+  }
+});
