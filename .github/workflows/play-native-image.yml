@@ -1,0 +1,44 @@
+# The desktop playtest runner image on GHCR, for RunPod (docs/play-native.md). Push a tag play-native-image-<anything>
+# (or run it by hand) and GitHub builds server/play-native and pushes ghcr.io/jgriffith3433/hawkes-play-native:<tag
+# suffix> and :latest. Like playtest-image.yml, it is also pushed as ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-
+# <suffix> (that package is already public, so RunPod can pull it before hawkes-play-native is made public). GitHub's
+# own token writes both: no secret. The image has Proton, Xorg, ffmpeg and the runner only (no keys).
+name: Play native image
+on:
+  push:
+    tags: ['play-native-image-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Unit tests
+        run: node --test tools/play-native/unit.test.mjs
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          img=ghcr.io/jgriffith3433/hawkes-play-native
+          gpu=ghcr.io/jgriffith3433/hawkes-gen-gpu
+          ref="${GITHUB_REF_NAME#play-native-image-}"
+          tag="${ref:-manual}-$(git rev-parse --short HEAD)"
+          docker build server/play-native --provenance=false \
+            --label org.opencontainers.image.source=https://github.com/jgriffith3433/hawkesgen \
+            -t "$img:$tag" -t "$img:latest" -t "$gpu:play-native-$tag"
+          docker push "$img:$tag"
+          docker push "$img:latest"
+          docker push "$gpu:play-native-$tag"
+          echo "Pushed $img:$tag and $gpu:play-native-$tag" >> "$GITHUB_STEP_SUMMARY"
