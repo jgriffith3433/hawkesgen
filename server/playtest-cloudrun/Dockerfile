@@ -6,6 +6,9 @@
 # loader and the Vulkan loader, and the two vendor files that point them at the NVIDIA libraries Cloud Run mounts at
 # /usr/local/nvidia/lib64 (and appends to LD_LIBRARY_PATH). No Mesa drivers: a missing NVIDIA path must fail the
 # self-test, not fall back to llvmpipe quietly.
+# The same image plays on RunPod (docs/playtest-runpod.md). Its serverless hosts mount the driver's compute and video
+# libraries but not the graphics ones; server.mjs then fetches that driver version's user-space graphics libraries from
+# NVIDIA at startup (gpu.mjs ensureGraphicsLibs; xz-utils and zstd unpack the installer).
 FROM mcr.microsoft.com/playwright:v__PW_VERSION__-noble
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -19,7 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HAWKES_TABS=4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg libglvnd0 libegl1 libgles2 libgl1 libvulkan1 vulkan-tools ca-certificates \
+      ffmpeg libglvnd0 libegl1 libgles2 libgl1 libvulkan1 vulkan-tools ca-certificates xz-utils zstd \
     && apt-get purge -y mesa-vulkan-drivers 2>/dev/null; rm -rf /var/lib/apt/lists/*
 
 COPY 10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json

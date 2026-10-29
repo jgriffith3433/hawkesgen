@@ -18,6 +18,8 @@
 
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 /** Flags every browser gets, whatever the GL path. --disable-dev-shm-usage: /dev/shm on Cloud Run is small and counts as memory. */
 export const BASE_ARGS = ['--ignore-gpu-blocklist', '--enable-gpu', '--disable-dev-shm-usage', '--autoplay-policy=no-user-gesture-required', '--mute-audio', '--no-first-run'];
@@ -107,11 +109,33 @@ export const PAGE_PROBE = `(() => {
   };
 })()`;
 
-async function tryCandidate(chromium, cand, { timeoutMs = 45_000, benchMs = 0 } = {}) {
+/**
+ * One candidate, with a hard deadline: a GPU process that hangs inside WebGL (a broken driver) must fail the candidate,
+ * not hold /ping at 204 forever (on RunPod the load balancer then holds every request; 2026-10-29).
+ */
+async function tryCandidate(chromium, cand, opts = {}) {
+  const limit = (opts.timeoutMs ?? 45_000) + (opts.benchMs ?? 0) + 30_000;
+  let timer;
+  const holder = {};
+  const deadline = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      holder.browser?.close().catch(() => {});
+      resolve({ id: cand.id, channel: cand.channel ?? 'chromium-headless-shell', ok: false, error: `no answer in ${Math.round(limit / 1000)} s (the GPU process hung)`, ms: limit });
+    }, limit);
+  });
+  try {
+    return await Promise.race([tryCandidateOnce(chromium, cand, opts, holder), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function tryCandidateOnce(chromium, cand, { timeoutMs = 45_000, benchMs = 0 } = {}, holder = {}) {
   const t0 = Date.now();
   let browser = null;
   try {
     browser = await chromium.launch({ headless: true, channel: cand.channel, args: cand.args, timeout: timeoutMs });
+    holder.browser = browser;
     const page = await browser.newPage();
     await page.setContent('<!doctype html><title>gpu</title>');
     const gl = await page.evaluate(PAGE_PROBE);
@@ -157,7 +181,78 @@ export function driverFacts() {
   }
   const smiBin = ['/usr/local/nvidia/bin/nvidia-smi', 'nvidia-smi'].find((b) => b.includes('/') ? fs.existsSync(b) : true);
   const smi = spawnSync(smiBin, ['--query-gpu=name,driver_version,memory.total', '--format=csv,noheader'], { encoding: 'utf8', timeout: 15_000 });
-  return { libDir: dir, libs, nvidiaSmi: smi.status === 0 ? smi.stdout.trim() : null, ldLibraryPath: process.env.LD_LIBRARY_PATH ?? null, capabilities: process.env.NVIDIA_DRIVER_CAPABILITIES ?? null };
+  return { libDir: dir, libs, nvidiaSmi: smi.status === 0 ? smi.stdout.trim() : null, ldLibraryPath: process.env.LD_LIBRARY_PATH ?? null, capabilities: process.env.NVIDIA_DRIVER_CAPABILITIES ?? null,
+    fetched: (() => { try { return fs.readdirSync('/opt/nvidia-gl').filter((f) => /^libEGL_nvidia\.so\.\d+\.\d+/.test(f)); } catch { return null; } })() };
+}
+
+/** The driver's graphics libraries (EGL, GLES, GLX, Vulkan): RunPod's serverless hosts mount none of them. */
+export const GRAPHICS_LIBS = /^lib(EGL_nvidia|GLESv2_nvidia|GLESv1_CM_nvidia|GLX_nvidia|nvidia-(eglcore|glcore|glsi|gpucomp|glvkspirv|tls|egl-gbm|egl-wayland|rtcore))\.so\./;
+export const DRIVER_URL = (v) => `https://download.nvidia.com/XFree86/Linux-x86_64/${v}/NVIDIA-Linux-x86_64-${v}.run`;
+export const DRIVER_URL_DC = (v) => `https://us.download.nvidia.com/tesla/${v}/NVIDIA-Linux-x86_64-${v}.run`;
+
+/** The kernel driver's version (nvidia-smi, else /proc/driver/nvidia/version), or null with no NVIDIA GPU. */
+export function driverVersion() {
+  const smi = spawnSync('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'], { encoding: 'utf8', timeout: 15_000 });
+  const v = smi.status === 0 ? smi.stdout.trim().split('\n')[0].trim() : (/Kernel Module\s+([0-9.]+)/.exec((() => { try { return fs.readFileSync('/proc/driver/nvidia/version', 'utf8'); } catch { return ''; } })())?.[1] ?? '');
+  return /^\d+\.\d+(\.\d+)?$/.test(v) ? v : null;
+}
+
+/**
+ * When the host gave the container the NVIDIA GPU but not its graphics libraries (RunPod serverless: compute and video
+ * only, so EGL falls back to Mesa's llvmpipe), fetch the user-space half of the driver that matches the host's kernel
+ * module from NVIDIA (the .run installer, ~300 MB, extracted only: nothing is installed or loaded into the kernel),
+ * copy its graphics libraries to `dir`, and point the GLVND EGL and Vulkan vendor files at them. Chromium (launched
+ * from this process) finds them through LD_LIBRARY_PATH. Skipped when the libraries are there (Cloud Run, Pods) or with
+ * HAWKES_FETCH_DRIVER=0. Returns what it did, for the self-test report.
+ */
+export async function ensureGraphicsLibs({ dir = '/opt/nvidia-gl', log = () => {} } = {}) {
+  if (process.env.HAWKES_FETCH_DRIVER === '0') return { done: false, why: 'HAWKES_FETCH_DRIVER=0' };
+  const facts = driverFacts();
+  if ((facts.libs ?? []).some((f) => /^libEGL_nvidia\.so/.test(f))) return { done: false, why: 'the host mounted the graphics libraries' };
+  const version = driverVersion();
+  if (!version) return { done: false, why: 'no NVIDIA driver here' };
+  const have = (() => { try { return fs.readdirSync(dir); } catch { return []; } })();
+  const t0 = Date.now();
+  if (!have.some((f) => f === `libEGL_nvidia.so.${version}`)) {
+    const tmp = fs.mkdtempSync('/tmp/nvdrv-');
+    try {
+      let got = null;
+      for (const url of [DRIVER_URL(version), DRIVER_URL_DC(version)]) {
+        log(`fetching the NVIDIA ${version} user-space graphics libraries from ${url}`);
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(300_000) });
+          if (!r.ok || !r.body) continue;
+          await pipeline(Readable.fromWeb(r.body), fs.createWriteStream(`${tmp}/d.run`));
+          got = url;
+          break;
+        } catch (e) {
+          log(`fetching ${url}: ${e?.message ?? e}`);
+        }
+      }
+      if (!got) return { done: false, why: `NVIDIA has no ${version} installer at the known addresses`, version };
+      const x = spawnSync('sh', [`${tmp}/d.run`, '--extract-only', '--target', `${tmp}/x`], { encoding: 'utf8', timeout: 300_000 });
+      if (x.status !== 0) return { done: false, why: `extracting failed: ${(x.stderr || x.stdout).trim().slice(-300)}`, version };
+      fs.mkdirSync(dir, { recursive: true });
+      for (const f of fs.readdirSync(`${tmp}/x`)) if (GRAPHICS_LIBS.test(f)) fs.copyFileSync(`${tmp}/x/${f}`, `${dir}/${f}`);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+  // The sonames the loaders open (libEGL_nvidia.so.0, libGLX_nvidia.so.0, libGLESv2_nvidia.so.2, ...).
+  for (const f of fs.readdirSync(dir)) {
+    const m = /^(lib[^.]+\.so)\.(\d+)\.\d+(\.\d+)?$/.exec(f);
+    if (!m) continue;
+    const so = { libEGL_nvidia: '0', libGLX_nvidia: '0', libGLESv2_nvidia: '2', libGLESv1_CM_nvidia: '1' }[m[1].replace(/\.so$/, '')];
+    for (const link of [so ? `${m[1]}.${so}` : null, m[1]].filter(Boolean)) {
+      try { fs.symlinkSync(f, `${dir}/${link}`); } catch { /* there */ }
+    }
+  }
+  fs.mkdirSync('/usr/share/glvnd/egl_vendor.d', { recursive: true });
+  fs.writeFileSync('/usr/share/glvnd/egl_vendor.d/10_nvidia.json', JSON.stringify({ file_format_version: '1.0.0', ICD: { library_path: `${dir}/libEGL_nvidia.so.0` } }));
+  fs.mkdirSync('/etc/vulkan/icd.d', { recursive: true });
+  fs.writeFileSync('/etc/vulkan/icd.d/nvidia_icd.json', JSON.stringify({ file_format_version: '1.0.1', ICD: { library_path: `${dir}/libGLX_nvidia.so.0`, api_version: '1.3.0' } }));
+  process.env.LD_LIBRARY_PATH = [dir, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':');
+  return { done: true, version, dir, libs: fs.readdirSync(dir).filter((f) => !fs.lstatSync(`${dir}/${f}`).isSymbolicLink()).length, seconds: Math.round((Date.now() - t0) / 100) / 10 };
 }
 
 /** Whether ffmpeg can encode H.264 on the GPU here (libnvidia-encode from the mounted driver). */

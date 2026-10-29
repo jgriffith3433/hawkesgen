@@ -27,7 +27,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
-import { selfTest, candidatesFor, glMode, BASE_ARGS } from './gpu.mjs';
+import { selfTest, candidatesFor, glMode, BASE_ARGS, ensureGraphicsLibs } from './gpu.mjs';
 
 // The image installs ws; elsewhere (Gen's tests run this file from the repo) Playwright's bundled copy does.
 const WebSocketServer = await import('ws').then((m) => m.WebSocketServer ?? m.default.WebSocketServer, async () => (await import('playwright-core/lib/utilsBundle')).default.wsServer);
@@ -56,9 +56,16 @@ let started = 0;
 
 const log = (...a) => console.log(JSON.stringify({ severity: 'INFO', message: a.join(' ') }));
 
+let graphics = null;
+
 async function runSelfTest(opts = {}) {
-  testing ??= selfTest(chromium, opts).then((r) => {
-    report = r;
+  // A host without the driver's graphics libraries (RunPod serverless) gets them first (gpu.mjs ensureGraphicsLibs).
+  testing ??= (MODE === 'gpu' && !graphics ? ensureGraphicsLibs({ log }).catch((e) => ({ done: false, why: String(e?.message ?? e) })) : Promise.resolve(graphics)).then((g) => {
+    if (g && !graphics) { graphics = g; log(`driver graphics libraries: ${g.done ? `fetched ${g.version} (${g.libs} files, ${g.seconds} s)` : g.why}`); }
+    return selfTest(chromium, opts);
+  }).then((r) => {
+    report = { ...r, graphics };
+    if (!r.gl.ok) log(`driver: ${JSON.stringify(r.driver)}`);
     log(`self-test (${r.mode}): ${r.gl.ok ? `WebGL via ${r.gl.id} (${r.gl.renderer})${r.gl.fps ? `, ${r.gl.fps} fps on the bench` : ''}` : `no GL path (${r.candidates.map((c) => `${c.id}: ${c.renderer ?? c.error}`).join('; ')})`}, nvenc ${r.nvenc.ok ? 'yes' : 'no'}, ${r.seconds} s`);
     return r;
   }).finally(() => { testing = null; });
@@ -69,6 +76,19 @@ async function runSelfTest(opts = {}) {
 function launchOptions() {
   const c = candidatesFor(MODE).find((x) => x.id === report?.gl?.id);
   return c ? { headless: true, channel: c.channel, args: c.args } : { headless: true, args: BASE_ARGS };
+}
+
+/** The container's CPUs and memory as its cgroup limits them (what sizes tabs per instance), next to the host's. */
+function machineSize() {
+  const read = (f) => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return null; } };
+  const [quota, period] = (read('/sys/fs/cgroup/cpu.max') ?? 'max').split(/\s+/);
+  const mem = read('/sys/fs/cgroup/memory.max');
+  return {
+    cpus: quota && quota !== 'max' ? Math.round((Number(quota) / Number(period || 100000)) * 10) / 10 : null,
+    memoryGiB: mem && mem !== 'max' ? Math.round((Number(mem) / 2 ** 30) * 10) / 10 : null,
+    hostCpus: os.availableParallelism?.() ?? os.cpus().length,
+    hostMemoryGiB: Math.round(os.totalmem() / 2 ** 30),
+  };
 }
 
 const send = (res, status, body, headers = {}) => {
@@ -137,11 +157,13 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/healthz') return send(res, 200, 'ok');
     // RunPod's load balancer health check (PORT_HEALTH): 204 while the self-test runs (initializing: no traffic yet),
-    // 200 once a GL path draws, 503 when none did (RunPod then replaces the worker).
+    // then 200 whatever it found. A worker whose /ping never says 200 gets no traffic and RunPod holds every request
+    // for it until the client gives up (2026-10-29), so a worker without a GPU path answers instead: /pw refuses with
+    // 412 No GPU, which Gen doesn't retry (it moves on to the CPU service at once).
     if (url.pathname === '/ping') {
-      if (report && (report.gl.ok || ALLOW_SOFTWARE)) return send(res, 200, 'ok');
-      if (!report) { res.writeHead(204); return res.end(); }
-      return send(res, 503, 'no GL path');
+      if (report) return send(res, 200, report.gl.ok ? 'ok' : 'no GPU path');
+      res.writeHead(204);
+      return res.end();
     }
     if (!tokenOk(req)) return send(res, 401, 'bad token');
     if (url.pathname === '/ready') {
@@ -150,7 +172,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === '/selftest') {
       if (url.searchParams.get('fresh') === '1' || !report) await runSelfTest({ all: url.searchParams.get('all') === '1' });
-      return send(res, 200, { ...report, sessions, maxSessions: MAX_SESSIONS, upSeconds: Math.round((Date.now() - started) / 1000), launch: launchOptions() });
+      return send(res, 200, { ...report, sessions, maxSessions: MAX_SESSIONS, machine: machineSize(), upSeconds: Math.round((Date.now() - started) / 1000), launch: launchOptions() });
     }
     return send(res, 404, 'not found');
   } catch (e) {
@@ -169,7 +191,8 @@ server.on('upgrade', async (req, socket, head) => {
   if (!tokenOk(req)) return refuse(401, 'Unauthorized');
   if (url.pathname === '/encode') return encoder.handleUpgrade(req, socket, head, (ws) => encodeSession(ws, url));
   if (url.pathname !== '/pw') return refuse(404, 'Not Found');
-  if (!report || (!report.gl.ok && !ALLOW_SOFTWARE)) return refuse(503, MODE === 'software' ? 'No WebGL' : 'No GPU');
+  if (!report) return refuse(503, 'Starting');
+  if (!report.gl.ok && !ALLOW_SOFTWARE) return refuse(412, MODE === 'software' ? 'No WebGL' : 'No GPU');
   // Cloud Run's concurrency already caps connections per instance; this guards a misconfigured deploy.
   if (sessions >= MAX_SESSIONS) return refuse(429, 'Too Many Tabs');
   sessions++;
