@@ -167,8 +167,13 @@ portal and Studio use Gen in the back end with their own keys.
   - **Editor:** a timeline of clips with in/out, transitions and captions, plus music (`audio.music` or a library
     track), previewed in the page and rendered by `video.compose` (CPU, a 3-credit floor).
 
-  Sign-up is inline: the first Generate asks for an account, then goes on. The editor's timeline lives in the
-  browser (`localStorage`).
+  Sign-in is **Continue with Google** (`POST /v1/users/google`, `users.ts googleSignin`), inline: the first Generate
+  asks, then goes on. One Google account signs in to every product (portal, Studio, Gen), each keeping its own
+  account. A Gen account is found by Google's permanent id (`user_google`), else by its email (an older account,
+  linked), else made with the starter credits. Email and password are off on the cloud lanes (410 `google_only`;
+  `HAWKESGEN_PASSWORD_LOGIN=1` turns them back on) and stay for local runs and tests. The app uses the admin
+  dashboard's Google client (`settings.dashboard.googleClientId`); its JavaScript origins must list each Gen address.
+  The editor's timeline lives in the browser (`localStorage`).
 - **The admin dashboard** is `/admin` (its files are served beside it: `/admin/app.js` is `dashboard/app.js`). Owner
   and admin keys, or Google for `settings.dashboard.googleEmails`. The app links there for admins.
 - The old Hawkes Play pages stay at `/home`, `/app` and `/play`.

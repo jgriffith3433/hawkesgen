@@ -77,12 +77,60 @@ const refreshCredits = () => api('/v1/users/me').then((m) => { state.user = m.us
 // Sign in or create an account, then go on with what the person was doing.
 let afterSignIn = null;
 let authMode = 'login';
+// Continue with Google (POST /v1/users/google): the way in. Email and password only where Google isn't set up (local).
+const signin = { clientId: null, passwords: false, ready: null };
+function loadGoogle() {
+  signin.ready ??= api('/v1/users/google').then((g) => {
+    signin.clientId = g.clientId;
+    signin.passwords = Boolean(g.passwords);
+    if (!g.clientId) return;
+    return new Promise((resolve) => {
+      const s = document.createElement('script');
+      s.src = 'https://accounts.google.com/gsi/client';
+      s.async = true;
+      s.onload = () => {
+        google.accounts.id.initialize({ client_id: g.clientId, callback: (r) => googleDone(r.credential), ux_mode: 'popup' });
+        resolve();
+      };
+      s.onerror = () => resolve();
+      document.head.append(s);
+    });
+  }).catch(() => {});
+  return signin.ready;
+}
+async function googleDone(credential) {
+  try {
+    const r = await api('/v1/users/google', { body: { credential } });
+    $('#authDialog').close();
+    await loadMe();
+    updateQuote();
+    if (r.created) toast(`Welcome! You have ${state.user?.credits ?? 0} free credits.`);
+    const then = afterSignIn;
+    afterSignIn = null;
+    if (then) then();
+  } catch (err) {
+    $('#authError').textContent = err.message;
+    $('#authError').hidden = false;
+  }
+}
+async function showSignIn() {
+  await loadGoogle();
+  const box = $('#googleBtn');
+  box.replaceChildren();
+  const google_ = signin.clientId && globalThis.google?.accounts?.id;
+  if (google_) google.accounts.id.renderButton(box, { theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'filled_black' : 'outline', size: 'large', text: 'continue_with', shape: 'pill', width: 300 });
+  box.hidden = !google_;
+  $('#passwordAuth').hidden = Boolean(google_) || !signin.passwords;
+  $('#authSubmit').hidden = $('#passwordAuth').hidden;
+  if (!google_ && !signin.passwords) { $('#authError').textContent = 'Sign-in is not set up on this Gen yet.'; $('#authError').hidden = false; }
+}
+
 function setAuthMode(mode) {
   authMode = mode;
   $$('#authDialog .tab').forEach((t) => t.classList.toggle('on', t.dataset.mode === mode));
   $('#nameField').hidden = mode !== 'signup';
   $('#authSubmit').textContent = mode === 'signup' ? 'Create account' : 'Sign in';
-  $('#authTitle').textContent = mode === 'signup' ? 'Create your Hawkes Gen account' : 'Sign in to Hawkes Gen';
+  $('#authTitle').textContent = 'Sign in to Hawkes Gen';
   $('#authPassword').autocomplete = mode === 'signup' ? 'new-password' : 'current-password';
 }
 function needSignIn(then, mode = 'signup') {
@@ -91,6 +139,7 @@ function needSignIn(then, mode = 'signup') {
   setAuthMode(mode);
   $('#authError').hidden = true;
   $('#authDialog').showModal();
+  showSignIn();
 }
 $$('#authDialog .tab').forEach((t) => t.addEventListener('click', () => setAuthMode(t.dataset.mode)));
 $('#authCancel').addEventListener('click', () => { afterSignIn = null; $('#authDialog').close(); });

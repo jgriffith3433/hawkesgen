@@ -138,6 +138,35 @@ export function signupUser(input: { email?: unknown; password?: unknown; name?: 
   return { user: toPublicUser(user), apiKey, sessionToken: session.token };
 }
 
+// Continue with Google (J, 2026-10-29: one Google account signs in to every product, each keeping its own account): a
+// Gen account is found by Google's permanent id (`google_sub`), else by its email (an account made with a password
+// before, now linked), else made. Passwords are off on the cloud lanes (passwordsAllowed).
+db.exec('CREATE TABLE IF NOT EXISTS user_google (user_id TEXT PRIMARY KEY, sub TEXT UNIQUE NOT NULL, linked INTEGER NOT NULL)');
+
+/** Email-and-password sign-up and sign-in: only off the cloud (local runs and tests), or with HAWKESGEN_PASSWORD_LOGIN=1. */
+export const passwordsAllowed = () => !process.env.K_SERVICE || env('HAWKESGEN_PASSWORD_LOGIN') === '1';
+
+export function googleSignin(who: { sub: string | null; email: string; name: string | null }) {
+  if (!who.sub) throw new GenError('That Google sign-in has no account id. Try again.', { status: 401 });
+  const email = who.email.trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) throw new GenError('That Google account has no usable email');
+  const bySub = db.prepare('SELECT user_id FROM user_google WHERE sub = ?').get(who.sub) as { user_id: string } | undefined;
+  let user = bySub ? getUserById(bySub.user_id) : getUserByEmail(email);
+  if (user && !bySub) db.prepare('INSERT OR IGNORE INTO user_google (user_id, sub, linked) VALUES (?, ?, ?)').run(user.id, who.sub, Date.now());
+  if (!user) {
+    // A new account: no password (an unusable hash), the starter credits, its own project and key, as signupUser does.
+    const made = signupUser({ email, password: crypto.randomBytes(24).toString('base64url'), name: who.name ?? undefined });
+    db.prepare("UPDATE users SET password_hash = 'google' WHERE id = ?").run(made.user.id);
+    db.prepare('INSERT INTO user_google (user_id, sub, linked) VALUES (?, ?, ?)').run(made.user.id, who.sub, Date.now());
+    return { user: made.user, sessionToken: made.sessionToken, created: true };
+  }
+  const now = Date.now();
+  db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(now, user.id);
+  user = getUserById(user.id)!;
+  const session = createSession(user.id);
+  return { user: toPublicUser(user), sessionToken: session.token, created: false };
+}
+
 export function loginUser(input: { email?: unknown; password?: unknown }) {
   const email = String(input.email ?? '').trim().toLowerCase();
   const password = typeof input.password === 'string' ? input.password : '';

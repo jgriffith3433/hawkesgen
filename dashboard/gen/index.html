@@ -109,18 +109,22 @@
   <dialog id="authDialog" class="sheet">
     <form id="authForm" method="dialog">
       <h2 id="authTitle">Sign in to Hawkes Gen</h2>
-      <p class="muted" id="authLead">Make images and videos. New accounts start with free credits.</p>
-      <div class="tabs">
-        <button type="button" class="tab on" data-mode="login">Sign in</button>
-        <button type="button" class="tab" data-mode="signup">Create account</button>
+      <p class="muted" id="authLead">One click with your Google account. New accounts start with free credits.</p>
+      <div id="googleBtn" class="google-btn"></div>
+      <div id="passwordAuth" hidden>
+        <p class="muted small-note">Google sign-in isn't set up here: use an email and password (local runs).</p>
+        <div class="tabs">
+          <button type="button" class="tab on" data-mode="login">Sign in</button>
+          <button type="button" class="tab" data-mode="signup">Create account</button>
+        </div>
+        <label class="field" id="nameField" hidden>Name <input id="authName" autocomplete="name" maxlength="120"></label>
+        <label class="field">Email <input id="authEmail" type="email" autocomplete="email"></label>
+        <label class="field">Password <input id="authPassword" type="password" autocomplete="current-password" minlength="6"></label>
       </div>
-      <label class="field" id="nameField" hidden>Name <input id="authName" autocomplete="name" maxlength="120"></label>
-      <label class="field">Email <input id="authEmail" type="email" autocomplete="email" required></label>
-      <label class="field">Password <input id="authPassword" type="password" autocomplete="current-password" minlength="6" required></label>
       <p id="authError" class="error" hidden></p>
       <div class="row end">
         <button type="button" class="ghost" id="authCancel">Cancel</button>
-        <button class="primary" id="authSubmit" type="submit">Sign in</button>
+        <button class="primary" id="authSubmit" type="submit" hidden>Sign in</button>
       </div>
     </form>
   </dialog>

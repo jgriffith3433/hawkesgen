@@ -56,22 +56,36 @@ export function sessionEmail(value: string, now = Date.now()): string | null {
   } catch { return null; }
 }
 
+/** The client id Gen's Google sign-in uses for anyone (the app's customer accounts), or null when none is set. */
+export const googleClientIdAny = (): string | null => loadSettings().dashboard.googleClientId || null;
+
+export type GoogleIdentity = { sub: string | null; email: string; name: string | null };
+
 /**
- * Checks a Google ID token with Google (the tokeninfo endpoint: signature, expiry) and that it was issued for our client
- * to a verified email on the list. Returns the email; throws a sentence otherwise. `fetchImpl` is for tests.
+ * Checks a Google ID token with Google (the tokeninfo endpoint: signature, expiry) and that it was issued for our
+ * client to a verified email. Returns who it is (Google's permanent account id `sub` when it has one, the email, the
+ * name); throws a
+ * sentence otherwise. `fetchImpl` is for tests.
  */
-export async function verifyGoogle(credential: string, fetchImpl: typeof fetch = fetch): Promise<string> {
-  const clientId = googleClientId();
+export async function checkGoogleToken(credential: string, fetchImpl: typeof fetch = fetch): Promise<GoogleIdentity> {
+  const clientId = googleClientIdAny();
   if (!clientId) throw new Error('Google sign-in is not set up on this Gen.');
   if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(String(credential ?? ''))) throw new Error('That is not a Google sign-in.');
   const r = await fetchImpl(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`, { signal: AbortSignal.timeout(10_000) });
   if (!r.ok) throw new Error('Google did not accept that sign-in. Try again.');
-  const t = await r.json() as { aud?: string; iss?: string; email?: string; email_verified?: string | boolean; exp?: string };
+  const t = await r.json() as { aud?: string; iss?: string; sub?: string; email?: string; email_verified?: string | boolean; exp?: string; name?: string };
   if (t.aud !== clientId) throw new Error('That sign-in was made for another app.');
   if (t.iss !== 'accounts.google.com' && t.iss !== 'https://accounts.google.com') throw new Error('That sign-in did not come from Google.');
   if (Number(t.exp) * 1000 < Date.now()) throw new Error('That sign-in has expired. Try again.');
   const email = String(t.email ?? '').toLowerCase();
   if (!(t.email_verified === true || t.email_verified === 'true') || !email) throw new Error('That Google account has no verified email.');
+  return { sub: /^\d{5,40}$/.test(String(t.sub ?? '')) ? String(t.sub) : null, email, name: t.name ? String(t.name).slice(0, 120) : null };
+}
+
+/** The admin dashboard's Google sign-in: a checked token whose email is on settings.dashboard.googleEmails. */
+export async function verifyGoogle(credential: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+  if (!googleClientId()) throw new Error('Google sign-in is not set up on this Gen.');
+  const { email } = await checkGoogleToken(credential, fetchImpl);
   if (!allowedEmails().includes(email)) throw new Error(`${email} is not allowed into this Gen.`);
   return email;
 }

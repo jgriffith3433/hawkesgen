@@ -8,7 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { primePlatform } from './platform.ts';
 import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
-import { DASH_COOKIE, DASH_DAYS, googleClientId, signSession, verifyGoogle } from './dashauth.ts';
+import { DASH_COOKIE, DASH_DAYS, googleClientId, googleClientIdAny, checkGoogleToken, signSession, verifyGoogle } from './dashauth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
 import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workflows/registry.ts';
 import { objectInfo, refreshCatalog, templates, templateWorkflow, templateThumb, importWorkflow } from './workflows/catalog.ts';
@@ -62,6 +62,8 @@ import {
   getUserForClient,
   getUserProfile,
   rotateUserApiKey,
+  googleSignin,
+  passwordsAllowed,
 } from './users.ts';
 import {
   listCreditPacks,
@@ -396,6 +398,19 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const rawBody = await readBody(req);
       const sig = String(req.headers['stripe-signature'] ?? '');
       return send(res, 200, handleStripeWebhook(rawBody, sig));
+    }
+    // Continue with Google (users.ts googleSignin): the app's sign-in. The client id is the one the admin dashboard uses.
+    if (route === '/v1/users/google' && method === 'GET') return send(res, 200, { clientId: googleClientIdAny(), passwords: passwordsAllowed() });
+    if (route === '/v1/users/google' && method === 'POST') {
+      const { credential } = await readJson(req);
+      let who;
+      try { who = await checkGoogleToken(String(credential ?? '')); } catch (e: any) { return send(res, 401, { error: e.message }); }
+      const result = googleSignin(who);
+      setSessionCookie(res, req, result.sessionToken);
+      return send(res, 200, { user: result.user, created: result.created });
+    }
+    if ((route === '/v1/users/signup' || route === '/v1/users/login') && method === 'POST' && !passwordsAllowed()) {
+      return send(res, 410, { error: 'Sign in with Google.', code: 'google_only' });
     }
     if (route === '/v1/users/signup' && method === 'POST') {
       const body = await readJson(req);
