@@ -26,6 +26,7 @@ import {
   cacheKeys, cacheRepo, cacheStateOf, recordBuild, shouldRunClean, failureKind, parseCloudResult, forgetCache, stubFolderOf,
   siteInputKeep, STUB, type CloudResult,
 } from './cache.ts';
+import { githubRepos, githubSite, buildCommitMessage } from './github.ts';
 
 const fail = (message: string, kind = 'builder') => new GenError(message, { status: 409, kind });
 
@@ -148,6 +149,14 @@ export type BuildOptions = { cache?: string; clean?: boolean };
 /** The checks every backend makes first; returns the spec with its stand-ins resolved and the Unity version. */
 export function checkBuild(spec: BuildSpec, cfg: ReturnType<typeof cloudConfig>, where: string) {
   const target = spec.target ?? 'WebGL';
+  if (spec.github) {
+    // Nothing here to read: the container checks ProjectSettings/ProjectVersion.txt against the image itself.
+    if (target !== 'WebGL') throw fail(`Builds ${where} make WebGL only (the image has the WebGL module); ${target} needs the build server.`, 'config');
+    if (spec.projectDir || spec.siteDir) throw fail('projectDir and siteDir are for builds from folders here; a GitHub-mode build fetches its sources and pushes its own result.');
+    if (spec.tests) throw fail('GitHub mode builds and pushes; run tests from folders (unity.test).');
+    if (!spec.site) throw fail('a GitHub-mode build needs site (the website folder its build method writes).');
+    return { spec, unity: cfg.gcp.unity, target };
+  }
   spec = { ...spec, projectDir: standIn(spec.projectDir, 'projectDir'), siteDir: standIn(spec.siteDir, 'siteDir') };
   if (spec.siteDir && !spec.site) throw fail('siteDir needs site (the website folder it stands in for).');
   if (target !== 'WebGL') throw fail(`Builds ${where} make WebGL only (the image has the WebGL module); ${target} needs the build server.`, 'config');
@@ -163,7 +172,10 @@ export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string
   const bucket = cfg.gcp.bucket;
   const repo = cacheRepo(spec.project);
   hooks.step('working out the commits to build');
-  const src = sourcesOf(spec);
+  const gh = spec.github;
+  // GitHub mode: the commit asked for, nothing uncommitted, no website from here (the container checks out its branch).
+  const src = gh ? { repos: githubRepos(gh, spec.project), overlay: [] as { key: string; file: string; size: number }[], deletes: [] as string[], projectBranch: gh.cacheBranch } : sourcesOf(spec);
+  if (gh) hooks.log(`GitHub mode${gh.ref ? ` (${gh.ref})` : ''}: the build is pushed to ${gh.siteRepo} ${gh.branch}; packages ${Object.entries(gh.packages).map(([k, v]) => `${k}@${v}`).join(', ')}`);
   const overlayBytes = src.overlay.reduce((n, f) => n + f.size, 0);
   if (overlayBytes > OVERLAY_MAX) throw fail(`${src.overlay.length} uncommitted files (${mb(overlayBytes)}) differ from GitHub: commit and push them, or use the build server.`, 'source');
   for (const r of src.repos) hooks.log(`${r.slug} at ${r.commit.slice(0, 12)}${r.branch ? ` (${r.branch})` : ''}${r.sparse.length ? `: ${r.sparse.join(', ')}` : ''}`);
@@ -181,7 +193,7 @@ export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string
     hooks.log(`${src.overlay.length} uncommitted files (${mb(overlayBytes)}) go with the build`);
   }
   let siteIn: string | null = null;
-  if (spec.site) {
+  if (spec.site && !gh) {
     const s = siteInput(spec.site, spec.siteDir);
     const stubFiles = [...s.stubs.entries()].map(([dir, omitted]) => {
       const f = path.join(tmp, `stub-${dir.replace(/\//g, '_')}`);
@@ -202,6 +214,7 @@ export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string
     cache: { bucket, prefix: `unity-cache/${repo}`, restore: decision.clean ? [] : keys.restore, save: keys.save, clean: decision.clean, reason: decision.reason, exclude: CACHE_EXCLUDE },
     out: { bucket, prefix },
     timeoutMinutes: cfg.timeoutMinutes,
+    github: gh ? { owner: gh.repo.split('/')[0], site: githubSite(gh, spec.site!), packages: gh.packages, ref: gh.ref, message: buildCommitMessage(gh, spec.project) } : null,
   };
   await gcsWrite(bucket, `${prefix}/spec.json`, Buffer.from(JSON.stringify(body, null, 2)), 'application/json');
   return { prefix, specUri: `gs://${bucket}/${prefix}/spec.json`, repo, saveKey: keys.save, stateKey, clean: decision.clean };
@@ -374,6 +387,22 @@ export async function finishBuildResult(jobId: string, spec: BuildSpec, hooks: B
     const lastLine = errors[0] ?? lines.filter((l) => l.trim() && !/Licensing::/i.test(l)).slice(-1)[0]?.trim();
     const error = result.error ? `${result.error}${lastLine && !result.error.includes(lastLine) ? `: ${lastLine}` : ''}` : `Unity exited with code ${result.exitCode}${lastLine ? `: ${lastLine}` : ''}`;
     return { ...base, exitCode: result.exitCode, ok: false, error, kind, errors, cloud };
+  }
+
+  // GitHub mode: the container committed and pushed the build itself; nothing to lay down here.
+  if (spec.github) {
+    const out = result.output;
+    const site = out ? {
+      changed: out.changed.map((f) => `${spec.site}/${f.path}`),
+      deleted: out.deleted.map((rel) => `${spec.site}/${stubFolderOf(rel) ?? rel}`),
+      bytes: out.changed.reduce((n, f) => n + f.size, 0),
+    } : null;
+    const pushed = result.pushed;
+    if (pushed) hooks.log(`pushed ${pushed.repo} ${pushed.branch}: ${pushed.before ? `${pushed.before.slice(0, 7)} -> ` : ''}${pushed.commit.slice(0, 7)} (${pushed.files} files, source ${pushed.source.slice(0, 7)})`);
+    else hooks.log(`nothing to push: the build changed nothing in ${spec.github.siteRepo} ${spec.github.branch}`);
+    recordBuild(job.repo, job.stateKey, { ok: true, at, job: jobId, restored: result.cache.restoredFrom, clean: job.clean }, o.cleanAfter);
+    if (Object.keys(result.packages).length) hooks.log(`packages: ${Object.entries(result.packages).map(([k, v]) => `${k} ${v.slice(0, 12)}`).join(', ')}`);
+    return { ...base, exitCode: result.exitCode ?? 0, ok: true, error: null, kind: null, errors: [] as string[], site, pushed, packages: result.packages, cloud };
   }
 
   // Lay the website changes into the site folder here.

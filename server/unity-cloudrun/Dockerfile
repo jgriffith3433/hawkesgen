@@ -12,8 +12,8 @@ RUN apt-get update \
  && git lfs install --system \
  && rm -rf /var/lib/apt/lists/*
 
-COPY entrypoint.sh /hawkes/entrypoint.sh
-RUN chmod 755 /hawkes/entrypoint.sh
+COPY entrypoint.sh github.sh /hawkes/
+RUN chmod 755 /hawkes/entrypoint.sh /hawkes/github.sh
 
 ENV HAWKES_WORK=/work \
     UNITY_BIN=unity-editor \

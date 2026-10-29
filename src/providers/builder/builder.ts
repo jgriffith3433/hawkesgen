@@ -772,6 +772,11 @@ export type BuildSpec = {
    */
   projectDir?: string;
   siteDir?: string;
+  /**
+   * GitHub mode (cloud backends only, github.ts): the source and the website come from GitHub, not from folders here,
+   * and the container pushes the build to the website repo's branch (beta) itself. Nothing is laid down here.
+   */
+  github?: import('./github.ts').GitHubBuild;
 };
 
 export type BuildHooks = { step(s: string): void; log(s: string): void; signal?: AbortSignal };

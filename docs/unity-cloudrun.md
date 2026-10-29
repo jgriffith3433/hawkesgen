@@ -50,6 +50,56 @@ over REST with ADC), `server/unity-cloudrun/` (the image), `tools/unity-cloudrun
 running 25 minutes after that. The Windows build server now has the same limit (it stops Unity and fails the job as
 `timeout`), so no build holds a lane for hours on either backend.
 
+## GitHub mode: builds from a tag, pushed to the website's beta
+
+Since 2026-10-28 Gen and Studio both run on Cloud Run, so Gen has no checkout of the games or their websites to send
+from or lay a build into. **GitHub mode** takes everything from GitHub and puts the result back there. It is what a
+build tag uses (J: "can we make it build by listening to tag pushes?"):
+
+```
+git tag build-2026-10-28 && git push origin build-2026-10-28     # in sickofitgame-unity, YoobaLand or breakingthrough
+```
+
+- **The tag:** `build-<letters, digits, . _ ->`. The repo's `.github/workflows/hawkes-studio.yml` (on `tags: ['build-*']`)
+  tells Studio with GitHub's OIDC token, like a push. The tagged commit must contain that workflow line (GitHub runs
+  the workflow file of the commit the tag points at). Studio (`hawkesstudio/src/tagbuild.ts`) starts a beta run whose
+  build step calls `unity.build` with `github`.
+- **The param** (`src/providers/builder/github.ts` checks it):
+  `github: { repo: "owner/source", commit: "<40-hex sha>", siteRepo: "owner/website", branch: "beta", ref: "build-...", packages?: { hawkesgen: "main" }, cacheBranch?: "beta" }`
+  with `project`, `site` and `method` as usual (and `env`, e.g. Studio's `BUILD_VERSION`). `branch` defaults to `beta`;
+  `main`, `master`, `gh-pages`, `live` and `production` are refused here, again in the container, and a result that
+  claims a push to main is refused when read. `projectDir`, `siteDir` and tests aren't allowed with it.
+- **Backend:** always a cloud one. The project's backend when it is `cloudrun` or `vm`, else `cloudrun`; an explicit
+  `backend: builder` is refused.
+- **Gen, here:** no commits worked out, no overlay, no `site-in.tgz`. `spec.json` gets `repos` (the source repo at the
+  commit, sparse to the project folder: `YoobaLand/YoobaLand` is the folder `YoobaLand` of the repo `YoobaLand`), and a
+  `github` block (the website repo and branch, the package refs, the owner, the commit message). The cache key is
+  `beta` (restore beta then main, save beta), as for a build of beta.
+- **The container** (`server/unity-cloudrun/github.sh`, sourced by `entrypoint.sh`):
+  1. `source`: the commit as before (`fetch_repo`). `ProjectSettings/ProjectVersion.txt` must match the image's Unity
+     (kind `config` otherwise: Gen had nothing to read it from). Then the repos of the project's local `file:`
+     packages (`file:C:/Projects/<repo>/<path>` in `Packages/manifest.json`): `owner/<repo>` at `packages[<repo>]`
+     (`main` by default), sparse to the package folders. Their commits are in `result.packages`.
+  2. The website: `owner/website` at `branch` (made from the default branch when it doesn't exist yet), depth 1,
+     sparse without the old `Game/v<n>` folders (each gets a `.hawkes-stub`, as in normal cloud builds), so Sick Of It's
+     old 1.3 GB versions are never downloaded.
+  3. `cache`, `unity`, `output` as before (the website diff is computed the same way; no `site.tgz` is uploaded).
+  4. `push`: `git add -A --sparse`, a gone stub removes its whole `Game/v<n>` from the index, one commit by
+     `Hawkes Gen <gen@hawkesgen.ai>` ("Unity build: <project> <sha7> (<tag>)"), pushed to `refs/heads/<branch>`. When the
+     branch moved during the build (a page change, another build), the commit is rebased onto its new tip and pushed
+     again (3 tries); a conflict fails the build with kind `push` ("build again"). Nothing changed: nothing pushed.
+  5. `result.json` has `pushed: { repo, branch, commit, before, source, files }`.
+- **The token:** the secret `github-token` (`GITHUB_TOKEN`) goes to git only as an `http.extraheader` set for each
+  fetch and push and removed right after; nothing prints it (the test checks the output and the checkout's config).
+  It now needs **Contents: read and write** on the three website repos (sickofitgamewebsite, YoobaLandGame,
+  theplacedepartmentwebsite) besides read on the source and package repos.
+- **Gen's result:** `ok`, `version` (from the changed `Game/v<n>` files), `site.folder` = `github:<repo>@<branch>`,
+  `github`, `pushed`, `packages`, `cloud`. Nothing is laid down here.
+- **Tests:** `test/unity-github.test.ts`: the param, the spec against a fake Google Cloud (Storage, Cloud Run, Logging),
+  and `github.sh` against local bare repos standing in for GitHub (beta checked out without old builds, the push to beta
+  with main untouched, a branch that moved, a website without beta, main refused, the packages, the token). Those need
+  `bash`, `git` and `jq`.
+
 ## Settings
 
 `settings.unityBuild` (POST `/v1/settings`, owner):
@@ -264,7 +314,8 @@ and password, at the start of every build, returned at the end.**
    - J's own account works too, if 2FA is off on it.
 3. **A GitHub token** for the builds:
    - Fine-grained, with read-only **Contents** on breakingthrough, YoobaLand, sickofitgame-unity, hawkesgen and
-     hawkesstudio. LFS is covered by Contents.
+     hawkesstudio, and **Contents: read and write** on sickofitgamewebsite, YoobaLandGame and theplacedepartmentwebsite
+     (GitHub mode pushes the build to their beta). LFS is covered by Contents.
    - The control server's existing `GITHUB_TOKEN` works too.
 4. **Image, job and secrets.** Each script prints first; add `--apply` to do it.
    ```

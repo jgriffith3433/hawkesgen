@@ -146,6 +146,10 @@ chosen one.
   `vmAt` (85%) of its memory moves its project there. Unity Personal is activated each build with the account's email and
   password (secrets `unity-email`, `unity-password`) through the Unity Licensing Client, and returned after;
   `HAWKES_LICENSE_CHECK=1` checks only that.
+- **GitHub mode** (`unity.build` param `github`, `src/providers/builder/github.ts`, `server/unity-cloudrun/github.sh`):
+  the source at one commit and the website's `beta` from GitHub, the build committed and pushed to that beta by the
+  container (never main). Studio uses it for build tags (`git tag build-x && git push origin build-x` in a Unity source
+  repo). docs/unity-cloudrun.md, "GitHub mode".
 
 ## Playtests
 
