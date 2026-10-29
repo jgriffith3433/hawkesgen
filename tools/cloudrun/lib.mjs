@@ -22,7 +22,7 @@ export function parseArgs(argv = process.argv.slice(2)) {
     const next = () => inline ?? argv[++i];
     if (k === 'apply') a.apply = true;
     else if (k === 'service') a.services.push(...String(next()).split(',').filter(Boolean));
-    else if (['project', 'region', 'bucket', 'image', 'gen-sa', 'worker-sa', 'network', 'subnet', 'tag', 'machine', 'parallel', 'from', 'to', 'state', 'limit', 'prefix', 'max-instances', 'tabs', 'class'].includes(k)) a[k.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = next();
+    else if (['project', 'region', 'bucket', 'image', 'gen-sa', 'worker-sa', 'network', 'subnet', 'tag', 'machine', 'parallel', 'from', 'to', 'state', 'limit', 'prefix', 'max-instances', 'tabs', 'class', 'variant'].includes(k)) a[k.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = next();
     else if (['no-sizes', 'setup', 'all', 'help'].includes(k)) a[k.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = true;
     else throw new Error(`Unknown option --${k}`);
   }

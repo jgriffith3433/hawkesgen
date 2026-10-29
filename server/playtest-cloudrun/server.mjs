@@ -1,9 +1,11 @@
 // The playtest service on Cloud Run (docs/playtest-cloudrun.md): a Playwright browser per WebSocket connection, on
-// the instance's NVIDIA L4. Gen connects with chromium.connect('wss://<service>/pw', { headers: { Authorization:
+// the instance's NVIDIA L4 (gen-playtest), or with WebGL on the CPU through SwiftShader (gen-playtest-cpu: the same
+// file with HAWKES_GL_MODE=software, built from Dockerfile.cpu). Gen connects with chromium.connect('wss://<service>/pw', { headers: { Authorization:
 // 'Bearer <Google ID token>' } }); Cloud Run checks the token (only Gen's service account is an invoker) before
 // anything here sees the request.
 //
-//   GET  /ready      startup probe: 200 once the GPU self-test found a GL path that draws on the NVIDIA GPU
+//   GET  /ready      startup probe: 200 once the self-test found a GL path that draws (GPU mode: on the NVIDIA GPU;
+//                    software mode: on SwiftShader)
 //   GET  /healthz    liveness: 200
 //   GET  /selftest   the self-test's report (JSON); ?fresh=1 runs it again (?all=1 tries every candidate)
 //   GET  /pw         WebSocket: one Chromium (launchServer with the chosen GPU flags) for this connection, proxied
@@ -23,13 +25,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
-import { selfTest, CANDIDATES, BASE_ARGS } from './gpu.mjs';
+import { selfTest, candidatesFor, glMode, BASE_ARGS } from './gpu.mjs';
 
 // The image installs ws; elsewhere (Gen's tests run this file from the repo) Playwright's bundled copy does.
 const WebSocketServer = await import('ws').then((m) => m.WebSocketServer ?? m.default.WebSocketServer, async () => (await import('playwright-core/lib/utilsBundle')).default.wsServer);
 const encoder = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
 
 const PORT = Number(process.env.PORT || 8080);
+const MODE = glMode();
 const ALLOW_SOFTWARE = process.env.HAWKES_ALLOW_SOFTWARE === '1';
 const MAX_SESSIONS = Math.max(1, Number(process.env.HAWKES_TABS || 4));
 const FPS = 30;
@@ -44,15 +47,15 @@ const log = (...a) => console.log(JSON.stringify({ severity: 'INFO', message: a.
 async function runSelfTest(opts = {}) {
   testing ??= selfTest(chromium, opts).then((r) => {
     report = r;
-    log(`self-test: ${r.gpu.ok ? `GPU via ${r.gpu.id} (${r.gpu.renderer})` : `no GPU path (${r.candidates.map((c) => `${c.id}: ${c.renderer ?? c.error}`).join('; ')})`}, nvenc ${r.nvenc.ok ? 'yes' : 'no'}, ${r.seconds} s`);
+    log(`self-test (${r.mode}): ${r.gl.ok ? `WebGL via ${r.gl.id} (${r.gl.renderer})${r.gl.fps ? `, ${r.gl.fps} fps on the bench` : ''}` : `no GL path (${r.candidates.map((c) => `${c.id}: ${c.renderer ?? c.error}`).join('; ')})`}, nvenc ${r.nvenc.ok ? 'yes' : 'no'}, ${r.seconds} s`);
     return r;
   }).finally(() => { testing = null; });
   return testing;
 }
 
-/** The launch options for every browser: the self-test's winner, else (only when allowed) software. */
+/** The launch options for every browser: the self-test's winner, else (only when allowed) Chromium's defaults. */
 function launchOptions() {
-  const c = CANDIDATES.find((x) => x.id === report?.gpu?.id);
+  const c = candidatesFor(MODE).find((x) => x.id === report?.gl?.id);
   return c ? { headless: true, channel: c.channel, args: c.args } : { headless: true, args: BASE_ARGS };
 }
 
@@ -122,7 +125,7 @@ const server = http.createServer(async (req, res) => {
   try {
     if (url.pathname === '/healthz') return send(res, 200, 'ok');
     if (url.pathname === '/ready') {
-      if (report && (report.gpu.ok || ALLOW_SOFTWARE)) return send(res, 200, { ok: true, gl: report.gpu.id, renderer: report.gpu.renderer });
+      if (report && (report.gl.ok || ALLOW_SOFTWARE)) return send(res, 200, { ok: true, mode: MODE, gl: report.gl.id, renderer: report.gl.renderer });
       return send(res, 503, { ok: false, testing: Boolean(testing), report });
     }
     if (url.pathname === '/selftest') {
@@ -145,7 +148,7 @@ server.on('upgrade', async (req, socket, head) => {
   };
   if (url.pathname === '/encode') return encoder.handleUpgrade(req, socket, head, (ws) => encodeSession(ws, url));
   if (url.pathname !== '/pw') return refuse(404, 'Not Found');
-  if (!report || (!report.gpu.ok && !ALLOW_SOFTWARE)) return refuse(503, 'No GPU');
+  if (!report || (!report.gl.ok && !ALLOW_SOFTWARE)) return refuse(503, MODE === 'software' ? 'No WebGL' : 'No GPU');
   // Cloud Run's concurrency already caps connections per instance; this guards a misconfigured deploy.
   if (sessions >= MAX_SESSIONS) return refuse(429, 'Too Many Tabs');
   sessions++;
@@ -184,7 +187,7 @@ server.on('upgrade', async (req, socket, head) => {
       if (head?.length) upstream.write(head);
       socket.pipe(upstream);
       upstream.pipe(socket);
-      log(`session ${job || '?'} started (${sessions} open, ${report?.gpu?.id ?? 'software'})`);
+      log(`session ${job || '?'} started (${sessions} open, ${report?.gl?.id ?? 'default flags'})`);
     });
   } catch (e) {
     log(`session ${job || '?'}: the browser didn't start: ${e?.message ?? e}`);
@@ -196,7 +199,7 @@ server.on('upgrade', async (req, socket, head) => {
 });
 
 started = Date.now();
-server.listen(PORT, () => log(`playtest service on :${PORT}, up to ${MAX_SESSIONS} tabs`));
+server.listen(PORT, () => log(`playtest service (${MODE}) on :${PORT}, up to ${MAX_SESSIONS} tabs`));
 // The self-test before traffic: the startup probe (/ready) waits for it.
 runSelfTest().catch((e) => log(`self-test failed: ${e?.message ?? e}`));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { log(`${sig}: closing`); server.close(); setTimeout(() => process.exit(0), 2000).unref(); });

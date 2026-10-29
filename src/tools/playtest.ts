@@ -81,7 +81,8 @@ export const playtestRunTool: Tool = {
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
   },
   async run(ctx) {
-    const p = ctx.params;
+    // A copy: the boot wait is stretched below when the browser renders in software (the Cloud Run CPU service).
+    const p = { ...ctx.params };
     // Loaded lazily so the service starts without Playwright's browsers installed.
     const { chromium, devices } = await import('playwright');
     // What it's doing, live, for Studio's Playtests page (livePlay.ts): every step from here on, and the state below.
@@ -97,6 +98,8 @@ export const playtestRunTool: Tool = {
     let host: PlaytestHost | null = null;
     // Why a game played in software on this machine instead of on a GPU (the result says so; frame rates mean nothing then).
     let softwareBecause: string | null = null;
+    // How much slower than a GPU browser this one is (the Cloud Run CPU service: its spec's `slow`).
+    let slow = 1;
     let killed = '';
     const kill = async (why: string) => {
       if (killed) return;
@@ -159,6 +162,11 @@ export const playtestRunTool: Tool = {
         if (!host && p.gpu === 'require') throw new GenError('No GPU server is ready for the playtest (start one, or use gpu: auto)', { kind: 'gpu' });
         if (!host && !softwareBecause && p.mode !== 'site') softwareBecause = 'no GPU machine was ready (the playtester did not start and no GPU server was running)';
       }
+      // A browser with no GPU (the Cloud Run CPU service, docs/playtest-cloudrun.md): the run says so, and loading and
+      // playing get `slow` times longer (SwiftShader draws every frame on the CPU).
+      if (host?.software) softwareBecause = host.software;
+      slow = Math.max(1, host?.slow ?? 1);
+      if (slow > 1) p.bootTimeout = Math.round(p.bootTimeout * slow);
       if (!host) {
         // This machine has one browser to give: playtests that run here take turns.
         ctx.step('waiting for this machine\'s browser');
@@ -172,7 +180,7 @@ export const playtestRunTool: Tool = {
           timeout: 90_000,
           args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--mute-audio'],
         }), 120_000, 'starting the browser');
-      if (host) ctx.log(`browser on the GPU server ${host.server}`);
+      if (host) ctx.log(`browser on ${host.software ? '' : 'the GPU server '}${host.server}`);
       // From here: loading, playing (the scenario's limit) and wrapping up, with room to spare.
       arm((p.bootTimeout + (p.timeout ?? 3600) + 300) * 1000);
 
@@ -277,7 +285,7 @@ export const playtestRunTool: Tool = {
             const sc = scenarios.find((s: any) => s.id === p.scenario);
             if (!sc) throw new GenError(`No scenario "${p.scenario}". This game has: ${scenarios.map((s: any) => s.id).join(', ') || 'none'}`, { kind: 'contract' });
             liveSc = sc;
-            const limit = (p.timeout ?? Math.max(60, Math.round((sc.seconds || 150) * 2))) * 1000;
+            const limit = (p.timeout ?? Math.max(60, Math.round((sc.seconds || 150) * 2 * slow))) * 1000;
             // Now that the scenario's length is known, tighten the watchdog: what's left of loading, the limit, wrapping up.
             arm(Math.max(0, bootEnd - Date.now()) + limit + 300_000);
             ctx.step(`waiting for the game to be ready`);
@@ -430,7 +438,7 @@ export const playtestRunTool: Tool = {
       liveOutcome = outcome;
       const result: any = {
         url: p.url, mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract ? p.scenario : null, outcome,
-        stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `GPU server ${host.server}` : 'this machine',
+        stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
         seconds: T(), loadSeconds, fps, renderer, software, softwareBecause, contract, scenarios,
         metrics: report?.metrics ?? {}, events: report?.events ?? [], log: report?.log ?? [],
         problems: dedupeBy(problems, (x) => x.message),
@@ -531,7 +539,7 @@ export const playtestRunTool: Tool = {
       if (!(e instanceof Stuck) || ctx.signal.aborted || page) throw e;
       const result = {
         url: p.url, mode: p.mode === 'site' ? 'site' : 'generic', scenario: null, outcome: 'stuck', stuck: e.message, device: p.mobile ? 'phone' : 'desktop', viewport,
-        browser: host ? `GPU server ${host.server}` : 'this machine', seconds: 0, loadSeconds: null, fps: summarizeFps([]), contract: false, scenarios: [], metrics: {}, events: [], log: [],
+        browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine', seconds: 0, loadSeconds: null, fps: summarizeFps([]), contract: false, scenarios: [], metrics: {}, events: [], log: [],
         problems: [{ severity: 'bug', message: `the run got stuck before the page opened: ${e.message}`, source: 'runner' }],
         console: { errors: 0, warnings: 0, first: [] }, failedRequests: [], pages: [], timeline: [], shots: [], video: null, visual: null, s3: null,
       };
@@ -612,7 +620,7 @@ export function stackArgs(inputs: { file: string; mjpeg: boolean }[], viewport: 
  * limits as one player: every await is bounded and a watchdog kills the browser if the run overruns.
  */
 async function runPeers(ctx: RunContext, chromium: any, devices: any, live: ReturnType<typeof beginLive>) {
-  const p = ctx.params;
+  const p = { ...ctx.params };
   const n: number = p.peers;
   if (p.mode === 'site' || p.mode === 'generic') throw new GenError(`peers needs a game with the playtest contract (mode auto or contract, not ${p.mode})`, { kind: 'contract' });
   const viewport = p.mobile ? { width: 390, height: 844 } : { width: p.width, height: p.height };
@@ -621,6 +629,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
   let browser: any = null;
   let host: PlaytestHost | null = null;
   let softwareBecause: string | null = null;
+  let slow = 1;
   let killed = '';
   const kill = async (why: string) => {
     if (killed) return;
@@ -669,6 +678,9 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       if (!host && p.gpu === 'require') throw new GenError('No GPU server is ready for the playtest (start one, or use gpu: auto)', { kind: 'gpu' });
       if (!host && !softwareBecause) softwareBecause = 'no GPU machine was ready (the playtester did not start and no GPU server was running)';
     }
+    if (host?.software) softwareBecause = host.software;
+    slow = Math.max(1, host?.slow ?? 1);
+    if (slow > 1) p.bootTimeout = Math.round(p.bootTimeout * slow);
     if (!host) {
       ctx.step('waiting for this machine\'s browser');
       release = await localSlot(ctx.signal);
@@ -681,7 +693,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
         timeout: 90_000,
         args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--mute-audio'],
       }), 120_000, 'starting the browser');
-    if (host) ctx.log(`browser on the GPU server ${host.server}`);
+    if (host) ctx.log(`browser on ${host.software ? '' : 'the GPU server '}${host.server}`);
     arm((p.bootTimeout + (p.timeout ?? 3600) + 300) * 1000);
 
     // One context per player (its own storage, like separate players), each recorded.
@@ -784,7 +796,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
         peer.sc = peer.scenarios.find((s: any) => s.id === peer.scenario);
         if (!peer.sc) throw new GenError(`No scenario "${peer.scenario}" (peer ${peer.i}). This game has: ${peer.scenarios.map((s: any) => s.id).join(', ') || 'none'}`, { kind: 'contract' });
       }
-      const limit = (p.timeout ?? Math.max(60, Math.round(Math.max(...peers.map((x) => x.sc.seconds || 150)) * 2))) * 1000;
+      const limit = (p.timeout ?? Math.max(60, Math.round(Math.max(...peers.map((x) => x.sc.seconds || 150)) * 2 * slow))) * 1000;
       arm(Math.max(0, bootEnd - Date.now()) + limit + 300_000);
       ctx.step('waiting for the games to be ready');
       await Promise.all(peers.map(async (peer) => {
@@ -948,7 +960,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
     const allErrors = allConsole.filter((c) => c.type === 'error').length;
     const result: any = {
       url: p.url, mode: 'contract', scenario: p.scenario, scenarioPeers: p.scenarioPeers || p.scenario, outcome: merged.outcome, room,
-      stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `GPU server ${host.server}` : 'this machine',
+      stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
       seconds: T(), loadSeconds: Math.max(...peers.map((x) => x.loadSeconds ?? 0)) || null, fps: players[0].fps, renderer, software, softwareBecause, contract: true, scenarios: peers[0].scenarios,
       metrics: peers[0].report?.metrics ?? {}, events: merged.events, log: merged.log,
       problems: dedupeBy([...problems, ...merged.problems], (x) => x.message),
@@ -1025,7 +1037,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
     if (!(e instanceof Stuck) || ctx.signal.aborted || peers.length) throw e;
     const result = {
       url: p.url, mode: 'contract', scenario: null, outcome: 'stuck', stuck: e.message, room, device: p.mobile ? 'phone' : 'desktop', viewport,
-      browser: host ? `GPU server ${host.server}` : 'this machine', seconds: 0, loadSeconds: null, fps: summarizeFps([]), contract: false, scenarios: [], metrics: {}, events: [], log: [],
+      browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine', seconds: 0, loadSeconds: null, fps: summarizeFps([]), contract: false, scenarios: [], metrics: {}, events: [], log: [],
       problems: [{ severity: 'bug', message: `the run got stuck before the page opened: ${e.message}`, source: 'runner' }],
       console: { errors: 0, warnings: 0, first: [] }, failedRequests: [], pages: [], timeline: [], shots: [], peers: [], video: null, visual: null, s3: null,
     };

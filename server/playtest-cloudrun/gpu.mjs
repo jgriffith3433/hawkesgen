@@ -8,7 +8,13 @@
 // renderer. The first whose renderer names the NVIDIA GPU (not SwiftShader, llvmpipe or another software path) is used
 // for every browser the instance launches. /ready stays 503 until one passes (unless HAWKES_ALLOW_SOFTWARE=1).
 //
-// Pure helpers (CANDIDATES, classifyRenderer, pickCandidate) are tested in Gen's test/playtest-cloudrun.test.ts.
+// The CPU variant (gen-playtest-cpu, HAWKES_GL_MODE=software; docs/playtest-cloudrun.md, "The CPU service") has no GPU
+// at all: WebGL runs on SwiftShader, Chromium's own CPU implementation of Vulkan under ANGLE. Its candidates are
+// SOFTWARE_CANDIDATES, and a candidate passes when it draws on SwiftShader (any renderer that draws, in fact: the
+// point is that WebGL works). The same self-test then also times a small WebGL loop, so the report says how fast.
+//
+// Pure helpers (CANDIDATES, SOFTWARE_CANDIDATES, classifyRenderer, pickCandidate, candidatesFor) are tested in Gen's
+// test/playtest-cloudrun.test.ts.
 
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -31,6 +37,23 @@ export const CANDIDATES = [
   { id: 'angle-vulkan-chromium', channel: 'chromium', args: [...VULKAN, ...BASE_ARGS] },
 ];
 
+/**
+ * Software WebGL (no GPU): ANGLE on SwiftShader. --enable-unsafe-swiftshader keeps WebGL on SwiftShader allowed
+ * (Chromium 137+ otherwise refuses the automatic fallback). Tried in Playwright's headless shell first, then in its
+ * new-headless "chromium" channel.
+ */
+const SWIFTSHADER = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
+export const SOFTWARE_CANDIDATES = [
+  { id: 'swiftshader', channel: undefined, args: [...SWIFTSHADER, ...BASE_ARGS] },
+  { id: 'swiftshader-chromium', channel: 'chromium', args: [...SWIFTSHADER, ...BASE_ARGS] },
+];
+
+/** 'gpu' (the default, the L4 service) or 'software' (gen-playtest-cpu). */
+export const glMode = (v = process.env.HAWKES_GL_MODE) => (String(v ?? '').toLowerCase() === 'software' ? 'software' : 'gpu');
+
+/** The candidates for a mode. */
+export const candidatesFor = (mode) => (mode === 'software' ? SOFTWARE_CANDIDATES : CANDIDATES);
+
 /** 'gpu' when the renderer names a hardware GPU, 'software' for Chromium's and Mesa's software paths, else 'unknown'. */
 export function classifyRenderer(renderer) {
   const r = String(renderer ?? '');
@@ -40,10 +63,32 @@ export function classifyRenderer(renderer) {
   return 'unknown';
 }
 
-/** The first candidate whose test drew on the GPU, or null. */
-export function pickCandidate(results) {
-  return results.find((r) => r.ok && classifyRenderer(r.renderer) === 'gpu') ?? null;
+/** The first candidate whose test drew on the GPU (or, in software mode, drew at all), or null. */
+export function pickCandidate(results, mode = 'gpu') {
+  return results.find((r) => r.ok && (mode === 'software' || classifyRenderer(r.renderer) === 'gpu')) ?? null;
 }
+
+/**
+ * Runs in the page: a 1280x720 WebGL canvas drawing a full-screen fragment shader with some arithmetic per pixel for
+ * `ms`, counting animation frames. A rough "how fast is WebGL here" next to a game's own fps (the real number is the
+ * playtest's).
+ */
+export const PAGE_BENCH = `(async (ms) => {
+  const c = document.createElement('canvas'); c.width = 1280; c.height = 720; document.body.appendChild(c);
+  const gl = c.getContext('webgl2'); if (!gl) return { fps: 0 };
+  const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, '#version 300 es\\nin vec2 a; void main(){ gl_Position = vec4(a, 0., 1.); }'));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, '#version 300 es\\nprecision highp float; uniform float t; out vec4 o; void main(){ vec2 u = gl_FragCoord.xy / vec2(1280., 720.); float v = 0.; for (int i = 0; i < 24; i++) v += sin(u.x * float(i) * 9. + t) * cos(u.y * float(i) * 7. - t); o = vec4(u, .5 + .5 * sin(v), 1.); }'));
+  gl.linkProgram(p); gl.useProgram(p);
+  const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(p, 'a'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const tl = gl.getUniformLocation(p, 't');
+  let frames = 0; const t0 = performance.now();
+  await new Promise((done) => { const f = (now) => { gl.uniform1f(tl, now / 1000); gl.drawArrays(gl.TRIANGLES, 0, 3); frames++; if (now - t0 < ms) requestAnimationFrame(f); else done(); }; requestAnimationFrame(f); });
+  return { fps: Math.round(frames / ((performance.now() - t0) / 1000) * 10) / 10 };
+})`;
 
 /** Runs in the page: a WebGL2 context, a clear and a readback (proves it draws), the unmasked vendor and renderer. */
 export const PAGE_PROBE = `(() => {
@@ -62,7 +107,7 @@ export const PAGE_PROBE = `(() => {
   };
 })()`;
 
-async function tryCandidate(chromium, cand, timeoutMs = 45_000) {
+async function tryCandidate(chromium, cand, { timeoutMs = 45_000, benchMs = 0 } = {}) {
   const t0 = Date.now();
   let browser = null;
   try {
@@ -70,6 +115,8 @@ async function tryCandidate(chromium, cand, timeoutMs = 45_000) {
     const page = await browser.newPage();
     await page.setContent('<!doctype html><title>gpu</title>');
     const gl = await page.evaluate(PAGE_PROBE);
+    // How fast WebGL draws here (software mode: SwiftShader on this instance's vCPUs).
+    if (benchMs && gl.webgl) gl.bench = await page.evaluate(`(${PAGE_BENCH})(${Number(benchMs)})`).catch((e) => ({ error: String(e?.message ?? e).slice(0, 200) }));
     // chrome://gpu, as a human would read it: the feature status lines ("WebGL: Hardware accelerated").
     let features = null;
     try {
@@ -110,20 +157,29 @@ export function nvencWorks() {
   return { ok: r.status === 0, error: r.status === 0 ? null : (r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n').slice(-2).join(' ').slice(0, 300) };
 }
 
-/** The whole self-test: every candidate (stops at the first GPU one unless `all`), the driver facts, NVENC. */
-export async function selfTest(chromium, { all = false, only = process.env.HAWKES_GL || '' } = {}) {
+/**
+ * The whole self-test: every candidate of the mode (stops at the first that passes unless `all`), the driver facts and
+ * NVENC (GPU mode only). `gl` is the chosen path; `gpu` is the same object, kept under its old name.
+ */
+export async function selfTest(chromium, { all = false, only = process.env.HAWKES_GL || '', mode = glMode() } = {}) {
   const t0 = Date.now();
-  const list = only ? CANDIDATES.filter((c) => c.id === only) : CANDIDATES;
+  const all_ = candidatesFor(mode);
+  const list = only ? all_.filter((c) => c.id === only) : all_;
   const results = [];
   for (const c of list) {
-    const r = await tryCandidate(chromium, c);
+    const r = await tryCandidate(chromium, c, { benchMs: mode === 'software' ? 3000 : 0 });
     results.push(r);
-    if (!all && r.ok && r.kind === 'gpu') break;
+    if (!all && pickCandidate([r], mode)) break;
   }
-  const chosen = pickCandidate(results);
+  const chosen = pickCandidate(results, mode);
+  const gl = chosen
+    ? { ok: true, id: chosen.id, renderer: chosen.renderer, vendor: chosen.vendor, kind: chosen.kind, fps: chosen.bench?.fps ?? null }
+    : { ok: false, id: null, renderer: results.find((r) => r.renderer)?.renderer ?? null };
   return {
-    at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 100) / 10,
-    gpu: chosen ? { ok: true, id: chosen.id, renderer: chosen.renderer, vendor: chosen.vendor } : { ok: false, id: null, renderer: results.find((r) => r.renderer)?.renderer ?? null },
-    candidates: results, driver: driverFacts(), nvenc: nvencWorks(),
+    at: new Date().toISOString(), seconds: Math.round((Date.now() - t0) / 100) / 10, mode,
+    gl, gpu: gl,
+    candidates: results,
+    driver: mode === 'software' ? { libDir: null, libs: null, nvidiaSmi: null, ldLibraryPath: process.env.LD_LIBRARY_PATH ?? null } : driverFacts(),
+    nvenc: mode === 'software' ? { ok: false, error: 'software mode: no GPU' } : nvencWorks(),
   };
 }

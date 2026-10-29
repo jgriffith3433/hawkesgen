@@ -169,11 +169,16 @@ export type Settings = {
    * used only when `cloudrun.url` is set; if it can't be reached the run falls back to the playtesters. `maxInstances`
    * and `tabsPerInstance` must match the deployed service (Gen's lane admits their product in browser tabs). `encode`:
    * where the video is encoded, on the service (NVENC) or here.
+   * "cloudrun-cpu" is the same browser service without a GPU (gen-playtest-cpu: WebGL on SwiftShader, request-based
+   * billing, scale to zero; `cloudrunCpu`): it plays when no GPU is to be had (AWS suspended 2026-10-28, no L4 quota).
+   * "cloudrun" falls back to it when the L4 service can't be reached and `cloudrunCpu.url` is set; either falls back to
+   * the playtesters. Frame rates there are SwiftShader's, so the run reports `software: true`.
    */
   playtest: {
-    backend: 'ec2' | 'cloudrun';
-    projects: Record<string, 'ec2' | 'cloudrun'>;
+    backend: PlaytestBackend;
+    projects: Record<string, PlaytestBackend>;
     cloudrun: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here' };
+    cloudrunCpu: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here' };
   };
   /**
    * Where the CPU suite runs (docs/cpu-cloudrun.md): "local" is this machine; "cloudrun" is Cloud Run, one request per
@@ -218,6 +223,9 @@ export type GpuEndpoint = {
   enabled: boolean;
 };
 
+/** Where playtest.run's browser runs (settings.playtest): the EC2 playtesters, the L4 service, the CPU service. */
+export type PlaytestBackend = 'ec2' | 'cloudrun' | 'cloudrun-cpu';
+export const PLAYTEST_BACKENDS: readonly PlaytestBackend[] = ['ec2', 'cloudrun', 'cloudrun-cpu'];
 export type UnityBackend = 'builder' | 'cloudrun' | 'vm';
 const isUnityBackend = (v: unknown): v is UnityBackend => v === 'builder' || v === 'cloudrun' || v === 'vm';
 
@@ -241,7 +249,7 @@ export const SETTINGS_DEFAULTS: Settings = {
     gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32 },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
-  playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' } },
+  playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service' } },
   cpu: { backend: 'local', tools: {}, cloudrun: { urls: {}, bucket: null, concurrent: 16 } },
   dashboard: { googleClientId: null, googleEmails: [] },
 };
@@ -278,20 +286,23 @@ function cleanCpu(c: Partial<Settings['cpu']> | undefined): Settings['cpu'] {
 /** settings.playtest, checked: known backends only, an https run.app-style URL, sane sizes. */
 function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['playtest'] {
   const d = SETTINGS_DEFAULTS.playtest;
-  const be = (v: unknown): 'ec2' | 'cloudrun' | null => (v === 'cloudrun' ? 'cloudrun' : v === 'ec2' ? 'ec2' : null);
-  const c: Partial<Settings['playtest']['cloudrun']> = t?.cloudrun ?? {};
+  const be = (v: unknown): PlaytestBackend | null => (PLAYTEST_BACKENDS.includes(v as PlaytestBackend) ? (v as PlaytestBackend) : null);
   const n = (v: unknown, lo: number, hi: number, def: number) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || def));
-  const projects: Record<string, 'ec2' | 'cloudrun'> = {};
+  // A Cloud Run URL, or the same container on this machine (http://127.0.0.1:<port>: no token; docs/playtest-cloudrun.md).
+  const okUrl = (u: unknown): u is string => typeof u === 'string' && (/^https:\/\/[a-z0-9.-]+\/?$/.test(u) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(u));
+  const service = (c: Partial<Settings['playtest']['cloudrun']>, def: Settings['playtest']['cloudrun']): Settings['playtest']['cloudrun'] => ({
+    url: okUrl(c.url) ? c.url.replace(/\/$/, '') : null,
+    maxInstances: n(c.maxInstances, 1, 20, def.maxInstances),
+    tabsPerInstance: n(c.tabsPerInstance, 1, 8, def.tabsPerInstance),
+    encode: c.encode === 'here' ? 'here' : 'service',
+  });
+  const projects: Record<string, PlaytestBackend> = {};
   for (const [k, v] of Object.entries(t?.projects ?? {})) if (/^[A-Za-z0-9._/-]{1,80}$/.test(k) && be(v)) projects[k] = be(v)!;
   return {
     backend: be(t?.backend) ?? d.backend,
     projects,
-    cloudrun: {
-      url: typeof c.url === 'string' && /^https:\/\/[a-z0-9.-]+\/?$/.test(c.url) ? c.url.replace(/\/$/, '') : null,
-      maxInstances: n(c.maxInstances, 1, 20, d.cloudrun.maxInstances),
-      tabsPerInstance: n(c.tabsPerInstance, 1, 8, d.cloudrun.tabsPerInstance),
-      encode: c.encode === 'here' ? 'here' : 'service',
-    },
+    cloudrun: service(t?.cloudrun ?? {}, d.cloudrun),
+    cloudrunCpu: service(t?.cloudrunCpu ?? {}, d.cloudrunCpu),
   };
 }
 export const FLEET_MAX = 16;
@@ -441,7 +452,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } }, dashboard: { ...SETTINGS_DEFAULTS.dashboard, ...raw.dashboard } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, ...raw.playtest?.cloudrunCpu } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } }, dashboard: { ...SETTINGS_DEFAULTS.dashboard, ...raw.dashboard } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -462,7 +473,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     storage: { ...cur.storage, ...(patch.storage ?? {}) },
     gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
     unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) }, vm: { ...cur.unityBuild.vm, ...(patch.unityBuild?.vm ?? {}) } },
-    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) } },
+    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) }, cloudrunCpu: { ...cur.playtest.cloudrunCpu, ...(patch.playtest?.cloudrunCpu ?? {}) } },
     cpu: { ...cur.cpu, ...(patch.cpu ?? {}), tools: { ...cur.cpu.tools, ...(patch.cpu?.tools ?? {}) }, cloudrun: { ...cur.cpu.cloudrun, ...(patch.cpu?.cloudrun ?? {}), urls: { ...cur.cpu.cloudrun.urls, ...(patch.cpu?.cloudrun?.urls ?? {}) } } },
     dashboard: { ...cur.dashboard, ...(patch.dashboard ?? {}) },
   });

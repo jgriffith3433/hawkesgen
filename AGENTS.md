@@ -12,7 +12,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/workflows.md` covers ComfyUI workflows as tools.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.
-- `docs/playtest-cloudrun.md` covers playtests on Cloud Run (the L4 browser service, how WebGL gets the GPU, local builds through the connection, cost per playtest, the pilot).
+- `docs/playtest-cloudrun.md` covers playtests on Cloud Run (the L4 browser service, how WebGL gets the GPU, local builds through the connection, cost per playtest, the pilot) and **the CPU service `gen-playtest-cpu`** (no GPU: WebGL on SwiftShader, `backend: "cloudrun-cpu"`, one tab per 4 vCPU instance, request-based billing at about $0.007 a playtest minute, what was measured, J's `deploy-cpu.ps1`).
 - `docs/cloudrun.md` covers GPU jobs on Google Cloud Run (scale to zero): the worker image (`server/cloudrun/`), the family → service map (`services.json`), routing by `settings.gpu` (fleet stays the default), the per-graph request protocol, the scripts in `tools/cloudrun/` (dry run unless `--apply`; deploying needs J's OK) and the pilot steps.
 - `docs/gpu-providers.md` covers GPU jobs on more than one provider: `settings.gpu.order` / `familyOrder` over `fleet`, `cloudrun` and endpoints in `settings.gpu.providers` (RunPod, Modal, any HTTPS host running the worker image), cooldowns and fallback, the storage broker (workers elsewhere get no Google credentials: a run token and V4 signed URLs), the fleet from Cloud Run (keyless AWS, a fixed egress IP or `fleet.openComfyPort`), prices, and the setup scripts in `tools/gpu-providers/` (print first, `--apply` to change). No order set: the old rule, unchanged.
 - `docs/cpu-cloudrun.md` covers the CPU suite on Cloud Run: the CPU tools (cutout, transform, sprite sheets, maps, probe, video fit/compose/matte/composite/control-mix, splats, LOD levels) on the scale-to-zero services gen-cpu and gen-cpu-heavy, the same tool code (`src/cpu/`), routing by `settings.cpu` (local stays the default), the protocol, fallback to here, prices, `GET /v1/cpu`, and `tools/cpu-cloudrun/` (J's `deploy.ps1`).
@@ -177,6 +177,14 @@ returns a verdict, scores and findings.
   video encodes on the service (NVENC) over a WebSocket, else here; its own `playtest-cloud` lane of maxInstances x
   tabsPerInstance tabs. A GPU self-test gates the service's `/ready` (`hawkesgen playtester cloud selftest`). Any
   failure falls back to the playtesters. Scripts in `tools/playtest-cloudrun/` print first, `--apply` to change.
+- **CPU backend** (`docs/playtest-cloudrun.md`, "The CPU service"; AWS suspended and no GPU quota since 2026-10-28):
+  `cloudrun-cpu` plays on `gen-playtest-cpu`, the same server (`HAWKES_GL_MODE=software`, `Dockerfile.cpu`,
+  `service-cpu.json`) with WebGL on SwiftShader: one tab per 4 vCPU / 8 GiB instance, request-based billing (no idle
+  tail), its own lane `playtest-cloud-cpu`, `settings.playtest.cloudrunCpu`. The run reports `software: true` (the review
+  ignores frame rates), and `slow` (2) doubles the boot wait and the default scenario limit. `cloudrun` falls back to it
+  before the playtesters. A playtest service URL may also be `http://127.0.0.1:<port>` (the container beside Gen, no
+  token). `hawkesgen playtester cloud cpu selftest`; J's `tools/playtest-cloudrun/deploy-cpu.ps1` (dry run, `-Apply`,
+  `-Settings`).
 - **Lanes count browser tabs** (a multiplayer run is one per player): each playtester's by its type
   (`PLAYTESTER_TYPES[..].lanes`: g4dn.xlarge 2, g4dn.2xlarge 4), summed over every playtester that exists (the queue,
   `jobs.ts`); three on a GPU fleet server; one on this PC or in software (the local browser also takes turns inside

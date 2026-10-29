@@ -1192,14 +1192,16 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // ------------------------------------------------- playtests on Cloud Run (docs/playtest-cloudrun.md)
     // The settings, the lanes and the price; ?selftest=1 also asks the service how WebGL reaches its GPU (that may start
     // an instance: about $0.03 for its cold start and test, plus its idle tail). fresh=1 reruns it, all=1 tries every path.
+    // ?variant=cpu: the CPU service (gen-playtest-cpu, software WebGL; its self-test also times a WebGL loop).
     if (route === '/v1/playtester/cloud' && method === 'GET') {
       requireRole(client, 'owner');
       const pc = await import('./providers/playtester/cloudrun.ts');
       const s = loadSettings();
       const project = url.searchParams.get('project');
-      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, backend: 'cloudrun' } });
+      const variant = url.searchParams.get('variant') === 'cpu' ? 'cpu' : 'gpu';
+      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, projects: {}, backend: variant === 'cpu' ? 'cloudrun-cpu' : 'cloudrun' } });
       const out: any = { settings: s.playtest, backendFor: project ? pc.playtestBackendOf(project, s.playtest) : s.playtest.backend, deployed: Boolean(c) };
-      if (c) Object.assign(out, { service: c.name, region: c.region, lanes: pc.cloudLanes(c), pricePerHour: Math.round(c.pricePerSecond * 3600 * 100) / 100, perTabMinute: Math.round(pc.tabCost(c, 60) * 10_000) / 10_000 });
+      if (c) Object.assign(out, { service: c.name, variant: c.variant, region: c.region, lanes: pc.cloudLanes(c), pricePerHour: Math.round(c.pricePerSecond * 3600 * 100) / 100, perTabMinute: Math.round(pc.tabCost(c, 60) * 10_000) / 10_000 });
       if (c && url.searchParams.get('selftest') === '1') out.selftest = await pc.cloudSelfTest(c, { fresh: url.searchParams.get('fresh') === '1', all: url.searchParams.get('all') === '1' });
       return send(res, 200, out);
     }

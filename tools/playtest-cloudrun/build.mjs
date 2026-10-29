@@ -2,7 +2,10 @@
 // Builds the playtest service's image (server/playtest-cloudrun/) with Cloud Build into Artifact Registry.
 // docs/playtest-cloudrun.md, "Pilot".
 //
-//   node tools/playtest-cloudrun/build.mjs [--project hawkes-staging] [--region us-east4] [--machine default] [--apply]
+//   node tools/playtest-cloudrun/build.mjs [--variant gpu|cpu] [--project hawkes-staging] [--region us-east4] [--machine default] [--apply]
+//
+// --variant cpu builds gen-playtest-cpu from Dockerfile.cpu (no NVIDIA files: WebGL on SwiftShader); its tag goes to
+// .data/cloudrun/playtest-cpu-image.json.
 //
 // The image is Playwright's own (mcr.microsoft.com/playwright:v<Gen's version>-noble) plus ffmpeg, the GLVND EGL and
 // Vulkan loaders with the NVIDIA vendor files, and the service (server.mjs, gpu.mjs). Its tag is
@@ -14,17 +17,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, gcloud, saveState, STATE_DIR } from '../cloudrun/lib.mjs';
-import { loadSpec, buildContext, imageTag } from './lib.mjs';
+import { loadSpec, buildContext, imageTag, variantOf, stateName } from './lib.mjs';
 
 const args = parseArgs();
-const spec = loadSpec();
+const variant = variantOf(args.variant);
+const spec = loadSpec(variant);
 if (!process.argv.some((a) => a.startsWith('--region'))) args.region = spec.region;
-const ctx = buildContext();
+const ctx = buildContext(undefined, variant);
 const tag = args.tag ?? imageTag(args, spec, ctx);
 const machine = args.machine ?? 'default';
-const dir = path.join(STATE_DIR, `playtest-build-${ctx.hash}`);
+const dir = path.join(STATE_DIR, `playtest-build-${variant}-${ctx.hash}`);
 
-console.log(`Playtest image ${tag}`);
+console.log(`Playtest image (${variant}) ${tag}`);
 console.log(`  Playwright ${ctx.version} (Gen's package-lock.json), context ${ctx.hash}`);
 
 const repo = gcloud(args, ['artifacts', 'repositories', 'describe', spec.repository, `--project=${args.project}`, `--location=${args.region}`, '--format=value(name)'], { read: true });
@@ -35,7 +39,7 @@ if (!repo) {
 const have = gcloud(args, ['artifacts', 'docker', 'images', 'describe', tag, `--project=${args.project}`, '--format=value(image_summary.digest)'], { read: true });
 if (have) {
   console.log(`\nThat tag is already built (${have}); nothing to do.`);
-  saveState('playtest-image.json', { tag, project: args.project, region: args.region, built: 'existing' });
+  saveState(stateName(variant, 'image'), { tag, project: args.project, region: args.region, built: 'existing' });
   process.exit(0);
 }
 
@@ -52,5 +56,5 @@ if (!args.apply) {
   console.log('\nDry run: nothing built. Add --apply to build (Cloud Build minutes, J\'s OK).');
   process.exit(0);
 }
-saveState('playtest-image.json', { tag, project: args.project, region: args.region, built: new Date().toISOString() });
-console.log(`\nBuilt ${tag}. Next: node tools/playtest-cloudrun/deploy.mjs --project ${args.project} --region ${args.region}`);
+saveState(stateName(variant, 'image'), { tag, project: args.project, region: args.region, built: new Date().toISOString() });
+console.log(`\nBuilt ${tag}. Next: node tools/playtest-cloudrun/deploy.mjs${variant === 'cpu' ? ' --variant cpu' : ''} --project ${args.project} --region ${args.region}`);
