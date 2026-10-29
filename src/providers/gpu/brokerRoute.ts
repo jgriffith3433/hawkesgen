@@ -11,7 +11,31 @@ export type BrokerDeps = {
   /** The object's bytes as a stream (with a Range header passed on), or null when it isn't there. */
   open: (uri: string, range?: string) => Promise<Response | null>;
   signer: () => Promise<Signer | null>;
+  /** A model that isn't in the bucket: its public download (server/models.json's url) and size, or null. */
+  source: (uri: string) => Promise<{ url: string; size: number } | null>;
 };
+
+// Models straight from Hugging Face (J, 2026-10-29: "for now, download from hugging face"; provider volumes later): a
+// models/<dir>/<file> the bucket doesn't hold is answered with models.json's public URL, which workers download in
+// ranges like a signed one (free egress, no copy to keep). Sizes are asked once per file.
+const sizes = new Map<string, number>();
+async function modelSource(uri: string): Promise<{ url: string; size: number } | null> {
+  const m = /^gs:\/\/[^/]+\/models\/([^/]+)\/(.+)$/.exec(uri);
+  if (!m) return null;
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const list = JSON.parse(readFileSync(fileURLToPath(new URL('../../../server/models.json', import.meta.url)), 'utf8'));
+  const e = (list.models ?? []).find((x: any) => x.dir === m[1] && x.file === m[2] && /^https:\/\//.test(String(x.url ?? '')));
+  if (!e) return null;
+  let size = sizes.get(e.url);
+  if (size === undefined) {
+    const r = await fetch(e.url, { method: 'HEAD', redirect: 'follow' });
+    size = Number(r.headers.get('x-linked-size') ?? r.headers.get('content-length') ?? 0);
+    if (!r.ok || !(size > 0)) return null;
+    sizes.set(e.url, size);
+  }
+  return { url: e.url, size };
+}
 
 const media = (uri: string) => {
   const m = /^gs:\/\/([^/]+)\/(.+)$/.exec(uri)!;
@@ -28,6 +52,7 @@ export const defaultBrokerDeps = (): BrokerDeps => ({
     return r;
   },
   signer: defaultSigner,
+  source: modelSource,
 });
 
 const MAX_WRITE = 512 * 1024 * 1024;
@@ -60,7 +85,7 @@ export async function handleBroker(req: IncomingMessage, res: ServerResponse, ur
   if ((op === 'write') !== (method === 'PUT') || !allowed(run, op, uri)) return json(403, { error: `not allowed: ${op} ${uri}` });
   try {
     if (op === 'stat') {
-      const s = await deps.stat(uri);
+      const s = (await deps.stat(uri)) ?? (await deps.source(uri));
       return s ? json(200, { size: Number(s.size) }) : json(404, { error: 'not found' });
     }
     if (op === 'write') {
@@ -69,7 +94,10 @@ export async function handleBroker(req: IncomingMessage, res: ServerResponse, ur
     }
     if (op === 'url') {
       const s = await deps.stat(uri);
-      if (!s) return json(404, { error: 'not found' });
+      if (!s) {
+        const src = await deps.source(uri);
+        return src ? json(200, { url: src.url, size: src.size, from: 'huggingface' }) : json(404, { error: 'not found' });
+      }
       const who = await deps.signer().catch(() => null);
       if (!who) return json(200, { proxy: true, size: Number(s.size) });
       return json(200, { url: await signedGetUrl(uri, who, 900), size: Number(s.size) });

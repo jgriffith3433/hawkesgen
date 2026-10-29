@@ -219,8 +219,9 @@ test('broker tokens: one run, its own folder read-write, inputs and models read-
 });
 
 /** The broker route on a real port, over in-memory objects. */
-async function brokerServer(objects: Map<string, Buffer>, signer: any = null) {
+async function brokerServer(objects: Map<string, Buffer>, signer: any = null, sources: Record<string, { url: string; size: number }> = {}) {
   const deps = {
+    source: async (uri: string) => sources[uri] ?? null,
     stat: async (uri: string) => (objects.has(uri) ? { size: objects.get(uri)!.length } : null),
     write: async (uri: string, data: Buffer) => { objects.set(uri, data); },
     open: async (uri: string, range?: string) => {
@@ -259,6 +260,26 @@ test('the broker route: stat, read with ranges, write, url (proxy without a sign
     assert.equal((await fetch(`${url}?op=stat&uri=${encodeURIComponent(out)}`)).status, 401, 'no token');
     assert.equal((await fetch(`${url}?op=stat&uri=${encodeURIComponent(out)}`, { headers: { 'X-Hawkes-Run-Token': brokerToken(KEY, 'other') } })).status, 403, 'a token for another bucket');
   } finally { srv.close(); }
+});
+
+test('a model the bucket lacks comes from its public source (Hugging Face): url and stat answer it, nothing else does', async () => {
+  resetBrokerKey();
+  const hf = 'https://huggingface.co/x/y/resolve/main/z.safetensors';
+  const { srv, url } = await brokerServer(new Map(), null, { 'gs://bkt/models/vae/z.safetensors': { url: hf, size: 123 } });
+  try {
+    const tok = brokerToken(KEY, 'bkt');
+    const call = (op: string, uri: string) => fetch(`${url}?op=${op}&uri=${encodeURIComponent(uri)}`, { headers: { 'X-Hawkes-Run-Token': tok } });
+    assert.deepEqual(await (await call('url', 'gs://bkt/models/vae/z.safetensors')).json(), { url: hf, size: 123, from: 'huggingface' });
+    assert.deepEqual(await (await call('stat', 'gs://bkt/models/vae/z.safetensors')).json(), { size: 123 });
+    assert.equal((await call('url', 'gs://bkt/models/vae/unknown.safetensors')).status, 404);
+    assert.equal((await call('url', `gs://bkt/cloudrun/runs/${KEY}/nothing.png`)).status, 404, 'only models have a public source');
+  } finally { srv.close(); }
+});
+
+test('the real model lookup finds models.json entries by dir/file (no network for an unknown file)', async () => {
+  const { defaultBrokerDeps } = await import('../src/providers/gpu/brokerRoute.ts');
+  assert.equal(await defaultBrokerDeps().source('gs://bkt/models/vae/not-a-model.safetensors'), null);
+  assert.equal(await defaultBrokerDeps().source('gs://bkt/cloudrun/inputs/x.png'), null);
 });
 
 test('V4 signed URLs: the canonical request is signed as the service account (checked with a real RSA key)', async () => {

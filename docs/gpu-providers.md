@@ -157,6 +157,31 @@ All of these live in Gen's environment, mounted from Secret Manager by `tools/ge
 
 An endpoint whose key is missing shows "… not set" and is skipped. An endpoint that answers 401/403 cools down for 30 minutes.
 
+## Models: from Hugging Face now, provider volumes later
+
+**Now** (J, 2026-10-29: "for now, download from hugging face"): a model a job needs that isn't in the models bucket is
+downloaded by the worker straight from its public URL in `server/models.json`. The broker's `url` and `stat` answer
+with that URL and its size (`brokerRoute.ts modelSource`); the worker downloads it in parallel ranges like a signed URL
+(checked: Hugging Face's CDN honours ranges through the redirect). Free egress, nothing to store or keep in sync. The cost
+is time: each cold worker downloads its job's models first (Z-Image about 24 GB, a minute or two). A model in the bucket
+still wins. New models: add them to `models.json` with a public `url`.
+
+**Later, when cold starts should be faster (J agreed the shape, not started):** one endpoint and one volume per kind of
+work, so the models sit next to the GPU (the AWS fleet baked them into its AMI; a provider volume is the equivalent, the
+container image stays small). Gen already routes by family (`families` on each `settings.gpu.providers` entry).
+
+| Endpoint | Families | Provider | GPU | Volume |
+|---|---|---|---|---|
+| image | z-image, qwen-image / qwen-edit, utility (cutout, depth, upscale, segment, pose) | RunPod (load balancer: requests end at 5.5 min) | L40S | ~120 GB, ~$8/month |
+| 3D | trellis2, hunyuan3d, multi-view | RunPod | L40S | ~50 GB, ~$3.50/month |
+| video | wan (i2v, animate, infinitetalk, t2v, control), ltx-2.3, minimax-h3 | Modal (requests up to ~55 min) | L40S, or 80 GB if Wan needs it | ~200 GB |
+| audio | ACE-Step and the open voice/SFX models | Modal | 24 GB card | ~40 GB; needs its own worker (these aren't ComfyUI) |
+
+The work: a fill job per volume (Hugging Face into the volume: a cheap RunPod CPU pod, a Modal function), MODEL_LOAD
+mount with MODELS_MOUNT on each endpoint, one settings entry per endpoint with its families. A family lives on one
+provider (no fallback across them unless its models are copied to both). RunPod volumes tie an endpoint to one
+datacenter: pick one with L40S to spare.
+
 ## The image
 
 It is the Cloud Run GPU image (`server/cloudrun/`, built by `tools/cloudrun/build.mjs` in Cloud Build). It holds ComfyUI
