@@ -12,6 +12,7 @@ import { getTool } from './tools/index.ts';
 import { applyPreset } from './presets.ts';
 import { getUserById, type UserRow } from './users.ts';
 import { id, GenError } from './util.ts';
+import { subscriptionEvent } from './subscriptions.ts';
 
 const STRIPE_CONFIG_FILE = path.join(DATA_DIR, 'stripe.json');
 
@@ -42,6 +43,9 @@ function readStripeConfigFile(): StripeConfigFile {
     return {};
   }
 }
+
+/** Stripe's keys (the runtime config file, else the environment), for subscriptions.ts. */
+export const stripeKeys = () => loadStripeKeys();
 
 function loadStripeKeys() {
   const file = readStripeConfigFile();
@@ -112,7 +116,7 @@ export function saveStripeConfig(input: {
   return getStripeStatus();
 }
 
-export type CreditLedgerKind = 'signup_bonus' | 'stripe_purchase' | 'job_reserve' | 'job_refund' | 'admin_grant';
+export type CreditLedgerKind = 'signup_bonus' | 'stripe_purchase' | 'subscription_credits' | 'job_reserve' | 'job_refund' | 'admin_grant';
 
 export type CreditLedgerEntry = {
   id: string;
@@ -583,6 +587,10 @@ export function handleStripeWebhook(rawBody: Buffer | string, signatureHeader: s
     throw new GenError('Webhook body is not valid JSON', { status: 400 });
   }
 
+  // Subscriptions (subscriptions.ts): their checkout, invoices and status changes.
+  const sub = subscriptionEvent(event);
+  if (sub) return sub;
+
   if (event?.type === 'checkout.session.completed') {
     const session = event.data?.object ?? {};
     if (session.payment_status === 'paid') {
@@ -693,7 +701,8 @@ export function createSubscriptionPlan(plan: Omit<SubscriptionPlan, 'created'>):
 
 export function getUserSubscription(userId: string): UserSubscription | null {
   const row = db.prepare(
-    "SELECT * FROM user_subscriptions WHERE user_id = ? AND status IN ('active', 'trialing') ORDER BY created DESC LIMIT 1",
+    // past_due stays current (the plan shows "payment failed" and can't be bought twice) until Stripe ends it.
+    "SELECT * FROM user_subscriptions WHERE user_id = ? AND status IN ('active', 'trialing', 'past_due') ORDER BY created DESC LIMIT 1",
   ).get(userId) as any;
   if (!row) return null;
   return {

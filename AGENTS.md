@@ -174,6 +174,19 @@ portal and Studio use Gen in the back end with their own keys.
   `HAWKESGEN_PASSWORD_LOGIN=1` turns them back on) and stay for local runs and tests. The app uses the admin
   dashboard's Google client (`settings.dashboard.googleClientId`); its JavaScript origins must list each Gen address.
   The editor's timeline lives in the browser (`localStorage`).
+- **Paying** (`src/subscriptions.ts`, `src/billing.ts`, `test/subscriptions.test.ts`):
+  - **Plans:** monthly plans grant credits every paid month. Defaults (provisional): Creator $12 = 1,500 credits,
+    Pro $39 = 5,500, seeded when the table is empty; the owner changes them at `POST /v1/subscriptions/plans`.
+  - **Credit packs:** one-off, as before.
+  - **Stripe:** a Checkout session in subscription mode (`POST /v1/subscriptions/checkout`). Webhooks
+    (`/v1/billing/webhook`) record it, grant credits once per paid invoice (`invoice:<id>` in the ledger), follow
+    cancel and status, and mark a failed payment `past_due` (still the current plan).
+  - **Management:** cancel and resume at the month's end (`/v1/subscriptions/cancel|resume`), and Stripe's billing
+    portal (`POST /v1/billing/portal`).
+  - **Set-up:** Stripe needs its keys on each lane (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, or
+    `POST /v1/billing/config`) and a webhook endpoint at `https://<gen>/v1/billing/webhook` for
+    `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` and
+    `customer.subscription.deleted`.
 - **The admin dashboard** is `/admin` (its files are served beside it: `/admin/app.js` is `dashboard/app.js`). Owner
   and admin keys, or Google for `settings.dashboard.googleEmails`. The app links there for admins.
 - The old Hawkes Play pages stay at `/home`, `/app` and `/play`.

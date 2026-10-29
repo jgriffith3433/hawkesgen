@@ -31,6 +31,7 @@ export type PublicUser = {
   credits: number;
   created: number;
   last_login: number | null;
+  hasBilling: boolean;
 };
 
 export const SESSION_COOKIE = 'hg_session';
@@ -46,6 +47,8 @@ export function toPublicUser(u: UserRow): PublicUser {
     credits: u.credits,
     created: u.created,
     last_login: u.last_login,
+    /** Has paid through Stripe (the billing portal has something to show). */
+    hasBilling: Boolean(u.stripe_customer_id),
   };
 }
 

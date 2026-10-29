@@ -169,6 +169,31 @@ async function openAccount() {
   $('#accountEmail').textContent = state.user?.email ?? '';
   $('#accountCredits').textContent = String(state.user?.credits ?? 0);
   $('#accountError').hidden = true;
+  // Plans: the current one (cancel or resume at the month's end), else the ones to pick.
+  const plansBox = $('#plans');
+  plansBox.replaceChildren();
+  try {
+    const [{ plans = [], stripe = {} }, { subscription: sub }] = await Promise.all([api('/v1/subscriptions/plans'), api('/v1/subscriptions/me')]);
+    const cur = sub && sub.status !== 'canceled' ? plans.find((p) => p.id === sub.planId) : null;
+    if (cur) {
+      const ends = new Date(sub.currentPeriodEnd).toLocaleDateString();
+      plansBox.append(h('div', {},
+        h('p', {}, h('b', {}, cur.name), ` · ${cur.creditsPerMonth.toLocaleString()} credits a month`,
+          sub.status === 'past_due' ? h('span', { class: 'error' }, ' · payment failed: update your card') : '',
+          sub.cancelAtPeriodEnd ? h('span', { class: 'muted' }, ` · ends ${ends}`) : h('span', { class: 'muted' }, ` · renews ${ends}`)),
+        h('button', { class: 'ghost small', onclick: () => planAction(sub.cancelAtPeriodEnd ? 'resume' : 'cancel') }, sub.cancelAtPeriodEnd ? 'Keep my plan' : 'Cancel at the end of the month')));
+    } else if (!stripe.configured) {
+      plansBox.append(h('p', { class: 'muted' }, 'Plans open soon.'));
+    } else {
+      for (const p of plans) {
+        plansBox.append(h('button', { class: 'ghost', onclick: () => subscribe(p.id) },
+          h('b', {}, `${p.name} · $${(p.priceCents / 100).toFixed(0)}/month`), h('small', {}, `${p.creditsPerMonth.toLocaleString()} credits every month`)));
+      }
+    }
+  } catch (err) {
+    plansBox.append(h('p', { class: 'muted' }, err.message));
+  }
+  $('#billingPortalBtn').hidden = !state.user?.hasBilling;
   const box = $('#packs');
   box.replaceChildren();
   try {
@@ -184,6 +209,33 @@ async function openAccount() {
   }
   $('#accountDialog').showModal();
 }
+async function subscribe(planId) {
+  try {
+    const r = await api('/v1/subscriptions/checkout', { body: { planId } });
+    if (r.url) location.href = r.url;
+  } catch (err) {
+    $('#accountError').textContent = err.message;
+    $('#accountError').hidden = false;
+  }
+}
+async function planAction(what) {
+  try {
+    await api(`/v1/subscriptions/${what}`, { method: 'POST' });
+    openAccount();
+  } catch (err) {
+    $('#accountError').textContent = err.message;
+    $('#accountError').hidden = false;
+  }
+}
+$('#billingPortalBtn').addEventListener('click', async () => {
+  try {
+    const r = await api('/v1/billing/portal', { method: 'POST' });
+    if (r.url) location.href = r.url;
+  } catch (err) {
+    $('#accountError').textContent = err.message;
+    $('#accountError').hidden = false;
+  }
+});
 async function buy(packId) {
   try {
     const r = await api('/v1/billing/checkout', { body: { packId } });

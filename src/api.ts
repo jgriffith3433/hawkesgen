@@ -359,6 +359,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/portfolio' && method === 'GET') {
       return send(res, 200, getPortfolio());
     }
+    // The plans, for anyone (the app shows them before sign-in); the defaults are seeded on first ask (subscriptions.ts).
+    if (route === '/v1/subscriptions/plans' && method === 'GET') {
+      (await import('./subscriptions.ts')).seedPlans();
+      return send(res, 200, { plans: billing.listSubscriptionPlans(), stripe: { configured: getStripeStatus().configured } });
+    }
     if (route === '/v1/billing/packs' && method === 'GET') {
       const st = getStripeStatus();
       return send(res, 200, {
@@ -534,6 +539,25 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       const plan = billing.createSubscriptionPlan(body);
       return send(res, 200, plan);
+    }
+    // Subscribing (subscriptions.ts): a plan's Stripe checkout, cancel and resume at the period's end, the billing portal.
+    if (route === '/v1/subscriptions/checkout' && method === 'POST') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in to subscribe', { status: 403 });
+      const S = await import('./subscriptions.ts');
+      return send(res, 200, await S.subscriptionCheckout(user, String((await readJson(req)).planId ?? ''), origin || 'https://gen.hawkesgen.ai'));
+    }
+    if ((route === '/v1/subscriptions/cancel' || route === '/v1/subscriptions/resume') && method === 'POST') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in first', { status: 403 });
+      const S = await import('./subscriptions.ts');
+      return send(res, 200, { subscription: await S.setCancelAtPeriodEnd(user, route.endsWith('cancel')) });
+    }
+    if (route === '/v1/billing/portal' && method === 'POST') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in first', { status: 403 });
+      const S = await import('./subscriptions.ts');
+      return send(res, 200, await S.billingPortal(user, origin || 'https://gen.hawkesgen.ai'));
     }
     if (route === '/v1/subscriptions/me' && method === 'GET') {
       if (client.role !== 'user') throw new GenError('Subscriptions are for user accounts only', { status: 403 });
