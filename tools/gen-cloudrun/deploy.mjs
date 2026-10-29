@@ -35,8 +35,11 @@ const ownerSecret = beta ? 'gen-beta-owner-key' : 'gen-owner-key';
 const unityBucket = `hawkes-unity-${project}`;
 const unityJobSa = `hawkes-unity-build@${project}.iam.gserviceaccount.com`;
 
+// The image: --image, else the one the service runs now (CI deploys code; this script changes settings, secrets and
+// permissions without rolling the code back), else the last one build.mjs made on this PC.
 const imageFile = path.join(ROOT, '.data', 'cloudrun', 'gen-image.json');
-const image = flag('image', fs.existsSync(imageFile) ? JSON.parse(fs.readFileSync(imageFile, 'utf8')).tag : null);
+const running = gcloudQuery(['run', 'services', 'describe', service, `--region=${region}`, P, '--format=value(spec.template.spec.containers[0].image)']);
+const image = flag('image', running || (fs.existsSync(imageFile) ? JSON.parse(fs.readFileSync(imageFile, 'utf8')).tag : null));
 if (!image) die('No image yet: node tools/gen-cloudrun/build.mjs --apply');
 console.log(`Gen on Cloud Run: ${service} in ${project} / ${region}\nImage ${image}\nRuns as ${sa}\n`);
 
