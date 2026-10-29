@@ -15,6 +15,7 @@ import * as maxPlan from './claudecode.ts';
 import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
 import * as bedrock from './bedrock.ts';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { GenError, mimeOf } from '../util.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
@@ -45,6 +46,13 @@ function anthropic() {
 
 export const backend = () => loadSettings().claude.backend;
 
+/** Who a job's Claude calls are for (src/jobs.ts sets it around every tool run). A customer's calls never go to J's
+ *  Max plan, Cursor or Copilot (those are J's own subscriptions): they run on the API key, else Bedrock, billed per token. */
+export const callScope = new AsyncLocalStorage<{ customer: boolean }>();
+/** Whether the running job is a customer's (whatever the Claude setting). */
+export const customerJob = () => callScope.getStore()?.customer === true;
+export const forCustomer = () => callScope.getStore()?.customer === true && loadSettings().claude.customers === 'api';
+
 /** The API path needs its key; the Max plan path needs only the CLI. Cursor needs CURSOR_API_KEY. Bedrock needs AWS creds. */
 export const configured = () => {
   const b = loadSettings().brain;
@@ -72,6 +80,19 @@ type AskParams = {
 
 /** One request: text (and images) in, text or schema-valid JSON out. Routes by settings.brain and settings.claude.backend. */
 export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: string; model: string; usage: any; cost: number; billing: Billing }> {
+  if (forCustomer()) {
+    if (env('ANTHROPIC_API_KEY')) {
+      const r = await askApi(p, signal);
+      return p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r;
+    }
+    if (bedrock.configured()) {
+      const { onText, ...q } = p;
+      const r = await bedrock.ask(q, signal);
+      onText?.(r.text);
+      return p.schema ? { ...r, text: bedrock.extractJson(r.text) } : r;
+    }
+    throw new GenError('Claude for customers runs on the API: put ANTHROPIC_API_KEY in hawkesgen/.env (or set up Bedrock)', { status: 503, kind: 'auth' });
+  }
   const brain = loadSettings().brain;
   if (brain === 'cursor' || brain === 'copilot') {
     const { onText, ...q } = p;

@@ -154,6 +154,26 @@ chosen one.
   container (never main). Studio uses it for build tags (`git tag build-x && git push origin build-x` in a Unity source
   repo). docs/unity-cloudrun.md, "GitHub mode".
 
+## Customers (tenancy)
+
+Gen is sold to customers (hawkesstudio `docs/platform-plan.md`), so one customer must never see or use another's
+work. A **customer** is a key with role `user` whose projects are all customer projects (`settings.queue.projects`:
+`usr_*`, `ustg_*`, `u_*`, `org_*`…; the portal's one key narrows itself per call with `X-Hawkesgen-Project`). The
+studio's own products' user keys are not customers. `test/tenancy.test.ts` tries each rule as another customer; add a
+case there whenever you add a route or an input kind.
+- **Blobs:** stored once by content, but `blob_owners` records who uploaded each (`ownBlob`). `canUseBlob` lets a
+  customer use only its own uploads or blobs behind assets it can see. Knowing a hash is not access.
+- **Reads:** jobs, assets, entities, `recipes/check` (`findByRecipe` takes the caller's projects), presets (own and
+  `shared`) and usage (own projects) are scoped. Raw server paths are owner-only everywhere.
+- **The studio's machinery** (`OPS_ROUTES` in `src/api.ts`: fleet, machines, settings, storage, clients, workflows,
+  Claude logins, everyone's live playtests…) answers 403 to customers.
+- **Priority:** customers can lower their own jobs, never raise them or ride a boost (`createJob`).
+- **Fair queues:** `fairOrder` on the GPU and on every API and local lane; one customer takes at most
+  `queue.perProjectLane` slots of a lane (playtests count tabs) and `queue.perProjectGpu` GPU jobs.
+- **Claude:** a customer's job runs inside `callScope` (`providers/anthropic.ts`). Its Claude calls go to the API key,
+  else Bedrock, never J's Max plan, Cursor or Copilot (`settings.claude.customers`: `api`; `as-set` is the old
+  behavior). Customers' playtest reviews default to Sonnet and may only review their own project's playtests.
+
 ## Playtests
 
 `playtest.run` opens a page in Chromium (headless, but on the real GPU through ANGLE/D3D11) and plays it through the

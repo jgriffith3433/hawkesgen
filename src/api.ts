@@ -17,7 +17,7 @@ import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
 import { submit, getJob, listJobs, cancel, rerun, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec } from './jobs.ts';
-import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, putAsset, findByRecipe, recipeKey } from './library.ts';
+import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
@@ -182,6 +182,16 @@ function liveVideo(req: IncomingMessage, res: ServerResponse, job: string, kind:
   });
   tick();
 }
+
+/** Routes about the studio's own machinery (src/api.ts gate): never for customers' keys. */
+/** A customer's key: role user, and only customer projects (settings.queue.projects: usr_*, u_*, org_*...). The studio's
+ *  own products' user keys (DoD's devtools and the rest) keep seeing the fleet and the machines. */
+export function isCustomer(c: Client) {
+  if (c.role !== 'user') return false;
+  const globs = loadSettings().queue.projects;
+  return c.projects.length > 0 && c.projects.every((p) => p !== '*' && globs.some((g) => (g.endsWith('*') ? p.startsWith(g.slice(0, -1)) : p === g)));
+}
+const OPS_ROUTES = /^\/v1\/(fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune)(\/|$)/;
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
@@ -433,6 +443,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
 
     if (route === '/v1/me') return send(res, 200, client);
+    // The studio's machinery is for admins: customers' keys (role user) never see the fleet, machines, settings, storage,
+    // Claude logins, workflows or everyone's live playtests, whatever each route below checks itself.
+    if (isCustomer(client) && OPS_ROUTES.test(route)) return send(res, 403, { error: 'This needs the admin role' });
 
     // --------------------------------------------------- user & billing routes
     if (route === '/v1/users/me' && method === 'GET') {
@@ -878,7 +891,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (!assetId && file?.startsWith('asset:')) assetId = file.slice(6);
         if (!assetId && file?.startsWith('blob:')) {
           const p = blobPath(file.slice(5));
-          if (!p) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
+          if (!p || !canUseBlob(client, file.slice(5))) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
           const e = lib.getEntity(client, entityId);
           const ext = path.extname(p).toLowerCase();
           assetId = putAsset({
@@ -926,6 +939,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const rawExt = path.extname(filename).toLowerCase().replace(/[^.a-z0-9]/g, '');
       const ext = rawExt || (ctype && !ctype.includes('json') && !ctype.includes('octet-stream') ? extOf(ctype.split(';')[0].trim()) : '.png');
       const sha = putBlob(buf, ext);
+      ownBlob(sha, client);
       const asset = putAsset({
         data: buf,
         ext,
@@ -1017,7 +1031,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const data = await readBody(req, 2 * 1024 * 1024 * 1024);
       if (!data.length) throw new GenError('Send the file as the request body');
       const ext = path.extname(String(req.headers['x-filename'] ?? '')).toLowerCase().replace(/[^.a-z0-9]/g, '');
-      return send(res, 200, { blob: `blob:${putBlob(data, ext)}`, bytes: data.length });
+      const sha = putBlob(data, ext);
+      ownBlob(sha, client);
+      return send(res, 200, { blob: `blob:${sha}`, bytes: data.length });
     }
     // The library's files in S3 (src/storage.ts): what's backed up, back up the rest, bring missing files back.
     if (route === '/v1/storage' && method === 'GET') return send(res, 200, storage.status());
@@ -1057,15 +1073,22 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const params = validateParams(t, body.params ?? {});
       const inputs: Record<string, string | string[]> = {};
       for (const [k, v] of Object.entries<any>(body.inputs ?? {})) {
+        // Only what this caller may use: its blobs and assets it can see. Raw paths only for owner keys (games on
+        // this machine), as for job inputs: a customer must not learn what files exist on the server.
         const one = async (ref: string) => {
-          if (ref.startsWith('blob:')) return ref.slice(5);
-          if (ref.startsWith('asset:')) return getAsset(ref.slice(6))?.sha256 ?? 'missing';
+          if (ref.startsWith('blob:')) return canUseBlob(client, ref.slice(5)) ? ref.slice(5) : 'missing';
+          if (ref.startsWith('asset:')) {
+            const a = getAsset(ref.slice(6));
+            return a && canProject(client, a.project) ? a.sha256 : 'missing';
+          }
+          if (client.role !== 'owner') throw new GenError('Send inputs as blob:<sha256> or asset:<id>', { status: 403 });
           return sha256File(ref);
         };
         inputs[k] = Array.isArray(v) ? await Promise.all(v.map(one)) : await one(v);
       }
       const key = recipeKey({ tool: t.id, version: t.version, params, inputs, models: t.models?.(params) });
-      const asset = findByRecipe(key, body.project);
+      if (body.project && !canProject(client, String(body.project))) throw new GenError(`No access to project ${body.project}`, { status: 403 });
+      const asset = findByRecipe(key, body.project, client.projects);
       return send(res, 200, { status: asset ? 'current' : 'missing', key, asset });
     }
 
@@ -1326,7 +1349,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
 
     // -------------------------------------------------------------- presets
-    if (route === '/v1/presets' && method === 'GET') return send(res, 200, { projects: listPresets().filter((p) => canProject(client, p.project) || p.project === 'shared' || client.role === 'user') });
+    if (route === '/v1/presets' && method === 'GET') return send(res, 200, { projects: listPresets().filter((p) => canProject(client, p.project) || p.project === 'shared') });
     m = /^\/v1\/presets\/([\w.-]+)$/.exec(route);
     if (m) {
       if (!canProject(client, m[1])) throw new GenError('No access to that project', { status: 403 });
@@ -1432,7 +1455,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // ------------------------------------------------------- usage, providers
     if (route === '/v1/usage' && method === 'GET') {
       const since = q('since') ? Number(q('since')) : Date.now() - 30 * 24 * 3600 * 1000;
-      return send(res, 200, usageSummary({ since, by: (q('by') as any) ?? 'project' }));
+      // Customers see their own projects' usage only; the whole studio's is for admins.
+      return send(res, 200, usageSummary({ since, by: (q('by') as any) ?? 'project', projects: client.role === 'user' ? client.projects : ['*'] }));
     }
     if (route === '/v1/providers/elevenlabs/voices' && method === 'GET') return send(res, 200, { voices: await eleven.voices({ force: q('refresh') === '1' }) });
     // The open audio models: licence, size, what each can do, and which the `auto` provider trusts (docs/audio.md).

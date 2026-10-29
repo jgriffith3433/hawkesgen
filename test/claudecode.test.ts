@@ -29,7 +29,7 @@ function freshLog(mode = 'ok') {
 }
 
 test('the Max plan is the default backend, with a cap of 3 and a timeout', () => {
-  assert.deepEqual(loadSettings().claude, { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 });
+  assert.deepEqual(loadSettings().claude, { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10, customers: 'api' });
   assert.equal(configured(), true);
 });
 

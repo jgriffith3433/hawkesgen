@@ -94,14 +94,20 @@ export type Settings = {
    *  (hawkesgen.ai's customers and its starter library, the beta portal's). Anything else asked for by id still gets them. */
   lod: { projects: string[] };
   /** Fair sharing of the GPU between customers (src/jobs.ts `fairOrder`): `perProjectGpu` is the most GPU jobs one customer
-   *  project runs at once, `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
-  queue: { perProjectGpu: number; projects: string[] };
+   *  project runs at once, `perProjectLane` the most slots one takes in each API or local lane (playtests count browser
+   *  tabs), `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
+  queue: { perProjectGpu: number; perProjectLane: number; projects: string[] };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number; lod: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
    * (billed per token), "bedrock" uses AWS Bedrock (billed per token to AWS). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
    * (inside every job: reviews, judges, captions) and how long one may take. */
-  claude: { backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number };
+  claude: {
+    backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number;
+    /** Customers' jobs (hawkesgen.ai accounts): "api" (the API key, else Bedrock; never J's Max plan, Cursor or Copilot)
+     *  or "as-set" (the backend above, the old behavior; only until the API key is in place). */
+    customers: 'api' | 'as-set';
+  };
   /**
    * Which harness answers writing, review and JSON calls, and (via Studio) the coding agents.
    * "claude" is Claude Code (the Max plan or the API key above). "cursor" is Cursor's agent on the Cursor plan.
@@ -247,8 +253,8 @@ export const SETTINGS_DEFAULTS: Settings = {
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
   lod: { projects: ['usr_*', 'ubeta_*'] },
-  queue: { perProjectGpu: 2, projects: ['usr_*', 'ubeta_*'] },
-  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
+  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'] },
+  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10, customers: 'api' },
   brain: 'claude',
   model: '',
   localOpen: true,
@@ -409,12 +415,14 @@ function clean(s: Settings): Settings {
     lod: { projects: Array.isArray(s.lod?.projects) ? s.lod!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.lod.projects },
     queue: {
       perProjectGpu: n(s.queue?.perProjectGpu, 1, 16, SETTINGS_DEFAULTS.queue.perProjectGpu),
+      perProjectLane: n(s.queue?.perProjectLane, 1, 64, SETTINGS_DEFAULTS.queue.perProjectLane),
       projects: Array.isArray(s.queue?.projects) ? s.queue!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.queue.projects,
     },
     claude: {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
       timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
+      customers: s.claude?.customers === 'as-set' ? 'as-set' : 'api',
     },
     brain: s.brain === 'cursor' || (s.brain as string) === 'grok' ? 'cursor' : s.brain === 'copilot' ? 'copilot' : 'claude',
     model: typeof (s as { model?: string }).model === 'string' ? (s as { model?: string }).model : '',

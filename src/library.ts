@@ -15,7 +15,7 @@ import { db, parseRow, J } from './db.ts';
 import { paths } from './config.ts';
 import { id, sha256, kindOf, mimeOf, extOf, stableStringify, GenError } from './util.ts';
 import { backup } from './storage.ts';
-import { projectScopeSql } from './auth.ts';
+import { projectScopeSql, canProject, type Client } from './auth.ts';
 
 export type Recipe = {
   tool: string;
@@ -125,10 +125,12 @@ export function deleteAsset(assetId: string) {
 }
 
 /** The newest asset made from this recipe (any seed). */
-export function findByRecipe(key: string, project?: string): Asset | null {
+export function findByRecipe(key: string, project?: string, projects: string[] = ['*']): Asset | null {
+  // `projects` limits the search to what the caller may see (a customer never finds another customer's asset).
+  const scope = projectScopeSql(projects);
   const row = project
     ? db.prepare('SELECT * FROM assets WHERE recipe_key = ? AND project = ? ORDER BY created DESC LIMIT 1').get(key, project)
-    : db.prepare('SELECT * FROM assets WHERE recipe_key = ? ORDER BY created DESC LIMIT 1').get(key);
+    : db.prepare(`SELECT * FROM assets WHERE recipe_key = ?${scope ? ` AND ${scope}` : ''} ORDER BY created DESC LIMIT 1`).get(key);
   return parseRow<Asset>(row, JSON_COLS) ?? null;
 }
 
@@ -149,6 +151,26 @@ export function putBlob(data: Buffer, ext = ''): string {
     fs.writeFileSync(file, data);
   }
   return hash;
+}
+
+// Who uploaded a blob. Files are stored once by content, but a customer may only use a blob it uploaded itself (or one
+// behind an asset it can see): knowing a hash is not access. A row per uploader: the key's id, and its one project when
+// the key works in one (the portal narrows its key to a customer per call).
+db.exec(`CREATE TABLE IF NOT EXISTS blob_owners (sha TEXT NOT NULL, client TEXT NOT NULL, project TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, PRIMARY KEY (sha, client, project))`);
+
+const oneProject = (c: Pick<Client, 'projects'>) => (c.projects.length === 1 && !c.projects[0].includes('*') ? c.projects[0] : '');
+
+export function ownBlob(hash: string, client: Pick<Client, 'id' | 'projects'>) {
+  db.prepare('INSERT OR IGNORE INTO blob_owners (sha, client, project, created) VALUES (?, ?, ?, ?)').run(hash, client.id, oneProject(client), Date.now());
+}
+
+/** Whether this caller may use blob:<hash>: every project's keys may; others only blobs they uploaded or that back an asset they can see. */
+export function canUseBlob(client: Client, hash: string): boolean {
+  if (client.projects.includes('*')) return true;
+  const rows = db.prepare('SELECT client, project FROM blob_owners WHERE sha = ?').all(hash) as { client: string; project: string }[];
+  if (rows.some((r) => (r.client === client.id && (!r.project || canProject(client, r.project))) || (r.project && canProject(client, r.project)))) return true;
+  const scope = projectScopeSql(client.projects);
+  return Boolean(db.prepare(`SELECT 1 FROM assets WHERE sha256 = ?${scope ? ` AND ${scope}` : ''} LIMIT 1`).get(hash));
 }
 
 export function blobPath(hash: string): string | null {

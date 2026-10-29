@@ -69,9 +69,9 @@ builds the world from it line by line). The finished result replaces it. The API
 | `PATCH /v1/assets/:id` `{ "title", "tags", "starred", "labels" }` | Organize |
 | `DELETE /v1/assets/:id` | Delete (admin) |
 | `GET /v1/files/:id[?download=1&lod=<n>&v=<hash>]` (= `/v1/assets/:id/file`) | The file (supports Range, so videos stream). `ETag` is its sha256; `If-None-Match` answers 304. `lod=n`: a level of detail, the largest level at most n (px for images, triangles for models), else the smallest; the original when n is at least its size and bigger than every level (`X-Lod-Level` says which). With `v` = the file's hash prefix: `Cache-Control: public, max-age=31536000, immutable` |
-| `POST /v1/blobs` (body = file bytes, header `X-Filename`) | Upload an input → `{ "blob": "blob:<sha256>" }` |
+| `POST /v1/blobs` (body = file bytes, header `X-Filename`) | Upload an input → `{ "blob": "blob:<sha256>" }`. A customer's key may use only blobs it uploaded (or that back an asset it can see) |
 | `POST /v1/estimate` `{ project, items: [{ tool \| preset, params, count, label }], servers? }` | What a batch would cost before running it: GPU seconds per line (the median of past jobs of that tool, scaled by frames and pixels, else the tool's guess), model loads per family, server boots, API costs, `cost: { gpu, api, idleTail, total, withIdleTail }`, `wallMinutes`, `note`. `asset.make` items expand into their steps × `candidates` plus a pick. `src/estimate.ts` |
-| `POST /v1/recipes/check` `{ tool, params, inputs, project }` | `{ status: "current" \| "missing", asset }`: is there an asset from exactly this tool version, params and inputs (any seed)? |
+| `POST /v1/recipes/check` `{ tool, params, inputs, project }` | `{ status: "current" \| "missing", asset }`: is there an asset from exactly this tool version, params and inputs (any seed)? Searches only the caller's projects; inputs as `blob:`/`asset:` (raw paths: owner keys only) |
 
 ## Entities, slots and versions (docs/library.md)
 
@@ -267,7 +267,7 @@ Hawkes Net is its own service and repo (`jgriffith3433/hawkesnet`, its `docs/net
 |---|---|
 | `GET /v1/health` | No key needed: version, which providers are set up, queue counts |
 | `GET /v1/me` | Who you are (client, role, projects) |
-| `GET /v1/usage?since=<ms>&by=project\|client\|provider\|day` | Usage and cost |
+| `GET /v1/usage?since=<ms>&by=project\|client\|provider\|day` | Usage and cost (a customer's key: its own projects only) |
 | `GET /v1/providers/elevenlabs/voices` | The ElevenLabs voice library |
 | `GET /v1/audio/models` | The open audio models: license, size, VRAM, capabilities, whether each is verified for `provider: auto`; the refused (non-commercial) ones; the loudness targets (docs/audio.md) |
 | `GET /v1/providers/anthropic/models` | Claude models the tools accept |

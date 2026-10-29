@@ -21,7 +21,8 @@ import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
-import { putAsset, getAsset, blobPath, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { putAsset, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { callScope } from './providers/anthropic.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
@@ -189,7 +190,7 @@ function resolveInput(client: Client, ref: unknown): string {
   }
   if (ref.startsWith('blob:')) {
     const p = blobPath(ref.slice(5));
-    if (!p) throw new GenError(`No blob ${ref.slice(5)} (upload it to /v1/blobs first)`, { status: 404 });
+    if (!p || !canUseBlob(client, ref.slice(5))) throw new GenError(`No blob ${ref.slice(5)} (upload it to /v1/blobs first)`, { status: 404 });
     return p;
   }
   // Raw paths only for callers on this machine with owner rights (games running here).
@@ -354,8 +355,9 @@ export function boostLabel(label: string, value: string, priority: number, minut
 
 function createJob(client: Client, tool: Tool, s: { project: string; params: Record<string, any>; inputs: Record<string, any>; labels?: Record<string, unknown>; key?: string; priority?: number }): Job {
   const { project, params, inputs } = s;
-  // No priority asked for: a boost on one of its labels sets it (boostLabel).
-  const spec = { ...s, priority: s.priority ?? boostFor(s.labels) };
+  // No priority asked for: a boost on one of its labels sets it (boostLabel). Customers' keys (role user) can lower
+  // their own jobs but never raise them or ride an admin's boost: priority is the scheduler's business.
+  const spec = { ...s, priority: client.role === 'user' ? Math.min(0, Number(s.priority) || 0) : s.priority ?? boostFor(s.labels) };
   const family = tool.provider === 'comfy' ? (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null : null;
   const job: Job = {
     id: newId('j', 6), key: spec.key ? String(spec.key) : null, client: client.id, project, tool: tool.id, params, inputs,
@@ -518,6 +520,8 @@ class Queue {
   gpuSeen = { at: 0, ready: false, limit: 3 };
   /** Running playtests' browser tabs (their players), for the playtest lane. */
   tabs = new Map<string, number>();
+  /** Running API and local jobs' projects, for fair sharing of those lanes between customers. */
+  laneProject = new Map<string, string>();
   /** Browser tabs the running playtests use, and the most the lane admits now. */
   tabsInUse() {
     return { used: [...this.tabs.values()].reduce((a, n) => a + n, 0), limit: this.gpuSeen.ready ? this.gpuSeen.limit : 1 };
@@ -587,8 +591,15 @@ class Queue {
       }
     };
 
-    // API and local lanes.
-    for (const j of waiting.filter((x) => toolOf(x).provider !== 'comfy')) {
+    // API and local lanes, shared fairly between customers like the GPU (fairOrder): a customer's n-th waiting job
+    // comes after every other customer's earlier turns, and one customer holds at most queue.perProjectLane slots of a
+    // lane (playtests count tabs), so nobody fills every playtest, Claude or CPU slot. Studio's projects and admin keys
+    // are exempt, as on the GPU.
+    const laneExempt = exemptCheck();
+    const runningBy = new Map<string, number>();
+    for (const p of this.laneProject.values()) runningBy.set(p, (runningBy.get(p) ?? 0) + 1);
+    const lanesOrder = fairOrder(waiting.filter((x) => toolOf(x).provider !== 'comfy').map((x) => ({ ...x, exempt: laneExempt(x) })), runningBy, Infinity);
+    for (const j of lanesOrder) {
       const provider = toolOf(j).provider as 'elevenlabs' | 'anthropic' | 'local' | 'builder' | 'playtest' | 'pipeline';
       // A pipeline that is a step of another job (asset.make's image.viewsheet) runs in its own lane, never behind the
       // cap: its parent already holds a pipeline slot and waits for it. Queued behind the cap, six asset.make jobs held
@@ -621,6 +632,13 @@ class Queue {
         this.wait(j, provider === 'playtest' ? `waiting: ${used} of ${limit} playtest browser tabs in use` : `waiting: ${lane.size} ${key} jobs already running`);
         continue;
       }
+      if (!j.exempt && !nested && !own) {
+        const mine = [...lane].filter((id) => this.laneProject.get(id) === j.project).reduce((a, id) => a + (provider === 'playtest' ? (this.tabs.get(id) ?? 1) : 1), 0);
+        if (mine > 0 && mine + weight > settings.queue.perProjectLane) {
+          this.wait(j, `waiting: this project already has ${mine} ${provider === 'playtest' ? 'playtest tabs' : `${key} jobs`} running (its share)`);
+          continue;
+        }
+      }
       // A Gen deploy is waiting for the build server to be free (hawkesstudio/deploy/hawkes-pull.mjs drops this file):
       // don't start another build until it's done, so the deploy gets its moment.
       if (provider === 'builder' && fs.existsSync(path.join(DATA_DIR, 'deploy-pending'))) {
@@ -628,9 +646,12 @@ class Queue {
         continue;
       }
       lane.add(j.id);
+      this.laneProject.set(j.id, j.project);
       if (provider === 'playtest') this.tabs.set(j.id, weight);
-      void this.runJob(j, null, null, cpuCloud).finally(() => {
+      const { turn: _turn, ok: _ok, exempt: _exempt, ...job } = j;
+      void this.runJob(job, null, null, cpuCloud).finally(() => {
         lane.delete(j.id);
+        this.laneProject.delete(j.id);
         this.tabs.delete(j.id);
         this.pump();
       });
@@ -982,7 +1003,8 @@ class Queue {
         : false;
       if (!remote) {
         if (cpu) Object.assign(job, { server: null });
-        await tool.run(ctx);
+        // A customer's job never spends J's Max plan (providers/anthropic.ts callScope).
+        await callScope.run({ customer: !exemptCheck()(job) }, () => tool.run(ctx));
       }
       if (cloud) markUp(cloud.lane ?? cloud.name);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
