@@ -5,6 +5,10 @@ over an SSH tunnel) to a Google Cloud Run service with an NVIDIA L4 that scales 
 The code sits behind `settings.playtest`, which defaults to EC2, and every Cloud Run failure falls back to the
 playtesters.
 
+**Without a GPU (since 2026-10-28):** AWS is suspended and Google refused GPU quota, so the L4 can't run. The same
+service runs on plain CPUs with WebGL on SwiftShader as `gen-playtest-cpu` (`backend: "cloudrun-cpu"`). See "The CPU
+service" below for what differs, what was measured, the cost (about $0.007 a playtest minute) and J's steps.
+
 | Piece | Where |
 |---|---|
 | The service image (Playwright's image at Gen's version, ffmpeg, the NVIDIA EGL/Vulkan vendor files) | `server/playtest-cloudrun/Dockerfile`, `package.json`, `10_nvidia.json`, `nvidia_icd.json` |
@@ -221,6 +225,137 @@ matches what a g4dn.xlarge plays. Change `service.json` and redeploy.
 
 So the first playtest after an idle spell waits about **30-90 s** for its browser. Today a stopped playtester takes
 2-4 minutes. Warm instances answer at once. A multiplayer run connects all its players in parallel.
+
+## The CPU service (gen-playtest-cpu): software WebGL, no GPU
+
+**Why.** AWS (and its T4 playtesters) was suspended on 2026-10-28, and Google refused the project GPU quota for lack
+of usage history, so the L4 service above can't run. Without a GPU nothing playtested. `gen-playtest-cpu` is the same
+service on plain Cloud Run CPUs: Chromium draws WebGL with **SwiftShader** (Chromium's own CPU implementation of
+Vulkan, under ANGLE). The L4 design stays as it is for when quota or RunPod exists.
+
+| Piece | Where |
+|---|---|
+| The image: Playwright's at Gen's version, ffmpeg, `HAWKES_GL_MODE=software`; no NVIDIA files | `server/playtest-cloudrun/Dockerfile.cpu` |
+| The same server and self-test, in software mode | `server.mjs`, `gpu.mjs` (`SOFTWARE_CANDIDATES`, `glMode`, `PAGE_BENCH`) |
+| Its size, tabs, slowness and request-based prices | `server/playtest-cloudrun/service-cpu.json` |
+| Gen's side | `cloudPlaytestsFor`, `cloudLaneKey`, `CPU_SOFTWARE_WHY` in `src/providers/playtester/cloudrun.ts`; the fallback loop in `openGpuHost`; `host.software` / `host.slow` in `src/tools/playtest.ts` |
+| Scripts (dry run unless `--apply`) | `tools/playtest-cloudrun/build.mjs --variant cpu`, `deploy.mjs --variant cpu`, J's `deploy-cpu.ps1` |
+| Tests | `test/playtest-cloudrun.test.ts` (the CPU tests run the service here in software mode) |
+
+**What differs from the L4 service.**
+
+- **The self-test** (`gpu.mjs`, `HAWKES_GL_MODE=software`). The candidates are `swiftshader` (the headless shell) and
+  `swiftshader-chromium` (new headless), with `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader` plus
+  the base flags. A candidate passes when WebGL2 draws and reads back. The renderer string is reported
+  (`ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) ...), SwiftShader driver)`). It also times a 1280x720
+  fragment-shader loop for 3 s and reports `gl.fps`, a rough number for how fast this instance draws. `/ready` passes
+  only after that, and `/selftest` shows `mode: "software"` and `gl` (`gpu` is the same object under its old name).
+  NVENC and the driver checks are skipped.
+- **One tab per instance** (`tabsPerInstance: 1`, `containerConcurrency: 1`), 4 vCPU and 8 GiB, up to 4 instances.
+  Measured below: a second tab halves the frame rate and broke a bot.
+- **Request-based billing** (`run.googleapis.com/cpu-throttling: "true"`). A tab's WebSocket is a request for its whole
+  run, so the instance has its CPU while it plays and costs nothing between playtests. There is no idle tail, unlike
+  the L4. No GPU quota, no zonal-redundancy setting.
+- **Slower limits.** The spec's `slow` (2) reaches Gen as `host.slow`. `playtest.run` doubles `bootTimeout` and the
+  default scenario limit (2x the scenario's `seconds` becomes 4x). An explicit `timeout` is kept as given. The game's
+  own bot timers are not stretched: a game whose bot waits by wall clock can still time out on a slow instance.
+- **The run says it was software.** `result.software` is true (the renderer is SwiftShader), and `softwareBecause` is
+  `CPU_SOFTWARE_WHY`. The low-frame-rate warning is not raised. The review is told frame rates and smoothness mean
+  nothing (as for any software run). `result.browser` is `Cloud Run gen-playtest-cpu (us-east4, software WebGL)`.
+- **Video** as before: the CDP screencast comes to Gen, then is encoded with libx264 on the service's `/encode` (the
+  encode is its own short request after the tab closes), else here.
+- **Usage** rows are `gcp-playtest-cpu` (unit `tab_seconds`) at the spec's request-based rates.
+
+**Settings** (`POST /v1/settings`):
+
+```json
+{
+  "playtest": {
+    "backend": "cloudrun-cpu",
+    "cloudrunCpu": { "url": "https://gen-playtest-cpu-….run.app", "maxInstances": 4, "tabsPerInstance": 1, "encode": "service" }
+  }
+}
+```
+
+- `backend` (or `projects.<product>`) can be `ec2`, `cloudrun` (the L4) or `cloudrun-cpu`.
+- **Fallback, in order, each step told in the job's log.**
+  - `cloudrun` tries the L4 service, then the CPU service when `cloudrunCpu.url` is set, then the playtesters.
+  - `cloudrun-cpu` tries the CPU service, then the playtesters.
+  - The playtesters fall back to a GPU fleet server, then to software in Gen's own process. With AWS suspended, those
+    later steps are not there.
+- The CPU service has its own lane in the queue, `playtest-cloud-cpu`, of `maxInstances × tabsPerInstance` tabs (4).
+  It is counted apart from the L4's `playtest-cloud`.
+- **A local service.** `cloudrunCpu.url` (or `cloudrun.url`) may be `http://127.0.0.1:<port>` or
+  `http://localhost:<port>`: the same container run beside Gen (`docker run -p 8095:8080 <image>`). Gen sends it no
+  Google token. That is how this was proven on J's PC.
+- **Check it.** `hawkesgen playtester cloud cpu [selftest]` (`GET /v1/playtester/cloud?variant=cpu&selftest=1`)
+  returns the settings, the lanes, the price and the service's self-test.
+
+### Measured (2026-10-29)
+
+Each run was Dose Of Destruction's `smoke` (title, menus, character select, a City Top match, back to the menu) through
+the whole path: Gen's `playtest.run`, then `openGpuHost`, then the CPU service (`server.mjs` in software mode), with
+the screencast and the encode on the service. `software: true` in every result.
+
+| Where | CPUs | Load | Run | fps avg (worst) | Outcome |
+|---|---|---|---|---|---|
+| J's PC, local build (`dist/`, through the proxy) | all 14 threads | 4.1 s | 40 s | 36 (19) | done; the video encoded on the service (libx264, 1280x720, 1207 frames) |
+| J's PC, live site | 4 logical (affinity 0xF: 2 P-cores) | 1.7 s | 44 s | 20 (2) | done |
+| J's PC, live site | 2 logical (one P-core) | 1.2 s | 50 s | 19 (4) | done |
+| J's PC, live site | 8 logical (P+E cores) | 2.0 s | 47 s | 17 (1) | done |
+| J's PC, live site, **two tabs at once** | 4 logical | 3.1 / 3.3 s | 89 / 111 s | 11 / 8 | done / **stuck** (bot: "timed out waiting for Quit") |
+| The real image in Cloud Build (`e2-standard-2`, `docker run --cpus=2 --memory=6g`) | 2 shared vCPU | 3.1 s | 94 s | 8.3 (0) | **stuck** (bot: "timed out waiting for the match to start"); the stage still drew in full |
+
+- **Self-test bench** (`gl.fps`): ~52 on 4 logical CPUs here, **17.2** in Cloud Build's 2 vCPU. The test took 4.5 s
+  here and 11 s there, so `/ready` came 11 s after start.
+- **Memory**: one tab peaked at 1.8 GB working set (1.55 GB private) over 5 Chromium processes. 8 GiB leaves room for
+  Unity games' wasm heaps; 4 GiB would do for DoD.
+- **What it shows.**
+  - One tab per instance. A second halves the frame rate.
+  - Per-core speed matters more than core count: 2, 4 and 8 threads here gave about the same.
+  - Cloud Build's slow shared cores were too slow. Cloud Run's vCPUs are faster than `e2-standard-2`'s, but how much
+    faster is the one number not measured yet (Cloud Build refused 8-vCPU machines on this project's quota).
+- **The rule for after the deploy.** Run `deploy-cpu.ps1 -Settings`; it prints the bench. Under ~35, set `"cpu": 8` in
+  `service-cpu.json` and deploy again. At 8 vCPU it is about $0.83 an hour while a tab plays.
+- **Image**: `us-east4-docker.pkg.dev/hawkes-staging/hawkes-gen/gen-playtest-cpu:pw1.64.1-5803d4c11a` is built and
+  pushed (Cloud Build, 2026-10-29), so `build.mjs --variant cpu --apply` finds it and skips the build while the sources
+  are unchanged.
+
+### Cost per playtest (CPU service)
+
+The rates are request-based, Tier 1 (us-east4): $0.000024 per vCPU-second and $0.0000025 per GiB-second, the same
+rates as `server/cpu-cloudrun/service.json`. They are not yet checked against the bill.
+
+| Rate | Price |
+|---|---|
+| 4 vCPU + 8 GiB, while a tab is connected | $0.000116/s = **$0.42/h, $0.007 a playtest minute** |
+| The same at 8 vCPU (if the bench says so) | $0.000212/s = $0.76/h, $0.013 a minute |
+| Idle | $0: no idle tail (request-based) |
+
+- **Per run.** A 1-minute smoke costs about **$0.007**, plus the encode (10-20 s of the same instance, ~$0.002). A
+  3-minute run is about **$0.025**.
+- **A day.** Studio's daily run of ~20 playtest minutes is about $0.15.
+- **Free tier.** Cloud Run's free tier (180,000 vCPU-seconds a month per billing account, shared with gen-cpu) covers
+  about 12 hours of these playtests a month.
+- **Transfer.** Gen (`gen`, `gen-beta`) is in us-east4 too, so the screencast frames and local files cross within the
+  region. Check the first bill.
+- **Cold start.** Each start pulls the image (~2 GB; Cloud Run caches it), then runs the self-test (~11 s). Expect
+  about 20-40 s before the first tab; a warm instance answers at once.
+
+### J's steps
+
+1. Merge `playtest-cpu` into `dev`, and `git pull` in `C:\Projects\hawkesgen`. The script runs from there.
+2. Read the dry run:
+   `powershell -ExecutionPolicy Bypass -File C:\Projects\hawkesgen\tools\playtest-cloudrun\deploy-cpu.ps1`
+3. Deploy: `... deploy-cpu.ps1 -Apply`. The image is already built. This step makes the account `gen-playtest@` (no
+   roles) and the service, and grants `roles/run.invoker` to `gen-control@` only.
+4. Point Gen at it: `... deploy-cpu.ps1 -Settings`. It patches beta Gen, then live Gen
+   (`backend: "cloudrun-cpu"` and `cloudrunCpu`) with the keys in `~/.hawkes/client.json`. It prints each lane's
+   self-test and the bench.
+5. Tell Claude. It plays `studio.cmd playtest doseofdestruction smoke --wait` and one product of each kind (a web game
+   and a Unity game), then checks the videos and frame rates. If the bench was under 35, first set `"cpu": 8`.
+6. **Undo.** `POST /v1/settings {"playtest": {"backend": "ec2"}}` stops using it. Then
+   `gcloud run services delete gen-playtest-cpu --region us-east4` removes it. Idle, it costs nothing.
 
 ## Pilot (J's OK: it bills while instances run)
 

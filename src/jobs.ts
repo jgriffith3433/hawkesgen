@@ -37,7 +37,7 @@ import { gpuCandidates, triedOf, orderFor } from './providers/gpu/route.ts';
 import { markDown, markUp, isDown, awsRefused, COOLDOWN } from './providers/gpu/health.ts';
 import { fleetBlocked } from './providers/gpu/egress.ts';
 import { cpuRoute, cpuCloudEnabled, runCpuRemote, type CpuService } from './providers/cloudrun/cpu.ts';
-import { cloudPlaytestFor, cloudLanes } from './providers/playtester/cloudrun.ts';
+import { cloudPlaytestFor, cloudLanes, cloudLaneKey } from './providers/playtester/cloudrun.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
@@ -571,14 +571,15 @@ class Queue {
       return this.gpuSeen.ready ? this.gpuSeen.limit : 1;
     };
     const tabsOf = (j: Job) => (j.tool === 'playtest.run' ? Math.max(1, Math.min(4, Number(j.params.peers) || 1)) : 1);
-    // Browser tabs the Cloud Run playtest service plays at once, when this job's project plays there; else null.
+    // The lane of the Cloud Run playtest service this job's project plays on first (the L4's or the CPU service's) and
+    // the browser tabs it plays at once; else null.
     const cloudPlaytestLanes = (j: Job, s: typeof settings) => {
       // The same rule playtest.run follows for a GPU browser: gpu require, or auto anywhere but this PC (Windows).
       const gpuHost = j.params.gpu === 'require' || (j.params.gpu !== 'off' && process.platform !== 'win32');
-      if (!gpuHost || (s.playtest.backend === 'ec2' && !Object.values(s.playtest.projects).includes('cloudrun'))) return null;
+      if (!gpuHost || (s.playtest.backend === 'ec2' && !Object.values(s.playtest.projects).some((b) => b !== 'ec2'))) return null;
       try {
         const c = cloudPlaytestFor(j.project, s);
-        return c ? cloudLanes(c) : null;
+        return c ? { key: cloudLaneKey(c), limit: cloudLanes(c) } : null;
       } catch {
         return null;
       }
@@ -606,11 +607,11 @@ class Queue {
       const cloudPlay = provider === 'playtest' ? cloudPlaytestLanes(j, settings) : null;
       // So does the CPU suite on Cloud Run (settings.cpu, docs/cpu-cloudrun.md): this machine's CPU isn't what limits it.
       const cpuCloud = provider === 'local' && !own && cpuCloudEnabled(settings) ? cpuRoute(j.tool, settings).service : null;
-      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : unityBackend === 'vm' ? 'builder-vm' : cloudPlay ? 'playtest-cloud' : cpuCloud ? 'local-cloud' : provider;
+      const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : unityBackend === 'vm' ? 'builder-vm' : cloudPlay ? cloudPlay.key : cpuCloud ? 'local-cloud' : provider;
       const lane = this.lanes.get(key) ?? new Set();
       this.lanes.set(key, lane);
       // One build server. Pipelines only wait on other jobs, so several can run.
-      const limit = own ? own.limit() : nested ? Infinity : cloudBuild ? settings.unityBuild.concurrency : cloudPlay ? cloudPlay : cpuCloud ? settings.cpu.cloudrun.concurrent : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
+      const limit = own ? own.limit() : nested ? Infinity : cloudBuild ? settings.unityBuild.concurrency : cloudPlay ? cloudPlay.limit : cpuCloud ? settings.cpu.cloudrun.concurrent : provider === 'builder' ? 1 : provider === 'playtest' ? await playtestLimit(j) : provider === 'pipeline' ? settings.concurrency.pipeline : settings.concurrency[provider];
       // Playtests by tabs: an empty lane always takes one, so a run with more players than the lanes still plays.
       const weight = provider === 'playtest' ? tabsOf(j) : 1;
       const used = provider === 'playtest' ? [...lane].reduce((a, id) => a + (this.tabs.get(id) ?? 1), 0) : lane.size;

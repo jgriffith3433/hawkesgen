@@ -426,3 +426,156 @@ test('end to end: a local page and its WebSocket through the service, served fro
     site.close();
   }
 });
+
+// ------------------------------------------------------------------ the CPU service (gen-playtest-cpu, software WebGL)
+
+const CPU_URL = 'https://gen-playtest-cpu-abc123-uk.a.run.app';
+
+test('CPU service settings: the cloudrun-cpu backend, its own URL and sizes, a local service URL allowed', () => {
+  assert.deepEqual(SETTINGS_DEFAULTS.playtest.cloudrunCpu, { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service' });
+  const s = saveSettings({ playtest: { backend: 'cloudrun-cpu', projects: { phorigins: 'cloudrun-cpu' }, cloudrunCpu: { url: `${CPU_URL}/`, maxInstances: 50, tabsPerInstance: 3 } } } as any);
+  assert.equal(s.playtest.backend, 'cloudrun-cpu');
+  assert.equal(s.playtest.projects.phorigins, 'cloudrun-cpu');
+  assert.equal(s.playtest.cloudrunCpu.url, CPU_URL);
+  assert.equal(s.playtest.cloudrunCpu.maxInstances, 20);
+  assert.equal(s.playtest.cloudrunCpu.tabsPerInstance, 3);
+  // The same container beside Gen (docker run -p 8095:8080): plain http on loopback only.
+  assert.equal(saveSettings({ playtest: { cloudrunCpu: { url: 'http://127.0.0.1:8095' } } } as any).playtest.cloudrunCpu.url, 'http://127.0.0.1:8095');
+  assert.equal(saveSettings({ playtest: { cloudrunCpu: { url: 'http://10.0.0.5:8095' } } } as any).playtest.cloudrunCpu.url, null);
+  // A partial patch of the L4 service keeps the CPU one.
+  saveSettings({ playtest: { cloudrunCpu: { url: CPU_URL } } } as any);
+  assert.equal(saveSettings({ playtest: { cloudrun: { maxInstances: 1 } } } as any).playtest.cloudrunCpu.url, CPU_URL);
+  saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null } } } as any);
+});
+
+test('cloudPlaytestsFor: cloudrun tries the L4 then the CPU service; cloudrun-cpu only the CPU one; prices, slowness, lanes', () => {
+  const base = { backend: 'ec2', projects: {}, cloudrun: { url: URL_, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: CPU_URL, maxInstances: 4, tabsPerInstance: 1, encode: 'service' } } as any;
+  assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: base }), [], 'EC2: none');
+  const both = pc.cloudPlaytestsFor('x', { playtest: { ...base, backend: 'cloudrun' } });
+  assert.deepEqual(both.map((c) => c.name), ['gen-playtest', 'gen-playtest-cpu'], 'a missing L4 falls back to software WebGL first');
+  const noL4 = pc.cloudPlaytestsFor('x', { playtest: { ...base, backend: 'cloudrun', cloudrun: { ...base.cloudrun, url: null } } });
+  assert.deepEqual(noL4.map((c) => c.variant), ['cpu']);
+  const cpu = pc.cloudPlaytestFor('x', { playtest: { ...base, projects: { x: 'cloudrun-cpu' } } })!;
+  assert.equal(cpu.variant, 'cpu');
+  assert.equal(cpu.url, CPU_URL);
+  assert.equal(cpu.slow, 2);
+  assert.match(cpu.software!, /SwiftShader/);
+  assert.equal(pc.cloudLanes(cpu), 4);
+  assert.equal(pc.cloudLaneKey(cpu), 'playtest-cloud-cpu');
+  assert.equal(pc.cloudLaneKey(both[0]), 'playtest-cloud');
+  assert.equal(both[0].software, null);
+  // 4 vCPU and 8 GiB at request-based rates: about $0.42 an hour, $0.007 a minute for its one tab.
+  assert.ok(Math.abs(cpu.pricePerSecond * 3600 - 0.4176) < 0.001, `${cpu.pricePerSecond * 3600}`);
+  assert.ok(Math.abs(pc.tabCost(cpu, 60) - 0.00696) < 0.0001);
+  // Nothing deployed: nothing.
+  assert.equal(pc.cloudPlaytestFor('x', { playtest: { ...base, backend: 'cloudrun-cpu', cloudrunCpu: { ...base.cloudrunCpu, url: null } } }), null);
+  // Settings saved before the CPU service existed (no cloudrunCpu) still work.
+  const { cloudrunCpu: _, ...old } = base;
+  assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: { ...old, backend: 'cloudrun' } }).map((c) => c.variant), ['gpu']);
+});
+
+test('the queue: CPU service playtests take their own lane (playtest-cloud-cpu), counted apart from the L4', async () => {
+  const { db } = await import('../src/db.ts');
+  const { submit, queue } = await import('../src/jobs.ts');
+  saveSettings({ playtest: { backend: 'ec2', projects: { cpugame: 'cloudrun-cpu' }, cloudrunCpu: { url: CPU_URL, maxInstances: 2, tabsPerInstance: 1 } } } as any);
+  const q = queue as any;
+  q.pump = () => {};
+  const started: string[] = [];
+  q.runJob = (j: { id: string }) => {
+    started.push(j.id);
+    db.prepare("UPDATE jobs SET status = 'running' WHERE id = ?").run(j.id);
+    return new Promise(() => {});
+  };
+  const owner = { id: 'test', name: 'test', role: 'owner', projects: ['*'] } as any;
+  const play = () => submit(owner, { tool: 'playtest.run', project: 'cpugame', params: { url: 'http://localhost:8089/', gpu: 'require' } });
+  const a = play();
+  const b = play();
+  const c = play();
+  await q.fill();
+  assert.ok(started.includes(a.id) && started.includes(b.id), 'two instances, one tab each');
+  assert.ok(!started.includes(c.id), 'the third waits');
+  assert.equal(q.lanes.get('playtest-cloud-cpu')?.size, 2);
+  saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null } } } as any);
+});
+
+test('openCloudPlaytestHost on the CPU service: software reason, slowness, its own usage row; a local service gets no token', async () => {
+  const seen: any[] = [];
+  const browser = { contexts: () => [], isConnected: () => true, newContext: async () => ({}), close: async () => {} };
+  const chromium = { connect: async (ws: string, opts: any) => { seen.push({ ws, headers: opts.headers }); return browser; } };
+  const usage: any[] = [];
+  const base = { backend: 'cloudrun-cpu', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: 'http://127.0.0.1:8095', maxInstances: 1, tabsPerInstance: 1, encode: 'service' } } as any;
+  const c = pc.cloudPlaytestFor('x', { playtest: base })!;
+  let asked = 0;
+  const host = await pc.openCloudPlaytestHost(c, { pageUrl: 'https://doseofdestruction.com/Game/', job: 'j_1', chromium, onUsage: (u) => usage.push(u), connectDeps: { idToken: async () => { asked++; return 'tok'; }, sleep: async () => {}, now: () => Date.now() } });
+  assert.equal(host.backend, 'cloudrun-cpu');
+  assert.equal(host.slow, 2);
+  assert.match(host.software!, /SwiftShader/);
+  assert.match(host.server, /gen-playtest-cpu .*software WebGL/);
+  assert.equal(seen[0].ws, 'ws://127.0.0.1:8095/pw');
+  assert.equal(seen[0].headers.Authorization, undefined, 'a service on this machine needs no Google token');
+  assert.equal(asked, 0);
+  host.close();
+  assert.equal(usage[0].provider, 'gcp-playtest-cpu');
+  assert.match(usage[0].detail, /no idle tail/);
+  // On Cloud Run the token is sent.
+  assert.deepEqual(await pc.authFor(CPU_URL, async () => 'tok'), { Authorization: 'Bearer tok' });
+  assert.deepEqual(await pc.authFor('http://localhost:8095', async () => 'tok'), {});
+});
+
+test('software self-test rules: SwiftShader flags, any drawing renderer passes in software mode, the mode from the env', () => {
+  assert.equal(gpu.glMode('software'), 'software');
+  assert.equal(gpu.glMode(undefined), 'gpu');
+  assert.equal(gpu.candidatesFor('software'), gpu.SOFTWARE_CANDIDATES);
+  assert.equal(gpu.candidatesFor('gpu'), gpu.CANDIDATES);
+  for (const c of gpu.SOFTWARE_CANDIDATES) {
+    assert.ok(c.args.includes('--use-angle=swiftshader') && c.args.includes('--enable-unsafe-swiftshader') && c.args.includes('--disable-dev-shm-usage'));
+  }
+  const swift = { id: 'swiftshader', ok: true, renderer: 'ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)' };
+  assert.equal(gpu.pickCandidate([swift], 'software')?.id, 'swiftshader');
+  assert.equal(gpu.pickCandidate([swift]), null, 'the L4 service never takes SwiftShader');
+  assert.equal(gpu.pickCandidate([{ ...swift, ok: false }], 'software'), null, 'it must have drawn');
+});
+
+test('the CPU image and service: Dockerfile.cpu without NVIDIA files, software mode, no GPU, request-based billing', () => {
+  const ctx = tools.buildContext(undefined, 'cpu');
+  const docker = ctx.files.Dockerfile.toString();
+  assert.match(docker, /^FROM mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble$/m);
+  assert.match(docker, /HAWKES_GL_MODE=software/);
+  assert.ok(!/nvidia/i.test(docker.split('\n').filter((l) => !l.startsWith('#')).join('\n')), 'no NVIDIA files');
+  assert.deepEqual(Object.keys(ctx.files).sort(), ['Dockerfile', 'gpu.mjs', 'package.json', 'server.mjs']);
+  assert.notEqual(ctx.hash, tools.buildContext(ctx.version, 'gpu').hash);
+  const spec = tools.loadSpec('cpu');
+  assert.equal(spec.name, 'gen-playtest-cpu');
+  assert.equal(spec.gpu, null);
+  assert.match(tools.imageTag({ project: 'p', region: 'us-east4' }, spec, ctx), /\/gen-playtest-cpu:pw\d+\.\d+\.\d+-[0-9a-f]{10}$/);
+  assert.equal(tools.stateName('cpu', 'image'), 'playtest-cpu-image.json');
+  assert.equal(tools.stateName('gpu', 'image'), 'playtest-image.json');
+  assert.ok(Math.abs(tools.pricePerHour(spec) - 0.4176) < 0.001);
+  const y = tools.serviceYaml(spec, { image: 'img', region: 'us-east4', serviceAccount: 'sa@x', maxInstances: 4, tabs: 1 });
+  const t = y.spec.template;
+  assert.equal(t.metadata.annotations['run.googleapis.com/cpu-throttling'], 'true', 'request-based billing: no idle tail');
+  assert.equal(t.metadata.annotations['autoscaling.knative.dev/minScale'], '0');
+  assert.equal(t.spec.nodeSelector, undefined);
+  assert.equal(t.spec.containers[0].resources.limits['nvidia.com/gpu'], undefined);
+  assert.equal(t.spec.containerConcurrency, 1);
+  assert.deepEqual(t.spec.containers[0].env, [{ name: 'HAWKES_TABS', value: '1' }, { name: 'HAWKES_GL_MODE', value: 'software' }]);
+  assert.equal(t.spec.containers[0].startupProbe.httpGet.path, '/ready');
+  assert.ok(!JSON.stringify(y).includes('allUsers'));
+});
+
+test('the service in software mode, run here: /ready after WebGL draws on SwiftShader, and the bench', { skip: !haveChromium && 'Playwright Chromium is not installed here' }, async () => {
+  const svc = await startService({ HAWKES_GL_MODE: 'software', HAWKES_ALLOW_SOFTWARE: '0', HAWKES_GL: '', HAWKES_TABS: '1' });
+  try {
+    const ready: any = await (await fetch(`${svc.url}/ready`)).json();
+    assert.equal(ready.mode, 'software');
+    const st: any = await (await fetch(`${svc.url}/selftest`)).json();
+    assert.equal(st.mode, 'software');
+    assert.equal(st.gl.ok, true);
+    assert.match(st.gl.renderer, /SwiftShader/);
+    assert.ok(st.gl.fps > 0, 'the WebGL loop ran');
+    assert.equal(st.nvenc.ok, false);
+    assert.equal(st.maxSessions, 1);
+  } finally {
+    svc.child.kill();
+  }
+});

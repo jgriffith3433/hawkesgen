@@ -1,0 +1,23 @@
+{
+  "_about": "The Cloud Run CPU service that plays playtests when no GPU is to be had (docs/playtest-cloudrun.md, \"The CPU service\"): the same server as gen-playtest, built from Dockerfile.cpu, WebGL on SwiftShader. One WebSocket = one browser tab, so containerConcurrency = tabsPerInstance and Gen's playtest-cloud-cpu lane admits maxInstances x tabsPerInstance tabs. Request-based billing: an instance bills only while a tab (or an encode) is connected, so there is no idle tail. Gen's settings.playtest.cloudrunCpu must match what is deployed: deploy.mjs --variant cpu prints the patch.",
+  "variant": "cpu",
+  "name": "gen-playtest-cpu",
+  "image": "gen-playtest-cpu",
+  "dockerfile": "Dockerfile.cpu",
+  "repository": "hawkes-gen",
+  "region": "us-east4",
+  "gpu": null,
+  "cpu": 4,
+  "memoryGi": 8,
+  "maxInstances": 4,
+  "tabsPerInstance": 1,
+  "timeoutSeconds": 3600,
+  "slow": 2,
+  "prices": {
+    "billing": "request",
+    "cpuPerVcpuSecond": 0.000024,
+    "memoryPerGibSecond": 0.0000025,
+    "source": "cloud.google.com/run/pricing, request-based billing, Tier 1 (us-east4), the same rates as server/cpu-cloudrun/service.json; not verified against the bill"
+  },
+  "why": "SwiftShader draws WebGL on every vCPU it gets and the screencast's JPEGs take more; measured on J's PC (docs/playtest-cloudrun.md, \"Measured\"), one tab per 4 vCPU / 8 GiB instance plays a WebGL game at a usable frame rate, two halve it. 'slow' multiplies the boot wait and the default scenario limit (software rendering is slower to load and to play). us-east4 sits next to Gen (gen, gen-beta)."
+}

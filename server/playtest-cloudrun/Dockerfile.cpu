@@ -1,0 +1,26 @@
+# Hawkes Gen's playtest service for Cloud Run without a GPU: WebGL on the CPU through SwiftShader
+# (docs/playtest-cloudrun.md, "The CPU service"; the service gen-playtest-cpu).
+#
+# The same server as the L4 image (server.mjs, gpu.mjs) in software mode (HAWKES_GL_MODE=software): its self-test
+# launches Chromium with ANGLE on SwiftShader, checks that WebGL draws, times a small WebGL loop and only then lets
+# /ready pass. Playwright's own image at the exact version Gen uses (tools/playtest-cloudrun/build.mjs writes it over
+# __PW_VERSION__): Node, Chromium and its headless shell (both ship SwiftShader), their libraries. Added: ffmpeg for the
+# video encode (libx264). No NVIDIA files, no Vulkan or EGL loaders: SwiftShader is inside Chromium.
+FROM mcr.microsoft.com/playwright:v__PW_VERSION__-noble
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    NODE_ENV=production \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    HAWKES_GL_MODE=software \
+    HAWKES_TABS=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund --loglevel=error && npx playwright --version
+COPY server.mjs gpu.mjs ./
+
+EXPOSE 8080
+CMD ["node", "server.mjs"]

@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // Deploys (or updates) the playtest service on Cloud Run. docs/playtest-cloudrun.md, "Pilot".
 //
-//   node tools/playtest-cloudrun/deploy.mjs [--project hawkes-staging] [--region us-east4] [--image <tag>]
+//   node tools/playtest-cloudrun/deploy.mjs [--variant gpu|cpu] [--project hawkes-staging] [--region us-east4] [--image <tag>]
 //        [--max-instances 2] [--tabs 4] [--gen-sa <email>] [--worker-sa <email>] [--setup] [--apply]
+//
+// --variant cpu deploys gen-playtest-cpu (service-cpu.json: no GPU, WebGL on SwiftShader, request-based billing, so no
+// idle tail and no GPU quota) under the same account and invoker rules; its patch is settings.playtest.cloudrunCpu.
 //
 // One NVIDIA L4 per instance (8 vCPU, 32 GiB), scale to zero, at most --max-instances, containerConcurrency = --tabs
 // (one WebSocket = one browser tab), instance-based billing, no GPU zonal redundancy, a 60-minute request limit, the
@@ -16,25 +19,30 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, gcloud, saveState, readState, STATE_DIR, loadServiceMap } from '../cloudrun/lib.mjs';
-import { loadSpec, imageTag, serviceYaml, pricePerHour } from './lib.mjs';
+import { loadSpec, imageTag, serviceYaml, pricePerHour, variantOf, stateName } from './lib.mjs';
 
 const args = parseArgs();
-const spec = loadSpec();
+const variant = variantOf(args.variant);
+const spec = loadSpec(variant);
 if (!process.argv.some((a) => a.startsWith('--region'))) args.region = spec.region;
 const map = loadServiceMap();
-const gpu = map.gpus[spec.gpu];
-if (!gpu.regions.includes(args.region)) throw new Error(`${spec.gpu} isn't offered for Cloud Run services in ${args.region} (offered: ${gpu.regions.join(', ')})`);
-if (spec.cpu < gpu.minCpu || spec.memoryGi < gpu.minMemoryGi) throw new Error(`${spec.gpu} needs at least ${gpu.minCpu} vCPU and ${gpu.minMemoryGi} GiB`);
+if (spec.gpu) {
+  const gpu = map.gpus[spec.gpu];
+  if (!gpu.regions.includes(args.region)) throw new Error(`${spec.gpu} isn't offered for Cloud Run services in ${args.region} (offered: ${gpu.regions.join(', ')})`);
+  if (spec.cpu < gpu.minCpu || spec.memoryGi < gpu.minMemoryGi) throw new Error(`${spec.gpu} needs at least ${gpu.minCpu} vCPU and ${gpu.minMemoryGi} GiB`);
+}
 const maxInstances = Math.max(1, Math.min(20, Number(args.maxInstances ?? spec.maxInstances)));
 const tabs = Math.max(1, Math.min(8, Number(args.tabs ?? spec.tabsPerInstance)));
-const image = args.image ?? readState('playtest-image.json')?.tag ?? imageTag(args, spec);
+const image = args.image ?? readState(stateName(variant, 'image'))?.tag ?? imageTag(args, spec);
 const workerSa = args.workerSa ?? `gen-playtest@${args.project}.iam.gserviceaccount.com`;
 const genSa = args.genSa ?? `gen-control@${args.project}.iam.gserviceaccount.com`;
 const perHour = pricePerHour(spec, map);
 
 console.log(`Project ${args.project}, region ${args.region}, image ${image}`);
-console.log(`${spec.name}: ${spec.gpu} x1, ${spec.cpu} vCPU, ${spec.memoryGi} GiB, up to ${maxInstances} instance(s) x ${tabs} tabs = ${maxInstances * tabs} playtest tabs at once`);
-console.log(`  about $${perHour.toFixed(2)}/hour per instance while up (scale to zero: nothing when idle beyond Cloud Run's idle tail)`);
+console.log(`${spec.name}: ${spec.gpu ? `${spec.gpu} x1` : 'no GPU (WebGL on SwiftShader)'}, ${spec.cpu} vCPU, ${spec.memoryGi} GiB, up to ${maxInstances} instance(s) x ${tabs} tabs = ${maxInstances * tabs} playtest tabs at once`);
+console.log(spec.gpu
+  ? `  about $${perHour.toFixed(2)}/hour per instance while up (scale to zero: nothing when idle beyond Cloud Run's idle tail)`
+  : `  about $${perHour.toFixed(3)}/hour per instance while a tab is connected (request-based billing: nothing between playtests)`);
 console.log(`  runs as ${workerSa}; only ${genSa} may call it\n`);
 
 if (args.setup) {
@@ -57,13 +65,15 @@ const policy = gcloud(args, ['run', 'services', 'get-iam-policy', spec.name, `--
 if (policy && /allUsers|allAuthenticatedUsers/.test(policy)) console.log(`WARNING: ${spec.name} is open to allUsers/allAuthenticatedUsers: remove that binding (only Gen's account may call it)`);
 const url = gcloud(args, ['run', 'services', 'describe', spec.name, `--project=${args.project}`, `--region=${args.region}`, '--format=value(status.url)'], { read: true });
 
-const patch = { playtest: { cloudrun: { url: url || '<the service URL>', maxInstances, tabsPerInstance: tabs } } };
+const key = variant === 'cpu' ? 'cloudrunCpu' : 'cloudrun';
+const patch = { playtest: { [key]: { url: url || '<the service URL>', maxInstances, tabsPerInstance: tabs } } };
 if (!args.apply) {
-  console.log('\nDry run: nothing deployed. Add --apply to deploy (J\'s OK: L4 quota, and instances bill while up).');
+  console.log(`\nDry run: nothing deployed. Add --apply to deploy (J's OK: ${spec.gpu ? 'L4 quota, and instances bill while up' : 'instances bill while a playtest is connected'}).`);
   if (url) console.log(`The service already answers at ${url}`);
+  console.log(`The settings patch it would print: ${JSON.stringify(patch)}`);
   process.exit(0);
 }
-saveState('playtest-url.json', { url, region: args.region, maxInstances, tabs });
+saveState(stateName(variant, 'url'), { url, region: args.region, maxInstances, tabs });
 console.log('\nPoint Gen at it (POST /v1/settings, owner key). Playtests move only for the products you name, or all with "backend":');
-console.log(JSON.stringify({ ...patch, playtest: { ...patch.playtest, projects: { '<product>': 'cloudrun' } } }, null, 2));
-console.log('Then: hawkesgen playtester cloud selftest');
+console.log(JSON.stringify({ ...patch, playtest: { ...patch.playtest, ...(variant === 'cpu' ? { backend: 'cloudrun-cpu' } : { projects: { '<product>': 'cloudrun' } }) } }, null, 2));
+console.log(`Then: hawkesgen playtester cloud${variant === 'cpu' ? ' cpu' : ''} selftest`);

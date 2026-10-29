@@ -72,7 +72,9 @@ export type PlaytestHost = {
   /** The playtester it runs on (null on a GPU fleet server), and the lanes it holds there until close(). */ playtester: string | null;
   /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
   /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). Null on Cloud Run. */ ssh: { args: string[]; dest: string } | null;
-  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun';
+  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu';
+  /** Set when the browser has no GPU (the Cloud Run CPU service): why, for the result's softwareBecause. */ software?: string | null;
+  /** How much slower than a GPU browser to allow for (the boot wait and the default scenario limit): 1 on a GPU. */ slow?: number;
   /** A browser already connected (Cloud Run: a pool with a connection per tab); else playtest.ts connects to wsEndpoint. */ browser?: any;
   /** Added to every browser context's options (Cloud Run with a local page: service workers off, so routing sees every request). */ contextOptions?: Record<string, unknown>;
   /** Run on every new context before its page opens (Cloud Run: local origins served from here through the connection). */ prepareContext?(context: any): Promise<void>;
@@ -85,21 +87,23 @@ export type PlaytestHost = {
  * before (openPlaytestHost). Null when no GPU browser is ready.
  */
 export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, tabs = 1, project, job, onUsage }: { startPlaytester?: boolean; tabs?: number; project?: string | null; job?: string; onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void } = {}): Promise<PlaytestHost | null> {
-  const { cloudPlaytestFor, openCloudPlaytestHost, localPortsOf } = await import('../playtester/cloudrun.ts');
+  const { cloudPlaytestsFor, openCloudPlaytestHost, localPortsOf } = await import('../playtester/cloudrun.ts');
   const { loadSettings } = await import('../../config.ts');
-  const cloud = (() => {
+  const clouds = (() => {
     try {
-      return cloudPlaytestFor(project, loadSettings());
+      return cloudPlaytestsFor(project, loadSettings());
     } catch (e: any) {
       step(`Cloud Run playtests aren't set up right (${e.message}); using the playtesters`);
-      return null;
+      return [];
     }
   })();
-  if (cloud) {
+  // In order: the L4 service, then the CPU service (software WebGL), then the playtesters. Each step says why it moved on.
+  for (const [i, cloud] of clouds.entries()) {
     try {
       return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, step, onUsage });
     } catch (e: any) {
-      step(`no Cloud Run browser (${String(e?.message ?? e).slice(0, 200)}); using the playtesters`);
+      const nxt = clouds[i + 1];
+      step(`no Cloud Run browser on ${cloud.name} (${String(e?.message ?? e).slice(0, 200)}); ${nxt ? `trying ${nxt.name}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : 'using the playtesters'}`);
     }
   }
   return openPlaytestHost(localPortsOf(pageUrl), step, { startPlaytester, tabs });
