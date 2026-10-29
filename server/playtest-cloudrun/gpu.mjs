@@ -137,18 +137,27 @@ async function tryCandidate(chromium, cand, { timeoutMs = 45_000, benchMs = 0 } 
   }
 }
 
-/** What the platform gave us: the mounted driver libraries that matter for graphics and video, nvidia-smi's line. */
+/**
+ * What the platform gave us: the mounted driver libraries that matter for graphics and video, nvidia-smi's line.
+ * Cloud Run mounts them at /usr/local/nvidia/lib64; the NVIDIA container runtime elsewhere (RunPod,
+ * docs/playtest-runpod.md) puts them in the system library folder, the graphics ones only when
+ * NVIDIA_DRIVER_CAPABILITIES asks for graphics (the image sets "all").
+ */
 export function driverFacts() {
-  const dir = '/usr/local/nvidia/lib64';
-  let libs = [];
-  try {
-    libs = fs.readdirSync(dir).filter((f) => /EGL|GLX|GLES|vulkan|glcore|eglcore|encode|cuvid|nvidia-glsi|libcuda\.so/i.test(f)).sort();
-  } catch {
-    libs = null;
+  let dir = '/usr/local/nvidia/lib64';
+  let libs = null;
+  for (const [d, re] of [[dir, /EGL|GLX|GLES|vulkan|glcore|eglcore|encode|cuvid|nvidia-glsi|libcuda\.so/i], ['/usr/lib/x86_64-linux-gnu', /^lib(EGL_nvidia|GLX_nvidia|GLESv2_nvidia|nvidia-(eglcore|glcore|glsi|encode|gpucomp)|nvcuvid|cuda)\.so/i]]) {
+    try {
+      const found = fs.readdirSync(d).filter((f) => re.test(f)).sort();
+      if (found.length || !libs) { dir = d; libs = found; }
+      if (found.length) break;
+    } catch {
+      // Not on this platform.
+    }
   }
   const smiBin = ['/usr/local/nvidia/bin/nvidia-smi', 'nvidia-smi'].find((b) => b.includes('/') ? fs.existsSync(b) : true);
   const smi = spawnSync(smiBin, ['--query-gpu=name,driver_version,memory.total', '--format=csv,noheader'], { encoding: 'utf8', timeout: 15_000 });
-  return { libDir: dir, libs, nvidiaSmi: smi.status === 0 ? smi.stdout.trim() : null, ldLibraryPath: process.env.LD_LIBRARY_PATH ?? null };
+  return { libDir: dir, libs, nvidiaSmi: smi.status === 0 ? smi.stdout.trim() : null, ldLibraryPath: process.env.LD_LIBRARY_PATH ?? null, capabilities: process.env.NVIDIA_DRIVER_CAPABILITIES ?? null };
 }
 
 /** Whether ffmpeg can encode H.264 on the GPU here (libnvidia-encode from the mounted driver). */

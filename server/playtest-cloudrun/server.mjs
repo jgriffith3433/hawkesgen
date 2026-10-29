@@ -7,6 +7,8 @@
 //   GET  /ready      startup probe: 200 once the self-test found a GL path that draws (GPU mode: on the NVIDIA GPU;
 //                    software mode: on SwiftShader)
 //   GET  /healthz    liveness: 200
+//   GET  /ping       RunPod's load-balancer health check: 204 while the self-test runs, 200 once it passed
+//                    (docs/playtest-runpod.md: the same image as a RunPod serverless endpoint, with HAWKES_TOKEN)
 //   GET  /selftest   the self-test's report (JSON); ?fresh=1 runs it again (?all=1 tries every candidate)
 //   GET  /pw         WebSocket: one Chromium (launchServer with the chosen GPU flags) for this connection, proxied
 //                    byte for byte; the browser closes when the connection does. One connection = one tab: a
@@ -35,6 +37,16 @@ const PORT = Number(process.env.PORT || 8080);
 const MODE = glMode();
 const ALLOW_SOFTWARE = process.env.HAWKES_ALLOW_SOFTWARE === '1';
 const MAX_SESSIONS = Math.max(1, Number(process.env.HAWKES_TABS || 4));
+// On RunPod (docs/playtest-runpod.md) RunPod's gateway checks Gen's RunPod API key and drops the Authorization header;
+// HAWKES_TOKEN is a second lock of our own: every /pw, /encode and /selftest must carry it as X-Hawkes-Token. Unset on
+// Cloud Run, where only Gen's service account may call the service at all.
+const TOKEN = process.env.HAWKES_TOKEN || '';
+const tokenOk = (req) => {
+  if (!TOKEN) return true;
+  const got = Buffer.from(String(req.headers['x-hawkes-token'] ?? ''));
+  const want = Buffer.from(TOKEN);
+  return got.length === want.length && crypto.timingSafeEqual(got, want);
+};
 const FPS = 30;
 
 let report = null;
@@ -124,6 +136,14 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
   try {
     if (url.pathname === '/healthz') return send(res, 200, 'ok');
+    // RunPod's load balancer health check (PORT_HEALTH): 204 while the self-test runs (initializing: no traffic yet),
+    // 200 once a GL path draws, 503 when none did (RunPod then replaces the worker).
+    if (url.pathname === '/ping') {
+      if (report && (report.gl.ok || ALLOW_SOFTWARE)) return send(res, 200, 'ok');
+      if (!report) { res.writeHead(204); return res.end(); }
+      return send(res, 503, 'no GL path');
+    }
+    if (!tokenOk(req)) return send(res, 401, 'bad token');
     if (url.pathname === '/ready') {
       if (report && (report.gl.ok || ALLOW_SOFTWARE)) return send(res, 200, { ok: true, mode: MODE, gl: report.gl.id, renderer: report.gl.renderer });
       return send(res, 503, { ok: false, testing: Boolean(testing), report });
@@ -146,6 +166,7 @@ server.on('upgrade', async (req, socket, head) => {
   const refuse = (status, why) => {
     socket.end(`HTTP/1.1 ${status} ${why}\r\nRetry-After: 5\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
   };
+  if (!tokenOk(req)) return refuse(401, 'Unauthorized');
   if (url.pathname === '/encode') return encoder.handleUpgrade(req, socket, head, (ws) => encodeSession(ws, url));
   if (url.pathname !== '/pw') return refuse(404, 'Not Found');
   if (!report || (!report.gl.ok && !ALLOW_SOFTWARE)) return refuse(503, MODE === 'software' ? 'No WebGL' : 'No GPU');
@@ -180,7 +201,7 @@ server.on('upgrade', async (req, socket, head) => {
       const lines = [`GET ${wsPath} HTTP/1.1`];
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         const k = req.rawHeaders[i];
-        if (/^(authorization|x-forwarded-.*|x-cloud-trace-context|traceparent|forwarded|via)$/i.test(k)) continue;
+        if (/^(authorization|x-hawkes-token|x-forwarded-.*|x-cloud-trace-context|traceparent|forwarded|via|cf-.*|cdn-loop)$/i.test(k)) continue;
         lines.push(`${k}: ${k.toLowerCase() === 'host' ? `127.0.0.1:${port}` : req.rawHeaders[i + 1]}`);
       }
       upstream.write(`${lines.join('\r\n')}\r\n\r\n`);

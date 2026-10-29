@@ -1,0 +1,45 @@
+# The playtest browser image on GHCR, for RunPod (docs/playtest-runpod.md). Push a tag playtest-image-<anything> (or run
+# it by hand) and GitHub builds server/playtest-cloudrun (the GPU variant, Gen's Playwright version) and pushes
+# ghcr.io/jgriffith3433/hawkes-gen-playtest:pw<version>-<context hash> and :latest. The same image is also pushed as
+# ghcr.io/jgriffith3433/hawkes-gen-gpu:playtest-pw<version>-<hash>: that package is already public, so RunPod can pull it
+# before hawkes-gen-playtest is made public (GitHub makes a new package private). GitHub's own token writes both: no
+# secret. The image has Playwright, Chromium, ffmpeg and the service only (no keys).
+name: Playtest image
+on:
+  push:
+    tags: ['playtest-image-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build folder
+        id: ctx
+        run: node tools/playtest-runpod/image-context.mjs "$RUNNER_TEMP/pt" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          img=ghcr.io/jgriffith3433/hawkes-gen-playtest
+          gpu=ghcr.io/jgriffith3433/hawkes-gen-gpu
+          tag="${{ steps.ctx.outputs.TAG }}"
+          docker build "$RUNNER_TEMP/pt" --provenance=false \
+            --label org.opencontainers.image.source=https://github.com/jgriffith3433/hawkesgen \
+            -t "$img:$tag" -t "$img:latest" -t "$gpu:playtest-$tag"
+          docker push "$img:$tag"
+          docker push "$img:latest"
+          docker push "$gpu:playtest-$tag"
+          echo "Pushed $img:$tag and $gpu:playtest-$tag" >> "$GITHUB_STEP_SUMMARY"
