@@ -276,6 +276,49 @@ MangoHud measured 84 fps on average (1% low 2.4 fps) and the game reported 50 fp
   where NVIDIA Vulkan fails (`ERROR_INCOMPATIBLE_DRIVER`) and Xvfb with GLX crashed. Narrowing the list to the
   browser runner's four models fixed it.
 
+### A real game: Breaking Through (2026-10-29)
+
+Unity 6000.3.7f1, Mono, built on J's PC with `-buildLinux64Player` / `-buildWindows64Player` (no project changes), the
+playtest SDK `com.hawkes.playtest@0.2.0` (contract v2), scenario `smoke` (menu, a run, 30 s of the bot). The builds are
+assets of the private prerelease `playtest-test-1` in `jgriffith3433/breakingthrough` (`bt-linux64.tar.gz` 58 MB,
+`bt-win64.tar.gz` 60 MB), so they reach the runner as GitHub's short-lived link (Gen's `{ github: { release } }` build).
+
+| Target | Graphics the game used | fps (avg / worst) | GPU | First frame | Run |
+|---|---|---|---|---|---|
+| `linux` | OpenGL Core on llvmpipe (Unity's default on Linux) | 10.4 / 6 | 0% (CPU 580%) | 1.9 s | done |
+| `linux` with `-force-vulkan` (now the runner's default for Unity) | Vulkan, RTX A4500 | **347 / 171** (p99 4.2 ms) | 33% | 2.4 s | done |
+| `proton` (GE-Proton11-10) | Direct3D 11 through DXVK, RTX A4500 | **432 / 251** (p99 3.3 ms) | 36% | 6.4 s | done |
+
+Video, eight screenshots (menu, wave 1, the game's own problems, the end), `logs.txt` with Player.log, `report.json`
+and MangoHud's frame times all came back over the session. The game reported its own bugs the same way on both
+(a NullReferenceException in `ZeldaStyleCamera.Start`, "the active player is not Wallit", "Right hand bone was not
+found"): findings about Breaking Through, not the runner.
+
+**What draws on the GPU here:** Vulkan (native Vulkan games; Unity with `-force-vulkan`; Godot 4 Forward+/Mobile),
+Direct3D 9/10/11 through DXVK and Direct3D 12 through VKD3D under Proton. **What doesn't:** OpenGL (Unity's Linux
+default, Godot's Compatibility renderer, most older Linux games, WineD3D): Mesa's llvmpipe on the CPU. The runner reads
+what the game drew with from its own log (`gameRenderer`: Unity's `Vulkan renderer=[…]` / `Renderer:`, Godot's `Using
+Device:`), reports it as `renderer` and `api`, and a software renderer is a warning with what to change.
+
+**Through Gen** (a local Gen from this branch, `settings.playtest.runners` = the entry below, `playtest.run` with
+`build: { github: { repo, release, asset }, token }`): `target: linux` and `target: proton` both finished `done`; the
+mp4 and shots were filed as assets, usage was about $0.007 a run (`pricePerSecond` x seconds). Fixed on the way:
+- **A Linux game launched on a cold worker was killed at 3 s** (SIGKILL): the Wine prefix warm-up that runs after the
+  self-test ends by killing the player user's processes. Every run now waits for the warm-up (a few seconds).
+- **The game's own `problem` events never reached Gen's `problems`.** They do now, with `source: "game"`.
+- **The renderer was the worker's, not the game's**, so a llvmpipe run said `software: false`.
+- **MangoHud, ALSA and Wine EDID lines counted as console errors** (17 in a clean Proton run). They stay in `logs.txt`.
+
+**Not proven on RunPod:** image 5 (`play-native-5-ebc6186`: the game's problems, the game's renderer, the noise filter)
+passed its unit tests and Gen's protocol tests, and starts locally, but no run on a RunPod worker used it. An image-3
+worker stayed up for over an hour and took the runs until the endpoint was scaled to 0. A worker on a fresh host
+pulls the 3.5 GB image first: one took longer than Gen's 5-minute accept limit, and Gen cooled the runner down.
+Image 4's two fixes (the warm-up wait, -force-vulkan) were proven by the direct runs above, made with them by hand.
+
+**Cost:** a smoke run is about 40 s of play and 45-80 s of worker time with the download and sending; RunPod bills the
+worker from its start to 60 s after the run (AMPERE_16 flex, $0.58/h): about **$0.01-0.02 a run**, plus about 30 s of
+cold start when no worker is up.
+
 ## Local test
 
 ```bash
