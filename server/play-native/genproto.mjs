@@ -114,8 +114,16 @@ export async function finishGen(g, report, files) {
     type: 'result', outcome, seconds: report.seconds, loadSeconds: report.firstFrameSeconds ?? null,
     contract: Boolean(report.hello), scenarios: report.hello?.scenarios ?? null,
     report: { metrics: report.report?.metrics ?? {}, events: report.events ?? [], log: report.logs?.slice?.(-50) ?? [] },
-    problems: (report.problems ?? []).map((x) => ({ severity: x.severity, message: x.message, source: 'runner' })),
-    software: Boolean(report.machine?.software), ...(report.machine?.software ? { softwareBecause: 'no GPU path on this worker' } : {}),
-    renderer: report.machine?.vulkan ?? report.machine?.gl ?? null, exe: report.exe, target: report.target,
+    // The runner's problems, then the game's own (the contract's problem events: its exceptions and checks).
+    problems: [...(report.problems ?? []), ...(report.gameProblems ?? [])].map((x) => ({ severity: x.severity, message: x.message, source: x.source ?? 'runner' })),
+    // What the game drew with (its own log, session.mjs gameRenderer), else the worker's Vulkan device.
+    ...softwareOf(report),
+    renderer: report.drew?.renderer ?? report.machine?.vulkan ?? report.machine?.gl ?? null, api: report.drew?.api ?? null, exe: report.exe, target: report.target,
   });
+}
+
+function softwareOf(report) {
+  if (report.machine?.software) return { software: true, softwareBecause: 'no GPU path on this worker' };
+  if (report.drew?.software) return { software: true, softwareBecause: `the game drew with ${report.drew.renderer} (${report.drew.api ?? '?'}): only Vulkan reaches the GPU here` };
+  return { software: false };
 }

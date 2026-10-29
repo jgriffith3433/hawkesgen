@@ -152,6 +152,34 @@ export function playerUsage(uid = PLAYER_UID) {
 }
 
 /**
+ * Lines the runner's own setup puts on every game's stderr (MangoHud, ALSA without a sound card, Wine's missing EDID):
+ * kept in logs.txt, not sent as the game's log, where Gen counted them as console errors (17 in a clean Proton run).
+ */
+export const RUNNER_NOISE = /\[MANGOHUD\]|^ALSA lib |readMonitorEdidFromKey|DXGI: Failed to parse display metadata/;
+
+/**
+ * What the game itself drew with, from its own log (logs.txt): Unity's "Vulkan renderer=[…]" or "Renderer: …" (OpenGL,
+ * Direct3D through DXVK), Godot's "Using Device: …". { renderer, api, software } or null when the log doesn't say.
+ */
+export function gameRenderer(text) {
+  const t = String(text ?? '');
+  const vk = [...t.matchAll(/Vulkan renderer=\[([^\]]+)\]/g)].pop()?.[1];
+  const godot = [...t.matchAll(/^(Vulkan|OpenGL|D3D12|Direct3D 12)[^\n]*Using Device(?: #\d+)?: (.+)$/gm)].pop();
+  const unity = [...t.matchAll(/^\s*Renderer:\s*(.+)$/gm)].pop()?.[1];
+  const api = vk ? 'Vulkan' : godot ? (/^Vulkan/.test(godot[1]) ? 'Vulkan' : /^OpenGL/.test(godot[1]) ? 'OpenGL' : 'Direct3D 12')
+    : /Direct3D:/.test(t) ? 'Direct3D' : /OPENGL LOG|OpenGL/.test(t) ? 'OpenGL' : null;
+  const renderer = (vk ?? godot?.[2] ?? unity ?? '').trim().replace(/\s*\(ID=0x[0-9a-f]+\)$/i, '');
+  if (!renderer) return null;
+  return { renderer, api, software: /llvmpipe|lavapipe|softpipe|swiftshader|software/i.test(renderer) };
+}
+
+/** A contract `problem` event ("bug: message", the SDKs' form) as a problem of the run, from the game. */
+export function gameProblem(e) {
+  const m = /^(blocker|bug|warning|polish|idea)\s*:\s*(.*)$/is.exec(String(e.detail ?? ''));
+  return { severity: e.severity ?? m?.[1]?.toLowerCase() ?? 'bug', message: String(e.message ?? m?.[2] ?? e.detail ?? 'problem'), t: e.t ?? null, source: 'game' };
+}
+
+/**
  * The game's command line. A Unity Linux player picks OpenGL Core first, and OpenGL on this display is Mesa's llvmpipe
  * (Breaking Through: 10 fps on the CPU), while Vulkan is the GPU's (347 fps on an A4500, 2026-10-29). So a Unity Linux
  * build (UnityPlayer.so beside the executable) gets -force-vulkan unless the caller chose a graphics flag or set
@@ -209,6 +237,7 @@ export class Run {
     this.phase = 'starting';
     this.stopRequested = false;
     this.problems = [];
+    this.gameProblems = [];
     this.smokeInputs = []; // what a smoke run pressed, and when (the report shows what came before a crash)
     this.shots = [];
     this.output = []; // the process's stdout/stderr, last 2000 lines
@@ -317,7 +346,7 @@ export class Run {
         s.on('fatal', ({ code, reason }) => { this.runLog(`protocol: ${reason}`); this.problem('bug', `playtest contract: ${reason}`); c.close(code, reason); });
         s.on('hello', (h) => this.io.send({ type: 'hello', hello: { product: h.product, engine: h.engine, engineVersion: h.engineVersion, sdk: h.sdk, platform: h.platform, scenarios: h.scenarios }, t: this.t() }));
         s.on('state', (st) => this.io.send({ type: 'state', state: st, t: this.t() }));
-        s.on('event', (e) => { this.io.send({ type: 'event', event: e, t: this.t() }); if (e.type === 'scene' || e.type === 'problem' || e.type === 'finish') this.#shot(`${e.type}${e.detail ? `-${e.detail}` : ''}`); });
+        s.on('event', (e) => { this.io.send({ type: 'event', event: e, t: this.t() }); if (e.type === 'problem') this.gameProblems.push(gameProblem(e)); if (e.type === 'scene' || e.type === 'problem' || e.type === 'finish') this.#shot(`${e.type}${e.detail ? `-${e.detail}` : ''}`); });
         s.on('log', (e) => this.io.send({ type: 'log', source: 'game', level: e.level, line: e.line, t: this.t() }));
         connected();
       },
@@ -495,7 +524,7 @@ export class Run {
         for (const line of lines) {
           this.output.push(`${name}: ${line}`);
           if (this.output.length > 2000) this.output.shift();
-          this.io.send({ type: 'log', source: name, line: line.slice(0, 2000), t: this.t() });
+          if (!RUNNER_NOISE.test(line)) this.io.send({ type: 'log', source: name, line: line.slice(0, 2000), t: this.t() });
         }
       });
     }
@@ -689,6 +718,10 @@ export class Run {
     const out = path.join(this.dir, 'out');
     const collected = this.#collect(out);
     const perf = this.#perf(out);
+    const drew = gameRenderer((() => { try { return fs.readFileSync(path.join(out, 'logs.txt'), 'utf8'); } catch { return ''; } })());
+    if (drew?.software && !this.problems.some((p) => p.message.startsWith('software rendering'))) {
+      this.problem('warning', `software rendering: the game drew with ${drew.renderer} (${drew.api ?? 'its graphics API'}), not the GPU. On this runner only Vulkan reaches the GPU (DXVK and VKD3D for Windows games): ${drew.api === 'OpenGL' ? 'for Unity pass -force-vulkan, for Godot --rendering-driver vulkan' : 'use a Vulkan build'}`);
+    }
 
     const outcome = this.outcome ?? (this.stopRequested ? 'done' : this.error ? 'error' : 'done');
     const report = {
@@ -704,6 +737,7 @@ export class Run {
       frames: { sampled: this.frames.count, drawn: this.frames.drawn, last: this.frames.last },
       perf, shots: this.shots, video: video ? { encoder: video.encoder, bytes: video.bytes, error: video.error } : null,
       files: collected,
+      drew, gameProblems: this.gameProblems,
       machine: { display: this.ctx.selftest?.display?.kind ?? null, vulkan: this.ctx.selftest?.vulkan?.device ?? null, gl: this.ctx.selftest?.gl?.renderer ?? null, software: Boolean(this.ctx.selftest?.software), gpu: this.ctx.selftest?.gpu?.name ?? null, proton: this.target === 'proton' ? this.ctx.selftest?.proton ?? null : null },
     };
     const reportFile = path.join(out, 'report.json');

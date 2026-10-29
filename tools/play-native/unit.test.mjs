@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { archiveKind, findExe, parseMangoHud, startProblem, runLimits, gameArgs } from '../../server/play-native/session.mjs';
+import { archiveKind, findExe, parseMangoHud, startProblem, runLimits, gameArgs, gameRenderer, gameProblem, RUNNER_NOISE } from '../../server/play-native/session.mjs';
 import { JpegSplitter, encoderArgs } from '../../server/play-native/capture.mjs';
 import { frameStats, frameDiff, isBlack, classifyRenderer, xorgConf } from '../../server/play-native/display.mjs';
 import { xorgBusId } from '../../server/play-native/driver.mjs';
@@ -121,4 +121,20 @@ test('a Unity Linux player gets -force-vulkan unless told otherwise', () => {
   assert.deepEqual(gameArgs('linux', exe, [], { vulkan: false }), []);
   assert.deepEqual(gameArgs('proton', exe, []), []);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('what the game drew with, from its own log', () => {
+  assert.deepEqual(gameRenderer('Vulkan API version 1.1.0\nVulkan renderer=[NVIDIA RTX A4500] id=[2232]\n'), { renderer: 'NVIDIA RTX A4500', api: 'Vulkan', software: false });
+  assert.deepEqual(gameRenderer('OPENGL LOG: Creating OpenGL 4.5 graphics device\nRenderer: llvmpipe (LLVM 20.1.2, 256 bits)\n'), { renderer: 'llvmpipe (LLVM 20.1.2, 256 bits)', api: 'OpenGL', software: true });
+  assert.deepEqual(gameRenderer('Direct3D:\n    Version:  Direct3D 11.0 [level 11.1]\n    Renderer: NVIDIA RTX A4500 (ID=0x2232)\n'), { renderer: 'NVIDIA RTX A4500', api: 'Direct3D', software: false });
+  assert.equal(gameRenderer('Vulkan 1.3.280 - Forward+ - Using Device #0: NVIDIA - NVIDIA RTX A4500').api, 'Vulkan');
+  assert.equal(gameRenderer('nothing here'), null);
+});
+
+test('contract problem events become the game\'s problems; runner noise stays out of the game log', () => {
+  assert.deepEqual(gameProblem({ t: 1.2, type: 'problem', detail: 'bug: exception: NullReferenceException' }), { severity: 'bug', message: 'exception: NullReferenceException', t: 1.2, source: 'game' });
+  assert.equal(gameProblem({ type: 'problem', detail: 'odd' }).severity, 'bug');
+  assert.ok(RUNNER_NOISE.test('[2026-10-29 22:19:48.515] [MANGOHUD] [error] [loader_nvctrl.cpp:39] Failed'));
+  assert.ok(RUNNER_NOISE.test('ALSA lib pcm.c:2721:(snd_pcm_open_noupdate) Unknown PCM default'));
+  assert.ok(!RUNNER_NOISE.test('NullReferenceException: Object reference not set'));
 });
