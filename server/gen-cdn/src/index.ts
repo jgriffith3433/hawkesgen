@@ -1,9 +1,8 @@
-// cdn.hawkesgen.ai: GET /sha256/<64 hex> only. A file comes from Cloudflare's cache when it's there, else from the
-// bucket through Cloud Storage's S3-compatible API with a read-only HMAC key (signed with aws4fetch), and is cached for a
-// year. Nothing else is served: no listing, no other paths, no writes. Open CORS (games load assets from any page).
-import { AwsClient } from 'aws4fetch';
-
-type Env = { BUCKET: string; GCS_HMAC_ID: string; GCS_HMAC_SECRET: string };
+// cdn.hawkesgen.ai: GET /sha256/<64 hex> only. A file comes from Cloudflare's cache when it's there, else from Gen's
+// CDN origin route (src/api.ts /cdn/sha256/<hash>: Gen reads its private bucket with its own identity, no key), and is
+// cached for a year (a hash's bytes never change). Nothing else is served: no listing, no other paths, no writes. Open
+// CORS (games load assets from any page).
+type Env = { GEN_ORIGIN: string };
 const KEY = /^\/sha256\/[0-9a-f]{64}$/;
 const YEAR = 31536000;
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS', 'Access-Control-Max-Age': '86400' };
@@ -18,8 +17,7 @@ export default {
     const cacheKey = new Request(`https://cdn.hawkesgen.ai${url.pathname}`);
     const hit = await cache.match(cacheKey);
     if (hit) return request.method === 'HEAD' ? new Response(null, { status: hit.status, headers: hit.headers }) : hit;
-    const gcs = new AwsClient({ accessKeyId: env.GCS_HMAC_ID, secretAccessKey: env.GCS_HMAC_SECRET, service: 's3', region: 'auto' });
-    const r = await gcs.fetch(`https://storage.googleapis.com/${env.BUCKET}${url.pathname}`);
+    const r = await fetch(`${env.GEN_ORIGIN}/cdn${url.pathname}`);
     if (!r.ok) return new Response(r.status === 404 ? 'Not found' : 'Not available', { status: r.status === 404 ? 404 : 502, headers: cors });
     const headers = new Headers(cors);
     headers.set('Content-Type', r.headers.get('Content-Type') ?? 'application/octet-stream');

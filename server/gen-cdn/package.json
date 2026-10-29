@@ -2,8 +2,12 @@
   "name": "hawkes-gen-cdn",
   "private": true,
   "type": "module",
-  "description": "cdn.hawkesgen.ai: Gen's library files from its private Cloud Storage bucket, cached at Cloudflare's edge (docs/gen-cloudrun.md, \"The CDN\")",
-  "scripts": { "deploy": "wrangler deploy", "check": "wrangler deploy --dry-run --outdir .dry" },
-  "dependencies": { "aws4fetch": "1.0.20" },
-  "devDependencies": { "wrangler": "^4" }
+  "description": "cdn.hawkesgen.ai: Gen's library files through Gen (no key), cached at Cloudflare's edge (docs/gen-cloudrun.md, \"The CDN\")",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "check": "wrangler deploy --dry-run --outdir .dry"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
 }

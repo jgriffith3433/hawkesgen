@@ -140,6 +140,12 @@ export class Gcs {
     return r ? Buffer.from(await r.arrayBuffer()) : null;
   }
 
+  /** An object's bytes as a streaming response (headers include its Content-Type and Content-Length), or null. */
+  async media(uri: string): Promise<Response | null> {
+    const { bucket, name } = splitUri(uri);
+    return this.req(`${API}/b/${bucket}/o/${enc(name)}?alt=media`, { ok404: true });
+  }
+
   async readJson<T = any>(uri: string): Promise<T | null> {
     const b = await this.read(uri);
     return b ? JSON.parse(b.toString('utf8')) : null;

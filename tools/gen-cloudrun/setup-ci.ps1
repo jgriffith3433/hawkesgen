@@ -27,6 +27,9 @@ if ($LASTEXITCODE -ne 0) { & $g iam service-accounts create gen-deployer --proje
 foreach ($r in 'roles/cloudbuild.builds.editor', 'roles/artifactregistry.writer', 'roles/run.developer', 'roles/storage.objectAdmin', 'roles/logging.viewer', 'roles/serviceusage.serviceUsageConsumer', 'roles/artifactregistry.reader') {
   Retry { & $g projects add-iam-policy-binding $Project --member="serviceAccount:$sa" --role=$r --condition=None --format=none } $r
 }
+# `gcloud builds submit` uploads the source to Cloud Build's staging bucket first, and needs the bucket itself (not only
+# its objects): admin on that one bucket.
+Retry { & $g storage buckets add-iam-policy-binding "gs://${Project}_cloudbuild" --member="serviceAccount:$sa" --role=roles/storage.admin --project $Project --format=none } "Cloud Build's staging bucket"
 # Deploying a service that runs as gen-control means acting as it.
 Retry { & $g iam service-accounts add-iam-policy-binding $runtime --member="serviceAccount:$sa" --role=roles/iam.serviceAccountUser --project $Project --format=none } 'act as gen-control'
 # Only main of this repo may become gen-deployer.

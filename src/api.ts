@@ -287,6 +287,27 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   noteClient(req);
 
   try {
+    // The CDN's origin (server/gen-cdn: cdn.hawkesgen.ai caches each file a year at Cloudflare's edge): one library file
+    // by its content hash, read from the bucket with Gen's own identity (no key anywhere). Exact sha256 keys only: no
+    // listing, nothing else in the bucket. A hash names its bytes, so it's immutable.
+    const cdn = /^\/cdn\/sha256\/([0-9a-f]{64})$/.exec(route);
+    if (cdn && (method === 'GET' || method === 'HEAD')) {
+      const st = await import('./storage.ts');
+      const b = st.bucket();
+      if (!b || st.provider() !== 'gcs') return send(res, 404, { error: 'No CDN origin here' });
+      const { gcs } = await import('./providers/gcp/gcs.ts');
+      const r = await gcs().media(`gs://${b}/${st.keyOf(cdn[1])}`);
+      if (!r) return send(res, 404, { error: 'Not found' });
+      res.writeHead(200, {
+        'Content-Type': st.safeMime(r.headers.get('content-type')),
+        ...(r.headers.get('content-length') ? { 'Content-Length': r.headers.get('content-length')! } : {}),
+        'Cache-Control': 'public, max-age=31536000, immutable', 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff',
+      });
+      if (method === 'HEAD' || !r.body) { await r.body?.cancel().catch(() => {}); return res.end(); }
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(r.body as any).pipe(res);
+      return;
+    }
     if (route === '/v1/health') {
       return send(res, 200, {
         ok: true, name: 'hawkesgen', version: VERSION,

@@ -1,11 +1,11 @@
 // cdn.hawkesgen.ai: Gen's library files (sha256/<hash>, the keys src/storage.ts writes) from its private bucket, cached
-// at Cloudflare's edge for a year (a hash's bytes never change). Deploy from this folder: npx wrangler deploy. The bucket
-// stays private: the Worker reads with a read-only HMAC key (secrets GCS_HMAC_ID, GCS_HMAC_SECRET; setup-cdn.ps1).
+// at Cloudflare's edge for a year (a hash's bytes never change), fetched through Gen's /cdn route (no key anywhere: the
+// Google organization forbids service-account keys). Deploy from this folder: npx wrangler deploy.
 {
   "name": "hawkes-gen-cdn",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "routes": [{ "pattern": "cdn.hawkesgen.ai", "custom_domain": true }],
-  "vars": { "BUCKET": "hawkes-staging-gen-library" },
+  "vars": { "GEN_ORIGIN": "https://gen-f6ruen5wfa-uk.a.run.app" },
   "observability": { "enabled": true }
 }

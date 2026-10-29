@@ -55,6 +55,14 @@ or permissions change).
 request to the service's own address and the visitor's IP as `X-Hawkes-Client-IP`, which Gen believes only from
 Cloudflare's ranges (`src/analytics/collect.ts clientIp`).
 
+## The CDN
+
+`https://cdn.hawkesgen.ai` is a second Cloudflare Worker (`server/gen-cdn/`, `npx wrangler deploy` there) serving only
+`/sha256/<hash>`: a cached file comes from Cloudflare's edge (kept a year: a hash names its bytes), a miss from Gen's
+`/cdn/sha256/<hash>` route, which streams that one object from the library bucket with Gen's own identity. No key exists
+anywhere (the Google organization forbids service-account keys), the bucket stays private and can't be listed. Gen's
+`settings.storage.cdn` set to the address makes asset answers carry CDN links.
+
 ## Known limits
 
 - **One instance**: fine for Studio and a few customers; a crowd needs the database off SQLite first.
