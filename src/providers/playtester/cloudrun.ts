@@ -30,7 +30,18 @@ export type Variant = 'gpu' | 'cpu' | 'runpod';
  * One Cloud Run playtest service as Gen uses it. `variant` cpu is gen-playtest-cpu (software WebGL); `slow` multiplies
  * the boot wait and the default scenario limit there; `software` says why frame rates mean little (null on the L4).
  */
-export type CloudPlaytest = Settings['playtest']['cloudrun'] & { idleSeconds?: number; gpu?: string; url: string; pricePerSecond: number; region: string; name: string; variant?: Variant; slow?: number; software?: string | null };
+export type CloudPlaytest = Settings['playtest']['cloudrun'] & { idleSeconds?: number; gpu?: string; url: string; pricePerSecond: number; region: string; name: string; variant?: Variant; slow?: number; software?: string | null;
+  /** The runner it is in settings.playtest.runners (runners.ts): its slot and cooldown. */ runner?: string };
+
+/**
+ * A build the browser service fetches and serves itself (docs/playtest-runners.md, "Web builds"): the X-Hawkes-Site
+ * header on the /pw connection. The service downloads the archive from the signed URL, unpacks it, serves it on its own
+ * loopback and maps SITE_HOST to it in that browser, so the page is http://build.hawkes.test/<entry> and Gen serves nothing.
+ */
+export const SITE_HOST = 'build.hawkes.test';
+export const siteHeader = (b: { url: string; kind?: string; sha256?: string; name?: string }) =>
+  Buffer.from(JSON.stringify({ url: b.url, kind: b.kind ?? 'archive', sha256: b.sha256 ?? null, name: b.name ?? null })).toString('base64url');
+export const sitePageUrl = (entry: string | null | undefined) => `http://${SITE_HOST}/${String(entry ?? '').replace(/^\/+/, '')}`;
 export type Backend = PlaytestBackend;
 
 export type ServiceSpec = {
@@ -260,7 +271,7 @@ export const retryable = (e: any) => /\b(429|503|502|500|504|408|524)\b|Too Many
  * One browser on the service. Waits through a cold start (Cloud Run holds the request until the startup probe
  * passes: the GPU self-test) and retries a full service (429) or a starting one (503) until `timeoutMs`.
  */
-export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & Partial<Pick<CloudPlaytest, 'variant'>>, { job, timeoutMs = 6 * 60_000, onStep = (_s: string) => {}, deps = defaultConnectDeps() }: { job?: string; timeoutMs?: number; onStep?: (s: string) => void; deps?: ConnectDeps } = {}) {
+export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & Partial<Pick<CloudPlaytest, 'variant'>>, { job, site, timeoutMs = 6 * 60_000, onStep = (_s: string) => {}, deps = defaultConnectDeps() }: { job?: string; site?: string; timeoutMs?: number; onStep?: (s: string) => void; deps?: ConnectDeps } = {}) {
   const end = deps.now() + timeoutMs;
   let wait = 3_000;
   for (let attempt = 1; ; attempt++) {
@@ -268,7 +279,7 @@ export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & 
     try {
       return await chromium.connect(wsEndpointOf(c.url), {
         timeout: Math.max(10_000, Math.min(left, 5 * 60_000)),
-        headers: { ...(await headersFor(c, deps.idToken, deps.env)), ...(job ? { 'x-hawkes-job': job } : {}) },
+        headers: { ...(await headersFor(c, deps.idToken, deps.env)), ...(job ? { 'x-hawkes-job': job } : {}), ...(site ? { 'x-hawkes-site': site } : {}) },
       });
     } catch (e: any) {
       if (!retryable(e) || deps.now() + wait > end) throw new Error(`${c.variant === 'runpod' ? 'RunPod' : 'Cloud Run'} playtest service: ${String(e?.message ?? e).split('\n')[0]}`);
@@ -320,28 +331,39 @@ export class BrowserPool {
  * are made here (so a failure falls back to the playtesters before the run starts), local origins are served through
  * each context, the video encodes on the service, and close() records the tab-seconds as a gcp-playtest usage row.
  */
-export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 1, job, step = (_s: string) => {}, onUsage, chromium, connectDeps, proxyDeps, connectTimeoutMs }: {
+export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 1, job, site, step = (_s: string) => {}, onUsage, chromium, connectDeps, proxyDeps, connectTimeoutMs }: {
   pageUrl: string; tabs?: number; job?: string; step?: (s: string) => void;
+  /** A build the service serves itself (siteHeader): nothing is served from here then. */ site?: string;
   onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void;
   chromium?: any; connectDeps?: ConnectDeps; proxyDeps?: ProxyDeps;
   /** How long to wait for a browser here before giving up (another region may have room); connectOne's default otherwise. */
   connectTimeoutMs?: number;
 }): Promise<PlaytestHost> {
   const pw = chromium ?? (await import('playwright')).chromium;
-  const ports = localPortsOf(pageUrl);
+  // Local origins are served from here only for J's own local builds; a build the service serves itself needs none.
+  const ports = site ? [] : localPortsOf(pageUrl);
   const n = Math.max(1, Math.min(8, Math.round(tabs)));
   const cpu = c.variant === 'cpu';
   const runpod = c.variant === 'runpod';
   const where = runpod ? `RunPod (${c.name.replace(/^runpod /, 'endpoint ')}, ${c.gpu ?? 'GPU'})` : `Cloud Run (${c.name}, ${c.region}${cpu ? ', software WebGL' : ''})`;
   step(`opening ${n === 1 ? 'a browser' : `${n} browsers`} on ${where}; a cold start takes ${cpu ? 'about half a minute' : runpod ? 'up to a few minutes (the image is pulled once per machine)' : 'a minute or two'}`);
   const t0 = Date.now();
-  const pool = await new BrowserPool(() => connectOne(pw, c, { job, onStep: step, deps: connectDeps, ...(connectTimeoutMs ? { timeoutMs: connectTimeoutMs } : {}) })).open(n);
+  // A router's runner (runners.ts) counts this run against its maxConcurrent until close().
+  const releaseRunner = c.runner ? (await import('./runners.ts')).claimRunner(c.runner) : () => {};
+  let pool: BrowserPool;
+  try {
+    pool = await new BrowserPool(() => connectOne(pw, c, { job, site, onStep: step, deps: connectDeps, ...(connectTimeoutMs ? { timeoutMs: connectTimeoutMs } : {}) })).open(n);
+  } catch (e) {
+    releaseRunner();
+    throw e;
+  }
   const connectedAt = Date.now();
   let closed = false;
   return {
     wsEndpoint: wsEndpointOf(c.url),
     server: runpod ? `RunPod ${c.name.replace(/^runpod /, '')} (${c.gpu ?? 'GPU'})` : `Cloud Run ${c.name} (${c.region}${cpu ? ', software WebGL' : ''})`,
     playtester: null,
+    runner: c.runner ?? null,
     backend: runpod ? 'runpod' : cpu ? 'cloudrun-cpu' : 'cloudrun',
     software: c.software ?? null,
     slow: c.slow ?? 1,
@@ -356,6 +378,7 @@ export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 
       if (closed) return;
       closed = true;
       void pool.close();
+      releaseRunner();
       const seconds = Math.round((Date.now() - connectedAt) / 100) / 10;
       if (runpod) return onUsage?.(runpodUsage(c, { seconds, connectSeconds: (connectedAt - t0) / 1000, tabs: n }));
       onUsage?.({

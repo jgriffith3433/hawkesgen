@@ -22,7 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HAWKES_TABS=4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg libglvnd0 libegl1 libgles2 libgl1 libvulkan1 vulkan-tools ca-certificates xz-utils zstd \
+      ffmpeg libglvnd0 libegl1 libgles2 libgl1 libvulkan1 vulkan-tools ca-certificates xz-utils zstd unzip \
     && apt-get purge -y mesa-vulkan-drivers 2>/dev/null; rm -rf /var/lib/apt/lists/*
 
 COPY 10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
@@ -31,7 +31,7 @@ COPY nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund --loglevel=error && npx playwright --version
-COPY server.mjs gpu.mjs ./
+COPY server.mjs gpu.mjs site.mjs ./
 
 # Playwright's image runs as root by default; Chromium runs without its sandbox under Playwright (Cloud Run's gen2
 # sandbox is the isolation).

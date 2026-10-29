@@ -196,6 +196,14 @@ export type Settings = {
      * `pricePerHour` is a worker's price (RunPod bills from the worker's start to its idle timeout, `idleSeconds`).
      */
     runpod: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here'; gpu: string; pricePerHour: number; idleSeconds: number };
+    /**
+     * The runner router (src/providers/playtester/runners.ts, docs/playtest-runners.md): where a playtest plays, by its
+     * target, first with room first. Empty: web runs play as `backend` says (the services above), and nothing plays
+     * desktop targets. Each entry: `provider` runpod / cloudrun / cloudrun-cpu (the browser services above: their URL
+     * when `url` is null) or native (a hawkes-play-native runner, the session protocol); `targets` it plays; `lanes`
+     * whose builds it takes (studio: our own products; customer: untrusted builds, plan 3.5); a price and a cap.
+     */
+    runners: PlaytestRunner[];
   };
   /**
    * Where the CPU suite runs (docs/cpu-cloudrun.md): "local" is this machine; "cloudrun" is Cloud Run, one request per
@@ -240,6 +248,26 @@ export type GpuEndpoint = {
   enabled: boolean;
 };
 
+/** What a playtest plays (playtest.run's `target`): a page, an Electron app, or a desktop build on Linux, Proton or Windows. */
+export type PlaytestTarget = 'web' | 'electron' | 'linux' | 'proton' | 'windows';
+export const PLAYTEST_TARGETS: readonly PlaytestTarget[] = ['web', 'electron', 'linux', 'proton', 'windows'];
+/** A runner in settings.playtest.runners (docs/playtest-runners.md). */
+export type PlaytestRunner = {
+  id: string;
+  provider: 'runpod' | 'cloudrun' | 'cloudrun-cpu' | 'native';
+  /** https://…; null for a browser service means its URL in settings.playtest (runpod.url, cloudrun.url, cloudrunCpu.url). */
+  url: string | null;
+  targets: PlaytestTarget[];
+  lanes: ('studio' | 'customer')[];
+  /** What a second of a run costs us there (dollars), for usage rows and quotes. */
+  pricePerSecond: number;
+  /** Runs at once. */
+  maxConcurrent: number;
+  /** A native runner's key: the name of the environment variable or secret that holds it (sent as X-Hawkes-Token). */
+  tokenEnv: string | null;
+  enabled: boolean;
+};
+
 /** Where playtest.run's browser runs (settings.playtest): the EC2 playtesters, the L4 service, the CPU service. */
 export type PlaytestBackend = 'ec2' | 'cloudrun' | 'cloudrun-cpu' | 'runpod';
 export const PLAYTEST_BACKENDS: readonly PlaytestBackend[] = ['ec2', 'cloudrun', 'cloudrun-cpu', 'runpod'];
@@ -268,7 +296,7 @@ export const SETTINGS_DEFAULTS: Settings = {
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
-    runpod: { url: null, maxInstances: 2, tabsPerInstance: 2, encode: 'service', gpu: 'RTX A4000', pricePerHour: 0.58, idleSeconds: 60 } },
+    runpod: { url: null, maxInstances: 2, tabsPerInstance: 2, encode: 'service', gpu: 'RTX A4000', pricePerHour: 0.58, idleSeconds: 60 }, runners: [] },
   cpu: { backend: 'local', tools: {}, cloudrun: { urls: {}, bucket: null, concurrent: 16 } },
   dashboard: { googleClientId: null, googleEmails: [] },
 };
@@ -341,7 +369,35 @@ function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['
         idleSeconds: Math.max(5, Math.min(3600, Math.round(Number(r.idleSeconds)) || d.runpod.idleSeconds)),
       };
     })(),
+    runners: cleanRunners(t?.runners),
   };
+}
+
+/** settings.playtest.runners, checked: known providers and targets, https URLs (a local one for the runner beside Gen), sane numbers. */
+export function cleanRunners(list: unknown): PlaytestRunner[] {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const out: PlaytestRunner[] = [];
+  for (const r of list.slice(0, 32) as any[]) {
+    const id = String(r?.id ?? '');
+    if (!/^[a-z0-9][a-z0-9._-]{0,40}$/.test(id) || seen.has(id)) continue;
+    if (!['runpod', 'cloudrun', 'cloudrun-cpu', 'native'].includes(r?.provider)) continue;
+    const url = typeof r.url === 'string' && (/^https:\/\/[a-z0-9.-]+(:\d{2,5})?\/?$/.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
+    if (r.provider === 'native' && !url) continue;
+    const targets = (Array.isArray(r.targets) ? r.targets : []).filter((x: unknown) => PLAYTEST_TARGETS.includes(x as PlaytestTarget)) as PlaytestTarget[];
+    if (!targets.length) continue;
+    const lanes = (Array.isArray(r.lanes) ? r.lanes : ['studio', 'customer']).filter((x: unknown) => x === 'studio' || x === 'customer') as PlaytestRunner['lanes'];
+    const price = Number(r.pricePerSecond);
+    seen.add(id);
+    out.push({
+      id, provider: r.provider, url, targets: [...new Set(targets)], lanes: lanes.length ? [...new Set(lanes)] : ['studio'],
+      pricePerSecond: Number.isFinite(price) && price >= 0 && price <= 0.1 ? price : 0,
+      maxConcurrent: Math.max(1, Math.min(200, Math.round(Number(r.maxConcurrent)) || 1)),
+      tokenEnv: typeof r.tokenEnv === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(r.tokenEnv) ? r.tokenEnv : null,
+      enabled: r.enabled !== false,
+    });
+  }
+  return out;
 }
 export const FLEET_MAX = 16;
 
@@ -516,7 +572,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     storage: { ...cur.storage, ...(patch.storage ?? {}) },
     gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
     unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) }, vm: { ...cur.unityBuild.vm, ...(patch.unityBuild?.vm ?? {}) } },
-    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) }, cloudrunCpu: { ...cur.playtest.cloudrunCpu, ...(patch.playtest?.cloudrunCpu ?? {}) }, runpod: { ...cur.playtest.runpod, ...(patch.playtest?.runpod ?? {}) } },
+    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) }, cloudrunCpu: { ...cur.playtest.cloudrunCpu, ...(patch.playtest?.cloudrunCpu ?? {}) }, runpod: { ...cur.playtest.runpod, ...(patch.playtest?.runpod ?? {}) }, runners: patch.playtest?.runners ?? cur.playtest.runners },
     cpu: { ...cur.cpu, ...(patch.cpu ?? {}), tools: { ...cur.cpu.tools, ...(patch.cpu?.tools ?? {}) }, cloudrun: { ...cur.cpu.cloudrun, ...(patch.cpu?.cloudrun ?? {}), urls: { ...cur.cpu.cloudrun.urls, ...(patch.cpu?.cloudrun?.urls ?? {}) } } },
     dashboard: { ...cur.dashboard, ...(patch.dashboard ?? {}) },
   });

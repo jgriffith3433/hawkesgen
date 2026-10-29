@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { db, parseRow, J } from './db.ts';
-import { paths, loadSettings, ROOT, DATA_DIR, unityBackendOf } from './config.ts';
+import { paths, loadSettings, ROOT, DATA_DIR, unityBackendOf, type PlaytestTarget } from './config.ts';
 import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
@@ -41,6 +41,7 @@ import { markDown, markUp, isDown, awsRefused, COOLDOWN } from './providers/gpu/
 import { fleetBlocked } from './providers/gpu/egress.ts';
 import { cpuRoute, cpuCloudEnabled, runCpuRemote, type CpuService } from './providers/cloudrun/cpu.ts';
 import { cloudPlaytestsFor, cloudLanes, cloudLaneKey } from './providers/playtester/cloudrun.ts';
+import { isNativeTarget } from './providers/playtester/runners.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
@@ -278,6 +279,7 @@ export function submit(client: Client, spec0: JobSpec): Job {
       spec.labels = { ...(spec.labels ?? {}), requestedTool: requested };
     }
   }
+  if (tool.admit) params = tool.admit({ params, client, project, customer: !exemptCheck()({ project, client: client.id }) });
   const inputs = resolveInputs(client, tool, spec.inputs ?? {});
   tool.guard?.({ params, inputs, labels: spec.labels });
   if (spec.reuse) {
@@ -431,6 +433,8 @@ export function rerun(client: Client, jobId: string, { sameSeed = false, params:
   if (!sameSeed) delete params.seed;
   else params.seed = j.outputs[0]?.seed ?? params.seed;
   if (over && Object.keys(over).length) params = validateParams(tool, params);
+  // The same checks against the caller as a submit (playtest.run: a customer's build is its own, its URL public).
+  if (tool.admit) params = tool.admit({ params, client, project: j.project, customer: !exemptCheck()({ project: j.project, client: client.id }) });
   const inputs: Record<string, any> = { ...j.inputs };
   for (const [k, v] of Object.entries(swap ?? {})) {
     const spec = tool.inputs[k];
@@ -582,6 +586,14 @@ class Queue {
     // The lane of the Cloud Run playtest service this job's project plays on first (the L4's or the CPU service's) and
     // the browser tabs it plays at once; else null.
     const cloudPlaytestLanes = (j: Job, s: typeof settings) => {
+      // Runners from settings.playtest.runners (src/providers/playtester/runners.ts), and every desktop target: one lane per
+      // kind (browser, native) of the runs those runners play at once.
+      const target = (j.params.target ?? 'web') as PlaytestTarget;
+      if (s.playtest.runners.length || isNativeTarget(target)) {
+        const native = isNativeTarget(target);
+        const limit = s.playtest.runners.filter((r) => r.enabled && r.targets.includes(target)).reduce((n, r) => n + r.maxConcurrent, 0);
+        return { key: native ? 'playtest-native' : 'playtest-runners', limit: Math.max(1, limit) };
+      }
       // The same rule playtest.run follows for a GPU browser: gpu require, or auto anywhere but this PC (Windows).
       const gpuHost = j.params.gpu === 'require' || (j.params.gpu !== 'off' && process.platform !== 'win32');
       if (!gpuHost || (s.playtest.backend === 'ec2' && !Object.values(s.playtest.projects).some((b) => b !== 'ec2'))) return null;

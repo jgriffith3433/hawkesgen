@@ -35,6 +35,11 @@ export function validateParams(tool: Tool, raw: Record<string, unknown> = {}) {
           try {
             v = JSON.parse(v);
           } catch {
+            // A json param that also takes a plain string (playtest.run's build: "blob:<sha>", a URL, or an object).
+            if (spec.orString) {
+              out[name] = v;
+              break;
+            }
             problems.push(`${name} must be JSON`);
             break;
           }

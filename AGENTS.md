@@ -74,7 +74,8 @@ each job).
 | `src/tools/blender.ts`, `src/providers/blender/` | `blender.render`: Blender 5.0 on a GPU server (installed on first use; `install.ts` is shared with `bootstrap.sh`), a job workspace in `/var/tmp/hawkes-blender`, a detached render followed over SSH. The scripts are `post/blender/hawkes_blender.py` (inside Blender) and `post/pose_draw.py`. `src/tools/rig.ts` is `mesh.rig` (family `rig`: Make-It-Animatable and SkinTokens in their own venvs, installed on first use, then Blender for the walk; `post/rig/`, `post/blender/hawkes_rig.py`); `src/tools/character.ts` is `blender.character` (`post/blender/hawkes_character.py`: named ops only, checked by `checkOps` before a server is claimed); `src/tools/motion.ts` is `motion.from-text` (family `motion`: Kimodo SOMA + HY-Motion fallback in `/opt/hawkes-motion`, then retarget via blender.character; `post/motion/`) |
 | `src/tools/local.ts` `sprite.sheet`, `image.transform` | sprite.sheet: a clip (or frames) to a game sprite sheet with ffmpeg (frames spread evenly, a flat background keyed to transparency with colorkey + despill, the PNG atlas, frame JSON (TexturePacker hash), a GIF; `loop` drops the repeated last frame). image.transform: `post/transform.py` (Pillow), steps in order: resize, scale, crop, trim, pad, square, pot, flip, rotate, pixelate, colors, outline, tint, grayscale |
 | `src/tools/threed.ts`, `viewsheet.ts` | The "always more than one view" rule (refusals, deprecation notices, tool order) and `image.viewsheet` (back/left/right views, Claude's consistency check, the sheet) |
-| `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
+| `src/tools/build.ts`, `playtest.ts`, `pipeline.ts` | `unity.build`; `playtest.run` (Playwright, or a native runner for desktop targets) and `playtest.review` (Claude); `asset.make` (chains, best-of-N with canon and references, library reuse) |
+| `src/providers/playtester/` | Where playtests play: `playtester.ts` (the EC2 playtesters), `cloudrun.ts` (the browser services: RunPod, Cloud Run L4 and CPU), `intake.ts` (customers' builds, SSRF checks, the GitHub token vault, staging), `runners.ts` (the runner router), `native.ts` (the session protocol to native runners). docs/playtest-runners.md |
 | `src/analytics/`, `analytics/products.json` | Player analytics (docs/analytics.md): `collect.ts` (the public door: validation, limits, CORS, rate limit), `geo.ts` + `mmdb.ts` (DB-IP Lite GeoIP), `ua.ts`, `store.ts` (`.data/analytics.db`: events, sessions, daily rollups, the purge), `query.ts` + `routes.ts` (the reads). The registry lists each product's origins |
 | `src/netbridge.ts` | **Hawkes Net's bridge.** Hawkes Net (multiplayer, `https://net.hawkesgen.ai`) is its own repo, `jgriffith3433/hawkesnet`. Gen's whole part: `GET /v1/net/whoami` (the box checks API keys with it), `POST /v1/net/usage` (the box's usage into Gen's usage table) and a 308 to the box for the rest of `/v1/net/` and the SDK files (`/sdk/hawkes-net*.mjs`). Test `test/netbridge.test.ts` |
 | `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |
@@ -201,6 +202,19 @@ game's playtest contract (`C:\Projects\hawkesstudio\docs\playtest.md`), or a gen
 (`mode: site`). It records video (mp4), screenshots (every few seconds and at events), console errors, failed
 requests, load time and fps. `playtest.review` sends the frames and the report to Claude with the product's story and
 returns a verdict, scores and findings.
+- **Builds, targets and runners** (`docs/playtest-runners.md`; `src/providers/playtester/intake.ts`, `runners.ts`,
+  `native.ts`): `build` takes `blob:`/`asset:` archives, a URL or `{ github: { repo, release | run | ref, token? } }`;
+  `target` is `web | electron | linux | proton | windows`, with `exe` and `args`. **Gen never fetches or serves a
+  customer's build itself:** archives go to the library bucket (`playtest-builds/<project>/<sha>`) and runners get a
+  signed link, GitHub builds resolve to GitHub's own links, and a web archive is served by the browser service
+  (`server/playtest-cloudrun/site.mjs`, `X-Hawkes-Site`, `http://build.hawkes.test/`). Customers' URLs must be public
+  (SSRF checks at submit and run), a GitHub token stays in memory only, and customers' runs play only on runners whose
+  `lanes` take customers (never here, never through `proxyLocal`, which is J's local dev only). The router
+  (`settings.playtest.runners`, `runnerCandidates`, like `gpuCandidates`) picks by target and lane, first with room,
+  with cooldowns and fallback; with none set, the browser services above are the implicit web runners. Desktop runs
+  speak the session protocol to `hawkes-play-native` and add `crashes`, `logs` and `perf` to the result.
+  `playtest.run` and `playtest.review` are priced (`billing.ts playtestCost`, provisional). Add a case to
+  `test/tenancy.test.ts` for any new build form.
 - **Never stuck:** every await in `playtest.run` has a hard limit (`within()`), and a watchdog kills the browser and
   tunnel if the run overruns. A hung browser, tunnel or page ends the run as outcome `stuck` (with `result.stuck`
   saying what hung) and keeps what it recorded: shots, the video so far, the report.

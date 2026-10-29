@@ -111,3 +111,46 @@ test('lanes alternate between customers (fairOrder with no cap)', () => {
   ];
   assert.deepEqual(fairOrder(open, new Map([['usr_a', 1]]), Infinity).map((j) => j.id), ['b1', 'a1', 'a2', 'a3']);
 });
+
+test('playtests: a customer plays only its own builds, public URLs only, and its GitHub token never reaches the database', async () => {
+  const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('aaaa build')]);
+  const up = await json(await call(portal, '/v1/blobs', { project: 'usr_aaaa', raw: zip }));
+  assert.equal(up.status, 200);
+  const cancel = (id: string) => db.prepare("UPDATE jobs SET status = 'cancelled' WHERE id = ?").run(id);
+  // B names A's build: as if it didn't exist.
+  const b = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool: 'playtest.run', params: { build: up.body.blob, target: 'linux' } } }));
+  assert.equal(b.status, 404, JSON.stringify(b.body));
+  // A may: accepted (sold now, not internal), and played on runners only.
+  const a = await json(await call(portal, '/v1/jobs', { project: 'usr_aaaa', body: { tool: 'playtest.run', params: { build: up.body.blob, target: 'linux' } } }));
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  const aJob = a.body.jobs[0].id;
+  cancel(aJob);
+  const aParams = JSON.parse((db.prepare('SELECT params FROM jobs WHERE id = ?').get(aJob) as any).params);
+  assert.equal(aParams.gpu, 'require');
+  assert.deepEqual(aParams.build, { kind: 'blob', sha: up.body.blob.slice(5) });
+  // Gen's own loopback, the metadata server, a private network: refused at submit.
+  for (const url of ['http://127.0.0.1:8790/v1/settings', 'http://localhost:8790/', 'http://169.254.169.254/computeMetadata/v1/', 'http://10.0.0.2/', 'http://[::1]:8790/']) {
+    const r = await json(await call(own, '/v1/jobs', { body: { tool: 'playtest.run', params: { url } } }));
+    assert.equal(r.status, 400, `${url}: ${JSON.stringify(r.body)}`);
+  }
+  // A GitHub token is used for the run and kept in memory only.
+  const token = `ghp_${'z'.repeat(36)}`;
+  const g = await json(await call(own, '/v1/jobs', { body: { tool: 'playtest.run', params: { build: { github: { repo: 'acme/game', ref: 'main', token } }, target: 'proton' } } }));
+  assert.equal(g.status, 200, JSON.stringify(g.body));
+  cancel(g.body.jobs[0].id);
+  const row = db.prepare('SELECT params, labels FROM jobs WHERE id = ?').get(g.body.jobs[0].id) as any;
+  assert.ok(!JSON.stringify(row).includes(token), 'the token is not in the job');
+  assert.ok(!JSON.stringify(g.body).includes(token), 'nor in the answer');
+  // A rerun is checked the same way: A can't swap in B's build or Gen's loopback.
+  const bUp = await json(await call(portal, '/v1/blobs', { project: 'usr_bbbb', raw: Buffer.concat([zip, Buffer.from('bbbb')]) }));
+  const swapBlob = await json(await call(portal, `/v1/jobs/${aJob}/rerun`, { project: 'usr_aaaa', body: { params: { build: bUp.body.blob } } }));
+  assert.equal(swapBlob.status, 404, JSON.stringify(swapBlob.body));
+  const swapUrl = await json(await call(portal, `/v1/jobs/${aJob}/rerun`, { project: 'usr_aaaa', body: { params: { build: 'http://127.0.0.1:8790/' } } }));
+  assert.equal(swapUrl.status, 400, JSON.stringify(swapUrl.body));
+  const again = await json(await call(portal, `/v1/jobs/${aJob}/rerun`, { project: 'usr_aaaa', body: {} }));
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  cancel(again.body.id ?? again.body.jobs?.[0]?.id);
+  // Another customer's playtest as a baseline: as if it didn't exist.
+  const base = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool: 'playtest.run', params: { url: 'https://example.com/', baseline: aJob } } }));
+  assert.equal(base.status, 404, JSON.stringify(base.body));
+});
