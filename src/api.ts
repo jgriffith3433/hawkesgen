@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
+import { primePlatform } from './platform.ts';
 import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { DASH_COOKIE, DASH_DAYS, googleClientId, signSession, verifyGoogle } from './dashauth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
@@ -439,6 +440,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return handleBroker(req, res, url);
     }
 
+    await primePlatform(req);
     const client = authenticateRequest(req);
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
 

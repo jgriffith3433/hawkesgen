@@ -97,6 +97,10 @@ export type Settings = {
    *  project runs at once, `perProjectLane` the most slots one takes in each API or local lane (playtests count browser
    *  tabs), `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
   queue: { perProjectGpu: number; perProjectLane: number; projects: string[] };
+  /** Platform tokens from hawkesgen.ai (src/platform.ts): `issuer` the portal this lane trusts (empty: hawkesgen.ai, or
+   *  beta.hawkesgen.ai on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
+   *  (design partners, J's own). */
+  platform: { issuer: string; freeOrgs: string[] };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number; lod: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
@@ -254,6 +258,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
   lod: { projects: ['usr_*', 'ubeta_*'] },
   queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'] },
+  platform: { issuer: '', freeOrgs: [] },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10, customers: 'api' },
   brain: 'claude',
   model: '',
@@ -417,6 +422,10 @@ function clean(s: Settings): Settings {
       perProjectGpu: n(s.queue?.perProjectGpu, 1, 16, SETTINGS_DEFAULTS.queue.perProjectGpu),
       perProjectLane: n(s.queue?.perProjectLane, 1, 64, SETTINGS_DEFAULTS.queue.perProjectLane),
       projects: Array.isArray(s.queue?.projects) ? s.queue!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.queue.projects,
+    },
+    platform: {
+      issuer: typeof s.platform?.issuer === 'string' && /^https?:\/\/[^\s]+$/.test(s.platform.issuer) ? s.platform.issuer : '',
+      freeOrgs: Array.isArray(s.platform?.freeOrgs) ? s.platform!.freeOrgs.map(String).filter((o) => /^org_[0-9a-f]{8,32}$/.test(o)).slice(0, 200) : [],
     },
     claude: {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',

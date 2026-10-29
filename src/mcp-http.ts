@@ -1,7 +1,8 @@
 // /mcp: the Hawkes Gen MCP tools over Streamable HTTP, for Claude Code anywhere (claude mcp add --transport http)
 // and claude.ai connectors. The caller's Hawkes Gen API key is the auth, sent as "Authorization: Bearer hg_..." or in
 // the URL (/mcp/hg_..., for clients that can't send headers); the tools then call this service with that same key,
-// so its role and projects apply. hawkesstudio/docs/cloud.md has the setup.
+// so its role and projects apply. A platform token from hawkesgen.ai (src/platform.ts) works the same way: the org's
+// projects and the token's scopes. hawkesstudio/docs/cloud.md has the setup.
 
 import type { IncomingMessage, ServerResponse } from 'node:http';
 // @ts-ignore: plain JS client
@@ -9,11 +10,14 @@ import { HawkesGen } from '../clients/js/hawkesgen.mjs';
 import { serveHttp, mcpKey } from './mcp-core.ts';
 import { genMcp } from './mcp-tools.ts';
 import { authenticate } from './auth.ts';
+import { primePlatform } from './platform.ts';
 import { PORT } from './config.ts';
 
 export async function handleMcp(req: IncomingMessage, res: ServerResponse, pathname: string) {
   const key = mcpKey(req, pathname);
   if (key) req.headers.authorization = `Bearer ${key}`;
+  // A hawkesgen.ai platform token works here too (src/platform.ts): the tools call Gen with it, as the org's customer.
+  await primePlatform(req);
   const client = authenticate(req);
   if (!client) {
     res.writeHead(401, { 'Content-Type': 'application/json', 'WWW-Authenticate': 'Bearer realm="hawkesgen"' });

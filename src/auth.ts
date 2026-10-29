@@ -16,8 +16,13 @@ import { db, parseRow, J } from './db.ts';
 import { loadSettings } from './config.ts';
 import { id, sha256, GenError } from './util.ts';
 import { DASH_COOKIE, sessionEmail } from './dashauth.ts';
+import { orgProjects, verifyPlatformToken } from './platform.ts';
 
-export type Client = { id: string; name: string; role: 'owner' | 'admin' | 'user'; projects: string[] };
+export type Client = {
+  id: string; name: string; role: 'owner' | 'admin' | 'user'; projects: string[];
+  /** A platform token's caller (src/platform.ts): the org, the person's role in it, and what the token may do. */
+  org?: string; orgRole?: string; scopes?: string[];
+};
 
 export const LOCAL_OWNER: Client = { id: 'local', name: 'This machine', role: 'owner', projects: ['*'] };
 
@@ -71,6 +76,19 @@ export function authenticate(req: IncomingMessage): Client | null {
   if (!sent && !fromCookie) {
     const email = sessionEmail(cookieOf(req, DASH_COOKIE));
     if (email) return { id: `google:${email}`, name: email, role: 'owner', projects: ['*'] };
+  }
+  // A platform token from hawkesgen.ai (a JWT, not an hg_ key): a customer of an org, its projects only. A bad one is
+  // refused outright, never treated as a key.
+  if (/^eyJ[\w-]*\.[\w-]+\.[\w-]+$/.test(sent)) {
+    try {
+      const t = verifyPlatformToken(sent);
+      const c: Client = { id: `org:${t.org}:${t.user}`, name: `${t.user} in ${t.org}`, role: 'user', projects: orgProjects(t), org: t.org, orgRole: t.role, scopes: t.scopes };
+      const only = String(req.headers['x-hawkesgen-project'] ?? '').trim();
+      if (only) return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(only) && canProject(c, only) ? { ...c, projects: [only] } : null;
+      return c;
+    } catch {
+      return null;
+    }
   }
   const key = sent || fromCookie;
   if (key) {

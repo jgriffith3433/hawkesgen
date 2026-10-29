@@ -32,7 +32,7 @@ const call = (key: string, route: string, init: { method?: string; body?: any; p
       ...(init.project ? { 'x-hawkesgen-project': init.project } : {}),
       ...(init.body ? { 'content-type': 'application/json' } : {}),
     },
-    body: init.raw ?? (init.body ? JSON.stringify(init.body) : undefined),
+    body: init.raw ? new Uint8Array(init.raw) : init.body ? JSON.stringify(init.body) : undefined,
   });
 const json = async (r: Response) => ({ status: r.status, body: await r.json().catch(() => null) as any });
 
@@ -106,8 +106,8 @@ test('a customer can\'t raise its own jobs\' priority', async () => {
 test('lanes alternate between customers (fairOrder with no cap)', () => {
   const t = Date.now();
   const open = [
-    ...[1, 2, 3].map((i) => ({ id: `a${i}`, project: 'usr_a', priority: 0, created: t + i, exempt: false })),
-    { id: 'b1', project: 'usr_b', priority: 0, created: t + 10, exempt: false },
+    ...[1, 2, 3].map((i) => ({ id: `a${i}`, project: 'usr_a', family: null, priority: 0, created: t + i, exempt: false })),
+    { id: 'b1', project: 'usr_b', family: null, priority: 0, created: t + 10, exempt: false },
   ];
   assert.deepEqual(fairOrder(open, new Map([['usr_a', 1]]), Infinity).map((j) => j.id), ['b1', 'a1', 'a2', 'a3']);
 });

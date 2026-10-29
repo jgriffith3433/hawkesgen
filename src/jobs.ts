@@ -23,6 +23,7 @@ import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
 import { putAsset, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
+import { checkSubmit } from './platform.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
@@ -354,6 +355,8 @@ export function boostLabel(label: string, value: string, priority: number, minut
 }
 
 function createJob(client: Client, tool: Tool, s: { project: string; params: Record<string, any>; inputs: Record<string, any>; labels?: Record<string, unknown>; key?: string; priority?: number }): Job {
+  // A platform token's caller: its scopes, and billing (src/platform.ts).
+  checkSubmit(client, tool.id);
   const { project, params, inputs } = s;
   // No priority asked for: a boost on one of its labels sets it (boostLabel). Customers' keys (role user) can lower
   // their own jobs but never raise them or ride an admin's boost: priority is the scheduler's business.

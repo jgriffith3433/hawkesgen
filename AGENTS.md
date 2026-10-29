@@ -170,6 +170,17 @@ case there whenever you add a route or an input kind.
 - **Priority:** customers can lower their own jobs, never raise them or ride a boost (`createJob`).
 - **Fair queues:** `fairOrder` on the GPU and on every API and local lane; one customer takes at most
   `queue.perProjectLane` slots of a lane (playtests count tabs) and `queue.perProjectGpu` GPU jobs.
+- **Platform tokens** (`src/platform.ts`, `test/platform-token.test.ts`): hawkesgen.ai is the account system. A
+  customer may call Gen (and `/mcp`) with the portal's short-lived JWT instead of an `hg_` key. It is checked against
+  the portal's keys (`/.well-known/jwks.json`, cached 5 minutes, fetched again for an unknown key id) and becomes a
+  `user` client of one org:
+  - projects `org_<hex>` and `org_<hex>.*`, plus the owner's older `usr_<hex>` for a personal org
+  - its `scopes` decide what it may run (`playtest.*` needs `playtest`, `unity.*` `build`, the rest `generate`)
+  - viewers can't run jobs
+  - billing for jobs sent straight to Gen with a token isn't connected yet, so only `settings.platform.freeOrgs` may
+    submit (402 otherwise)
+
+  `settings.platform.issuer` names the portal (empty: hawkesgen.ai, or beta.hawkesgen.ai when `HAWKESGEN_LANE=beta`).
 - **Claude:** a customer's job runs inside `callScope` (`providers/anthropic.ts`). Its Claude calls go to the API key,
   else Bedrock, never J's Max plan, Cursor or Copilot (`settings.claude.customers`: `api`; `as-set` is the old
   behavior). Customers' playtest reviews default to Sonnet and may only review their own project's playtests.
