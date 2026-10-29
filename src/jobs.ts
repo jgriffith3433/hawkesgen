@@ -32,7 +32,10 @@ import { autoStartRound, offRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, 
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, serverFreeDisk, markDiskFull, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
-import { cloudRoute, cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
+import { cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
+import { gpuCandidates, triedOf, orderFor } from './providers/gpu/route.ts';
+import { markDown, markUp, isDown, awsRefused, COOLDOWN } from './providers/gpu/health.ts';
+import { fleetBlocked } from './providers/gpu/egress.ts';
 import { cpuRoute, cpuCloudEnabled, runCpuRemote, type CpuService } from './providers/cloudrun/cpu.ts';
 import { cloudPlaytestFor, cloudLanes } from './providers/playtester/cloudrun.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
@@ -630,32 +633,77 @@ class Queue {
       });
     }
 
-    // The GPU lane. Jobs whose family runs on Cloud Run (settings.gpu, docs/cloudrun.md) go to their service; the rest
-    // to the fleet below.
+    // The GPU lane (docs/gpu-providers.md). Each job's providers come in order (settings.gpu.order / familyOrder; with
+    // none set, the old rule: its family's Cloud Run service when settings send it there, else the fleet). It takes the
+    // first one with room: an endpoint or Cloud Run service goes to fillCloud, the fleet to the servers below.
     const allGpu = waiting.filter((x) => toolOf(x).provider === 'comfy');
     if (!allGpu.length) return;
     const routes = new Map<string, CloudService>();
-    if (cloudEnabled(settings)) {
-      let map: ReturnType<typeof loadServiceMap> | null = null;
+    const stuck = new Map<string, string>();
+    const ordered = !!settings.gpu.order.length || Object.keys(settings.gpu.familyOrder).length > 0;
+    let map: ReturnType<typeof loadServiceMap> | null = null;
+    if (cloudEnabled(settings) || ordered) {
       try {
         map = loadServiceMap();
       } catch (e: any) {
         console.warn(`[queue] server/cloudrun/services.json: ${e.message}; GPU jobs stay on the fleet`);
       }
-      for (const j of map ? allGpu : []) {
-        const r = cloudRoute(j, toolOf(j), settings, map!);
-        if (r.service) routes.set(j.id, r.service);
-      }
-      if (routes.size) this.fillCloud(allGpu.filter((j) => routes.has(j.id)), routes, settings);
     }
-    const gpu = allGpu.filter((j) => !routes.has(j.id));
+    // Fleet unreachable from here (Cloud Run without a fixed address) or AWS refusing us: the fleet cools down quietly.
+    const blocked = fleetBlocked(settings.fleet);
+    if (blocked && !isDown('fleet')) markDown('fleet', blocked, COOLDOWN.auth);
+    const room = new Map<string, number>();
+    const hasRoom = (svc: CloudService) => {
+      const lane = svc.lane ?? svc.name;
+      const used = (this.cloud.get(lane)?.size ?? 0) + (room.get(lane) ?? 0);
+      return used < svc.maxInstances;
+    };
+    for (const j of allGpu) {
+      const { choices, skipped } = gpuCandidates(j, toolOf(j), settings, map);
+      if (!choices.length) {
+        // Every provider was tried or is cooling down: forget what this job tried, so it tries them again once one is back.
+        if (triedOf(j).length) {
+          j.labels = { ...j.labels, gpuTried: [] };
+          save(j, ['labels']);
+        }
+        stuck.set(j.id, `waiting: no GPU provider can take it now (${skipped.join('; ') || 'none set up'})`);
+        continue;
+      }
+      const pick = choices.find((c) => c.kind === 'fleet' || hasRoom(c.service)) ?? choices[0];
+      if (pick.kind === 'fleet') continue;
+      const lane = pick.service.lane ?? pick.service.name;
+      room.set(lane, (room.get(lane) ?? 0) + 1);
+      routes.set(j.id, pick.service);
+    }
+    for (const j of allGpu) {
+      const why = stuck.get(j.id);
+      if (why) this.wait(j, why);
+    }
+    if (stuck.size) {
+      if (this.timer) clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.pump(), 60_000);
+    }
+    if (routes.size) this.fillCloud(allGpu.filter((j) => routes.has(j.id)), routes, settings);
+    const gpu = allGpu.filter((j) => !routes.has(j.id) && !stuck.has(j.id));
     if (!gpu.length) return;
     let endpoints: Endpoint[] = [];
-    try {
-      endpoints = await comfyEndpoints();
-      this.waitReason = endpoints.length ? '' : 'no GPU server is ready. Start one (dashboard Fleet tab, or `hawkesgen fleet start`).';
-    } catch (e: any) {
-      this.waitReason = e.message;
+    // With no order set the fleet is the only place left, so only an unreachable fleet is skipped (the old behaviour otherwise).
+    const fleetDown = ordered || blocked ? isDown('fleet') : null;
+    if (fleetDown) {
+      this.waitReason = `the AWS fleet is skipped for now: ${fleetDown.reason}`;
+    } else {
+      try {
+        endpoints = await comfyEndpoints();
+        markUp('fleet');
+        this.waitReason = endpoints.length ? '' : 'no GPU server is ready. Start one (dashboard Fleet tab, or `hawkesgen fleet start`).';
+      } catch (e: any) {
+        this.waitReason = e.message;
+        // AWS refusing our credentials (invalid, expired, the account suspended): one quiet cooldown, not an error a job.
+        if (awsRefused(e.message) || e.kind === 'auth' || e.kind === 'egress') {
+          markDown('fleet', `AWS refused Gen: ${e.message}`, COOLDOWN.auth);
+          if (ordered) this.timer ??= setTimeout(() => { this.timer = null; this.pump(); }, 1000);
+        }
+      }
     }
     const cap = settings.fleet.servers;
     let free = endpoints.filter((ep) => !this.busy.has(ep.id)).slice(0, Math.max(0, cap - this.busy.size));
@@ -718,7 +766,7 @@ class Queue {
     }
     if (left.length) {
       const wanting = left.filter((j) => eligible.has(j.id)).length;
-      if (wanting && endpoints.length < Math.min(cap, wanting + this.busy.size)) void this.autoStart(wanting + this.busy.size);
+      if (wanting && !fleetDown && endpoints.length < Math.min(cap, wanting + this.busy.size)) void this.autoStart(wanting + this.busy.size);
       if (this.timer) clearTimeout(this.timer);
       this.timer = setTimeout(() => this.pump(), endpoints.length ? 10_000 : 30_000);
     }
@@ -749,9 +797,11 @@ class Queue {
       const j = byId.get(f.id)!;
       const svc = routes.get(j.id)!;
       if (!f.ok) { this.wait(j, `waiting: this project already has ${share} GPU jobs running (its next job goes when one finishes)`); continue; }
-      const lane = this.cloud.get(svc.name) ?? new Set<string>();
-      this.cloud.set(svc.name, lane);
-      if (lane.size >= svc.maxInstances) { this.wait(j, `waiting for a Cloud Run GPU (${svc.name}: ${lane.size} of ${svc.maxInstances} running)`); continue; }
+      const laneId = svc.lane ?? svc.name;
+      const lane = this.cloud.get(laneId) ?? new Set<string>();
+      this.cloud.set(laneId, lane);
+      const where = svc.provider && svc.provider !== 'cloudrun' ? svc.provider : 'Cloud Run';
+      if (lane.size >= svc.maxInstances) { this.wait(j, `waiting for a ${where} GPU (${svc.name}: ${lane.size} of ${svc.maxInstances} running)`); continue; }
       lane.add(j.id);
       if (!f.exempt) running.set(j.project, (running.get(j.project) ?? 0) + 1);
       void this.runJob(j, null, svc).finally(() => {
@@ -840,7 +890,7 @@ class Queue {
     // Instance seconds this attempt used on Cloud Run (and the cold starts it paid for), for its cost.
     const cloudUse = { seconds: 0, startup: 0, runs: 0, cold: 0 };
     Object.assign(job, {
-      status: 'running', started: Date.now(), server: cloud ? `cloudrun:${cloud.name}` : cpu ? `cloudrun:${cpu.name}` : ep?.id ?? null,
+      status: 'running', started: Date.now(), server: cloud ? `${cloud.provider && cloud.provider !== 'cloudrun' ? cloud.provider : 'cloudrun'}:${cloud.name}` : cpu ? `cloudrun:${cpu.name}` : ep?.id ?? null,
       detail: cloud ? `starting on Cloud Run (${cloud.name}, ${cloud.gpu})` : cpu ? `starting on Cloud Run (${cpu.name})` : ep ? `connecting to the GPU server in ${ep.region}` : 'starting',
     });
     save(job, ['status', 'started', 'server', 'detail']);
@@ -931,6 +981,7 @@ class Queue {
         if (cpu) Object.assign(job, { server: null });
         await tool.run(ctx);
       }
+      if (cloud) markUp(cloud.lane ?? cloud.name);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
       // The LOD system: low copies this job made are linked to their models, and its images and models get their
       // levels made (src/lod.ts; a low-priority CPU job of Gen's own, never charged).
@@ -947,6 +998,17 @@ class Queue {
       }
     } catch (e: any) {
       const cancelled = abort.signal.aborted || e.message === 'Cancelled';
+      // A provider that can't take it now (unreachable, no GPU free, our key refused): it cools down and the job goes back
+      // in the line for the next provider in its order (docs/gpu-providers.md).
+      // With no order set (the old rule) there is no next provider: the job fails as it always did.
+      if (cloud && e.unavailable && !cancelled && orderFor(loadSettings(), job.family).length) {
+        const lane = cloud.lane ?? cloud.name;
+        markDown(lane, e.message, e.auth ? COOLDOWN.auth : e.capacity ? COOLDOWN.capacity : COOLDOWN.unreachable);
+        Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: `${e.message}; trying the next GPU provider`, labels: { ...job.labels, gpuTried: [...new Set([...triedOf(job), lane])] } });
+        job.log.push(`error: ${e.message}`, job.detail);
+        save(job, ['labels']);
+        return;
+      }
       // A graph that ran past Cloud Run's request limit goes back in the line once, for the fleet (no time limit there).
       if (cloud && e.overLimit && !cancelled && job.labels.gpuBackend !== 'fleet') {
         Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: `${e.message}; running it on the fleet instead`, labels: { ...job.labels, gpuBackend: 'fleet' } });
@@ -989,7 +1051,7 @@ class Queue {
       if (cloud && cloudUse.seconds) {
         const cost = cloudUse.seconds * cloud.pricePerSecond;
         recordUsage({
-          client: job.client, project: job.project, job: job.id, provider: 'gcp-gpu', unit: 'instance_seconds', amount: Math.round(cloudUse.seconds * 10) / 10, cost,
+          client: job.client, project: job.project, job: job.id, provider: cloud.provider && cloud.provider !== 'cloudrun' ? `${cloud.provider}-gpu` : 'gcp-gpu', unit: 'instance_seconds', amount: Math.round(cloudUse.seconds * 10) / 10, cost,
           detail: `${cloud.name} ${cloud.gpu}, ${cloudUse.runs} run${cloudUse.runs === 1 ? '' : 's'}${cloudUse.cold ? `, ${cloudUse.cold} cold start (${Math.round(cloudUse.startup)} s)` : ''}`,
         });
         job.cost = Math.round((job.cost + cost) * 10000) / 10000;

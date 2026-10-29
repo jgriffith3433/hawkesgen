@@ -29,6 +29,22 @@ export type CloudService = {
   /** "dir/file" models every instance has at startup. */
   preload: Set<string>;
   bucket: string;
+  /**
+   * Other GPU providers (src/providers/gpu/, docs/gpu-providers.md) run the same worker. Unset on Cloud Run: provider
+   * "cloudrun", the queue's lane is the service's name, the worker reaches the bucket itself and Gen calls it with a
+   * Google ID token.
+   */
+  provider?: 'cloudrun' | 'runpod' | 'modal' | 'http';
+  /** The queue lane (an endpoint id elsewhere; the service name on Cloud Run). */
+  lane?: string;
+  /** The worker has no Google identity: it reads and writes the bucket through Gen's broker (gpu/broker.ts). */
+  broker?: boolean;
+  /** "dir/file" models of the family's service in services.json: sent along when the graph names them (nothing preloads). */
+  familyModels?: string[];
+  /** The request headers for this endpoint (gpu/auth.ts); unset: a Google ID token for the service URL. */
+  headers?: () => Record<string, string>;
+  /** How long a run waits for a free instance before the job goes to the next provider. */
+  waitForInstanceMs?: number;
 };
 
 export const SERVICES_FILE = () => path.join(paths.server, 'cloudrun', 'services.json');

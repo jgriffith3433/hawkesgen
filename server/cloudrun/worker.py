@@ -26,8 +26,19 @@ docs/cloudrun.md says which services use which, and why.
 
 Standard library only (no pip packages beyond ComfyUI's own): Cloud Storage through its JSON API with the metadata
 server's token.
+
+Elsewhere (RunPod, Modal, any GPU host: Gen's docs/gpu-providers.md) the same image runs with no Google identity. Then
+a request carries "store": {"broker": <Gen's /v1/gpu/broker URL>, "token": <this run's token>}, and every gs:// read and
+write of the run goes through Gen's broker instead: models and inputs download from short-lived signed URLs (or through
+Gen when it can't sign), outputs, the heartbeat and the manifest are PUT to Gen. The token is good for this run's folder
+and for reading inputs and models, for a few hours, and nothing else. STORAGE=broker skips the boot preloads (there is
+no bucket to read before a request brings a token); MODELS_MOUNT on a provider's network volume still works.
+
+  GET  /ping      RunPod's load balancer health check: 200 when ready, 204 while starting
+  WORKER_TOKEN    when set, POST /run needs the same value in X-Hawkes-Worker-Token (Gen's GPU_WORKER_TOKEN)
 """
 
+import hmac
 import json
 import os
 import subprocess
@@ -47,6 +58,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 BUCKET = os.environ.get("HAWKES_BUCKET", "")
 SERVICE = os.environ.get("HAWKES_SERVICE", "gen-gpu")
 MODEL_LOAD = os.environ.get("MODEL_LOAD", "download")  # download | mount | none
+STORAGE = os.environ.get("STORAGE", "gcs")  # gcs (this service's own identity) | broker (each request brings Gen's token)
+WORKER_TOKEN = os.environ.get("WORKER_TOKEN", "")
 MODELS_MOUNT = os.environ.get("MODELS_MOUNT", "/mnt/models")
 # "dir/file" entries, comma separated: what this service preloads (deploy.mjs sets it from services.json).
 PRELOAD = [m for m in os.environ.get("HAWKES_MODELS", "").split(",") if m.strip()]
@@ -148,13 +161,17 @@ def gcs_download(uri, dest, parallel=16):
     meta = gcs_stat(uri)
     if meta is None:
         raise FileNotFoundError(uri)
-    size = int(meta["size"])
+    b, name = split_uri(uri)
+    url = obj_url(b, name) + f"?alt=media&generation={meta['generation']}"
+    return ranged_download(lambda h, timeout: gcs_request("GET", url, headers=h, timeout=timeout), int(meta["size"]), dest, name, parallel)
+
+
+def ranged_download(get, size, dest, name, parallel=16):
+    """Fills dest with `size` bytes from get(headers, timeout) (one Range at a time, CHUNK each, `parallel` at once)."""
     if os.path.exists(dest) and os.path.getsize(dest) == size:
         return size
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     part = dest + ".part"
-    b, name = split_uri(uri)
-    url = obj_url(b, name) + f"?alt=media&generation={meta['generation']}"
     fd = os.open(part, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
         os.ftruncate(fd, size)
@@ -163,7 +180,7 @@ def gcs_download(uri, dest, parallel=16):
             end = min(size, start + CHUNK) - 1
             for attempt in range(5):
                 try:
-                    with gcs_request("GET", url, headers={"Range": f"bytes={start}-{end}"}, timeout=300) as r:
+                    with get({"Range": f"bytes={start}-{end}"}, 300) as r:
                         off = start
                         while True:
                             buf = r.read(4 * 1024 * 1024)
@@ -188,6 +205,88 @@ def gcs_download(uri, dest, parallel=16):
     return size
 
 
+class GcsStore:
+    """Cloud Storage with this service's own identity (Cloud Run)."""
+
+    stat = staticmethod(gcs_stat)
+    read = staticmethod(gcs_read)
+    write = staticmethod(gcs_write)
+    download = staticmethod(gcs_download)
+
+
+class BrokerStore:
+    """Cloud Storage through Gen (/v1/gpu/broker) with one run's token: for hosts without a Google identity."""
+
+    def __init__(self, broker, tok):
+        if not broker.startswith("https://") and not broker.startswith("http://127.0.0.1"):
+            raise ValueError("store.broker must be an https URL")
+        self.broker = broker
+        self.tok = tok
+
+    def _req(self, op, uri, method="GET", data=None, headers=None, timeout=120):
+        h = {"X-Hawkes-Run-Token": self.tok}
+        h.update(headers or {})
+        url = f"{self.broker}?op={op}&uri={urllib.parse.quote(uri, safe='')}"
+        return urllib.request.urlopen(urllib.request.Request(url, data=data, method=method, headers=h), timeout=timeout)
+
+    def stat(self, uri):
+        try:
+            with self._req("stat", uri) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+
+    def read(self, uri):
+        try:
+            with self._req("read", uri, timeout=300) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+
+    def write(self, uri, data, content_type="application/octet-stream"):
+        for attempt in range(4):
+            try:
+                with self._req("write", uri, "PUT", data, {"Content-Type": content_type, "Content-Length": str(len(data))}, 600) as r:
+                    return json.load(r)
+            except (urllib.error.URLError, TimeoutError) as e:
+                if isinstance(e, urllib.error.HTTPError) and e.code < 500:
+                    raise
+                if attempt == 3:
+                    raise
+                log(f"upload {uri}: {e}; again")
+                time.sleep(2 * (attempt + 1))
+
+    def download(self, uri, dest, parallel=16):
+        """Straight from Cloud Storage with a signed URL when Gen gives one (models are GBs), else through Gen."""
+        try:
+            with self._req("url", uri) as r:
+                where = json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise FileNotFoundError(uri) from None
+            raise
+        size = int(where["size"])
+        name = split_uri(uri)[1]
+        if where.get("url"):
+            signed = where["url"]
+            return ranged_download(lambda h, timeout: urllib.request.urlopen(urllib.request.Request(signed, headers=h), timeout=timeout), size, dest, name, parallel)
+        return ranged_download(lambda h, timeout: self._req("read", uri, headers=h, timeout=timeout), size, dest, name, min(parallel, 4))
+
+
+def store_for(req):
+    """The run's storage: Gen's broker when the request brings one, else this service's own Cloud Storage access."""
+    st = req.get("store") or {}
+    if st.get("broker") and st.get("token"):
+        return BrokerStore(str(st["broker"]), str(st["token"]))
+    if STORAGE == "broker":
+        raise ValueError("this worker reaches storage through Gen (STORAGE=broker) and the request has no store")
+    return GcsStore
+
+
 # ------------------------------------------------------------------ models
 
 
@@ -200,7 +299,7 @@ def mounted():
     return os.path.isdir(MODELS_MOUNT) and bool(os.listdir(MODELS_MOUNT))
 
 
-def place_model(entry, preload=False):
+def place_model(entry, preload=False, store=GcsStore, bucket=None):
     """Puts one model (dir/file) where ComfyUI finds it: the service's preloads by its load mode; a model a job asks
     for beyond them from the mount when the service has one (no memory), else downloaded."""
     dest = model_dest(entry)
@@ -213,7 +312,7 @@ def place_model(entry, preload=False):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         os.symlink(src, dest)
         return 0
-    return gcs_download(f"gs://{BUCKET}/models/{entry}", dest)
+    return store.download(f"gs://{bucket or BUCKET}/models/{entry}", dest)
 
 
 MODEL_EXT = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx", ".sft")
@@ -252,7 +351,7 @@ def graph_models(graph):
     return found
 
 
-def place_models(entries, on_step=None, preload=False):
+def place_models(entries, on_step=None, preload=False, store=GcsStore, bucket=None):
     todo = [e for e in entries if not os.path.exists(model_dest(e))]
     if not todo:
         return
@@ -262,7 +361,7 @@ def place_models(entries, on_step=None, preload=False):
     def one(e):
         if on_step:
             on_step(f"loading model {e}")
-        total[0] += place_model(e, preload)
+        total[0] += place_model(e, preload, store, bucket)
 
     # A few files at once, each one in parallel ranges.
     with ThreadPoolExecutor(max_workers=4) as ex:
@@ -426,6 +525,8 @@ class Run:
     def __init__(self, req):
         self.key = req["key"]
         self.out = req["out"].rstrip("/") + "/"
+        self.bucket = split_uri(self.out)[0]
+        self.store = store_for(req)
         self.limit = max(30, min(3540, int(req.get("timeoutSeconds") or 3500)))
         self.req = req
         self.events = []
@@ -450,7 +551,7 @@ class Run:
             self._beat = now
             self.emit({"t": "progress", "detail": detail})
             try:
-                gcs_write(self.out + "heartbeat.json", json.dumps({"at": int(now * 1000), "detail": detail, "service": SERVICE,
+                self.store.write(self.out + "heartbeat.json", json.dumps({"at": int(now * 1000), "detail": detail, "service": SERVICE,
                                                                     "instance": os.environ.get("K_REVISION", "") + "/" + str(os.getpid())}).encode(), "application/json")
             except Exception as e:  # noqa: BLE001 - a missed heartbeat only makes a restarted Gen wait less
                 log(f"heartbeat: {e}")
@@ -466,7 +567,7 @@ class Run:
         if now - self._cancel_checked >= CANCEL_CHECK_S:
             self._cancel_checked = now
             try:
-                self._cancelled = gcs_stat(self.out + "cancel") is not None
+                self._cancelled = self.store.stat(self.out + "cancel") is not None
             except Exception:  # noqa: BLE001
                 pass
         return self._cancelled
@@ -495,13 +596,13 @@ class Run:
         final["service"] = SERVICE
         if not final.get("cancelled"):
             try:
-                gcs_write(self.out + "manifest.json", json.dumps(final).encode(), "application/json")
+                self.store.write(self.out + "manifest.json", json.dumps(final).encode(), "application/json")
             except Exception as e:  # noqa: BLE001
                 log(f"manifest for {self.key}: {e}")
         self.emit(final)
 
     def _execute(self):
-        done = gcs_read(self.out + "manifest.json")
+        done = self.store.read(self.out + "manifest.json")
         if done:
             m = json.loads(done)
             if m.get("t") == "done":
@@ -510,7 +611,7 @@ class Run:
         req = self.req
         if req.get("models"):
             self.step(f"loading {len(req['models'])} more model(s)")
-            place_models([f"{m['dir']}/{m['file']}" for m in req["models"]], self.step)
+            place_models([f"{m['dir']}/{m['file']}" for m in req["models"]], self.step, store=self.store, bucket=self.bucket)
         # Inputs go straight into ComfyUI's input folder under the names the graph uses.
         written = []
         for name, uri in (req.get("files") or {}).items():
@@ -519,12 +620,12 @@ class Run:
                 raise ValueError(f"bad input name {name}")
             if not os.path.exists(dest):
                 self.step(f"fetching input {name}")
-                gcs_download(uri, dest, parallel=4)
+                self.store.download(uri, dest, parallel=4)
                 written.append(dest)
         more = graph_models(req["graph"])
         if more:
             self.step(f"linking {len(more)} model(s) from the bucket")
-            place_models(more, self.step)
+            place_models(more, self.step, store=self.store, bucket=self.bucket)
         graph = fill_defaults(req["graph"])
         self.step("queued on the GPU")
         try:
@@ -541,7 +642,7 @@ class Run:
                 data = fh.read()
             uri = f"{self.out}{i:02d}-{f['filename']}"
             self.step(f"saving {f['filename']} ({len(data) // 1024} KB)")
-            gcs_write(uri, data)
+            self.store.write(uri, data)
             out.append({**f, "uri": uri, "bytes": len(data)})
             # The instance's disk is its memory: nothing stays behind.
             try:
@@ -596,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):  # quieter: one line per request
-        if not self.path.startswith(("/ready", "/healthz")):
+        if not self.path.startswith(("/ready", "/healthz", "/ping")):
             log(f"{self.command} {self.path} {fmt % args}")
 
     def _json(self, code, obj):
@@ -610,6 +711,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/healthz":
             return self._json(200, {"ok": True})
+        if self.path == "/ping":
+            return self._json(200 if state["ready"] and comfy_alive() else 204, {"ready": state["ready"]})
         if self.path == "/ready":
             ok = state["ready"] and comfy_alive()
             return self._json(200 if ok else 503, {"ready": ok, "detail": state["detail"], "error": state["error"], "service": SERVICE,
@@ -624,6 +727,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path != "/run":
             return self._json(404, {"error": "not found"})
+        if WORKER_TOKEN and not hmac.compare_digest(self.headers.get("X-Hawkes-Worker-Token", ""), WORKER_TOKEN):
+            return self._json(401, {"error": "no valid worker token"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
             req = json.loads(self.rfile.read(n))
@@ -632,6 +737,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError(f"{k} is required")
             if not req["out"].startswith("gs://"):
                 raise ValueError("out must be a gs:// prefix")
+            store_for(req)
         except Exception as e:  # noqa: BLE001
             return self._json(400, {"error": str(e)})
         if not state["ready"]:
@@ -668,7 +774,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def boot():
     try:
-        if MODEL_LOAD != "none" and PRELOAD:
+        if MODEL_LOAD != "none" and PRELOAD and STORAGE != "broker":
             if MODEL_LOAD == "download" and not BUCKET:
                 raise RuntimeError("HAWKES_BUCKET is not set")
             state["detail"] = f"loading {len(PRELOAD)} models ({MODEL_LOAD})"

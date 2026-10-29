@@ -40,6 +40,8 @@ import { STSClient, GetCallerIdentityCommand } from '@aws-sdk/client-sts';
 import { env, paths, loadSettings } from '../../config.ts';
 import { installScript as blenderInstall } from '../blender/install.ts';
 import { GenError } from '../../util.ts';
+import { federationOn, gceAwsCredentials } from '../gceaws.ts';
+import { fixedIp, fleetBlocked } from '../gpu/egress.ts';
 
 /**
  * Instance types that fit the models (a 48 GB+ GPU and 32 GB+ memory). Prices
@@ -83,6 +85,9 @@ export function awsConfig() {
   const secret = env('AWS_SECRET_ACCESS_KEY');
   const region = env('AWS_DEFAULT_REGION') || 'us-east-1';
   if (key && secret) return { region, credentials: { accessKeyId: key, secretAccessKey: secret } };
+  // On Google (the control VM, or Gen on Cloud Run with HAWKES_AWS_ROLE_ARN): the metadata server's identity token traded
+  // with STS for hawkes/hawkes-control-gce, renewed before it expires (gceaws.ts). No keys anywhere.
+  if (federationOn(process.env) || (env('K_SERVICE') && env('HAWKES_AWS_ROLE_ARN'))) return { region, credentials: gceAwsCredentials };
   // On the AWS control server the instance role provides credentials (no keys on disk); HAWKES_AWS_ROLE says so.
   if (env('HAWKES_AWS_ROLE')) return { region };
   throw new GenError('AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not in hawkesgen/.env', { status: 503, kind: 'auth' });
@@ -180,6 +185,9 @@ function homeRegion() {
 }
 
 export async function myIp() {
+  // A fixed public address (settings.fleet.egressIp, or HAWKES_PUBLIC_IP: a static IP or Cloud NAT's) needs no lookup.
+  const fixed = fixedIp(loadSettings().fleet);
+  if (fixed) return fixed;
   const r = await fetch('https://checkip.amazonaws.com');
   const ip = (await r.text()).trim();
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(ip)) throw new GenError(`Could not work out this machine's public IP (got "${ip}")`);
@@ -490,7 +498,7 @@ async function defaultVpc(region: string) {
   return vpc;
 }
 
-async function ensureSecurityGroup(region: string, ip: string) {
+async function ensureSecurityGroup(region: string, ip: string, open = false) {
   const vpc = await defaultVpc(region);
   const prof = PROFILES.gen;
   const found = await ec2(region).send(new DescribeSecurityGroupsCommand({ Filters: [{ Name: 'group-name', Values: [prof.sg] }, { Name: 'vpc-id', Values: [vpc] }] }));
@@ -504,28 +512,48 @@ async function ensureSecurityGroup(region: string, ip: string) {
     }));
     sg = { GroupId: made.GroupId, IpPermissions: [] };
   }
-  await allowOnly(region, sg, ip);
+  await allowOnly(region, sg, ip, [PORT, 22], open);
   return sg.GroupId as string;
 }
 
 /** Opens the proxy and SSH ports to one IP and closes them to any other. */
-/** This machine's IP plus HAWKES_ALLOW_IPS (comma list): the laptop and the cloud control server can both get in. */
+/** This machine's IP, Gen's fixed address and HAWKES_ALLOW_IPS (comma list): the laptop and the cloud control server can both get in. */
 export function allowedIps(ip: string) {
-  return [...new Set([ip, ...(env('HAWKES_ALLOW_IPS') ?? '').split(',').map((s) => s.trim()).filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s))])];
+  // Gen's own fixed address (settings.fleet.egressIp / HAWKES_PUBLIC_IP) stays in whoever refreshes the groups.
+  return [...new Set([ip, fixedIp(loadSettings().fleet) ?? '', ...(env('HAWKES_ALLOW_IPS') ?? '').split(',').map((s) => s.trim())].filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s)))];
 }
 
-/** Opens the given ports to exactly these IPs (this machine's and HAWKES_ALLOW_IPS) and closes them to any other. */
-export async function allowOnly(region: string, sg: any, ip: string, ports: number[] = [PORT, 22]) {
-  const want = new Set(allowedIps(ip).map((x) => `${x}/32`));
+/**
+ * Where the fleet's security groups let Gen in from (gpu/egress.ts): a fixed or looked-up address, or, on Cloud Run with
+ * fleet.openComfyPort, no address and the ComfyUI port open to all. On Cloud Run with neither it refuses (kind "egress"):
+ * the queue skips the fleet with that message.
+ */
+export async function fleetAccess(forIp?: string): Promise<{ ip: string; open: boolean }> {
+  if (forIp) return { ip: forIp, open: false };
+  const fleet = loadSettings().fleet;
+  const blocked = fleetBlocked(fleet);
+  if (blocked) throw new GenError(blocked, { status: 503, kind: 'egress' });
+  if (env('K_SERVICE') && !fixedIp(fleet)) return { ip: '', open: true };
+  return { ip: await myIp(), open: false };
+}
+
+/**
+ * Opens the given ports to exactly these IPs (this machine's and HAWKES_ALLOW_IPS) and closes them to any other. `open`
+ * (fleet.openComfyPort, on Cloud Run) also opens the ComfyUI proxy port, and only it, to every address.
+ */
+export async function allowOnly(region: string, sg: any, ip: string, ports: number[] = [PORT, 22], open = false) {
+  const base = allowedIps(ip).map((x) => `${x}/32`);
+  const wantFor = (port: number) => new Set(open && port === PORT ? [...base, '0.0.0.0/0'] : base);
   const stale: any[] = [];
   for (const perm of sg.IpPermissions ?? []) {
+    const want = wantFor(perm.FromPort);
     for (const range of perm.IpRanges ?? []) {
       if (!want.has(range.CidrIp)) stale.push({ IpProtocol: perm.IpProtocol, FromPort: perm.FromPort, ToPort: perm.ToPort, IpRanges: [{ CidrIp: range.CidrIp }] });
     }
   }
   if (stale.length) await ec2(region).send(new RevokeSecurityGroupIngressCommand({ GroupId: sg.GroupId, IpPermissions: stale }));
   for (const port of ports) {
-    for (const cidr of want) {
+    for (const cidr of wantFor(port)) {
       const has = (sg.IpPermissions ?? []).some((p: any) => p.FromPort === port && (p.IpRanges ?? []).some((r: any) => r.CidrIp === cidr));
       if (has) continue;
       try {
@@ -542,14 +570,14 @@ export async function allowOnly(region: string, sg: any, ip: string, ports: numb
 
 /** Lets this machine's current IP in, in every region with a server, for both kinds of security group. */
 export async function refreshAccess(forIp?: string) {
-  const ip = forIp ?? await myIp();
+  const { ip, open } = await fleetAccess(forIp);
   const regions = [...new Set((await listServers()).map((s) => s.region))];
   if (!regions.length) regions.push(localState().region ?? homeRegion());
   for (const region of regions) {
     const r = await ec2(region).send(new DescribeSecurityGroupsCommand({ Filters: [{ Name: 'group-name', Values: [PROFILES.gen.sg, PROFILES.dod.sg] }] }));
-    for (const sg of r.SecurityGroups ?? []) await allowOnly(region, sg, ip);
+    for (const sg of r.SecurityGroups ?? []) await allowOnly(region, sg, ip, [PORT, 22], open);
   }
-  return { ip, regions };
+  return { ip, regions, open };
 }
 
 async function ensureKeyPair(region: string) {
@@ -732,7 +760,7 @@ export async function launchServer({ idleMinutes = loadSettings().fleet.idleMinu
   if (type !== 'auto' && !TYPES[type]) throw fleetError(`Not an instance type the fleet uses: ${type}`);
   const existing = await listServers({ force: true });
   if (existing.length >= max) throw fleetError(`There are already ${existing.length} GPU servers (the most "servers" allows). Start one of them instead, or raise the setting.`);
-  const ip = await myIp();
+  const { ip, open } = await fleetAccess();
   const token = crypto.randomBytes(24).toString('base64url');
   const attempts: any[] = [];
   const setups = new Map<string, Promise<any>>();
@@ -742,7 +770,7 @@ export async function launchServer({ idleMinutes = loadSettings().fleet.idleMinu
   const setupFor = (r: string) => {
     if (!setups.has(r)) {
       setups.set(r, (async () => {
-        const [sg, key, fleetImage] = await Promise.all([ensureSecurityGroup(r, ip), ensureKeyPair(r), fromImage ? findImage(r).catch(() => null) : null]);
+        const [sg, key, fleetImage] = await Promise.all([ensureSecurityGroup(r, ip, open), ensureKeyPair(r), fromImage ? findImage(r).catch(() => null) : null]);
         const image = fleetImage ? { ImageId: fleetImage.id, Name: fleetImage.name, RootDeviceName: fleetImage.root } : await gpuImage(r);
         const vpc = await defaultVpc(r);
         const subnets = await ec2(r).send(new DescribeSubnetsCommand({ Filters: [{ Name: 'vpc-id', Values: [vpc] }, { Name: 'default-for-az', Values: ['true'] }] }));

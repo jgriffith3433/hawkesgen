@@ -25,6 +25,7 @@ import type { CloudService } from './services.ts';
 import { gcs, gcpTokens, type Gcs } from '../gcp/gcs.ts';
 import { env } from '../../config.ts';
 import { GenError } from '../../util.ts';
+import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 
 /** A heartbeat younger than this means the run is still going on some instance. */
 const FRESH_MS = 60_000;
@@ -149,7 +150,19 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     const key = runKey(job.id, graph);
     const out = `${base}/runs/${key}/`;
     const extra = env('COMFY_ORG_API_KEY') ? { api_key_comfy_org: env('COMFY_ORG_API_KEY') } : undefined;
-    const body = JSON.stringify({ key, graph, files: inputsOf(graph, names), models: [...pending.values()].map(({ dir, file }) => ({ dir, file })), out, timeoutSeconds: svc.graphLimitSeconds, extra });
+    // Elsewhere (no preloads) every model of the family's service that the graph names rides along too.
+    const models = new Map([...pending.values()].map(({ dir, file }) => [`${dir}/${file}`, { dir, file }]));
+    if (svc.broker) {
+      const text = JSON.stringify(graph);
+      for (const id of svc.familyModels ?? []) {
+        const [dir, ...rest] = id.split('/');
+        const file = rest.join('/');
+        if (file && text.includes(file) && !models.has(id)) models.set(id, { dir, file });
+      }
+    }
+    // A worker without a Google identity reaches the bucket through Gen with this run's token (gpu/broker.ts).
+    const store = svc.broker ? { broker: brokerUrl(), token: brokerToken(key, svc.bucket) } : undefined;
+    const body = JSON.stringify({ key, graph, files: inputsOf(graph, names), models: [...models.values()], out, timeoutSeconds: svc.graphLimitSeconds, extra, store });
     const started = deps.now();
     let posts = 0;
     let waitedSince = 0;
@@ -184,33 +197,40 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     }
   };
 
+  const where = svc.provider && svc.provider !== 'cloudrun' ? svc.provider : 'Cloud Run';
+  /** The provider can't take the job now: the queue cools it down and hands the job to the next one (gpu/route.ts). */
+  const unavailable = (message: string, extra: Record<string, unknown> = {}) => Object.assign(new Error(message), { unavailable: true, ...extra });
+  const headers = async (): Promise<Record<string, string>> => {
+    if (svc.headers) return { ...svc.headers(), 'Content-Type': 'application/json' };
+    return { Authorization: `Bearer ${await deps.idToken(svc.url)}`, 'Content-Type': 'application/json' };
+  };
+
   /** One POST /run. -> the final line, or null when the stream broke first. */
   const post = async (key: string, body: string): Promise<any | null> => {
-    const until = deps.now() + WAIT_FOR_INSTANCE_MS;
+    const until = deps.now() + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
     for (let told = false; ; told = true) {
       if (hooks.signal.aborted) throw cancelled(key);
       let r: Response;
       try {
-        r = await deps.fetch(`${svc.url}/run`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${await deps.idToken(svc.url)}`, 'Content-Type': 'application/json' },
-          body,
-          signal: hooks.signal,
-        });
+        r = await deps.fetch(`${svc.url}/run`, { method: 'POST', headers: await headers(), body, signal: hooks.signal });
       } catch (e: any) {
         if (hooks.signal.aborted) throw cancelled(key);
+        if (e.unavailable) throw e;
         hooks.step(`${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
         await deps.sleep(10_000);
-        if (deps.now() > until) throw new Error(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
+        if (deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
         continue;
       }
       // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503. Wait our turn.
       if (r.status === 429 || r.status === 503) {
         await r.body?.cancel().catch(() => undefined);
-        if (deps.now() > until) throw new Error(`${svc.name}: no Cloud Run instance came free in ${Math.round(WAIT_FOR_INSTANCE_MS / 60_000)} minutes`);
-        if (!told) hooks.step(`${svc.name}: waiting for a free Cloud Run GPU instance`);
+        if (deps.now() > until) throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.round((svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS) / 60_000)} minutes`, { capacity: true });
+        if (!told) hooks.step(`${svc.name}: waiting for a free ${where} GPU`);
         await deps.sleep(15_000);
         continue;
+      }
+      if ((r.status === 401 || r.status === 403) && svc.provider && svc.provider !== 'cloudrun') {
+        throw unavailable(`${svc.name} (${svc.provider}) refused Gen's credentials (${r.status}): check its key in Gen's environment (docs/gpu-providers.md)`, { auth: true });
       }
       if (r.status === 401 || r.status === 403) {
         throw new GenError(`${svc.name} refused Gen's identity (${r.status}): Gen's service account needs roles/run.invoker on it (tools/cloudrun/deploy.mjs grants it), and ADC must be able to mint ID tokens (docs/cloudrun.md, "Credentials").`);
