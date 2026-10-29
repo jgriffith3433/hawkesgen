@@ -258,8 +258,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     return void res.end(method === 'HEAD' ? undefined : sdk.body);
   }
 
-  // Dashboard and customer-facing SaaS web app.
-  if (!route.startsWith('/v1/')) {
+  // Dashboard and customer-facing SaaS web app (/cdn/ is the CDN's origin, below).
+  if (!route.startsWith('/v1/') && !route.startsWith('/cdn/')) {
     const publicSaas = isPublicSaas(req);
     let rel: string;
     if (route === '/home' || route === '/home/' || route === '/public' || route === '/public/') {
