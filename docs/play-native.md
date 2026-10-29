@@ -262,7 +262,19 @@ node tools/play-native/test.mjs --runner http://127.0.0.1:18080 --token localtes
 `--pack` makes `fake`, `cube`, `crash`, `hang` and `black` builds. `--options '{"via":"none"}'` smoke-tests a game that
 has the SDK. The result JSON and the uploads land in `--out`.
 
-## J's steps to deploy (none done; the first two cost nothing)
+## J's steps to deploy (the first two cost nothing)
+
+**Done 2026-10-29:**
+- **The image:** tag `play-native-image-1` built `ghcr.io/jgriffith3433/hawkes-play-native:1-92e7c20` and the public copy
+  `ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-1-92e7c20`.
+- **The endpoint:** `setup.mjs --apply --image <that public copy>` made template `fd6cq6xkcb` and the load-balancer
+  endpoint `xkhpihvfrfsx6g` (`https://xkhpihvfrfsx6g.api.runpod.ai`; workers 0–2, `GPU_WORKER_TOKEN` as its
+  `HAWKES_TOKEN`).
+
+**Still to do:**
+- **The first GPU check.**
+- **Gen's runner list.** It needs a Gen that has the router (dev today; beta after the next deploy-beta). It lists the
+  web runners too: a runner list replaces the default browser services.
 
 1. **The image.**
    - Push a tag from a commit that has the workflow: `git tag play-native-image-1 && git push origin play-native-image-1`.

@@ -86,7 +86,14 @@ const url = `https://${endpointId ?? '<endpoint id>'}.api.runpod.ai`;
 header('Then Gen\'s runner list (platform-plan 3.3; Gen\'s router reads it once it exists)');
 say(JSON.stringify({
   playtest: {
-    runners: [{ id: 'runpod-native', provider: 'runpod', url, targets: ['linux', 'proton'], maxConcurrent: max, pricePerSecond: Math.round(((POOL_PRICES[first] ?? 0.7) / 3600) * 1e6) / 1e6, gpu: POOL_GPUS[first] ?? first }],
+    // Gen's router's shape (src/config.ts PlaytestRunner): a native runner, the image's token as X-Hawkes-Token and
+    // RunPod's key for its gateway (Authorization: Bearer).
+    runners: [{
+      id: 'runpod-native', provider: 'native', url, targets: ['linux', 'proton'], lanes: ['studio', 'customer'], maxConcurrent: max,
+      pricePerSecond: Math.round(((POOL_PRICES[first] ?? 0.7) / 3600) * 1e6) / 1e6,
+      tokenEnv: secret('PLAY_NATIVE_TOKEN') ? 'PLAY_NATIVE_TOKEN' : secret('PLAYTEST_RUNPOD_TOKEN') ? 'PLAYTEST_RUNPOD_TOKEN' : secret('GPU_WORKER_TOKEN') ? 'GPU_WORKER_TOKEN' : null,
+      gatewayKeyEnv: 'RUNPOD_API_KEY', enabled: true,
+    }],
   },
 }, null, 2));
 say('Gen connects to wss://<endpoint>/session with Authorization: Bearer RUNPOD_API_KEY (the gateway) and X-Hawkes-Token.');
