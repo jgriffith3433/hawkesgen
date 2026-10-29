@@ -23,6 +23,8 @@ rm -rf "$OUT"; mkdir -p "$P" "$OUT"   # a VM disk keeps /work: never hand back a
 T0=$(date +%s)
 
 log() { echo "[Hawkes] $*"; }
+# GitHub mode (fetch_repo, the website's branch checkout and push): next to this script.
+. "$(dirname "${BASH_SOURCE[0]}")/github.sh"
 
 # ------------------------------------------------------------ result state
 OK=false; STAGE=start; KIND=null; ERROR=""; EXIT_CODE=null; UNITY_VERSION=""
@@ -169,14 +171,14 @@ finish() {
     --argjson seconds "$secs" --arg unity "$UNITY_VERSION" --arg restored "$RESTORED" --argjson rbytes "${RESTORED_BYTES:-0}" \
     --argjson clean "$CLEAN" --arg reason "$CACHE_REASON" --argjson saved "$SAVED" --arg skey "$SAVED_KEY" --argjson sbytes "${SAVED_BYTES:-0}" \
     --arg skipped "$SAVE_SKIPPED" --argjson output "$OUTPUT_JSON" --arg results "$RESULTS_KEY" --arg log "$logkey" \
-    --arg peak "$(mem_peak)" --argjson errors "$ERRORS_JSON" '{
+    --arg peak "$(mem_peak)" --argjson errors "$ERRORS_JSON" --argjson pushed "${PUSHED_JSON:-null}" --argjson packages "$PACKAGES_JSON" '{
       v: 1, ok: $ok, stage: $stage, kind: (if $kind == "null" or $kind == "" then null else $kind end),
       error: (if $error == "" then null else $error end), exitCode: (if $exit == "null" then null else ($exit|tonumber) end),
       seconds: $seconds, unity: $unity,
       cache: { restoredFrom: (if $restored == "" then null else $restored end), restoredBytes: $rbytes, clean: $clean, reason: $reason,
                saved: $saved, savedKey: (if $skey == "" then null else $skey end), savedBytes: $sbytes, skipped: (if $skipped == "" then null else $skipped end) },
       output: $output, results: (if $results == "" then null else $results end), log: (if $log == "" then null else $log end),
-      memoryPeakBytes: (try ($peak|tonumber) catch null), errors: $errors }' > "$OUT/result.json"
+      memoryPeakBytes: (try ($peak|tonumber) catch null), errors: $errors, pushed: $pushed, packages: $packages }' > "$OUT/result.json"
   gs_put "$OUT_BUCKET" "$OUT_PREFIX/result.json" "$OUT/result.json" application/json || echo "couldn't upload result.json"
   log "done: ok=$OK kind=$KIND"
   exit 0
@@ -194,44 +196,35 @@ stage source
 [ -n "${GITHUB_TOKEN:-}" ] || die source "GITHUB_TOKEN (secret github-token) is empty: the build can't fetch the private repos"
 AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
 export GIT_TERMINAL_PROMPT=0
-PROJECT_COMMIT=""
+PROJECT_COMMIT=""; PROJECT_TOP=""
 n=$(jq '.repos | length' "$S")
 for ((i = 0; i < n; i++)); do
   slug=$(jq -r ".repos[$i].slug" "$S"); top=$(jq -r ".repos[$i].top" "$S"); commit=$(jq -r ".repos[$i].commit" "$S")
-  dir="$P/$top"
+  mapfile -t sparse < <(jq -r ".repos[$i].sparse[]" "$S")
   log "fetching $slug at ${commit:0:12} into $top"
-  mkdir -p "$dir"
-  ( cd "$dir" || exit 1
-    [ -d .git ] || git init -q
-    git remote get-url origin >/dev/null 2>&1 && git remote set-url origin "https://github.com/$slug.git" || git remote add origin "https://github.com/$slug.git"
-    git config "http.https://github.com/.extraheader" "$AUTH"   # also used by Git LFS
-    mapfile -t sparse < <(jq -r ".repos[$i].sparse[]" "$S")
-    # Only the folders the build needs (a package inside hawkesgen, the project inside YoobaLand): non-cone patterns.
-    if [ "${#sparse[@]}" -gt 0 ]; then
-      git config core.sparseCheckout true
-      mkdir -p .git/info && printf '/%s/\n' "${sparse[@]}" > .git/info/sparse-checkout
-    else
-      git config core.sparseCheckout false
-    fi
-    git fetch -q --depth 1 --filter=blob:none origin "$commit" || exit 2
-    git checkout -q -f --detach FETCH_HEAD || exit 3
-    # Keep a persistent Library (VM mode) and Unity's own folders; drop anything else left from an older build.
-    git clean -q -fd -e Library -e Temp -e Logs -e UserSettings >/dev/null 2>&1
-    git config --unset-all "http.https://github.com/.extraheader"
-    rm -rf .git/lfs/objects   # LFS files are in the working tree now; their second copy only costs memory
-  ) || die source "couldn't fetch $slug at ${commit:0:12} (is the commit pushed, and can the GitHub token read the repo?)"
-  if [ "$PROJECT" = "$top" ] || [[ "$PROJECT" == "$top/"* ]]; then PROJECT_COMMIT="$commit"; fi
+  fetch_repo "$slug" "$top" "$commit" "${sparse[@]}" || die source "couldn't fetch $slug at ${commit:0:12} (is the commit pushed, and can the GitHub token read the repo?)"
+  if [ "$PROJECT" = "$top" ] || [[ "$PROJECT" == "$top/"* ]]; then PROJECT_COMMIT=$(git -C "$P/$top" rev-parse HEAD); PROJECT_TOP="$top"; fi
 done
 OVERLAY=$(j .overlay)
 if [ -n "$OVERLAY" ]; then gs_get "$OUT_BUCKET" "$OVERLAY" | tar -xz -C "$P" || die source "couldn't unpack the uncommitted edits"; log "uncommitted edits applied"; fi
 while IFS= read -r rel; do [ -n "$rel" ] && rm -f -- "$P/$rel"; done < <(jq -r '.deletes[]?' "$S")
 [ -f "$PROJ/ProjectSettings/ProjectVersion.txt" ] || die source "$PROJECT has no ProjectSettings/ProjectVersion.txt after the checkout"
+GITHUB_MODE=false
+if [ "$(jq -r '.github != null' "$S")" = true ]; then
+  GITHUB_MODE=true
+  # Gen had no checkout to read the version from: the image must have the project's Unity.
+  pv=$(sed -nE 's/^m_EditorVersion: *([^ ]+).*/\1/p' "$PROJ/ProjectSettings/ProjectVersion.txt" | tr -d '\r' | head -1)
+  [ "$pv" = "$UNITY_VERSION" ] || die config "$PROJECT at ${PROJECT_COMMIT:0:12} uses Unity $pv, but the build image has $UNITY_VERSION"
+  github_packages "$PROJ" "${PROJECT_TOP:-}"
+fi
 # Local file: packages name C:/Projects/... (J's PC, forward slashes); here they are under $P.
 for f in "$PROJ/Packages/manifest.json" "$PROJ/Packages/packages-lock.json"; do
   [ -f "$f" ] && sed -i -E "s#file:[A-Za-z]:/Projects/#file:$P/#g" "$f"
 done
 SITE_IN=$(j .siteInput)
-if [ -n "$SITE" ]; then
+if [ -n "$SITE" ] && [ "$GITHUB_MODE" = true ]; then
+  github_site "$SITE"
+elif [ -n "$SITE" ]; then
   rm -rf "$SITE_DIR"; mkdir -p "$SITE_DIR"
   [ -n "$SITE_IN" ] && { gs_get "$OUT_BUCKET" "$SITE_IN" | tar -xz -C "$P" || die source "couldn't unpack the website input"; }
 fi
@@ -305,7 +298,7 @@ if [ -n "$SITE" ] && [ -z "$TESTS" ]; then
   awk -F'\t' 'NR==FNR { a[$1] = 1; next } !($1 in a) { print $1 }' "$WORK/site-after.txt" "$WORK/site-before.txt" > "$WORK/deleted.txt" || true
   bytes=$(awk -F'\t' '{ s += $2 } END { print s + 0 }' "$WORK/changed.tsv")
   key="$OUT_PREFIX/site.tgz"
-  if [ -s "$WORK/changed.tsv" ]; then
+  if [ -s "$WORK/changed.tsv" ] && [ "$GITHUB_MODE" != true ]; then
     cut -f1 "$WORK/changed.tsv" | sed "s#^#$SITE/#" > "$WORK/pull.txt"
     log "packing $(wc -l < "$WORK/changed.tsv") changed website files ($(( bytes / 1048576 )) MB)"
     tar -czf "$OUT/site.tgz" -C "$P" -T "$WORK/pull.txt" || die output "couldn't pack the website changes"
@@ -318,6 +311,11 @@ if [ -n "$SITE" ] && [ -z "$TESTS" ]; then
     '{ object: $object, bytes: $bytes, changed: $changed, deleted: $deleted }')
   echo "$OUTPUT_JSON" > "$OUT/manifest.json"
   gs_put "$OUT_BUCKET" "$OUT_PREFIX/manifest.json" "$OUT/manifest.json" application/json || true
+  # GitHub mode: the build is committed to the website's branch (beta) and pushed from here; nothing goes back to Gen.
+  if [ "$GITHUB_MODE" = true ]; then
+    stage push
+    github_publish "$SITE" "$PROJECT_COMMIT"
+  fi
 fi
 OK=true; KIND=null
 

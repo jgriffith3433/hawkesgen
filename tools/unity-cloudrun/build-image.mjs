@@ -14,7 +14,7 @@ import { ROOT, APPLY, config, imageBase, gcloud, gcloudQuery, done } from './com
 const c = config();
 const dir = path.join(ROOT, 'server', 'unity-cloudrun');
 const hash = crypto.createHash('sha256');
-for (const f of ['Dockerfile', 'entrypoint.sh']) hash.update(fs.readFileSync(path.join(dir, f)));
+for (const f of ['Dockerfile', 'entrypoint.sh', 'github.sh']) hash.update(fs.readFileSync(path.join(dir, f)));
 const tag = `${c.unity}-${hash.digest('hex').slice(0, 10)}`;
 const image = `${imageBase(c)}:${tag}`;
 

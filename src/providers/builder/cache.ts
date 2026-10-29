@@ -117,7 +117,14 @@ export type CloudResult = {
   cache: { restoredFrom: string | null; restoredBytes: number; clean: boolean; reason: string; saved: boolean; savedKey: string | null; savedBytes: number; skipped: string | null };
   output: { object: string; bytes: number; changed: CloudSiteFile[]; deleted: string[] } | null;
   results: string | null; log: string | null; memoryPeakBytes: number | null; errors: string[];
+  /** GitHub mode: what the container pushed to the website repo (github.ts); null otherwise or when nothing changed. */
+  pushed: CloudPush | null;
+  /** GitHub mode: the commit each local file: package repo was fetched at ({ hawkesgen: sha }). */
+  packages: Record<string, string>;
 };
+
+/** A GitHub-mode build's push: the website repo, the branch (never main), the new commit, and the source commit built. */
+export type CloudPush = { repo: string; branch: string; commit: string; before: string | null; source: string; files: number };
 
 const num = (v: unknown, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
@@ -154,7 +161,19 @@ export function parseCloudResult(raw: string | Buffer): CloudResult {
     },
     output, results: str(j.results), log: str(j.log), memoryPeakBytes: j.memoryPeakBytes ? num(j.memoryPeakBytes) : null,
     errors: (Array.isArray(j.errors) ? j.errors : []).map(String).slice(0, 20),
+    pushed: pushOf(j.pushed),
+    packages: Object.fromEntries(Object.entries(j.packages && typeof j.packages === 'object' ? j.packages : {}).filter(([, v]) => typeof v === 'string').map(([k, v]) => [k, String(v)])),
   };
+}
+
+const SHA = /^[0-9a-f]{40}$/;
+/** The `pushed` block of a result, or null when it isn't a real push (and never one to a protected branch). */
+function pushOf(p: any): CloudPush | null {
+  if (!p || typeof p !== 'object') return null;
+  const repo = str(p.repo), branch = str(p.branch), commit = str(p.commit), source = str(p.source);
+  if (!repo || !branch || !commit || !SHA.test(commit) || !source) return null;
+  if (['main', 'master'].includes(branch.toLowerCase())) throw new Error(`the cloud build says it pushed ${branch}, which a build never does`);
+  return { repo, branch, commit, before: str(p.before), source, files: num(p.files) };
 }
 
 /** The stub a site's old Game/v<n> folder is replaced by in the build's input (its big files stay here). */

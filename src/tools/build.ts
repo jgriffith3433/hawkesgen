@@ -7,12 +7,22 @@ import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
 import { runCloudBuild, type BuildOptions } from '../providers/builder/cloudrun.ts';
 import { runVmBuild } from '../providers/builder/vm.ts';
+import { githubBuildOf } from '../providers/builder/github.ts';
 import { paths, loadSettings, unityBackendOf, type UnityBackend } from '../config.ts';
 import { GenError } from '../util.ts';
 
 /** Which backend runs a build: the param when given, else the project's own (settings.unityBuild.projects), else settings.unityBuild.backend. */
 export function buildBackend(param?: unknown, project?: string, u = loadSettings().unityBuild): UnityBackend {
   return unityBackendOf({ backend: param, project }, u);
+}
+
+/**
+ * GitHub mode needs a cloud backend (the container fetches and pushes): the project's own when it is one, else Cloud Run.
+ * An explicit backend "builder" is refused rather than quietly moved.
+ */
+export function githubBackend(param: unknown, chosen: UnityBackend): UnityBackend {
+  if (param === 'builder') throw new GenError('A GitHub-mode build (github param) runs in the cloud: backend cloudrun or vm, not builder.', { status: 400, kind: 'params' });
+  return chosen === 'builder' ? 'cloudrun' : chosen;
 }
 
 /** One Unity batch run on the chosen backend (the same result shape from each). */
@@ -37,7 +47,8 @@ export const unityBuild: Tool = {
     'Builds a Unity project on the AWS build server, which keeps each project\'s Library so builds are incremental. ' +
     'Uploads only what changed, runs the project\'s own batch deploy method (which writes Game/v<n> into its website ' +
     'folder), then downloads the new build into the website folder here (or into siteDir, a scratch copy of it). ' +
-    'Nothing is committed or pushed. Starts the ' +
+    'Nothing is committed or pushed, except in GitHub mode (the github param: cloud only, the source and website from ' +
+    'GitHub, the build committed to the website repo beta branch and pushed, never main). Starts the ' +
     'server if it is stopped; it powers itself off when idle.',
   provider: 'builder',
   output: 'file',
@@ -54,14 +65,18 @@ export const unityBuild: Tool = {
     backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun', 'vm'], default: 'auto', description: 'Where to build: auto uses settings.unityBuild.backend', advanced: true },
     cache: { type: 'string', description: 'Cloud builds: the Library cache to restore and save (default: the branch, beta or main; other branches restore beta and save nothing)', advanced: true },
     clean: { type: 'boolean', default: false, description: 'Cloud builds: build without the Library cache (a full import); a success saves a fresh cache', advanced: true },
+    github: { type: 'json', description: 'GitHub mode (cloud only, docs/unity-cloudrun.md): {"repo": "owner/source", "commit": "<sha>", "siteRepo": "owner/website", "branch": "beta", "ref": "build-..."}. The container fetches that commit, builds, and commits Game/v<n> plus the loader to the website repo branch (beta; never main) and pushes it. Nothing is laid down here', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;
-    const backend = buildBackend(p.backend, p.project);
+    const github = p.github ? githubBuildOf(p.github, String(p.project), p.site || undefined) : undefined;
+    const backend = github ? githubBackend(p.backend, buildBackend(p.backend, p.project)) : buildBackend(p.backend, p.project);
+    if (github) ctx.log(`GitHub mode: ${github.repo}@${github.commit.slice(0, 12)}${github.ref ? ` (${github.ref})` : ''} -> ${github.siteRepo} ${github.branch}, on ${backend}`);
     const r = await build(ctx.job.id, {
       project: p.project, site: p.site || undefined, method: p.method || undefined, target: p.target,
       projectDir: p.projectDir || undefined, siteDir: p.siteDir || undefined,
       env: p.env && typeof p.env === 'object' ? p.env : undefined, args: Array.isArray(p.args) ? p.args.map(String) : undefined,
+      ...(github ? { github } : {}),
     }, { step: ctx.step, log: ctx.log, signal: ctx.signal }, backend, { cache: p.cache || undefined, clean: p.clean === true });
     try {
       ctx.usage({ provider: r.usage, unit: 'seconds', amount: r.seconds, cost: r.cost, detail: p.project });
@@ -69,11 +84,12 @@ export const unityBuild: Tool = {
       const version = r.site?.changed.map((f) => f.match(/\/Game\/v(\d+)\//)?.[1]).find(Boolean) ?? null;
       ctx.result({
         ok: r.ok, exitCode: r.exitCode, seconds: r.seconds, cost: Math.round(r.cost * 1000) / 1000, version,
-        site: r.site ? { folder: p.siteDir || p.site, changed: r.site.changed.length, deleted: r.site.deleted.length, bytes: r.site.bytes, files: r.site.changed.slice(0, 50) } : null,
+        site: r.site ? { folder: github ? `github:${github.siteRepo}@${github.branch}` : p.siteDir || p.site, changed: r.site.changed.length, deleted: r.site.deleted.length, bytes: r.site.bytes, files: r.site.changed.slice(0, 50) } : null,
         projectFilesChangedOnServer: r.project?.length ?? 0,
         errors: (r as any).errors ?? [],
         logTail: r.ok ? undefined : r.logTail,
         backend,
+        ...(github ? { github: { repo: github.repo, commit: github.commit, ref: github.ref, siteRepo: github.siteRepo, branch: github.branch }, pushed: (r as { pushed?: unknown }).pushed ?? null, packages: (r as { packages?: unknown }).packages ?? {} } : {}),
         ...(r.cloud ? { cloud: r.cloud } : {}),
         ...((r as { movedToVm?: string }).movedToVm ? { movedToVm: (r as { movedToVm?: string }).movedToVm } : {}),
       });
