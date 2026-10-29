@@ -881,6 +881,7 @@ render.settings = async () => {
       <label><span>Claude call time limit, minutes (Max plan)</span><input type="number" id="sct" value="${s.claude.timeoutMinutes}" min="1" max="60"></label>
       <label><span>ElevenLabs $ per 1,000 characters (for usage reports)</span><input type="number" step="any" id="sre" value="${s.rates.elevenlabsPer1kChars}"></label>
     </div><div class="row" style="margin-top:10px"><button class="primary" id="ssave">Save</button></div></div>
+    <div class="card" id="gpuProviders"><h3>GPU providers</h3><p class="muted small">Loading…</p></div>
     ${me.role === 'owner' ? '<div class="card" id="claudeAccounts"><h3>🔑 Claude accounts</h3><p class="muted small">Loading…</p></div>' : ''}
     ${me.role === 'owner' ? `<div class="card"><h3>Google sign-in</h3><p class="muted small">"Continue with Google" on this dashboard lets these Google accounts in as the owner. The client is a Google OAuth web client whose Authorized JavaScript origins list this address (${esc(location.origin)}).</p>
       <div class="form"><label><span>Google client id</span><input id="dgc" value="${esc(s.dashboard?.googleClientId ?? '')}" placeholder="1234…apps.googleusercontent.com"></label>
@@ -897,7 +898,32 @@ render.settings = async () => {
   $('#sout').onclick = () => post('/dashboard/signout').then(() => location.reload()).catch(fail);
   $('#dgsave')?.addEventListener('click', () => post('/settings', { dashboard: { googleClientId: $('#dgc').value.trim() || null, googleEmails: $('#dge').value.split(',').map((x) => x.trim()).filter(Boolean) } }).then(() => { toast('Saved'); render.settings(); }).catch(fail));
   if (me.role === 'owner') claudeAccounts().catch(fail);
+  gpuProviders(s).catch((e) => { $('#gpuProviders').innerHTML = `<h3>GPU providers</h3><p class="muted small">${esc(e.message)}</p>`; });
 };
+
+// Where GPU jobs run (docs/gpu-providers.md, GET /v1/gpu/providers): the providers in the order jobs try them, whether each
+// is set up, cooling down after refusing us (and why), its last error and price. The order and on/off save to settings.gpu.
+async function gpuProviders(s) {
+  const r = await api('/gpu/providers');
+  const fmt = (t) => (t ? new Date(t).toLocaleTimeString() : '');
+  const state = (p) => (!p.ready ? `<span class="muted">${esc(p.problem)}</span>` : p.health.down ? `cooling down until ${fmt(p.health.until)}: ${esc(p.health.reason)}` : 'ready');
+  const pos = (id) => { const i = r.order.indexOf(id); return i < 0 ? '' : String(i + 1); };
+  const intro = r.legacy
+    ? 'No order set: each family runs where its backend setting says (the AWS fleet by default), as before.'
+    : `Jobs try them in this order: <b>${esc(r.order.join(' → '))}</b>${Object.keys(r.familyOrder).length ? ` (own orders for ${esc(Object.keys(r.familyOrder).join(', '))})` : ''}. One that refuses (no GPU free, a bad key, unreachable) is skipped for a while and the job goes to the next.`;
+  $('#gpuProviders').innerHTML = `<h3>GPU providers</h3><p class="muted small">${intro}</p>
+    <table><thead><tr><th>#</th><th>Provider</th><th>Kind</th><th>Where</th><th>GPU</th><th>$/hour</th><th>Families</th><th>Status</th><th>Last error</th><th></th></tr></thead><tbody>
+    ${r.providers.map((p) => `<tr><td>${pos(p.id)}</td><td><b>${esc(p.id)}</b></td><td>${esc(p.provider)}</td><td>${esc(p.url ?? '')}</td><td>${esc(p.gpu)}</td><td>${p.pricePerHour != null ? p.pricePerHour.toFixed(2) : ''}</td><td>${esc(p.families.join(', '))}</td><td>${state(p)}</td>
+      <td class="small">${p.health.lastError ? `${fmt(p.health.lastError.at)} ${esc(p.health.lastError.reason)}` : ''}</td>
+      <td>${['runpod', 'modal', 'http'].includes(p.provider) ? `<button data-gp="${esc(p.id)}" data-on="${p.enabled ? 1 : 0}">${p.enabled ? 'Turn off' : 'Turn on'}</button>` : ''}</td></tr>`).join('')}</tbody></table>
+    <div class="form" style="margin-top:10px"><label><span>Order (ids, comma separated; empty: the old rule)</span><input id="gpo" value="${esc(r.order.join(', '))}" placeholder="cloudrun, runpod-a, fleet"></label></div>
+    <div class="row" style="margin-top:8px"><button id="gpsave">Save order</button></div>`;
+  $('#gpsave').onclick = () => post('/settings', { gpu: { order: $('#gpo').value.split(',').map((x) => x.trim()).filter(Boolean) } }).then(() => { toast('Saved'); gpuProviders(s); }).catch(fail);
+  for (const b of document.querySelectorAll('[data-gp]')) {
+    b.onclick = () => post('/settings', { gpu: { providers: s.gpu.providers.map((p) => (p.id === b.dataset.gp ? { ...p, enabled: b.dataset.on !== '1' } : p)) } })
+      .then(() => render.settings()).catch(fail);
+  }
+}
 
 // The Claude logins Gen's Claude calls run with on the Max plan (src/claude-accounts.ts): sign in like Hawkes Studio's
 // Settings (open Claude's link, sign in, paste the code back), keep several, switch, check one still answers.

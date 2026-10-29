@@ -416,6 +416,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       res.setHeader('Set-Cookie', `${DASH_COOKIE}=${signSession(email)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${DASH_DAYS * 86400}${secure}`);
       return send(res, 200, { email });
     }
+    // The GPU workers' storage broker (src/providers/gpu/broker.ts): the run token is the credential, not a Gen key.
+    if (route === '/v1/gpu/broker') {
+      const { handleBroker } = await import('./providers/gpu/brokerRoute.ts');
+      return handleBroker(req, res, url);
+    }
 
     const client = authenticateRequest(req);
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
@@ -1123,6 +1128,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // The CPU suite (docs/cpu-cloudrun.md): every CPU tool, where it runs now (here or a Cloud Run service) and why,
     // the services' sizes and prices, and the last requests (latency, cold starts, failures).
     if (route === '/v1/cpu' && method === 'GET') return send(res, 200, cpuStatus(loadSettings()));
+    // GPU providers (docs/gpu-providers.md): the order jobs try them in, each one's setup, cooldown, last error and price.
+    if (route === '/v1/gpu/providers' && method === 'GET') {
+      requireRole(client, 'admin');
+      const { gpuStatus } = await import('./providers/gpu/status.ts');
+      const { loadServiceMap } = await import('./providers/cloudrun/services.ts');
+      let map: ReturnType<typeof loadServiceMap> | null = null;
+      try { map = loadServiceMap(); } catch { /* no services.json: Cloud Run shows as not set up */ }
+      return send(res, 200, gpuStatus(loadSettings(), map));
+    }
     // Unity cloud builds (docs/unity-cloudrun.md): the settings, the Library caches, and "clear cache".
     if (route === '/v1/builder/cloud' && method === 'GET') {
       const u = loadSettings().unityBuild;

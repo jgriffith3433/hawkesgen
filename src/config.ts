@@ -78,6 +78,17 @@ export type Settings = {
     disposable: boolean;
     /** When a job's models still don't fit after pruning, grow the server's disk up to this many GB (0: never; ~$0.08/GB-month). */
     maxDiskGb: number;
+    /**
+     * Gen's fixed public address when it has one (docs/gpu-providers.md, "The fleet from Cloud Run"): Cloud Run's Direct VPC
+     * egress through Cloud NAT with a reserved IP (tools/gpu-providers/egress.mjs). The servers' security groups let this
+     * address in. Empty: the address is looked up (J's PC, a VM), or HAWKES_PUBLIC_IP from the environment.
+     */
+    egressIp: string;
+    /**
+     * Without a fixed address on Cloud Run: open the servers' ComfyUI port (only it, never SSH) to every address and rely
+     * on each server's own token. Off unless J turns it on; while off, Gen on Cloud Run without egressIp doesn't use the fleet.
+     */
+    openComfyPort: boolean;
   };
   /** The LOD system makes levels automatically only for these projects (globs: "usr_*"): the ones whose games load them
    *  (hawkesgen.ai's customers and its starter library, the beta portal's). Anything else asked for by id still gets them. */
@@ -116,7 +127,23 @@ export type Settings = {
    * `cloudrun.bucket`: inputs and outputs of runs (gs://<bucket>/cloudrun/...). `cloudrun.services`: family -> service
    * overrides (a pilot alternative).
    */
-  gpu: { backend: 'fleet' | 'cloudrun'; families: Record<string, 'fleet' | 'cloudrun'>; cloudrun: { bucket: string | null; urls: Record<string, string>; services: Record<string, string> } };
+  gpu: {
+    backend: 'fleet' | 'cloudrun'; families: Record<string, 'fleet' | 'cloudrun'>; cloudrun: { bucket: string | null; urls: Record<string, string>; services: Record<string, string> };
+    /**
+     * GPU providers beyond the AWS fleet and Cloud Run (docs/gpu-providers.md, src/providers/gpu/): endpoints running
+     * the same worker image (server/cloudrun/) on RunPod, Modal or any host that speaks the worker protocol. Each says
+     * which families it runs ("*" for all), its GPU, its price and how many requests it takes at once.
+     */
+    providers: GpuEndpoint[];
+    /**
+     * The order GPU jobs try providers in: endpoint ids, "cloudrun" (the family's Cloud Run service, as cloudrun.urls
+     * says) and "fleet" (the AWS servers). A provider that is down, out of capacity or not set up is skipped for a while
+     * and the job goes to the next. Empty: the old rule (backend and families) and nothing else.
+     */
+    order: string[];
+    /** An order per family over `order` ("video": ["runpod-a100", "fleet"]). */
+    familyOrder: Record<string, string[]>;
+  };
   /**
    * Where unity.build and unity.test run (docs/unity-cloudrun.md). "builder" is the Windows build server on AWS
    * (src/providers/builder/builder.ts); "cloudrun" is a Google Cloud Run job per build (cloudrun.ts), with the
@@ -169,11 +196,33 @@ export type Settings = {
   dashboard: { googleClientId: string | null; googleEmails: string[] };
 };
 
+/** A GPU endpoint (settings.gpu.providers): a host running the worker image (docs/gpu-providers.md). */
+/** RunPod load-balancing endpoints process a request for at most 5.5 minutes (docs.runpod.io, load balancing). */
+export const RUNPOD_GRAPH_SECONDS = 300;
+
+export type GpuEndpoint = {
+  id: string;
+  provider: 'runpod' | 'modal' | 'http';
+  url: string;
+  /** Families it runs, or ["*"]. */
+  families: string[];
+  gpu: string;
+  pricePerHour: number;
+  maxConcurrent: number;
+  /**
+   * The most one graph may run there, in seconds. Past a provider's request limit the stream ends and Gen follows the run
+   * by its heartbeat (cloudrun/run.ts), but a host may stop an instance with no request open: RunPod's load-balancing
+   * endpoints end a request at 5.5 minutes, so their default is 300 and longer graphs go to the next provider.
+   */
+  graphLimitSeconds: number;
+  enabled: boolean;
+};
+
 export type UnityBackend = 'builder' | 'cloudrun' | 'vm';
 const isUnityBackend = (v: unknown): v is UnityBackend => v === 'builder' || v === 'cloudrun' || v === 'vm';
 
 export const SETTINGS_DEFAULTS: Settings = {
-  fleet: { servers: 4, auto: true, autoLaunch: false, launchType: 'g6e.xlarge', idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0 },
+  fleet: { servers: 4, auto: true, autoLaunch: false, launchType: 'g6e.xlarge', idleMinutes: 60, autoPrune: true, disposable: true, maxDiskGb: 0, egressIp: '', openComfyPort: false },
   // pipeline: chains (asset.make, film) only wait on their steps; many at once keep a deep queue of each GPU model family,
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
@@ -185,7 +234,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   localOpen: true,
   rates: { elevenlabsPer1kChars: 0.3 },
   storage: { bucket: null, provider: 's3', cdn: null },
-  gpu: { backend: 'fleet', families: {}, cloudrun: { bucket: null, urls: {}, services: {} } },
+  gpu: { backend: 'fleet', families: {}, cloudrun: { bucket: null, urls: {}, services: {} }, providers: [], order: [], familyOrder: {} },
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
@@ -262,7 +311,33 @@ function cleanGpu(g: Partial<Settings['gpu']> | undefined): Settings['gpu'] {
     backend: be(g?.backend) ?? 'fleet',
     families,
     cloudrun: { bucket: typeof b === 'string' && /^[a-z0-9][a-z0-9._-]{2,62}$/.test(b) ? b : null, urls, services },
+    ...cleanProviders(g),
   };
+}
+
+/** settings.gpu's providers and order, checked: known provider kinds, https URLs, sane numbers, ids that exist. */
+export function cleanProviders(g: Partial<Settings['gpu']> | undefined): Pick<Settings['gpu'], 'providers' | 'order' | 'familyOrder'> {
+  const n = (v: unknown, lo: number, hi: number, d: number) => { const x = Number(v); return v !== undefined && v !== null && v !== '' && Number.isFinite(x) ? Math.max(lo, Math.min(hi, x)) : d; };
+  const providers: GpuEndpoint[] = [];
+  for (const p of Array.isArray(g?.providers) ? g!.providers : []) {
+    const id = String(p?.id ?? '').trim();
+    if (!NAME.test(id) || id === 'fleet' || id === 'cloudrun' || providers.some((x) => x.id === id)) continue;
+    if (!['runpod', 'modal', 'http'].includes(String(p?.provider))) continue;
+    const url = String(p?.url ?? '').trim().replace(/\/+$/, '');
+    if (!/^https:\/\/[a-z0-9.-]+(:\d+)?(\/[\w./-]*)?$/i.test(url)) continue;
+    const families = (Array.isArray(p.families) ? p.families : ['*']).map(String).filter((x) => x === '*' || NAME.test(x));
+    providers.push({
+      id, provider: p.provider, url, families: families.length ? families : ['*'],
+      gpu: String(p.gpu ?? '').trim().slice(0, 40) || 'gpu',
+      pricePerHour: n(p.pricePerHour, 0, 100, 0), maxConcurrent: Math.round(n(p.maxConcurrent, 1, 64, 1)),
+      graphLimitSeconds: Math.round(n(p.graphLimitSeconds, 60, 86_400, p.provider === 'runpod' ? RUNPOD_GRAPH_SECONDS : 3300)), enabled: p.enabled !== false,
+    });
+  }
+  const known = new Set(['fleet', 'cloudrun', ...providers.map((p) => p.id)]);
+  const list = (v: unknown) => [...new Set((Array.isArray(v) ? v : []).map(String).filter((x) => known.has(x)))];
+  const familyOrder: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(g?.familyOrder ?? {})) if (NAME.test(k) && list(v).length) familyOrder[k] = list(v);
+  return { providers, order: list(g?.order), familyOrder };
 }
 
 function clean(s: Settings): Settings {
@@ -277,6 +352,8 @@ function clean(s: Settings): Settings {
       autoPrune: s.fleet?.autoPrune !== false,
       disposable: s.fleet?.disposable !== false,
       maxDiskGb: n(s.fleet?.maxDiskGb, 0, 2000, SETTINGS_DEFAULTS.fleet.maxDiskGb),
+      egressIp: /^\d{1,3}(\.\d{1,3}){3}$/.test(String(s.fleet?.egressIp ?? '').trim()) ? String(s.fleet!.egressIp).trim() : '',
+      openComfyPort: s.fleet?.openComfyPort === true,
     },
     concurrency: {
       elevenlabs: n(s.concurrency?.elevenlabs, 1, 16, SETTINGS_DEFAULTS.concurrency.elevenlabs),

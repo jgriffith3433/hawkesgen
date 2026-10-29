@@ -59,6 +59,9 @@ if (gcloudQuery(['storage', 'buckets', 'describe', `gs://${unityBucket}`, P, '--
 for (const role of ['roles/run.developer', 'roles/logging.viewer', 'roles/logging.logWriter']) {
   gcloud(['projects', 'add-iam-policy-binding', project, `--member=serviceAccount:${sa}`, `--role=${role}`, '--condition=None', '--format=none'], { retries: 9 });
 }
+// Signing as itself (IAM signBlob): the GPU broker's short-lived signed URLs for workers on other providers
+// (src/providers/gpu/sign.ts, docs/gpu-providers.md). No key file: IAM signs.
+gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', sa, P, `--member=serviceAccount:${sa}`, '--role=roles/iam.serviceAccountTokenCreator', '--format=none'], { retries: 9 });
 if (gcloudQuery(['iam', 'service-accounts', 'describe', unityJobSa, P, '--format=value(email)']) !== null) {
   gcloud(['iam', 'service-accounts', 'add-iam-policy-binding', unityJobSa, P, `--member=serviceAccount:${sa}`, '--role=roles/iam.serviceAccountUser', '--format=none'], { retries: 9 });
 }
@@ -73,7 +76,9 @@ if (fs.existsSync(envFile)) {
     if (m) envVals[m[1]] = m[2].replace(/^["']|["']$/g, '');
   }
 }
-const KEYS = ['ANTHROPIC_API_KEY', 'ELEVENLABS_API_KEY', 'GEMINI_API_KEY', 'XAI_API_KEY', 'COMFY_ORG_API_KEY', 'COPILOT_GITHUB_TOKEN', 'CURSOR_API_KEY'];
+const KEYS = ['ANTHROPIC_API_KEY', 'ELEVENLABS_API_KEY', 'GEMINI_API_KEY', 'XAI_API_KEY', 'COMFY_ORG_API_KEY', 'COPILOT_GITHUB_TOKEN', 'CURSOR_API_KEY',
+  // GPU providers beyond Google's (docs/gpu-providers.md), each only when J has put it in .env.
+  'RUNPOD_API_KEY', 'MODAL_PROXY_KEY', 'MODAL_PROXY_SECRET', 'GPU_HTTP_TOKEN', 'GPU_WORKER_TOKEN'];
 const secretName = (k) => `gen-${k.toLowerCase().replace(/_/g, '-')}`;
 const mounted = [];
 function putSecret(name, value) {
@@ -110,6 +115,14 @@ const envVars = [
   'HAWKESGEN_LIBRARY_STORE=gcs',
   `HAWKESGEN_LIBRARY_BUCKET=${libraryBucket}`,
 ];
+// The AWS fleet without keys (optional): the metadata server's identity token traded for the role made by
+// deploy/gcp/aws-federation.mjs (src/providers/gceaws.ts). --aws-role <arn>, or HAWKES_AWS_ROLE_ARN in .env.
+const awsRole = flag('aws-role', envVals.HAWKES_AWS_ROLE_ARN || '');
+if (awsRole) envVars.push(`HAWKES_AWS_ROLE_ARN=${awsRole}`);
+else console.log('  HAWKES_AWS_ROLE_ARN: not set, so the AWS fleet stays off from Cloud Run (docs/gpu-providers.md)');
+// The fixed address the fleet's security groups let in (tools/gpu-providers/egress.mjs makes it): --egress-ip <ip>.
+const egressIp = flag('egress-ip', '');
+if (egressIp) envVars.push(`HAWKES_PUBLIC_IP=${egressIp}`);
 gcloud(['run', 'deploy', service, `--image=${image}`, `--region=${region}`, P,
   `--service-account=${sa}`, '--allow-unauthenticated',
   '--min-instances=0', '--max-instances=1', '--no-cpu-throttling', '--cpu=2', '--memory=4Gi',
