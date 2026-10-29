@@ -256,6 +256,10 @@ export function toolFloorCredits(toolId: string): number {
   if (toolId === 'mesh.from-image' || toolId === 'mesh.textured' || toolId === 'mesh.views3d' || toolId === 'mesh.from-views' || toolId === 'splat.build') {
     return 50;
   }
+  // Cutting and compositing run on the CPU with ffmpeg (free to us): a small floor, not a GPU video's.
+  if (toolId === 'video.compose' || toolId === 'video.composite' || toolId === 'video.matte' || toolId === 'video.control-mix') {
+    return 3;
+  }
   if (toolId.startsWith('video.')) {
     return 40;
   }

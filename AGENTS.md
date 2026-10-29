@@ -155,6 +155,24 @@ chosen one.
   container (never main). Studio uses it for build tags (`git tag build-x && git push origin build-x` in a Unity source
   repo). docs/unity-cloudrun.md, "GitHub mode".
 
+## The app (gen.hawkesgen.ai `/`)
+
+Hawkes Gen is a product of its own (J, 2026-10-29): people sign up at gen.hawkesgen.ai with Gen's own accounts
+(`src/users.ts`: email and password, starter credits, Stripe packs), separate from hawkesgen.ai's and Studio's. The
+portal and Studio use Gen in the back end with their own keys.
+- **The app** (`dashboard/gen/`: plain HTML, CSS and JS over `/v1`) is at `/`:
+  - **Create:** a prompt makes an image (`image.generate`), and Animate turns an image into a clip (`video.i2v`,
+    sized from the image's shape).
+  - **Library:** what the account made.
+  - **Editor:** a timeline of clips with in/out, transitions and captions, plus music (`audio.music` or a library
+    track), previewed in the page and rendered by `video.compose` (CPU, a 3-credit floor).
+
+  Sign-up is inline: the first Generate asks for an account, then goes on. The editor's timeline lives in the
+  browser (`localStorage`).
+- **The admin dashboard** is `/admin` (its files are served beside it: `/admin/app.js` is `dashboard/app.js`). Owner
+  and admin keys, or Google for `settings.dashboard.googleEmails`. The app links there for admins.
+- The old Hawkes Play pages stay at `/home`, `/app` and `/play`.
+
 ## Customers (tenancy)
 
 Gen is sold to customers (hawkesstudio `docs/platform-plan.md`), so one customer must never see or use another's

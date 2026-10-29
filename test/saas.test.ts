@@ -533,16 +533,13 @@ test('runtime Stripe config (GET/POST /v1/billing/config and GET /v1/billing/pac
     body: { secretKey: '', publishableKey: '', webhookSecret: '' },
   });
 
-  // 4. X-Hawkes-Public-Saas: 1 serves dashboard/public/landing.html at / and requires auth on /v1/me
-  const adminRoot = await reqJson('/');
-  assert.equal(adminRoot.status, 200);
-  assert.equal(typeof adminRoot.body, 'string');
-  assert.ok(!adminRoot.body.includes('Build Web Games with AI'));
-
-  const publicRoot = await reqJson('/', { headers: { 'X-Hawkes-Public-Saas': '1' } });
-  assert.equal(publicRoot.status, 200);
-  assert.equal(typeof publicRoot.body, 'string');
-  assert.ok(publicRoot.body.includes('Build Web Games with AI'));
+  // 4. / is the Gen app (dashboard/gen/) either way; the old Hawkes Play landing page stays at /home
+  const root = await reqJson('/', { headers: { 'X-Hawkes-Public-Saas': '1' } });
+  assert.equal(root.status, 200);
+  assert.equal(typeof root.body, 'string');
+  assert.ok(root.body.includes('Make anything.'));
+  const home = await reqJson('/home');
+  assert.ok(String(home.body).includes('Build Web Games with AI'));
 
   const localMe = await reqJson('/v1/me');
   assert.equal(localMe.status, 200);

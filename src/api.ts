@@ -280,9 +280,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     } else if (route === '/play' || route === '/play/') {
       rel = 'public/player.html';
     } else if (route === '/admin' || route === '/admin/') {
+      // The admin dashboard (owner and admin keys, Google for the listed emails); its files sit beside it.
       rel = 'index.html';
+    } else if (route.startsWith('/admin/')) {
+      rel = route.slice('/admin/'.length);
     } else if (route === '/') {
-      rel = publicSaas ? 'public/landing.html' : 'index.html';
+      // Hawkes Gen, the app (dashboard/gen/): create, library, editor, on Gen's own accounts.
+      rel = 'gen/index.html';
     } else {
       rel = route.slice(1);
     }

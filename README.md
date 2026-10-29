@@ -34,7 +34,8 @@ generative AI, so projects never deal with GPU servers, ComfyUI, models or API k
 auto-start.bat
 ```
 
-This opens the dashboard at http://127.0.0.1:8790. The first run installs Node packages and a Python `.venv`.
+This opens Hawkes Gen at http://127.0.0.1:8790: the app at `/` (Create, Library, Editor, on Gen's own accounts) and the
+admin dashboard at `/admin`. The first run installs Node packages and a Python `.venv`.
 Keys go in `.env` (see `.env.example`). The dashboard has these tabs:
 - Overview
 - Jobs

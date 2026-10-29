@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hawkes Gen</title>
+  <meta name="description" content="Make images, bring them to life as video, and cut them together. Hawkes Gen.">
+  <link rel="icon" href="/favicon.svg">
+  <link rel="stylesheet" href="/gen/gen.css">
+</head>
+<body>
+  <header class="bar">
+    <a class="brand" href="#create"><img src="/favicon.svg" alt=""><b>Hawkes Gen</b></a>
+    <nav class="views" aria-label="Views">
+      <a href="#create" data-view="create">Create</a>
+      <a href="#library" data-view="library">Library</a>
+      <a href="#editor" data-view="editor">Editor</a>
+    </nav>
+    <div class="me">
+      <a id="adminLink" class="ghost small" href="/admin" hidden>Admin</a>
+      <button id="creditsPill" class="pill" hidden title="Credits (1 credit = 1 cent)"><span id="creditsCount">0</span> credits</button>
+      <button id="signInBtn" class="primary small">Sign in</button>
+      <button id="accountBtn" class="ghost small" hidden></button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Create: a prompt, an image, then animate it -->
+    <section id="view-create" class="view">
+      <div class="hero">
+        <h1>Make anything.</h1>
+        <p class="sub">Describe an image. Bring it to life as video. Cut it together.</p>
+        <form id="promptForm" class="prompt" autocomplete="off">
+          <textarea id="prompt" rows="2" maxlength="2000" placeholder="A lighthouse on a cliff at dusk, storm clouds, painterly" required></textarea>
+          <div class="prompt-row">
+            <div class="chips" role="radiogroup" aria-label="Shape">
+              <button type="button" class="chip on" data-w="1024" data-h="1024">Square</button>
+              <button type="button" class="chip" data-w="1344" data-h="768">Wide</button>
+              <button type="button" class="chip" data-w="768" data-h="1344">Tall</button>
+            </div>
+            <span id="quote" class="quote"></span>
+            <button id="generateBtn" class="primary" type="submit">Generate</button>
+          </div>
+        </form>
+      </div>
+      <div id="feed" class="feed" aria-live="polite"></div>
+    </section>
+
+    <!-- Library: everything made -->
+    <section id="view-library" class="view" hidden>
+      <div class="view-head">
+        <h2>Library</h2>
+        <div class="chips" id="libFilter">
+          <button class="chip on" data-kind="">All</button>
+          <button class="chip" data-kind="image">Images</button>
+          <button class="chip" data-kind="video">Videos</button>
+          <button class="chip" data-kind="audio">Audio</button>
+        </div>
+      </div>
+      <div id="libGrid" class="grid"></div>
+      <p id="libEmpty" class="empty" hidden>Nothing here yet. Make something on <a href="#create">Create</a>.</p>
+    </section>
+
+    <!-- Editor: a timeline of clips, music, captions; rendered with video.compose -->
+    <section id="view-editor" class="view" hidden>
+      <div class="view-head">
+        <h2>Editor</h2>
+        <div class="row">
+          <button id="playBtn" class="ghost">Play</button>
+          <button id="clearBtn" class="ghost">Clear</button>
+          <button id="exportBtn" class="primary">Export video</button>
+        </div>
+      </div>
+      <div class="editor">
+        <div class="monitor">
+          <video id="monitor" playsinline muted></video>
+          <div id="monitorCaption" class="caption" hidden></div>
+          <p id="monitorEmpty" class="empty">Add clips from the bin below, or animate an image on Create.</p>
+        </div>
+        <div class="side">
+          <h3>Music</h3>
+          <div id="musicSlot" class="music"></div>
+          <form id="musicForm" class="inline">
+            <input id="musicPrompt" placeholder="Make music: calm piano, rain" maxlength="300">
+            <button class="ghost small" type="submit">Make</button>
+          </form>
+          <h3>Finish</h3>
+          <label class="field">Shape
+            <select id="exportShape">
+              <option value="1280x720">Wide 1280×720</option>
+              <option value="720x1280">Tall 720×1280</option>
+              <option value="1080x1080">Square 1080×1080</option>
+            </select>
+          </label>
+          <label class="field">Captions
+            <select id="exportCaptions"><option value="burn">Burned in</option><option value="vtt">As subtitles</option></select>
+          </label>
+          <div id="exports" class="exports"></div>
+        </div>
+      </div>
+      <h3 class="tl-head">Timeline <span id="tlLength" class="muted"></span></h3>
+      <ol id="timeline" class="timeline"></ol>
+      <h3>Bin</h3>
+      <div id="bin" class="bin"></div>
+    </section>
+  </main>
+
+  <!-- Sign in / create an account -->
+  <dialog id="authDialog" class="sheet">
+    <form id="authForm" method="dialog">
+      <h2 id="authTitle">Sign in to Hawkes Gen</h2>
+      <p class="muted" id="authLead">Make images and videos. New accounts start with free credits.</p>
+      <div class="tabs">
+        <button type="button" class="tab on" data-mode="login">Sign in</button>
+        <button type="button" class="tab" data-mode="signup">Create account</button>
+      </div>
+      <label class="field" id="nameField" hidden>Name <input id="authName" autocomplete="name" maxlength="120"></label>
+      <label class="field">Email <input id="authEmail" type="email" autocomplete="email" required></label>
+      <label class="field">Password <input id="authPassword" type="password" autocomplete="current-password" minlength="6" required></label>
+      <p id="authError" class="error" hidden></p>
+      <div class="row end">
+        <button type="button" class="ghost" id="authCancel">Cancel</button>
+        <button class="primary" id="authSubmit" type="submit">Sign in</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Animate an image -->
+  <dialog id="animateDialog" class="sheet">
+    <form id="animateForm" method="dialog">
+      <h2>Animate</h2>
+      <img id="animateFrom" class="thumb-lg" alt="">
+      <label class="field">What happens <textarea id="animatePrompt" rows="2" maxlength="1000" placeholder="Waves crash below, the light sweeps slowly, clouds roll"></textarea></label>
+      <label class="field">Length
+        <select id="animateLength"><option value="2">2 seconds</option><option value="3" selected>3 seconds</option><option value="5">5 seconds</option></select>
+      </label>
+      <p class="muted" id="animateQuote"></p>
+      <div class="row end">
+        <button type="button" class="ghost" id="animateCancel">Cancel</button>
+        <button class="primary" type="submit">Animate</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Account -->
+  <dialog id="accountDialog" class="sheet">
+    <div>
+      <h2>Account</h2>
+      <p id="accountEmail" class="muted"></p>
+      <p><b id="accountCredits">0</b> credits (1 credit = 1 cent)</p>
+      <div id="packs" class="packs"></div>
+      <p id="accountError" class="error" hidden></p>
+      <div class="row end">
+        <button class="ghost" id="signOutBtn">Sign out</button>
+        <button class="primary" id="accountClose">Done</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/gen/gen.js" type="module"></script>
+</body>
+</html>

@@ -90,26 +90,23 @@ test('/home, /app, and /public/* serve valid HTML, CSS, and JS on every server',
   }
 });
 
-test('HAWKESGEN_PUBLIC_SAAS=1 serves landing page at / and keeps operator console at /admin', async () => {
-  // Default (HAWKESGEN_PUBLIC_SAAS unset): / is the operator console
-  delete process.env.HAWKESGEN_PUBLIC_SAAS;
-  const rootDefault = await fetchRoute('/');
-  assert.equal(rootDefault.status, 200);
-  assert.match(rootDefault.text, /Generative R&amp;D for every Hawkes product/);
-
-  // When HAWKESGEN_PUBLIC_SAAS=1: / is the customer-facing landing page, and /admin is the operator console
-  process.env.HAWKESGEN_PUBLIC_SAAS = '1';
-  try {
-    const rootPublic = await fetchRoute('/');
-    assert.equal(rootPublic.status, 200);
-    assert.match(rootPublic.text, /Build Web Games with AI/);
-    assert.match(rootPublic.text, /Create Games/);
-
-    const admin = await fetchRoute('/admin');
-    assert.equal(admin.status, 200);
-    assert.match(admin.text, /Generative R&amp;D for every Hawkes product/);
-  } finally {
-    delete process.env.HAWKESGEN_PUBLIC_SAAS;
+test('/ is the Gen app; the operator console is /admin (its files beside it); the old landing page is /home', async () => {
+  for (const saas of [undefined, '1']) {
+    if (saas) process.env.HAWKESGEN_PUBLIC_SAAS = saas; else delete process.env.HAWKESGEN_PUBLIC_SAAS;
+    try {
+      const root = await fetchRoute('/');
+      assert.equal(root.status, 200);
+      assert.match(root.text, /Make anything\./);
+      for (const r of ['/admin', '/admin/']) {
+        const admin = await fetchRoute(r);
+        assert.equal(admin.status, 200);
+        assert.match(admin.text, /Generative R&amp;D for every Hawkes product/);
+      }
+      assert.equal((await fetchRoute('/admin/style.css')).status, 200);
+      assert.match((await fetchRoute('/home')).text, /Build Web Games with AI/);
+    } finally {
+      delete process.env.HAWKESGEN_PUBLIC_SAAS;
+    }
   }
 });
 
