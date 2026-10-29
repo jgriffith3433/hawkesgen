@@ -29,6 +29,17 @@ type Problem = { severity: string; message: string; source: string };
 
 const TERMINAL = new Set(['won', 'lost', 'done', 'stuck', 'error']);
 
+/**
+ * The page's cookies (the cookies param): at most 8, for https hosts, set Secure and HttpOnly before the page loads. Hawkes
+ * Studio sends a short-lived beta-site pass (hawkes_pass / hawkes_pass_beta) so its playtests of beta sites get in.
+ */
+export function pageCookies(cookies: unknown): { name: string; value: string; domain: string; path: string; secure: true; httpOnly: true; sameSite: 'Lax' }[] {
+  if (!Array.isArray(cookies)) return [];
+  return cookies.filter((c: any) => c && /^[A-Za-z0-9_-]{1,64}$/.test(String(c.name)) && typeof c.value === 'string' && c.value.length <= 4096 && !/[;\s]/.test(c.value)
+    && /^\.?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(String(c.domain)))
+    .slice(0, 8).map((c: any) => ({ name: String(c.name), value: c.value, domain: String(c.domain), path: '/', secure: true, httpOnly: true, sameSite: 'Lax' as const }));
+}
+
 /** Injected into every page: a frame counter the runner reads (works with or without the contract). */
 /** The page's globals (the globals param): named strings only, set before the page's own scripts. */
 export function globalsScript(globals: unknown): string | null {
@@ -77,6 +88,7 @@ export const playtestRunTool: Tool = {
     recorder: { type: 'enum', values: ['auto', 'screencast', 'playwright'], default: 'auto', description: 'How the video is made. screencast: every frame Chromium draws, kept at 30 fps, encoded after the run on the browser\'s machine (smooth). playwright: Playwright\'s recordVideo (25 fps, encoded on the browser\'s machine). auto: screencast when the browser runs on a GPU machine, else playwright.', advanced: true },
     baseline: { type: 'string', description: 'A previous playtest.run job of the same scenario: screenshots at matching events (scene changes, the end) are compared with a perceptual diff', advanced: true, example: 'j_0123456789ab' },
     globals: { type: 'json', description: 'Values the page sees before any of its scripts run, as window[name] = value: { "HAWKES_NET_ENDPOINT": "https://hawkesnet.hawkesgen.ai" } (Hawkes Studio puts beta playtests on beta Hawkes Net). Names are capital letters, digits and _, values strings; nothing else.', advanced: true, example: { HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.ai' } },
+    cookies: { type: 'json', description: 'Cookies set before the page loads: [{ "name", "value", "domain" }] (at most 8; Secure, HttpOnly, path /). Hawkes Studio sends a short-lived beta-site pass so playtests of beta sites get past the sign-in.', advanced: true, example: [{ name: 'hawkes_pass_beta', value: 'v1.beta…', domain: '.hawkesgen.ai' }] },
     peers: { type: 'integer', default: 1, min: 1, max: 4, description: 'Multiplayer: how many players (browser tabs in the same browser) play together. Each opens the URL with a shared random room=<id> and peer=<0..n-1>; peer 0 plays the scenario, the others scenarioPeers (or the same one). Their videos play side by side in the job\'s video; problems and events say which peer. Needs the playtest contract.' },
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
   },
@@ -198,6 +210,8 @@ export const playtestRunTool: Tool = {
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
         const pageGlobals = globalsScript(p.globals);
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
+        const jar = pageCookies(p.cookies);
+        if (jar.length) await within(context.addCookies(jar), 15_000, 'preparing the tab');
         page =await within(context.newPage(), 30_000, 'opening a browser tab');
       };
       const wantScreencast = p.recorder === 'screencast' || (p.recorder === 'auto' && Boolean(host));
@@ -713,6 +727,8 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
         const pageGlobals = globalsScript(p.globals);
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
+        const jar = pageCookies(p.cookies);
+        if (jar.length) await within(context.addCookies(jar), 15_000, 'preparing the tab');
         return { context, page: await within(context.newPage(), 30_000, 'opening a browser tab') as any };
       };
       let { context, page } = await openTab(!wantScreencast);
