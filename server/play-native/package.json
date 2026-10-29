@@ -1,0 +1,9 @@
+{
+  "name": "hawkes-play-native",
+  "private": true,
+  "type": "module",
+  "description": "Hawkes Gen's desktop playtest runner (docs/play-native.md): Linux builds and Windows .exe under Proton, played through playtest contract v2.",
+  "dependencies": {
+    "ws": "8.18.3"
+  }
+}
