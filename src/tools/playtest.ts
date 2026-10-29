@@ -1121,6 +1121,8 @@ export function within<T>(work: Promise<T>, ms: number, what: string): Promise<T
 /** The local browser (this PC's GPU, or software on the server) is one at a time; GPU servers take several. */
 let localTurn: Promise<void> = Promise.resolve();
 async function localSlot(signal: AbortSignal): Promise<() => void> {
+  // Gen's Cloud Run image has no browser of its own: a playtest there plays only on the playtest service.
+  if (process.env.K_SERVICE) throw new GenError('No playtest browser: the Cloud Run playtest service (settings.playtest) could not be reached or had no room. Try again; a cold start takes about half a minute.', { kind: 'gpu' });
   const before = localTurn;
   let release!: () => void;
   localTurn = new Promise<void>((r) => (release = r));

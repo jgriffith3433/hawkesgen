@@ -220,8 +220,11 @@ export async function proxyLocal(context: any, ports: number[], deps: ProxyDeps 
 export type ConnectDeps = { idToken: (aud: string) => Promise<string>; sleep: (ms: number) => Promise<void>; now: () => number };
 const defaultConnectDeps = (): ConnectDeps => ({ idToken: (aud) => gcpTokens().id(aud), sleep: (ms) => new Promise((r) => setTimeout(r, ms)), now: () => Date.now() });
 
-/** A refusal worth trying again: the service at its max instances (429), an instance starting or going away (503). */
-export const retryable = (e: any) => /\b(429|503|502)\b|Too Many|Service Unavailable|ECONNRESET|socket hang up/i.test(String(e?.message ?? e));
+/**
+ * A refusal worth trying again: the service at its max instances (429), an instance starting or going away (503), or a
+ * 500 on the WebSocket while a new instance cold-starts (2026-10-29: two playtests at once, one tab per instance).
+ */
+export const retryable = (e: any) => /\b(429|503|502|500)\b|Too Many|Service Unavailable|Internal Server Error|ECONNRESET|socket hang up/i.test(String(e?.message ?? e));
 
 /**
  * One browser on the service. Waits through a cold start (Cloud Run holds the request until the startup probe
