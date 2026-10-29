@@ -20,6 +20,8 @@ export type ParamSpec = {
   values?: string[];
   /** Hidden behind "more settings" in the dashboard. */
   advanced?: boolean;
+  /** json params: a string that isn't JSON is kept as that string (playtest.run's build: "blob:<sha>" or an object). */
+  orString?: boolean;
   /** An example value (shown as a placeholder). */
   example?: unknown;
 };
@@ -109,6 +111,12 @@ export type Tool = {
   workflow?: { dir: string; source: unknown; models: ModelRef[]; tags: string[] };
   /** Refuses a call before it is queued (throw a GenError saying what to do instead). Runs at submit, after the params are checked. */
   guard?(call: { params: Record<string, any>; inputs: Record<string, string | string[]>; labels?: Record<string, unknown> }): void;
+  /**
+   * Checks a call against its caller at submit and returns the params to store (playtest.run: a customer's build must be
+   * its own and its URL public; a GitHub token is moved out of the params into memory). `customer` is a customer's job
+   * (the same rule as callScope: a user key in a customer project). Throw a GenError to refuse.
+   */
+  admit?(call: { params: Record<string, any>; client: { id: string; role: string; projects: string[] }; project: string; customer: boolean }): Record<string, any>;
   /** Hands a call to another tool at submit (audio.voice -> the open-model tool). Returns the tool id to run, or null to stay. Both tools take the same params. */
   route?(params: Record<string, any>): string | null;
   run(ctx: RunContext): Promise<void>;

@@ -56,6 +56,24 @@ While `llm.text` or `llm.json` runs, its `result` is the answer so far: `{ parti
 saved about four times a second (also in `/v1/events`), so a caller can act on it before the end (the portal's Overseer
 builds the world from it line by line). The finished result replaces it. The API backend caches the system prompt.
 
+## Playtests: builds and targets (docs/playtest-runners.md)
+
+`POST /v1/jobs` with `tool: "playtest.run"` takes the page as `url` (as before) or `build`, plus `target`, `exe` and `args`:
+
+| Param | |
+|---|---|
+| `build` | `"blob:<sha256>"` / `"asset:<id>"` (a zip, tar or tar.gz of the build folder: a customer's own only, else 404), a URL or `{ "url" }` (a page, or for desktop an archive to download), or `{ "github": { "repo": "owner/name", "release": "v1" \| "latest", "asset"? } }`, `{ "github": { "repo", "run": <id>, "artifact"?, "token" } }`, `{ "github": { "repo", "ref": "main" } }` with an optional `"token"` (used for that run only: never stored, logged or returned; gone after a Gen restart) |
+| `target` | `web` (default), `electron`, `linux`, `proton`, `windows`. Desktop targets and Electron play on native runners (`settings.playtest.runners`); when no runner plays the target, the job fails (kind `runner`) and says why each was skipped |
+| `exe` | Inside the build: the executable (desktop) or the page (web, default `index.html`). Relative, no `..` |
+| `args` | A desktop build's command line: up to 32 strings |
+
+Customers' URLs must be public: `localhost`, private, link-local (the metadata server), CGNAT and `.internal`/`.local`
+names are refused with 400 at submit, and names resolving to such addresses when the run starts. Customers' runs play
+only on runners that take customers' builds (never in a browser on Gen's machine); `gpu` is forced to `require`, and a
+`baseline` must be the customer's own job. Results add `target`, `build`, and on native runs `runner`, `crashes`,
+`crashGroups`, `logs` and `perf` (frame times, CPU, GPU, memory). Prices: `playtest.run` by target and minutes,
+`playtest.review` by frames and model (`POST /v1/billing/quote`; provisional).
+
 ## Tools
 
 `GET /v1/tools` lists them with their inputs and params; `GET /v1/tools/:id` one. See the README table.

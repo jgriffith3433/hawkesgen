@@ -14,13 +14,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HAWKES_GL_MODE=software \
     HAWKES_TABS=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates unzip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev --no-audit --no-fund --loglevel=error && npx playwright --version
-COPY server.mjs gpu.mjs ./
+COPY server.mjs gpu.mjs site.mjs ./
 
 EXPOSE 8080
 CMD ["node", "server.mjs"]

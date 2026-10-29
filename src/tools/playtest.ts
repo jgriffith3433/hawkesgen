@@ -9,7 +9,14 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Tool, RunContext } from './types.ts';
 import { GenError, run as runProc, sleep } from '../util.ts';
-import { listAssets, getAsset } from '../library.ts';
+import { listAssets, getAsset, blobPath, canUseBlob } from '../library.ts';
+import { canProject, type Client } from '../auth.ts';
+import { loadSettings, PLAYTEST_TARGETS, type PlaytestTarget } from '../config.ts';
+import { parseBuild, storedBuild, checkTarget, checkEntry, checkArgs, publicUrl, resolveGithub, stageArchive, defaultStager, dropToken, type BuildRef, type FetchableBuild } from '../providers/playtester/intake.ts';
+import { runnerCandidates, isNativeTarget, claimRunner, runnerHealthKey, runnerCooldown } from '../providers/playtester/runners.ts';
+import { runSession, groupCrashes, RunnerUnavailable, type SessionResult } from '../providers/playtester/native.ts';
+import { siteHeader, sitePageUrl, type CloudPlaytest } from '../providers/playtester/cloudrun.ts';
+import { markDown, markUp } from '../providers/gpu/health.ts';
 import { db } from '../db.ts';
 import { ask, DEFAULT_MODEL, usageOf, forCustomer, customerJob } from '../providers/anthropic.ts';
 import { openGpuHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
@@ -70,7 +77,11 @@ export const playtestRunTool: Tool = {
   output: 'video',
   inputs: {},
   params: {
-    url: { type: 'string', required: true, description: 'The page: a local dev server, a local build, or the live site', example: 'http://localhost:8089/' },
+    url: { type: 'string', description: 'The page: a local dev server, a local build, or the live site (the same as build with a URL)', example: 'http://localhost:8089/' },
+    build: { type: 'json', orString: true, description: 'What to play, instead of url: "blob:<sha256>" or "asset:<id>" (a zip or tar.gz of the build folder), a URL (a hosted page; for a desktop target, an archive to download), or { "github": { "repo": "owner/name", "release": "v1.2" | "latest", "asset"?, "run"?: <Actions run id>, "artifact"?, "ref"?: <branch, tag or commit>, "token"?: <a GitHub token, used for this run only and never stored> } }. Runners fetch it themselves (docs/playtest-runners.md).', example: { github: { repo: 'owner/game', release: 'latest' } } },
+    target: { type: 'enum', values: [...PLAYTEST_TARGETS], default: 'web', description: 'What the build is: web (a page, played in Chromium), electron (an Electron app), linux (a native Linux build), proton (a Windows .exe under Proton) or windows (a Windows .exe on Windows). Desktop targets play on native runners (settings.playtest.runners).' },
+    exe: { type: 'string', description: 'Inside the build: the executable to launch (desktop targets; default: the runner finds the one executable) or the page to open (web; default index.html)', example: 'MyGame.exe' },
+    args: { type: 'json', description: 'Command-line arguments for a desktop build: a list of strings (at most 32)', advanced: true, example: ['-screen-fullscreen', '0'] },
     scenario: { type: 'string', default: 'smoke', description: 'The contract scenario to play (the game lists them)' },
     mode: { type: 'enum', values: ['auto', 'contract', 'generic', 'site'], default: 'auto', description: 'auto: the contract if the page has it, else the generic smoke test' },
     seed: { type: 'integer', default: 1, min: 0, max: 2147483647 },
@@ -92,14 +103,135 @@ export const playtestRunTool: Tool = {
     peers: { type: 'integer', default: 1, min: 1, max: 4, description: 'Multiplayer: how many players (browser tabs in the same browser) play together. Each opens the URL with a shared random room=<id> and peer=<0..n-1>; peer 0 plays the scenario, the others scenarioPeers (or the same one). Their videos play side by side in the job\'s video; problems and events say which peer. Needs the playtest contract.' },
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
   },
+  admit({ params, client, project, customer }) {
+    const p = { ...params };
+    const target = (p.target ?? 'web') as PlaytestTarget;
+    const build = parseBuild(p.build, p.url, { customer });
+    checkTarget(target, build);
+    // A customer's build is its own: an upload it made or an asset it can see (knowing a hash or an id is not access).
+    if (build!.kind === 'blob' && !canUseBlob(client as Client, build!.sha)) throw new GenError(`No blob ${build!.sha} (upload it to /v1/blobs first)`, { status: 404 });
+    if (build!.kind === 'asset') {
+      const a = getAsset(build!.id);
+      if (!a || !canProject(client as Client, a.project)) throw new GenError(`No asset ${build!.id}`, { status: 404 });
+    }
+    p.exe = checkEntry(p.exe, 'exe');
+    p.args = checkArgs(p.args);
+    if (isNativeTarget(target) && (p.peers ?? 1) > 1) throw new GenError('peers (multiplayer) plays web builds only for now');
+    if (customer) {
+      // Customers play on runners only: never in a browser on Gen's own machine, never through its loopback.
+      p.gpu = 'require';
+      if (p.baseline) {
+        const b = db.prepare('SELECT project FROM jobs WHERE id = ?').get(String(p.baseline)) as { project: string } | undefined;
+        if (!b || b.project !== project) throw new GenError(`No job ${p.baseline}`, { status: 404 });
+      }
+    }
+    // A page given as url stays as it was (the studio's calls keep their params); every other build is stored checked.
+    if (build!.kind === 'url') {
+      p.url = build!.url;
+      delete p.build;
+    } else {
+      p.build = storedBuild(build);
+      delete p.url;
+    }
+    if (p.exe === null) delete p.exe;
+    if (!p.args.length) delete p.args;
+    return p;
+  },
   async run(ctx) {
     // A copy: the boot wait is stretched below when the browser renders in software (the Cloud Run CPU service).
     const p = { ...ctx.params };
-    // Loaded lazily so the service starts without Playwright's browsers installed.
-    const { chromium, devices } = await import('playwright');
-    // What it's doing, live, for Studio's Playtests page (livePlay.ts): every step from here on, and the state below.
-    const live = beginLive(ctx);
-    if ((p.peers ?? 1) > 1) return runPeers(ctx, chromium, devices, live);
+    const target = (p.target ?? 'web') as PlaytestTarget;
+    // Normalized at submit (admit); a job made another way (or before this) is read the same way here.
+    const build: BuildRef | null = p.build && typeof p.build === 'object' && 'kind' in p.build ? (p.build as BuildRef) : parseBuild(p.build, p.url, { customer: customerJob() });
+    if (!build) throw new GenError('playtest.run needs a url or a build');
+    try {
+      // Desktop targets and Electron play on native runners (the session protocol, native.ts).
+      if (isNativeTarget(target)) return await runNative(ctx, p, target, build);
+      // Where a web build plays: today's services for the studio's own pages, the runner router for customers' runs and
+      // for builds the runner serves itself (p.url becomes http://build.hawkes.test/<entry> there).
+      const route = await webRoute(ctx, p, build);
+      Object.assign(ctx.params, { url: p.url, gpu: p.gpu });
+      // Loaded lazily so the service starts without Playwright's browsers installed.
+      const { chromium, devices } = await import('playwright');
+      // What it's doing, live, for Studio's Playtests page (livePlay.ts): every step from here on, and the state below.
+      const live = beginLive(ctx);
+      if ((p.peers ?? 1) > 1) return await runPeers(ctx, chromium, devices, live, route);
+      return await runPage(ctx, p, chromium, devices, live, route, target);
+    } finally {
+      if (build.kind === 'github') dropToken(build.tokenRef);
+    }
+  },
+};
+
+/** How a web run finds its browser: the router's services in order (null: today's, settings.playtest), and whether the playtesters may stand in. */
+type WebRoute = { clouds?: CloudPlaytest[]; fallback: boolean; site?: string } | null;
+
+/**
+ * A web build's page and browser services. The studio's own URLs play as before (unless settings.playtest.runners is
+ * set). A customer's URL must resolve to the internet; a customer's run goes only to runners that take customers'
+ * builds, never to the playtesters or a browser here. An archive (upload, asset, GitHub) is fetched and served by the
+ * browser service itself (cloudrun.ts siteHeader): Gen hands it a signed link and serves nothing.
+ */
+async function webRoute(ctx: RunContext, p: Record<string, any>, build: BuildRef): Promise<WebRoute> {
+  const customer = customerJob();
+  let site: string | undefined;
+  if (build.kind === 'url') {
+    if (customer) {
+      ctx.step('checking the build URL');
+      await publicUrl(build.url);
+    }
+    p.url = build.url;
+  } else {
+    const f = await fetchableOf(ctx, build, customer);
+    site = siteHeader(f);
+    p.url = sitePageUrl(p.exe ?? '');
+    ctx.log(`build: ${f.source}${f.bytes ? ` (${Math.round(f.bytes / 1e6)} MB)` : ''}, served by the runner`);
+  }
+  const settings = loadSettings();
+  if (!customer && !site && !settings.playtest.runners.length) return null;
+  const c = runnerCandidates({ project: ctx.job.project, labels: ctx.job.labels }, 'web', customer ? 'customer' : 'studio', settings);
+  const clouds = c.choices.flatMap((x) => (x.kind === 'browser' ? [x.cloud] : []));
+  for (const s of c.skipped) ctx.log(`runner ${s}`);
+  if (!clouds.length) throw new GenError(`No runner plays web builds${customer ? ' for customers' : ''} now: ${c.skipped.join('; ') || 'none set up'}`, { kind: 'runner', status: 503 });
+  const fallback = !customer && !site;
+  if (!fallback) p.gpu = 'require';
+  return { clouds, fallback, site };
+}
+
+/** A build the runner downloads: a public URL as it is, an upload or asset staged in the library bucket and signed, a GitHub link. */
+async function fetchableOf(ctx: RunContext, build: BuildRef, customer: boolean): Promise<FetchableBuild> {
+  if (build.kind === 'url') {
+    if (customer) await publicUrl(build.url);
+    return { url: build.url, kind: 'archive', source: `url ${new URL(build.url).host}` };
+  }
+  if (build.kind === 'github') {
+    ctx.step(`asking GitHub where ${build.repo}'s build is`);
+    return resolveGithub(build);
+  }
+  let file: string | null;
+  let sha: string;
+  if (build.kind === 'blob') {
+    sha = build.sha;
+    file = blobPath(sha);
+  } else {
+    const a = getAsset(build.id);
+    // Checked against the caller at submit; a customer's job may still only use its own project's assets.
+    if (!a || (customer && a.project !== ctx.job.project)) throw new GenError(`No asset ${build.id}`, { status: 404 });
+    const { ensureLocal } = await import('../storage.ts');
+    await ensureLocal(a);
+    file = a.path;
+    sha = a.sha256;
+  }
+  if (!file || !fs.existsSync(file)) throw new GenError('The build archive is gone from the library: upload it again', { status: 404 });
+  ctx.step('putting the build where the runner can fetch it');
+  const { bucket, stager } = await defaultStager();
+  return stageArchive(file, sha, ctx.job.project, bucket, stager);
+}
+
+/** One player in a page (peers 1): the original playtest.run. */
+async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, devices: any, live: ReturnType<typeof beginLive>, route: WebRoute, target: PlaytestTarget) {
+  {
+    const _target = target;
     const videoDir = ctx.tmp('video');
     fs.mkdirSync(videoDir, { recursive: true });
     const viewport = p.mobile ? { width: 390, height: 844 } : { width: p.width, height: p.height };
@@ -163,7 +295,7 @@ export const playtestRunTool: Tool = {
         // Cloud Run when settings.playtest says so (docs/playtest-cloudrun.md), else the playtesters / GPU servers.
         // Installing the browser on a server takes a few minutes the first time.
         // Games (anything but a site crawl) start the playtester if it's off.
-        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u) });
+        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
         host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
           opening.then((h) => h?.close(), () => {});
           if (p.gpu === 'require') throw e;
@@ -171,6 +303,7 @@ export const playtestRunTool: Tool = {
           softwareBecause = String(e.message ?? e).slice(0, 300);
           return null;
         });
+        if (!host && route && !route.fallback) throw new GenError('No runner had a browser for the playtest (every runner was full or unreachable; try again shortly)', { kind: 'runner' });
         if (!host && p.gpu === 'require') throw new GenError('No GPU server is ready for the playtest (start one, or use gpu: auto)', { kind: 'gpu' });
         if (!host && !softwareBecause && p.mode !== 'site') softwareBecause = 'no GPU machine was ready (the playtester did not start and no GPU server was running)';
       }
@@ -451,7 +584,7 @@ export const playtestRunTool: Tool = {
 
       liveOutcome = outcome;
       const result: any = {
-        url: p.url, mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract ? p.scenario : null, outcome,
+        url: p.url, target: _target, build: buildSource(p.build), mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract ? p.scenario : null, outcome,
         stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
         seconds: T(), loadSeconds, fps, renderer, software, softwareBecause, contract, scenarios,
         metrics: report?.metrics ?? {}, events: report?.events ?? [], log: report?.log ?? [],
@@ -570,8 +703,119 @@ export const playtestRunTool: Tool = {
       endLiveShots(ctx.job.id);
       live.end();
     }
-  },
-};
+  }
+}
+
+/** What a build was, for the result (no tokens, no signed links). */
+function buildSource(b: any): string | null {
+  if (!b || typeof b !== 'object') return null;
+  if (b.kind === 'blob') return `blob:${b.sha}`;
+  if (b.kind === 'asset') return `asset:${b.id}`;
+  if (b.kind === 'github') return `github:${b.repo}${b.release ? ` release ${b.release}` : b.run ? ` run ${b.run}` : b.ref ? ` at ${b.ref}` : ''}`;
+  return null;
+}
+
+// ------------------------------------------------------------ desktop and Electron (native runners)
+
+/**
+ * A desktop or Electron run on a native runner (settings.playtest.runners, provider native): the router's runners in
+ * order, the session protocol (native.ts), and the result in playtest.run's shape plus crashes, logs and perf.
+ */
+async function runNative(ctx: RunContext, p: Record<string, any>, target: PlaytestTarget, build: BuildRef) {
+  const customer = customerJob();
+  const c = runnerCandidates({ project: ctx.job.project, labels: ctx.job.labels }, target, customer ? 'customer' : 'studio', loadSettings());
+  const natives = c.choices.flatMap((x) => (x.kind === 'native' ? [x] : []));
+  for (const s of c.skipped) ctx.log(`runner ${s}`);
+  if (!natives.length) throw new GenError(`No runner plays ${target} builds${customer ? ' for customers' : ''} now: ${c.skipped.join('; ') || 'none set up'}`, { kind: 'runner', status: 503 });
+  const f = await fetchableOf(ctx, build, customer);
+  const viewport = { width: p.width, height: p.height };
+  const live = beginLive(ctx);
+  let latest: { latest: Buffer | null; latestAt: number } = { latest: null, latestAt: 0 };
+  let state: any = null;
+  let runnerName: string | null = null;
+  live.source(() => ({ host: runnerName, playtester: null, recorder: 'native', contract: Boolean(state), players: [{ i: 0, scenario: p.scenario ?? null, state, recorder: latest }], problems: [], console: [], failed: [], shots: [], timeline: [], loadSeconds: null, outcome: null }));
+  const limitMs = (p.bootTimeout + (p.timeout ?? 600) + 300) * 1000;
+  let session: SessionResult | null = null;
+  let used: (typeof natives)[number] | null = null;
+  const t0 = Date.now();
+  try {
+    for (const choice of natives) {
+      const release = claimRunner(choice.runner.id);
+      try {
+        ctx.step(`starting the ${target} build on ${choice.runner.id}`);
+        runnerName = choice.runner.id;
+        session = await runSession({ url: choice.url, token: choice.token, id: choice.runner.id }, {
+          job: ctx.job.id, project: ctx.job.project, target, build: { url: f.url, kind: f.kind, sha256: f.sha256, name: f.name, bytes: f.bytes },
+          exe: p.exe ?? null, args: p.args ?? [], scenario: p.scenario, mode: p.mode, options: p.options ?? null, seed: p.seed, speed: p.speed,
+          timeout: p.timeout ?? 600, bootTimeout: p.bootTimeout, width: p.width, height: p.height, shotEvery: p.shotEvery, liveFps: 4,
+        }, {
+          limitMs, signal: ctx.signal, tmp: (n) => ctx.tmp(n),
+          handlers: { step: (s) => ctx.step(s), log: (l) => ctx.log(l), state: (s) => { state = s; }, frame: (jpeg) => { latest = { latest: Buffer.from(jpeg), latestAt: Date.now() }; } },
+        });
+        markUp(runnerHealthKey(choice.runner.id));
+        used = choice;
+        break;
+      } catch (e: any) {
+        if (!(e instanceof RunnerUnavailable) || ctx.signal.aborted) throw e;
+        markDown(runnerHealthKey(choice.runner.id), e.message.slice(0, 200), runnerCooldown(e.message));
+        ctx.step(`${e.message}; ${choice === natives[natives.length - 1] ? 'no other runner' : 'trying the next runner'}`);
+      } finally {
+        release();
+      }
+    }
+    if (!session || !used) throw new GenError(`No runner took the ${target} run (every one refused or was unreachable; try again shortly)`, { kind: 'runner' });
+    const seconds = Math.round((Date.now() - t0) / 100) / 10;
+    ctx.usage({ provider: 'playtest-native', unit: 'seconds', amount: seconds, cost: Math.round(used.runner.pricePerSecond * seconds * 10_000) / 10_000, detail: `${target} on ${used.runner.id} for ${seconds} s` });
+    const r = session.result ?? {};
+    const outcome = String(r.outcome ?? (session.crashes.length ? 'crashed' : 'stuck'));
+    const problems: Problem[] = Array.isArray(r.problems) ? r.problems.slice(0, 200).map((x: any) => ({ severity: String(x.severity ?? 'bug'), message: String(x.message ?? '').slice(0, 500), source: String(x.source ?? 'runner') })) : [];
+    const groups = groupCrashes(session.crashes);
+    for (const g of groups) problems.push({ severity: 'blocker', message: `crashed${g.count > 1 ? ` ${g.count} times` : ''}: ${g.signature}`, source: 'crash' });
+    if (!session.result) problems.push({ severity: 'bug', message: `the runner ended without a result (${session.closed ? `closed ${session.closed.code} ${session.closed.reason}`.trim() : 'stopped at the time limit'})`, source: 'runner' });
+    const errors = session.logs.filter((l) => /error|exception|fatal|assertion failed/i.test(l.line));
+    const perf = session.perf ?? null;
+    if (perf?.fps?.average && perf.fps.average < 30 && !r.software) problems.push({ severity: 'warning', message: `low frame rate: ${perf.fps.average} fps on average (worst ${perf.fps.worst ?? '?'})`, source: 'runner' });
+    const lastAsset = () => (ctx.outputs[ctx.outputs.length - 1] as any)?.asset ?? null;
+    const result: any = {
+      url: null, target, build: buildSource(p.build) ?? f.source, mode: r.contract ? 'contract' : 'generic', scenario: r.contract ? p.scenario : null, outcome,
+      stuck: session.result ? (r.stuck ?? null) : 'the runner ended without a result', device: 'desktop', viewport, browser: null,
+      runner: { id: used.runner.id, ...(session.accepted ? { machine: session.accepted.machine ?? null, gpu: session.accepted.gpu ?? null, os: session.accepted.os ?? null } : {}) },
+      seconds: Number(r.seconds ?? seconds), loadSeconds: r.loadSeconds ?? null, fps: { average: perf?.fps?.average ?? null, worst: perf?.fps?.worst ?? null, samples: 0 },
+      renderer: r.renderer ?? null, software: Boolean(r.software), softwareBecause: r.software ? String(r.softwareBecause ?? 'the runner rendered in software') : null,
+      contract: Boolean(r.contract), scenarios: Array.isArray(r.scenarios) ? r.scenarios : [],
+      metrics: r.report?.metrics ?? {}, events: r.report?.events ?? session.events.slice(0, 500), log: r.report?.log ?? [],
+      problems: dedupeBy(problems, (x) => x.message),
+      console: { errors: errors.length, warnings: 0, first: errors.slice(0, 30).map((l) => ({ type: 'error', text: l.line, t: l.t })) },
+      failedRequests: [], pages: [], timeline: thin(session.states, 400), recorder: { kind: 'native' },
+      crashes: session.crashes, crashGroups: groups.map((g) => ({ signature: g.signature, count: g.count })),
+      logs: { lines: session.logs.length, first: session.logs.slice(0, 200), last: session.logs.length > 200 ? session.logs.slice(-100) : [] },
+      perf: perf ? { ...perf, samples: session.perfSamples.length ? thin(session.perfSamples, 300) : [] } : null,
+      shots: [] as any[], video: null as string | null, files: [] as any[], visual: null, s3: null,
+    };
+    ctx.step('saving the recording');
+    for (const file of session.files) {
+      const data = fs.readFileSync(file.path);
+      if (file.kind === 'video') {
+        await ctx.emit({ data, ext: path.extname(file.name) || '.mp4', mime: file.mime || 'video/mp4', title: `Playtest video (${target}${result.scenario ? `, ${result.scenario}` : ''})`, meta: { playtest: 'video' } });
+        result.video = lastAsset();
+      } else if (file.kind === 'shot') {
+        const t = Number(file.t ?? 0);
+        await ctx.emit({ data, ext: '.jpg', mime: 'image/jpeg', title: `${t}s ${file.reason ?? 'shot'}`, meta: { playtest: 'shot', t, reason: file.reason ?? 'timer', scene: file.scene ?? null } });
+        result.shots.push({ i: result.shots.length, t, reason: file.reason ?? 'timer', scene: file.scene ?? null, asset: lastAsset() });
+      } else if (file.kind !== 'report') {
+        await ctx.emit({ data, ext: path.extname(file.name) || '.txt', mime: file.mime, title: `${file.kind}: ${file.name}`, meta: { playtest: file.kind } });
+        result.files.push({ kind: file.kind, name: file.name, bytes: file.bytes, asset: lastAsset() });
+        if (file.kind === 'dump') for (const cr of result.crashes) if (cr.dump === file.name) cr.dumpAsset = lastAsset();
+      }
+    }
+    await ctx.emit({ data: Buffer.from(JSON.stringify(result, null, 2)), ext: '.json', mime: 'application/json', title: 'Playtest report', meta: { playtest: 'report' } });
+    result.report = lastAsset();
+    ctx.result(result);
+    ctx.log(`${target}: ${outcome} in ${result.seconds} s on ${used.runner.id}, ${result.problems.length} problems, ${session.crashes.length} crashes`);
+  } finally {
+    live.end();
+  }
+}
 
 // ------------------------------------------------------------ multiplayer (peers > 1)
 
@@ -633,7 +877,7 @@ export function stackArgs(inputs: { file: string; mjpeg: boolean }[], viewport: 
  * the videos are stacked into the job's video and the players' problems and events merged, labelled by peer. Same
  * limits as one player: every await is bounded and a watchdog kills the browser if the run overruns.
  */
-async function runPeers(ctx: RunContext, chromium: any, devices: any, live: ReturnType<typeof beginLive>) {
+async function runPeers(ctx: RunContext, chromium: any, devices: any, live: ReturnType<typeof beginLive>, route: WebRoute = null) {
   const p = { ...ctx.params };
   const n: number = p.peers;
   if (p.mode === 'site' || p.mode === 'generic') throw new GenError(`peers needs a game with the playtest contract (mode auto or contract, not ${p.mode})`, { kind: 'contract' });
@@ -681,7 +925,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
 
   try {
     if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
-      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u) });
+      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
       host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
         opening.then((h) => h?.close(), () => {});
         if (p.gpu === 'require') throw e;

@@ -13,6 +13,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { sshRun, sshTarget, comfyEndpoints } from './fleet.ts';
 import { paths } from '../../config.ts';
 import { claimPlaytester, ssh as playtesterSsh } from '../playtester/playtester.ts';
+import type { CloudPlaytest } from '../playtester/cloudrun.ts';
 
 export const PW_VERSION = JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'node_modules', 'playwright', 'package.json'), 'utf8')).version as string;
 export const NODE_URL = 'https://nodejs.org/dist/v24.13.1/node-v24.13.1-linux-x64.tar.xz';
@@ -72,6 +73,7 @@ export type PlaytestHost = {
   /** The playtester it runs on (null on a GPU fleet server), and the lanes it holds there until close(). */ playtester: string | null;
   /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
   /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). Null on Cloud Run. */ ssh: { args: string[]; dest: string } | null;
+  /** The runner it plays on (settings.playtest.runners), when the router chose it. */ runner?: string | null;
   /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu' | 'runpod';
   /** Set when the browser has no GPU (the Cloud Run CPU service): why, for the result's softwareBecause. */ software?: string | null;
   /** How much slower than a GPU browser to allow for (the boot wait and the default scenario limit): 1 on a GPU. */ slow?: number;
@@ -86,10 +88,17 @@ export type PlaytestHost = {
  * deployed (docs/playtest-cloudrun.md), else, or when Cloud Run can't be reached, the playtesters and GPU servers as
  * before (openPlaytestHost). Null when no GPU browser is ready.
  */
-export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, tabs = 1, project, job, onUsage }: { startPlaytester?: boolean; tabs?: number; project?: string | null; job?: string; onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void } = {}): Promise<PlaytestHost | null> {
+export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, tabs = 1, project, job, onUsage, clouds: given, fallback = true, site }: {
+  startPlaytester?: boolean; tabs?: number; project?: string | null; job?: string; onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void;
+  /** The browser services to try, in order (the runner router's choice); else this project's from settings.playtest. */ clouds?: CloudPlaytest[];
+  /** false: when none of them has a browser, null instead of the playtesters (customers' runs, builds the service serves). */ fallback?: boolean;
+  /** A build each service serves itself (cloudrun.ts siteHeader). */ site?: string;
+} = {}): Promise<PlaytestHost | null> {
   const { cloudPlaytestsFor, openCloudPlaytestHost, localPortsOf } = await import('../playtester/cloudrun.ts');
   const { loadSettings } = await import('../../config.ts');
-  const clouds = (() => {
+  const { markDown } = await import('../gpu/health.ts');
+  const { runnerHealthKey, runnerCooldown } = await import('../playtester/runners.ts');
+  const clouds = given ?? (() => {
     try {
       return cloudPlaytestsFor(project, loadSettings());
     } catch (e: any) {
@@ -108,14 +117,18 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
       try {
         // RunPod gets its full wait on the first round: its cold start pulls the image on a new machine (minutes), and
         // moving on to software WebGL would leave the worker it started idle.
-        return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, step, onUsage, ...(many ? { connectTimeoutMs: cloud.variant === 'runpod' && round === 1 ? 5 * 60_000 : 40_000 } : {}) });
+        return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, site, step, onUsage, ...(many ? { connectTimeoutMs: cloud.variant === 'runpod' && round === 1 ? 5 * 60_000 : 40_000 } : {}) });
       } catch (e: any) {
+        const why = String(e?.message ?? e);
+        // A router's runner that refused us cools down (runners.ts), so the next runs go elsewhere first.
+        if (cloud.runner && round === 1 && !/Build Failed/.test(why)) markDown(runnerHealthKey(cloud.runner), why.slice(0, 200), runnerCooldown(why));
         const nxt = clouds[i + 1] ?? (many && Date.now() < end ? clouds[0] : null);
-        step(`no browser on ${cloud.name} in ${cloud.region} (${String(e?.message ?? e).slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : 'using the playtesters'}`);
+        step(`no browser on ${cloud.name} in ${cloud.region} (${why.slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : fallback ? 'using the playtesters' : 'no other runner'}`);
       }
     }
     if (!many || Date.now() >= end) break;
   }
+  if (!fallback) return null;
   return openPlaytestHost(localPortsOf(pageUrl), step, { startPlaytester, tabs });
 }
 

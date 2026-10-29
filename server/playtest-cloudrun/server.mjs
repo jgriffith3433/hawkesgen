@@ -16,8 +16,10 @@
 //   GET  /encode     WebSocket: an MJPEG stream in (?w=&h=, the viewport), an H.264 mp4 out: NVENC when the self-test
 //                    found it, else libx264 (encodeSession has the message protocol).
 //
-// Nothing here keeps state between connections; local builds never reach this machine (Gen serves them through
-// Playwright's routing over the same connection).
+// A /pw connection with X-Hawkes-Site (a customer's build: site.mjs) first fetches that build's archive from its signed
+// link, unpacks it and serves it here on 127.0.0.1; the browser maps build.hawkes.test to it. Gen serves nothing.
+// J's local builds never reach this machine (Gen serves them through Playwright's routing over the same connection).
+// Unpacked builds are kept per instance (by checksum) while it lives, so the tabs of a run share one.
 
 import http from 'node:http';
 import net from 'node:net';
@@ -28,6 +30,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
 import { selfTest, candidatesFor, glMode, BASE_ARGS, ensureGraphicsLibs } from './gpu.mjs';
+import { parseSiteHeader, openSite, siteArg } from './site.mjs';
 
 // The image installs ws; elsewhere (Gen's tests run this file from the repo) Playwright's bundled copy does.
 const WebSocketServer = await import('ws').then((m) => m.WebSocketServer ?? m.default.WebSocketServer, async () => (await import('playwright-core/lib/utilsBundle')).default.wsServer);
@@ -199,6 +202,7 @@ server.on('upgrade', async (req, socket, head) => {
   const job = String(req.headers['x-hawkes-job'] ?? '').slice(0, 40);
   const t0 = Date.now();
   let browserServer = null;
+  let site = null;
   let done = false;
   const finish = (why) => {
     if (done) return;
@@ -206,13 +210,26 @@ server.on('upgrade', async (req, socket, head) => {
     sessions--;
     socket.destroy();
     browserServer?.close().catch(() => {});
+    site?.close().catch(() => {});
     log(`session ${job || '?'} ended (${why}) after ${Math.round((Date.now() - t0) / 1000)} s; ${sessions} open`);
   };
   socket.on('error', () => finish('client error'));
   socket.on('close', () => finish('client closed'));
   try {
     const wsPath = `/${crypto.randomBytes(12).toString('hex')}`;
-    browserServer = await chromium.launchServer({ ...launchOptions(), host: '127.0.0.1', port: 0, wsPath });
+    // A customer's build: fetched, unpacked and served here before the browser starts (site.mjs).
+    const want = req.headers['x-hawkes-site'];
+    if (want) {
+      const s = parseSiteHeader(want);
+      if (!s) {
+        refuse(400, 'Bad Site');
+        return finish('bad site header');
+      }
+      site = await openSite(s, { log });
+      if (done) return site.close().catch(() => {});
+    }
+    const opts = launchOptions();
+    browserServer = await chromium.launchServer({ ...opts, ...(site ? { args: [...(opts.args ?? []), siteArg(site.port)] } : {}), host: '127.0.0.1', port: 0, wsPath });
     if (done) return browserServer.close().catch(() => {});
     browserServer.process().on('exit', () => finish('browser exited'));
     const port = Number(new URL(browserServer.wsEndpoint()).port);
@@ -224,7 +241,7 @@ server.on('upgrade', async (req, socket, head) => {
       const lines = [`GET ${wsPath} HTTP/1.1`];
       for (let i = 0; i < req.rawHeaders.length; i += 2) {
         const k = req.rawHeaders[i];
-        if (/^(authorization|x-hawkes-token|x-forwarded-.*|x-cloud-trace-context|traceparent|forwarded|via|cf-.*|cdn-loop)$/i.test(k)) continue;
+        if (/^(authorization|x-hawkes-token|x-hawkes-site|x-forwarded-.*|x-cloud-trace-context|traceparent|forwarded|via|cf-.*|cdn-loop)$/i.test(k)) continue;
         lines.push(`${k}: ${k.toLowerCase() === 'host' ? `127.0.0.1:${port}` : req.rawHeaders[i + 1]}`);
       }
       upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
@@ -234,9 +251,10 @@ server.on('upgrade', async (req, socket, head) => {
       log(`session ${job || '?'} started (${sessions} open, ${report?.gl?.id ?? 'default flags'})`);
     });
   } catch (e) {
-    log(`session ${job || '?'}: the browser didn't start: ${e?.message ?? e}`);
+    log(`session ${job || '?'}: ${site === null && req.headers['x-hawkes-site'] ? 'the build' : 'the browser'} didn't start: ${e?.message ?? e}`);
     if (!done) {
-      refuse(500, 'Browser Failed');
+      // A build that can't be fetched or unpacked is the customer's to fix, not a reason to try another runner.
+      refuse(site === null && req.headers['x-hawkes-site'] ? 422 : 500, site === null && req.headers['x-hawkes-site'] ? 'Build Failed' : 'Browser Failed');
       finish('launch failed');
     }
   }

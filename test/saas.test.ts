@@ -260,8 +260,8 @@ test('strict multi-tenant isolation between User A and User B (jobs, assets, ent
   assert.equal((await reqJson(`/v1/entities/${projA}/hero-a`, { headers: authB })).status, 403);
   assert.equal((await reqJson(`/v1/entities/${projA}/hero-a`, { method: 'PATCH', headers: authB, body: { name: 'Stolen' } })).status, 403);
 
-  // 4. Internal-only tools blocked with 403 for role === 'user'
-  for (const internalTool of ['unity.build', 'unity.test', 'playtest.run', 'playtest.review']) {
+  // 4. Internal-only tools blocked with 403 for role === 'user' (playtests are priced and sold since the playtest intake)
+  for (const internalTool of ['unity.build', 'unity.test']) {
     const blocked = await reqJson('/v1/jobs', {
       headers: authA,
       body: { tool: internalTool, params: {} },

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { db } from './db.ts';
 import { env, DATA_DIR } from './config.ts';
 import { estimate } from './estimate.ts';
+import { costOf, DEFAULT_MODEL } from './providers/anthropic.ts';
 import { getTool } from './tools/index.ts';
 import { applyPreset } from './presets.ts';
 import { getUserById, type UserRow } from './users.ts';
@@ -170,10 +171,50 @@ export const COMMERCIAL_MARGIN = 3;
 export const INTERNAL_ONLY_TOOLS = new Set([
   'unity.build',
   'unity.test',
-  'playtest.run',
-  'playtest.review',
   'asset.lod', // the LOD system's own work (src/lod.ts): Gen queues it, nobody else
 ]);
+
+// ------------------------------------------------------------------ playtests (hawkesstudio docs/platform-plan.md 7)
+//
+// PROVISIONAL: the plan's unit-cost estimates, to be replaced once runs with design partners are measured. What a minute
+// of a run costs us by target (a web tab on RunPod is about $0.58/h over 2 tabs; Proton ~$0.01/min; real Windows
+// $0.02-0.04/min, VM time dominates), the minutes a run is quoted for, and a floor per run (credits; 1 credit = $0.01).
+
+/** Our cost of one minute of a playtest, by target (dollars). Provisional (plan 7). */
+export const PLAYTEST_MINUTE_USD: Record<string, number> = { web: 0.005, electron: 0.008, linux: 0.01, proton: 0.01, windows: 0.03 };
+/** The least a run costs, by target (credits). Provisional. */
+export const PLAYTEST_FLOOR_CREDITS: Record<string, number> = { web: 3, electron: 4, linux: 5, proton: 5, windows: 15 };
+/** Minutes quoted for starting a run (a cold browser or machine, fetching the build), by target. Provisional. */
+const PLAYTEST_BOOT_MINUTES: Record<string, number> = { web: 1, electron: 1.5, linux: 1.5, proton: 2, windows: 4 };
+/** playtest.review: tokens per frame (a 1280x720 JPEG), the prompt (report, story, known findings) and the answer. Provisional. */
+const REVIEW_TOKENS = { perFrame: 1600, prompt: 6000, answer: 3000 };
+
+/** The minutes a playtest.run is quoted for: its time limit (or a smoke's usual length), plus starting up, times its players. */
+export function playtestMinutes(params: Record<string, any>): number {
+  const target = String(params.target ?? 'web');
+  const peers = Math.max(1, Math.min(4, Number(params.peers) || 1));
+  const play = params.mode === 'site'
+    ? Math.max(1, Number(params.maxPages) || 40) * 4 / 60
+    : (Number(params.timeout) || (String(params.scenario ?? 'smoke') === 'smoke' ? 180 : 300)) / 60;
+  return Math.round((play + (PLAYTEST_BOOT_MINUTES[target] ?? 2)) * peers * 100) / 100;
+}
+
+/** A playtest tool's raw cost and floor (null for other tools): playtest.run by target and minutes, playtest.review by frames and model. */
+export function playtestCost(toolId: string, params: Record<string, any>): { usd: number; floor: number; basis: string } | null {
+  if (toolId === 'playtest.run') {
+    const target = String(params.target ?? 'web');
+    const minutes = playtestMinutes(params);
+    const perMinute = PLAYTEST_MINUTE_USD[target] ?? PLAYTEST_MINUTE_USD.windows;
+    return { usd: minutes * perMinute, floor: PLAYTEST_FLOOR_CREDITS[target] ?? 15, basis: `${target}: ${minutes} min at $${perMinute}/min (provisional)` };
+  }
+  if (toolId === 'playtest.review') {
+    const frames = Math.max(4, Math.min(40, Number(params.frames) || 16));
+    const model = String(params.model || DEFAULT_MODEL);
+    const usd = costOf(model, { input_tokens: REVIEW_TOKENS.prompt + frames * REVIEW_TOKENS.perFrame, output_tokens: REVIEW_TOKENS.answer });
+    return { usd, floor: 3, basis: `${frames} frames on ${model} (provisional)` };
+  }
+  return null;
+}
 
 export function isInternalOnlyTool(toolId: string): boolean {
   return INTERNAL_ONLY_TOOLS.has(toolId);
@@ -245,6 +286,17 @@ export function quoteJobCredits(
   if (!tool) throw new GenError(`Unknown tool: ${resolvedToolId || spec.preset}`, { status: 404 });
   const params = applied.params ?? {};
   const itemCount = Math.max(1, Math.round(Number(spec.count ?? params.count ?? 1)));
+
+  // Playtests are priced by what they run on, not the GPU estimate (plan 7; provisional).
+  const pt = playtestCost(tool.id, params);
+  if (pt) {
+    const rawUsd = pt.usd * itemCount;
+    const credits = Math.max(1, pt.floor * itemCount, Math.ceil(rawUsd * COMMERCIAL_MARGIN * 100));
+    return {
+      tool: tool.id, credits, usdEquivalent: credits / 100, margin: COMMERCIAL_MARGIN, rawCostUsd: Math.round(rawUsd * 10000) / 10000,
+      breakdown: [{ label: tool.id, tool: tool.id, count: itemCount, gpuSeconds: 0, apiCost: Math.round(rawUsd * 10000) / 10000, rawUsd: Math.round(rawUsd * 10000) / 10000, floorCredits: pt.floor * itemCount, credits, basis: pt.basis }],
+    };
+  }
 
   const est = estimate({
     project: spec.project,
