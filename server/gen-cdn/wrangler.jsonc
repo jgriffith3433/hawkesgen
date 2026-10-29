@@ -5,7 +5,7 @@
   "name": "hawkes-gen-cdn",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  "routes": [{ "pattern": "cdn.hawkesgen.ai", "custom_domain": true }],
+  "routes": [{ "pattern": "cdn.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }],
   "vars": { "GEN_ORIGIN": "https://gen-f6ruen5wfa-uk.a.run.app" },
   "observability": { "enabled": true }
 }
