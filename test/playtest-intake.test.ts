@@ -250,6 +250,10 @@ test('the router: with no runners set, today\'s browser services are the web run
   const c = runnerCandidates({ project: 'usr_a' }, 'web', 'customer', s, { specs: { cpu: spec } });
   assert.deepEqual(c.choices.map((x: any) => x.cloud.variant), ['runpod', 'cpu']);
   assert.equal(runnerCandidates({ project: 'usr_a' }, 'proton', 'customer', s, { specs: { cpu: spec } }).choices.length, 0);
+  // A list with only a desktop runner keeps today's browser services for web pages (adding it never takes them away).
+  const withNative = { ...s, playtest: { ...s.playtest, runners: [R({ id: 'runpod-native', provider: 'native', url: 'https://n.api.runpod.ai', targets: ['linux', 'proton'] })] } };
+  assert.deepEqual(runnersFor('usr_a', withNative, { cpu: spec }).map((x) => x.runner.id), ['runpod-native', 'runpod', 'cloudrun-cpu-us-east4']);
+  assert.deepEqual(runnerCandidates({ project: 'usr_a' }, 'web', 'customer', withNative, { specs: { cpu: spec } }).choices.map((x: any) => x.cloud.variant), ['runpod', 'cpu']);
   // An explicit browser runner with no URL takes its service's from settings.playtest.
   const ex = settingsWith([R({ id: 'rp', provider: 'runpod', url: null, targets: ['web'], pricePerSecond: 0.0001, maxConcurrent: 6 })], { runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, url: 'https://abc123.api.runpod.ai' } });
   const svc = (runnerCandidates({ project: 'x' }, 'web', 'customer', ex).choices[0] as any).cloud;

@@ -42,9 +42,17 @@ export const resetRunners = () => active.clear();
 
 const variantOf = (p: PlaytestRunner['provider']) => (p === 'runpod' ? 'runpod' : p === 'cloudrun-cpu' ? 'cpu' : 'gpu');
 
-/** The runners that apply: the settings' list, else today's browser services as implicit web runners. */
+/**
+ * The runners that apply: the settings' list, plus today's browser services as implicit web runners whenever that list
+ * plays no web pages itself (so adding a desktop runner never takes websites' playtests away).
+ */
 export function runnersFor(project: string | null | undefined, settings: Pick<Settings, 'playtest'>, specs: { gpu?: ServiceSpec; cpu?: ServiceSpec } = {}): { runner: PlaytestRunner; cloud?: CloudPlaytest }[] {
-  if (settings.playtest.runners?.length) return settings.playtest.runners.map((runner) => ({ runner }));
+  const listed = (settings.playtest.runners ?? []).map((runner) => ({ runner }));
+  if (listed.some(({ runner }) => runner.targets.includes('web'))) return listed;
+  return [...listed, ...implicitWebRunners(project, settings, specs)];
+}
+
+function implicitWebRunners(project: string | null | undefined, settings: Pick<Settings, 'playtest'>, specs: { gpu?: ServiceSpec; cpu?: ServiceSpec }): { runner: PlaytestRunner; cloud?: CloudPlaytest }[] {
   let clouds: CloudPlaytest[] = [];
   try {
     clouds = cloudPlaytestsFor(project, settings, specs);
