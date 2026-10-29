@@ -26,7 +26,7 @@ import {
   cacheKeys, cacheRepo, cacheStateOf, recordBuild, shouldRunClean, failureKind, parseCloudResult, forgetCache, stubFolderOf,
   siteInputKeep, STUB, type CloudResult,
 } from './cache.ts';
-import { githubRepos, githubSite, buildCommitMessage } from './github.ts';
+import { githubRepos, githubSite, buildCommitMessage, R2_BUILDS } from './github.ts';
 
 const fail = (message: string, kind = 'builder') => new GenError(message, { status: 409, kind });
 
@@ -214,7 +214,7 @@ export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string
     cache: { bucket, prefix: `unity-cache/${repo}`, restore: decision.clean ? [] : keys.restore, save: keys.save, clean: decision.clean, reason: decision.reason, exclude: CACHE_EXCLUDE },
     out: { bucket, prefix },
     timeoutMinutes: cfg.timeoutMinutes,
-    github: gh ? { owner: gh.repo.split('/')[0], site: githubSite(gh, spec.site!), packages: gh.packages, ref: gh.ref, message: buildCommitMessage(gh, spec.project) } : null,
+    github: gh ? { owner: gh.repo.split('/')[0], site: githubSite(gh, spec.site!), packages: gh.packages, ref: gh.ref, message: buildCommitMessage(gh, spec.project), builds: gh.builds ? { game: gh.builds, ...R2_BUILDS, ...(loadSettings().unityBuild as any).r2 } : null } : null,
   };
   await gcsWrite(bucket, `${prefix}/spec.json`, Buffer.from(JSON.stringify(body, null, 2)), 'application/json');
   return { prefix, specUri: `gs://${bucket}/${prefix}/spec.json`, repo, saveKey: keys.save, stateKey, clean: decision.clean };

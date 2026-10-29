@@ -101,6 +101,101 @@ github_site() {
   SITE_BEFORE=$(git -C "$SITE_REPO_DIR" rev-parse HEAD)
 }
 
+# Builds in R2, not git (hawkesstudio docs/unity-builds-storage.md): when the spec's .github.builds names the game and
+# the job has R2_BUILDS_TOKEN (Secret Manager r2-builds), each new Game/v<n> the build made is uploaded to
+# builds/<game>/v<n>/ (Brotli .unityweb stored with Content-Encoding: br, so browsers decompress it), left out of the
+# commit (a stub stands in, as for the old ones), the pages in Game/ point at its address, Game/build.json names it, and
+# old versions are pruned (kept: this one, the ones beta's and main's build.json name, and the 2 newest others).
+R2_STUB=".hawkes-r2"
+r2_curl() { curl -fsS --retry 3 --aws-sigv4 "aws:amz:auto:s3" --user "$R2_CRED" -H "x-amz-content-sha256: UNSIGNED-PAYLOAD" "$@"; }
+r2_url() { printf 'https://%s.r2.cloudflarestorage.com/%s/%s' "$(j .github.builds.account)" "$(j .github.builds.bucket)" "$1"; }
+r2_type() {
+  case "$1" in
+    *.wasm|*.wasm.*) echo application/wasm;; *.js|*.js.*) echo application/javascript;; *.json) echo application/json;;
+    *.html) echo text/html;; *.css) echo text/css;; *.png) echo image/png;; *.jpg|*.jpeg) echo image/jpeg;; *.svg) echo image/svg+xml;;
+    *) echo application/octet-stream;;
+  esac
+}
+r2_encoding() {  # br for Unity's Brotli files (they say so in their first bytes), gzip for gzip, none otherwise
+  local head; head=$(head -c 64 "$1" | tr -d '\0')
+  case "$head" in *"UnityWeb Compressed Content (brotli)"*) echo br; return;; esac
+  [ "$(head -c 2 "$1" | od -An -tx1 | tr -d ' \n')" = "1f8b" ] && echo gzip
+}
+r2_keys() {  # every key under a prefix, a page of 1000 at a time
+  local token="" page
+  while :; do
+    page=$(r2_curl "$(r2_url '')?list-type=2&prefix=$1${token:+&continuation-token=$(jq -rn --arg t "$token" '$t|@uri')}") || return 1
+    grep -o '<Key>[^<]*</Key>' <<<"$page" | sed -E 's#</?Key>##g'
+    token=$(grep -o '<NextContinuationToken>[^<]*' <<<"$page" | sed 's#<NextContinuationToken>##')
+    [ -n "$token" ] || break
+  done
+}
+r2_key() { local IFS=/ seg out=(); for seg in $1; do out+=("$(jq -rn --arg s "$seg" '$s|@uri')"); done; printf '%s' "${out[*]}"; }
+
+github_r2_builds() {
+  local site="$1" top sub game_rel gdir r2game base d ver f rel enc n
+  r2game=$(j .github.builds.game); base=$(j .github.builds.base)
+  [ -n "$r2game" ] || return 0
+  [ -n "${R2_BUILDS_TOKEN:-}" ] || die config "the spec sends this build to R2 but the job has no R2_BUILDS_TOKEN (Secret Manager r2-builds)"
+  local id; id=$(curl -fsS -H "Authorization: Bearer $R2_BUILDS_TOKEN" "https://api.cloudflare.com/client/v4/accounts/$(j .github.builds.account)/tokens/verify" | jq -r '.result.id // empty')
+  [ -n "$id" ] || die config "the R2 token in r2-builds doesn't verify"
+  R2_CRED="$id:$(printf '%s' "$R2_BUILDS_TOKEN" | sha256sum | cut -c1-64)"
+  top=$(j .github.site.top); sub="${site#"$top"}"; sub="${sub#/}"
+  game_rel="${sub:+$sub/}Game"; gdir="$SITE_REPO_DIR/$game_rel"
+  R2_NEW=()
+  for d in "$gdir"/v[1-9]*/; do
+    d="${d%/}"; [ -d "$d" ] || continue
+    [ -f "$d/.hawkes-stub" ] || [ -f "$d/$R2_STUB" ] && continue
+    ver=$(basename "$d"); n=0
+    log "uploading $game_rel/$ver to R2 builds/$r2game/$ver"
+    while IFS= read -r -d '' f; do
+      rel="${f#"$d"/}"; enc=$(r2_encoding "$f")
+      r2_curl -X PUT -T "$f" -H "Content-Type: $(r2_type "$rel")" ${enc:+-H "Content-Encoding: $enc"} "$(r2_url "builds/$r2game/$ver/$(r2_key "$rel")")" -o /dev/null \
+        || die push "couldn't upload $ver/$rel to R2"
+      n=$((n + 1))
+    done < <(find "$d" -type f -print0)
+    log "uploaded $n files of $ver"
+    # Out of git: the folder becomes a stub the commit ignores (.git/info/exclude), the pages point at R2.
+    find "$d" -mindepth 1 -delete
+    echo "Hawkes Gen cloud build: this version is in R2 at $base/$r2game/$ver/" > "$d/$R2_STUB"
+    R2_NEW+=("$ver")
+    while IFS= read -r -d '' f; do
+      # Literal paths ("v181/hawkes-sound.js") point at R2; a page that builds its paths at run time puts
+      # window.HAWKES_BUILD_BASE in front of its version (one line after <head>, kept current here).
+      sed -i -E "s#([\"'(=])$ver/#\1$base/$r2game/$ver/#g; /window\.HAWKES_BUILD_BASE *=/d" "$f"
+      [[ "$f" == *.html ]] && sed -i -E "0,/<head[^>]*>/s##&\n  <script>window.HAWKES_BUILD_BASE = \"$base/$r2game/\";</script>#" "$f"
+    done < <(find "$gdir" -maxdepth 1 -type f \( -name '*.html' -o -name '*.js' \) -print0)
+    jq -n --arg v "${ver#v}" --arg b "$base/$r2game/$ver/" '{ version: ($v | tonumber), base: $b }' > "$gdir/build.json"
+  done
+  printf '%s\n' "$R2_STUB" >> "$SITE_REPO_DIR/.git/info/exclude"
+  [ "${#R2_NEW[@]}" -gt 0 ] || { log "no new Game/v<n> to upload"; return 0; }
+  r2_prune "$r2game" "$game_rel"
+}
+
+# Keeps builds/<game>/ small: this build's versions, the ones the website's beta and main build.json name, and the 2
+# newest others (a rollback target); the rest are deleted.
+r2_prune() {
+  local r2game="$1" game_rel="$2" slug all keep v k br
+  slug=$(j .github.site.slug)
+  mapfile -t all < <(r2_curl "$(r2_url '')?list-type=2&delimiter=/&prefix=builds/$r2game/" | grep -o "<Prefix>builds/$r2game/v[0-9]*/</Prefix>" | sed -E 's#.*/(v[0-9]+)/<.*#\1#' | sort -t v -k2 -n)
+  keep=" ${R2_NEW[*]} "
+  for br in beta main; do
+    v=$( cd "$SITE_REPO_DIR" && gh_auth_on && git fetch -q --depth 1 --filter=blob:none origin "refs/heads/$br" 2>/dev/null       && git show "FETCH_HEAD:$game_rel/build.json" 2>/dev/null | jq -r '"v\(.version)"' 2>/dev/null; gh_auth_off )
+    [ -n "$v" ] && [ "$v" != "vnull" ] && keep+="$v "
+  done
+  n=0
+  for ((i = ${#all[@]} - 1; i >= 0; i--)); do
+    v="${all[$i]}"
+    [[ "$keep" == *" $v "* ]] && continue
+    if [ "$n" -lt 2 ]; then keep+="$v "; n=$((n + 1)); continue; fi
+    log "pruning R2 builds/$r2game/$v"
+    while IFS= read -r k; do
+      [ -n "$k" ] && r2_curl -X DELETE "$(r2_url "$(r2_key "$k")")" -o /dev/null || true
+    done < <(r2_keys "builds/$r2game/$v/")
+  done
+  log "R2 builds/$r2game keeps:$keep"
+}
+
 # Commits what the build changed in the website (deleted.txt: paths under the site folder; a stub gone = its whole
 # Game/v<n>) and pushes it to the branch. A branch that moved meanwhile gets the build on top of it (3 tries).
 github_publish() {

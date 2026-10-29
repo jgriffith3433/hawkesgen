@@ -37,6 +37,10 @@ test('the github param: defaults to beta, and never main', () => {
   assert.throws(() => gh.githubBuildOf({ ...base, siteRepo: base.repo }, 'p', 's'), /website repo/);
   assert.throws(() => gh.githubBuildOf({ ...base, branch: '--force' }, 'p', 's'), /isn't a branch/);
   assert.equal(gh.githubBuildOf({ ...base, packages: { hawkesgen: 'gcp' } }, 'p', 's').packages.hawkesgen, 'gcp');
+  // Builds in R2 (hawkesstudio docs/unity-builds-storage.md): a game's short name, or none (in git).
+  assert.equal(g.builds, null);
+  assert.equal(gh.githubBuildOf({ ...base, builds: 'yoobaland' }, 'p', 's').builds, 'yoobaland');
+  for (const builds of ['../x', 'Yooba Land', 'a/b']) assert.throws(() => gh.githubBuildOf({ ...base, builds }, 'p', 's'), /short name/);
 });
 
 test('the source repo is fetched sparse to the project inside it', () => {
@@ -118,6 +122,7 @@ test('a GitHub-mode build: the spec names the commit and the website branch, and
     assert.deepEqual(spec.github.site, { slug: 'jgriffith3433/YoobaLandGame', top: 'YoobaLandGame', branch: 'beta' });
     assert.equal(spec.github.owner, 'jgriffith3433');
     assert.match(spec.github.message, /build-oct28/);
+    assert.equal(spec.github.builds, null);
     // Only the spec went up; nothing came down (no site.tgz) and no checkout here was read.
     assert.deepEqual([...g.writes.keys()], ['unity-builds/j1/spec.json']);
     assert.ok(!g.calls.some((c) => c.includes('site.tgz')));

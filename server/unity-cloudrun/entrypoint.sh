@@ -314,6 +314,7 @@ if [ -n "$SITE" ] && [ -z "$TESTS" ]; then
   # GitHub mode: the build is committed to the website's branch (beta) and pushed from here; nothing goes back to Gen.
   if [ "$GITHUB_MODE" = true ]; then
     stage push
+    github_r2_builds "$SITE"
     github_publish "$SITE" "$PROJECT_COMMIT"
   fi
 fi

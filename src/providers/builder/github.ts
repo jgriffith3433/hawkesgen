@@ -37,7 +37,15 @@ export type GitHubBuild = {
   packages: Record<string, string>;
   /** The Library cache key family: beta (the default) or main. */
   cacheBranch: string;
+  /**
+   * The game's name in R2 when its builds live there, not in git (hawkesstudio docs/unity-builds-storage.md): the
+   * container uploads Game/v<n> to builds/<builds>/v<n>/ and commits only the pages and Game/build.json. null: in git.
+   */
+  builds: string | null;
 };
+
+/** Where R2 builds go and are served from (settings.unityBuild.r2 overrides; the token is the job's secret r2-builds). */
+export const R2_BUILDS = { account: 'f56b430f66b4e90148c6ae88cbb5a77c', bucket: 'hawkes-beta-sites', base: 'https://sites.hawkesgen.ai/builds' };
 
 /** Checks and fills in the `github` param of unity.build; throws a plain error for anything off. */
 export function githubBuildOf(raw: unknown, project: string, site?: string): GitHubBuild {
@@ -66,7 +74,9 @@ export function githubBuildOf(raw: unknown, project: string, site?: string): Git
   const ref = g.ref ? String(g.ref).trim().slice(0, 120) : null;
   if (ref && !/^[A-Za-z0-9._/-]+$/.test(ref)) throw bad(`github.ref "${ref}" has characters a ref can't`);
   const cacheBranch = g.cacheBranch === 'main' ? 'main' : 'beta';
-  return { repo, commit, ref, siteRepo, branch, packages, cacheBranch };
+  const builds = g.builds == null || g.builds === '' ? null : String(g.builds).trim();
+  if (builds !== null && !/^[a-z0-9-]{1,40}$/.test(builds)) throw bad(`github.builds "${builds}" must be a game's short name (lowercase letters, digits, dashes)`);
+  return { repo, commit, ref, siteRepo, branch, packages, cacheBranch, builds };
 }
 
 /**
