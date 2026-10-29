@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { archiveKind, findExe, parseMangoHud, startProblem, runLimits } from '../../server/play-native/session.mjs';
+import { archiveKind, findExe, parseMangoHud, startProblem, runLimits, gameArgs } from '../../server/play-native/session.mjs';
 import { JpegSplitter, encoderArgs } from '../../server/play-native/capture.mjs';
 import { frameStats, frameDiff, isBlack, classifyRenderer, xorgConf } from '../../server/play-native/display.mjs';
 import { xorgBusId } from '../../server/play-native/driver.mjs';
@@ -109,4 +109,16 @@ test('the Xorg config has every placeholder filled', () => {
   assert.doesNotMatch(conf, /__\w+__/);
   assert.match(conf, /^\s*BusID "PCI:59:0:0"/m);
   assert.match(conf, /^\s*Virtual 1280 720/m);
+});
+
+test('a Unity Linux player gets -force-vulkan unless told otherwise', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pn-unity-'));
+  const exe = path.join(dir, 'Game.x86_64');
+  assert.deepEqual(gameArgs('linux', exe, ['-a']), ['-a']);
+  fs.writeFileSync(path.join(dir, 'UnityPlayer.so'), '');
+  assert.deepEqual(gameArgs('linux', exe, ['-a']), ['-force-vulkan', '-a']);
+  assert.deepEqual(gameArgs('linux', exe, ['-force-glcore']), ['-force-glcore']);
+  assert.deepEqual(gameArgs('linux', exe, [], { vulkan: false }), []);
+  assert.deepEqual(gameArgs('proton', exe, []), []);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

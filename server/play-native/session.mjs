@@ -151,6 +151,19 @@ export function playerUsage(uid = PLAYER_UID) {
   return { ticks, rssMB: Math.round(rss / 1024), procs };
 }
 
+/**
+ * The game's command line. A Unity Linux player picks OpenGL Core first, and OpenGL on this display is Mesa's llvmpipe
+ * (Breaking Through: 10 fps on the CPU), while Vulkan is the GPU's (347 fps on an A4500, 2026-10-29). So a Unity Linux
+ * build (UnityPlayer.so beside the executable) gets -force-vulkan unless the caller chose a graphics flag or set
+ * options.vulkan false. A build made without Vulkan in its API list fails to start with it: options.vulkan false.
+ */
+export function gameArgs(target, exe, args, options = {}) {
+  if (target !== 'linux' || options?.vulkan === false) return args;
+  if (args.some((a) => /^-force-(vulkan|gl|glcore|opengl)/i.test(a))) return args;
+  if (!fs.existsSync(path.join(path.dirname(exe), 'UnityPlayer.so'))) return args;
+  return ['-force-vulkan', ...args];
+}
+
 /** Kills every process of the player user (the game, wineserver, anything it left). */
 export function killPlayer(signal = 'KILL') {
   spawnSync('pkill', [`-${signal}`, '-u', String(PLAYER_UID)], { timeout: 10_000 });
@@ -457,7 +470,7 @@ export class Run {
     }
     // The customer's own variables, except the ones that steer the runner.
     for (const [k, v] of Object.entries(this.m.env ?? {})) if (!/^(HAWKES_PLAYTEST|DISPLAY|HOME|STEAM_COMPAT_.*|XDG_RUNTIME_DIR)$/.test(k)) env[k] = v;
-    return launchWith(url, this.m.options?.via ?? 'env', env, this.m.args ?? []);
+    return launchWith(url, this.m.options?.via ?? 'env', env, gameArgs(this.target, this.exe, this.m.args ?? [], this.m.options));
   }
 
   #launch(url) {

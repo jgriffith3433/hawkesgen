@@ -223,8 +223,10 @@ function session(ws, job) {
       liveFrames = start.live?.frames !== false;
       if (gen) gen.accepted();
       mine = run = new Run(start, gen ? { ...gen.io, finish: (report, files) => finishGen(gen, report, files) } : io, ctx);
-      // A Proton run waits for the worker's warm prefix (the first minute after a cold start), at most 4 minutes.
-      if (m.target === 'proton' && ctx.prefix) await Promise.race([ctx.prefix, new Promise((r) => setTimeout(r, 240_000))]);
+      // Every run waits for the worker's warm prefix (the first seconds after a cold start), at most 4 minutes: Proton
+      // runs want it, and the warm-up ends by killing the player user's processes, which took a Linux game launched
+      // during it (SIGKILL at 2.9 s, Breaking Through on RunPod, 2026-10-29).
+      if (ctx.prefix) await Promise.race([ctx.prefix, new Promise((r) => setTimeout(r, 240_000))]);
       log(`session ${job || '?'}: run ${mine.id} (${m.target}) started`);
       const result = await mine.play();
       log(`session ${job || '?'}: run ${mine.id} ended ${result?.outcome} after ${Math.round((Date.now() - t0) / 1000)} s`);
