@@ -175,6 +175,13 @@ async function showJob(id, refresh = false) {
 
 const render = {};
 
+// The beta lane (gen-beta.hawkesgen.ai) says so on every page, so it's never taken for live.
+fetch('/v1/health').then((r) => r.json()).then((h) => {
+  if (h.lane !== 'beta') return;
+  document.title = `BETA · ${document.title}`;
+  document.querySelector('.brand b')?.insertAdjacentHTML('afterend', ' <span class="lane-badge">BETA</span>');
+}).catch(() => {});
+
 render.overview = async () => {
   const [health, jobs, usage] = await Promise.all([api('/health'), loadJobs(), api(`/usage?since=${Date.now() - 30 * 86400000}`)]);
   let fleet = null;

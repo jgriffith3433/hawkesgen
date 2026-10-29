@@ -1,5 +1,6 @@
 // gen.hawkesgen.ai: a Cloudflare Worker that passes every request to Hawkes Gen on Cloud Run (docs/gen-cloudrun.md,
 // "The address"). Deploy from this folder: npx wrangler deploy (the first time: npx wrangler login).
+// The beta lane (gen-beta.hawkesgen.ai -> the gen-beta service): npx wrangler deploy --env beta
 {
   "name": "hawkes-gen-edge",
   "main": "src/index.ts",
@@ -9,5 +10,12 @@
     // The Cloud Run service's own address (tools/gen-cloudrun/deploy.mjs prints it).
     "GEN_ORIGIN": "https://gen-f6ruen5wfa-uk.a.run.app"
   },
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  "env": {
+    "beta": {
+      "routes": [{ "pattern": "gen-beta.hawkesgen.ai", "custom_domain": true }],
+      // Cloud Run's deterministic address for the service gen-beta (<service>-<project number>.<region>.run.app).
+      "vars": { "GEN_ORIGIN": "https://gen-beta-388576319982.us-east4.run.app" }
+    }
+  }
 }

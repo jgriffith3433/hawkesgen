@@ -2,7 +2,7 @@
 // Deploys Hawkes Gen as the Cloud Run service `gen` (docs/gen-cloudrun.md). Prints every step; changes things only
 // with --apply. J runs it through deploy.ps1 (IAM and secret writes are his).
 //
-//   node tools/gen-cloudrun/deploy.mjs [--project hawkes-staging] [--region us-east4] [--apply]
+//   node tools/gen-cloudrun/deploy.mjs [--lane live|beta] [--project hawkes-staging] [--region us-east4] [--apply]
 //
 // 1. APIs; the state bucket (the databases through Litestream, settings) and the library bucket (every file).
 // 2. Gen's account gen-control@ (the GPU and CPU services already take its calls): the buckets, Unity cloud builds
@@ -20,11 +20,18 @@ import { flag, gcloud, gcloudQuery, die, done, ROOT, APPLY } from '../unity-clou
 
 const project = flag('project', 'hawkes-staging');
 const region = flag('region', 'us-east4');
-const service = flag('service', 'gen');
+// The lane (J, 2026-10-28: dev -> beta -> main): live is `gen` (gen.hawkesgen.ai, from main); beta is `gen-beta`
+// (gen-beta.hawkesgen.ai, from beta) with its own database, library and owner key, so testing never touches live
+// customers. Same image, same account, same provider keys.
+const lane = flag('lane', 'live');
+if (!['live', 'beta'].includes(lane)) die(`--lane is live or beta, not ${lane}`);
+const beta = lane === 'beta';
+const service = flag('service', beta ? 'gen-beta' : 'gen');
 const P = `--project=${project}`;
 const sa = `gen-control@${project}.iam.gserviceaccount.com`;
-const stateBucket = flag('state-bucket', `${project}-gen-state`);
-const libraryBucket = flag('library-bucket', `${project}-gen-library`);
+const stateBucket = flag('state-bucket', `${project}-${beta ? 'gen-beta' : 'gen'}-state`);
+const libraryBucket = flag('library-bucket', `${project}-${beta ? 'gen-beta' : 'gen'}-library`);
+const ownerSecret = beta ? 'gen-beta-owner-key' : 'gen-owner-key';
 const unityBucket = `hawkes-unity-${project}`;
 const unityJobSa = `hawkes-unity-build@${project}.iam.gserviceaccount.com`;
 
@@ -102,15 +109,16 @@ for (const k of KEYS) {
   mounted.push(`${k}=${name}:latest`);
 }
 // The owner key: made once, kept in Secret Manager; Gen makes it the owner on an empty database (src/cloudhost.ts).
-let ownerKey = gcloudQuery(['secrets', 'versions', 'access', 'latest', '--secret=gen-owner-key', P]);
+let ownerKey = gcloudQuery(['secrets', 'versions', 'access', 'latest', `--secret=${ownerSecret}`, P]);
 if (!ownerKey) {
   ownerKey = `hg_${crypto.randomBytes(24).toString('base64url')}`;
-  putSecret('gen-owner-key', ownerKey);
+  putSecret(ownerSecret, ownerKey);
 }
-mounted.push('HAWKESGEN_OWNER_KEY=gen-owner-key:latest');
+mounted.push(`HAWKESGEN_OWNER_KEY=${ownerSecret}:latest`);
 
 console.log('\n# The service');
 const envVars = [
+  `HAWKESGEN_LANE=${lane}`,
   `HAWKESGEN_STATE_BUCKET=${stateBucket}`,
   'HAWKESGEN_LIBRARY_STORE=gcs',
   `HAWKESGEN_LIBRARY_BUCKET=${libraryBucket}`,
@@ -157,7 +165,12 @@ console.log(`  settings: ${s.ok ? 'saved' : `refused (${s.status}): ${(await s.t
 
 // This PC's clients (CLI, MCP, project tools) use ~/.hawkes/client.json: point it at the new Gen.
 const cj = path.join(os.homedir(), '.hawkes', 'client.json');
-if (fs.existsSync(cj)) {
+if (beta && fs.existsSync(cj)) {
+  // Beta never replaces live in this PC's clients: kept beside it for tools that ask for beta.
+  const cur = JSON.parse(fs.readFileSync(cj, 'utf8'));
+  fs.writeFileSync(cj, JSON.stringify({ ...cur, genBetaUrl: url, genBetaKey: ownerKey }, null, 2));
+  console.log(`  ${cj}: genBetaUrl and genBetaKey saved (live's genUrl unchanged)`);
+} else if (fs.existsSync(cj)) {
   const cur = JSON.parse(fs.readFileSync(cj, 'utf8'));
   const backup = path.join(path.dirname(cj), 'client.aws.json');
   if (!fs.existsSync(backup)) fs.writeFileSync(backup, JSON.stringify(cur, null, 2));

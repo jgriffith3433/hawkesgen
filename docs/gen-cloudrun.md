@@ -38,13 +38,23 @@ while an instance lives (us-east4). An instance lives while requests come in or 
    secrets from `.env`, the service, its URL, the starting settings, and `~/.hawkes/client.json` (old one kept as
    `client.aws.json`). Every step is safe to repeat. A new image later: build, then run the script again.
 
+## Lanes: dev -> beta -> main
+
+J, 2026-10-28: "dev -> beta -> main". Work lands on `dev` (deploys nothing). `beta` is **gen-beta**
+(`https://gen-beta.hawkesgen.ai`): its own database, library, settings, Claude login and owner key (secret
+`gen-beta-owner-key`), the same image and provider keys, a BETA badge on the dashboard and `lane: "beta"` in
+`/v1/health`. `main` is **gen**, live. Testing on beta never touches live customers or their files. Made once with
+`deploy.ps1 -Lane beta` (client.json gets `genBetaUrl`/`genBetaKey`, live's entry is untouched) and
+`npx wrangler deploy --env beta` in `server/gen-edge`.
+
 ## Deploys
 
-A push to `main` deploys (`.github/workflows/ci.yml`): GitHub signs in to Google with its own OIDC token (no stored key:
-the `github-gen` provider of the `github` Workload Identity pool trusts only this repo's main, as `gen-deployer@`), builds
-the image of that commit with `tools/gen-cloudrun/build.mjs`, points the `gen` service at it, and checks
-`https://gen.hawkesgen.ai/v1/health`; if the new revision doesn't answer within three minutes, traffic goes back to the
-previous one and the run fails. GitHub runs no tests (J, 2026-10-25): run `npm run typecheck` and `npm test` before
+A push to `beta` or `main` deploys that lane (`.github/workflows/ci.yml`): GitHub signs in to Google with its own OIDC
+token (no stored key: the `github-gen` provider of the `github` Workload Identity pool trusts only this repo's main and
+beta, as `gen-deployer@`), builds the image of that commit with `tools/gen-cloudrun/build.mjs`, points the lane's
+service (`gen-beta` or `gen`) at it, and checks the lane's `/v1/health`; if the new revision doesn't answer within three
+minutes, traffic goes back to the previous one and the run fails. The image is per commit, so going live after beta
+reuses beta's image. GitHub runs no tests (J, 2026-10-25): run `npm run typecheck` and `npm test` before
 pushing. One-time setup: `powershell -ExecutionPolicy Bypass -File tools\gen-cloudrun\setup-ci.ps1` (J). By hand, as
 before: `build.mjs --apply`, then `gcloud run services update gen --image <tag>` (or `deploy.ps1` when settings, secrets
 or permissions change).

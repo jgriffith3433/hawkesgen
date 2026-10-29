@@ -317,7 +317,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === '/v1/health') {
       return send(res, 200, {
-        ok: true, name: 'hawkesgen', version: VERSION,
+        ok: true, name: 'hawkesgen', version: VERSION, lane: process.env.HAWKESGEN_LANE || 'live',
         providers: {
           aws: (() => { try { fleet.awsConfig(); return true; } catch { return false; } })(),
           elevenlabs: eleven.configured() && !eleven.billingState().blocked,

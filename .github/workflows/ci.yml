@@ -1,16 +1,18 @@
-# Deploys main to Cloud Run (docs/gen-cloudrun.md, "Deploys"), 2026-10-28: Gen runs on Cloud Run now, not the AWS
-# control server. No tests here (J, 2026-10-25: "i don't want github running the tests anymore"): run `npm run typecheck`
-# and `npm test` before pushing main. The safety net is the health check: a new revision that doesn't answer
-# https://gen.hawkesgen.ai/v1/health is replaced by the one before it.
+# Deploys Gen to Cloud Run (docs/gen-cloudrun.md, "Deploys"), 2026-10-28: Gen runs on Cloud Run now, not the AWS
+# control server. The lanes (J, 2026-10-28: dev -> beta -> main): a push to beta deploys `gen-beta`
+# (gen-beta.hawkesgen.ai), a push to main deploys `gen` (gen.hawkesgen.ai); dev deploys nothing.
+# No tests here (J, 2026-10-25: "i don't want github running the tests anymore"): run `npm run typecheck` and
+# `npm test` before pushing. The safety net is the health check: a new revision that doesn't answer its lane's
+# /v1/health is replaced by the one before it.
 # Keyless: GitHub's OIDC token is traded for the `gen-deployer` account through Workload Identity Federation, trusted for
-# this repo's main only (tools/gen-cloudrun/setup-ci.ps1 sets that up once).
+# this repo's main and beta only (tools/gen-cloudrun/setup-ci.ps1 sets that up once).
 name: Deploy
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
   workflow_dispatch:
 concurrency:
-  group: deploy-gen
+  group: deploy-gen-${{ github.ref_name }}
   cancel-in-progress: false
 permissions:
   contents: read
@@ -21,12 +23,20 @@ env:
 jobs:
   deploy:
     name: Build and deploy to Cloud Run
+    if: github.ref_name == 'main' || github.ref_name == 'beta'
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
       id-token: write
       contents: read
     steps:
+      - name: The lane
+        run: |
+          if [ "$GITHUB_REF_NAME" = beta ]; then
+            echo "SERVICE=gen-beta" >> "$GITHUB_ENV"; echo "HEALTH=https://gen-beta.hawkesgen.ai/v1/health" >> "$GITHUB_ENV"
+          else
+            echo "SERVICE=gen" >> "$GITHUB_ENV"; echo "HEALTH=https://gen.hawkesgen.ai/v1/health" >> "$GITHUB_ENV"
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -40,17 +50,18 @@ jobs:
         run: node tools/gen-cloudrun/build.mjs --project "$PROJECT" --region "$REGION" --commit "$GITHUB_SHA" --apply
       - name: Deploy it, keeping the previous revision to fall back on
         run: |
-          prev=$(gcloud run services describe gen --region "$REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)')
+          prev=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.latestReadyRevisionName)')
+          [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/gen-cloudrun/deploy.ps1 for this lane first"; exit 1; }
           echo "prev=$prev" >> "$GITHUB_ENV"
           tag=$(node -e "console.log(require('./.data/cloudrun/gen-image.json').tag)")
-          gcloud run services update gen --image "$tag" --region "$REGION" --project "$PROJECT" --format=none
+          gcloud run services update "$SERVICE" --image "$tag" --region "$REGION" --project "$PROJECT" --format=none
       - name: Health check (back to the previous revision if it fails)
         run: |
           for i in $(seq 1 18); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 https://gen.hawkesgen.ai/v1/health || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$HEALTH" || true)
             [ "$code" = 200 ] && { echo "healthy"; exit 0; }
             sleep 10
           done
           echo "Not healthy: back to $prev"
-          gcloud run services update-traffic gen --to-revisions "$prev=100" --region "$REGION" --project "$PROJECT" --format=none
+          gcloud run services update-traffic "$SERVICE" --to-revisions "$prev=100" --region "$REGION" --project "$PROJECT" --format=none
           exit 1
