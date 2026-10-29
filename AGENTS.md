@@ -191,6 +191,10 @@ portal and Studio use Gen in the back end with their own keys.
     `POST /v1/billing/config`) and a webhook endpoint at `https://<gen>/v1/billing/webhook` for
     `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` and
     `customer.subscription.deleted`.
+- **Admins sign in once:** a Gen account whose email is on `settings.dashboard.googleEmails` (J) and that signed in with
+  Google is Gen's owner too (`users.ts isGenAdmin`). The app shows it an Admin link, `/admin` works with the same
+  sign-in, and its own work stays in its own project (the app always names it). A password account with that email
+  never is.
 - **The admin dashboard** is `/admin` (its files are served beside it: `/admin/app.js` is `dashboard/app.js`). Owner
   and admin keys, or Google for `settings.dashboard.googleEmails`. The app links there for admins.
 - The old Hawkes Play pages stay at `/home`, `/app` and `/play`.

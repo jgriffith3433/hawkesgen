@@ -59,3 +59,22 @@ test('a Google token is checked: our client, Google as issuer, a verified email,
   assert.throws(() => googleSignin({ sub: '', email: 'x@y.com', name: null }), /account id/);
   await assert.rejects(checkGoogleToken('not-a-token', answer(good)), /not a Google sign-in/);
 });
+
+test('an admin email signed in with Google is the owner too (one sign-in for the app and /admin); a password account never is', async () => {
+  const { authenticateRequest, isGenAdmin } = await import('../src/users.ts');
+  saveSettings({ dashboard: { googleClientId: '123456-abc.apps.googleusercontent.com', googleEmails: ['boss@example.com'] } } as any);
+  const g = googleSignin({ sub: '1000000000009', email: 'boss@example.com', name: 'Boss' });
+  const asReq = (token: string) => ({ headers: { cookie: `hg_session=${token}` }, socket: { remoteAddress: '203.0.113.9' } }) as any;
+  const c = authenticateRequest(asReq(g.sessionToken))!;
+  assert.equal(c.role, 'owner');
+  assert.deepEqual(c.projects, ['*']);
+  assert.equal(c.userId, g.user.id, 'still that account: its credits, its own project in the app');
+  // A customer is a customer.
+  const cust = googleSignin({ sub: '1000000000010', email: 'someone@example.com', name: null });
+  assert.equal(authenticateRequest(asReq(cust.sessionToken))!.role, 'user');
+  // A password account with an admin email (local runs only) is not an admin.
+  const pw = signupUser({ email: 'pw-admin@example.com', password: 'secret-123', name: 'x' });
+  saveSettings({ dashboard: { googleClientId: '123456-abc.apps.googleusercontent.com', googleEmails: ['boss@example.com', 'pw-admin@example.com'] } } as any);
+  assert.equal(isGenAdmin({ id: pw.user.id, email: 'pw-admin@example.com' }), false);
+  assert.equal(authenticateRequest(asReq(pw.sessionToken))!.role, 'user');
+});

@@ -257,7 +257,8 @@ $('#signOutBtn').addEventListener('click', async () => {
 
 // ------------------------------------------------------------------ jobs
 async function submit(spec) {
-  const r = await api('/v1/jobs', { body: spec });
+  // Always the account's own project (an admin's account can reach every project; its own work stays in its own).
+  const r = await api('/v1/jobs', { body: { project: state.user?.project, ...spec } });
   return r.jobs[0];
 }
 /** Polls a job until it ends; onStep gets its progress line. Resolves with the finished job. */
@@ -273,7 +274,7 @@ async function waitJob(id, onStep) {
 async function quote(tool, params) {
   if (!state.user) return null;
   try {
-    return await api('/v1/billing/quote', { body: { tool, params } });
+    return await api('/v1/billing/quote', { body: { tool, params, project: state.user.project } });
   } catch {
     return null;
   }
@@ -392,7 +393,7 @@ $$('#libFilter .chip').forEach((c) => c.addEventListener('click', () => {
 }));
 async function myAssets(kind = '', limit = 80) {
   if (!state.user) return [];
-  const r = await api(`/v1/assets?limit=${limit}${kind ? `&kind=${kind}` : ''}`);
+  const r = await api(`/v1/assets?limit=${limit}${kind ? `&kind=${kind}` : ''}&project=${encodeURIComponent(state.user.project)}`);
   return (r.items ?? []).filter((a) => ['image', 'video', 'audio'].includes(a.kind));
 }
 function tile(a, { compact = false } = {}) {

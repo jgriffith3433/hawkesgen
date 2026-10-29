@@ -4,7 +4,7 @@
 import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { db } from './db.ts';
-import { env } from './config.ts';
+import { env, loadSettings } from './config.ts';
 import { authenticate, createClient, getClient, setClientDisabled, type Client } from './auth.ts';
 import { id, sha256, GenError } from './util.ts';
 
@@ -149,6 +149,12 @@ db.exec('CREATE TABLE IF NOT EXISTS user_google (user_id TEXT PRIMARY KEY, sub T
 /** Email-and-password sign-up and sign-in: only off the cloud (local runs and tests), or with HAWKESGEN_PASSWORD_LOGIN=1. */
 export const passwordsAllowed = () => !process.env.K_SERVICE || env('HAWKESGEN_PASSWORD_LOGIN') === '1';
 
+/** A Gen account that is an admin: its email is on settings.dashboard.googleEmails and it signed in with Google. */
+export function isGenAdmin(user: Pick<UserRow, 'id' | 'email'>): boolean {
+  if (!loadSettings().dashboard.googleEmails.includes(user.email.toLowerCase())) return false;
+  return Boolean(db.prepare('SELECT 1 FROM user_google WHERE user_id = ?').get(user.id));
+}
+
 export function googleSignin(who: { sub: string | null; email: string; name: string | null }) {
   if (!who.sub) throw new GenError('That Google sign-in has no account id. Try again.', { status: 401 });
   const email = who.email.trim().toLowerCase();
@@ -284,6 +290,9 @@ export function authenticateRequest(req: IncomingMessage): AuthClient | null {
       if (row.expires > Date.now()) {
         const user = getUserById(row.user_id);
         if (user) {
+          // The admins (settings.dashboard.googleEmails: J) signed in with Google are Gen's owner too, so one sign-in
+          // opens the app and /admin (J, 2026-10-29). A password account with the same email never is.
+          if (isGenAdmin(user)) return { id: user.id, name: user.email, role: 'owner', projects: ['*'], userId: user.id };
           return {
             id: user.id,
             name: user.email,
