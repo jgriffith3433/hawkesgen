@@ -24,8 +24,28 @@ async function api(path, opts = {}) {
 function signIn() {
   if (signIn.open) return;
   signIn.open = true;
-  const b = modal(`<h2>Sign in to Hawkes Gen</h2><p>Paste an owner or admin key (<code>hg_…</code>). On your PC it's <code>genKey</code> in <code>~/.hawkes/client.json</code>. This browser keeps you signed in for 30 days.</p>
-    <div class="row"><input id="sik" type="password" autocomplete="off" style="flex:1" placeholder="hg_…"><button class="primary" id="sigo">Sign in</button></div><p class="small muted" id="sierr"></p>`);
+  const b = modal(`<h2>Sign in to Hawkes Gen</h2><div id="sigoogle" style="margin:6px 0 14px"></div>
+    <details id="sikeys"><summary>Sign in with a key instead</summary>
+    <p>Paste an owner or admin key (<code>hg_…</code>). On your PC it's <code>genKey</code> in <code>~/.hawkes/client.json</code>. This browser keeps you signed in for 30 days.</p>
+    <div class="row"><input id="sik" type="password" autocomplete="off" style="flex:1" placeholder="hg_…"><button class="primary" id="sigo">Sign in</button></div></details><p class="small muted" id="sierr"></p>`);
+  // "Continue with Google" when this Gen has it set up (settings.dashboard): Google's own button, then Gen checks the
+  // token with Google and lets in only the listed accounts (src/dashauth.ts).
+  fetch('/v1/dashboard/google').then((r) => r.json()).then(({ clientId }) => {
+    if (!clientId) { $('#sikeys', b).open = true; return; }
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = () => {
+      google.accounts.id.initialize({
+        client_id: clientId,
+        callback: ({ credential }) => fetch('/v1/dashboard/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential }) })
+          .then(async (r) => { if (r.ok) location.reload(); else $('#sierr', b).textContent = (await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`; }),
+      });
+      google.accounts.id.renderButton($('#sigoogle', b), { theme: 'filled_black', size: 'large', text: 'continue_with', shape: 'pill' });
+    };
+    s.onerror = () => { $('#sikeys', b).open = true; $('#sierr', b).textContent = 'Google sign-in could not load: use a key.'; };
+    document.head.append(s);
+  }).catch(() => { $('#sikeys', b).open = true; });
   const go = () => fetch('/v1/dashboard/signin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: $('#sik', b).value }) })
     .then(async (r) => { if (r.ok) location.reload(); else $('#sierr', b).textContent = (await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`; });
   $('#sigo', b).onclick = go;
@@ -862,6 +882,10 @@ render.settings = async () => {
       <label><span>ElevenLabs $ per 1,000 characters (for usage reports)</span><input type="number" step="any" id="sre" value="${s.rates.elevenlabsPer1kChars}"></label>
     </div><div class="row" style="margin-top:10px"><button class="primary" id="ssave">Save</button></div></div>
     ${me.role === 'owner' ? '<div class="card" id="claudeAccounts"><h3>🔑 Claude accounts</h3><p class="muted small">Loading…</p></div>' : ''}
+    ${me.role === 'owner' ? `<div class="card"><h3>Google sign-in</h3><p class="muted small">"Continue with Google" on this dashboard lets these Google accounts in as the owner. The client is a Google OAuth web client whose Authorized JavaScript origins list this address (${esc(location.origin)}).</p>
+      <div class="form"><label><span>Google client id</span><input id="dgc" value="${esc(s.dashboard?.googleClientId ?? '')}" placeholder="1234…apps.googleusercontent.com"></label>
+      <label><span>Google accounts let in (comma separated)</span><input id="dge" value="${esc((s.dashboard?.googleEmails ?? []).join(', '))}"></label></div>
+      <div class="row" style="margin-top:8px"><button id="dgsave">Save</button></div></div>` : ''}
     <div class="card"><h3>Signed in</h3><p class="muted small">As <b>${esc(me.name)}</b> (${esc(me.role)}).</p><div class="row"><button id="sout">Sign out</button></div></div>
     <div class="card"><h3>Adopt GPU servers</h3><p class="muted small">Take over servers another project launched (their tokens and SSH keys), e.g. Dose Of Destruction's <code>.cache/gpu</code>.</p>
       <div class="row"><input id="adf" style="flex:1" value="C:\\Projects\\doseofdestructionwebsite\\.cache\\gpu"><button id="adgo">Adopt</button></div></div>`;
@@ -871,6 +895,7 @@ render.settings = async () => {
   $('#ssave').onclick = () => post('/settings', { localOpen: $('#slo').value === 'true', brain: $('#sbrain').value, concurrency: { elevenlabs: Number($('#sce').value), anthropic: Number($('#sca').value), local: Number($('#scl').value) }, claude: { backend: $('#scb').value, concurrency: Number($('#scc').value), timeoutMinutes: Number($('#sct').value) }, rates: { elevenlabsPer1kChars: Number($('#sre').value) } }).then(() => toast('Saved')).catch(fail);
   $('#adgo').onclick = () => confirm('Copy that folder\'s server tokens and SSH keys into Hawkes Gen?') && post('/fleet/adopt', { confirm: true, from: $('#adf').value }).then((r) => toast(`Adopted ${r.servers.length} servers, ${r.keys.length} keys`)).catch(fail);
   $('#sout').onclick = () => post('/dashboard/signout').then(() => location.reload()).catch(fail);
+  $('#dgsave')?.addEventListener('click', () => post('/settings', { dashboard: { googleClientId: $('#dgc').value.trim() || null, googleEmails: $('#dge').value.split(',').map((x) => x.trim()).filter(Boolean) } }).then(() => { toast('Saved'); render.settings(); }).catch(fail));
   if (me.role === 'owner') claudeAccounts().catch(fail);
 };
 

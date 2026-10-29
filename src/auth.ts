@@ -15,6 +15,7 @@ import type { IncomingMessage } from 'node:http';
 import { db, parseRow, J } from './db.ts';
 import { loadSettings } from './config.ts';
 import { id, sha256, GenError } from './util.ts';
+import { DASH_COOKIE, sessionEmail } from './dashauth.ts';
 
 export type Client = { id: string; name: string; role: 'owner' | 'admin' | 'user'; projects: string[] };
 
@@ -47,10 +48,11 @@ const isLoopback = (addr = '') => addr === '127.0.0.1' || addr === '::1' || addr
 /** The dashboard's sign-in (api.ts /v1/dashboard/signin): an owner or admin key in an HttpOnly, SameSite=Strict cookie,
  *  so the dashboard's links, images and event stream (which can't send a header) work where "this machine" isn't J's PC. */
 export const KEY_COOKIE = 'hg_key';
-const cookieKey = (req: IncomingMessage) => {
-  const m = new RegExp(`(?:^|;\\s*)${KEY_COOKIE}=([^;]+)`).exec(String(req.headers.cookie ?? ''));
+const cookieOf = (req: IncomingMessage, name: string) => {
+  const m = new RegExp(`(?:^|;\\s*)${name}=([^;]+)`).exec(String(req.headers.cookie ?? ''));
   try { return m ? decodeURIComponent(m[1]).trim() : ''; } catch { return ''; }
 };
+const cookieKey = (req: IncomingMessage) => cookieOf(req, KEY_COOKIE);
 
 /** A dashboard key: an enabled owner or admin key, else null. */
 export function dashboardClient(key: string): Client | null {
@@ -65,6 +67,11 @@ export function authenticate(req: IncomingMessage): Client | null {
   const sent = header.startsWith('Bearer ') ? header.slice(7).trim() : String(req.headers['x-hawkesgen-key'] ?? '').trim();
   const fromCookie = sent ? '' : cookieKey(req);
   if (fromCookie && !dashboardClient(fromCookie)) return null;
+  // Signed in with Google (dashauth.ts): the owner, while the email is on settings.dashboard.googleEmails.
+  if (!sent && !fromCookie) {
+    const email = sessionEmail(cookieOf(req, DASH_COOKIE));
+    if (email) return { id: `google:${email}`, name: email, role: 'owner', projects: ['*'] };
+  }
   const key = sent || fromCookie;
   if (key) {
     const row: any = db.prepare('SELECT * FROM clients WHERE key_hash = ?').get(sha256(key));

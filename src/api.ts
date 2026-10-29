@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
+import { DASH_COOKIE, DASH_DAYS, googleClientId, signSession, verifyGoogle } from './dashauth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
 import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workflows/registry.ts';
 import { objectInfo, refreshCatalog, templates, templateWorkflow, templateThumb, importWorkflow } from './workflows/catalog.ts';
@@ -381,8 +382,18 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, { name: who.name, role: who.role });
     }
     if (route === '/v1/dashboard/signout' && method === 'POST') {
-      res.setHeader('Set-Cookie', `${KEY_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+      res.setHeader('Set-Cookie', [`${KEY_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`, `${DASH_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`]);
       return send(res, 200, { ok: true });
+    }
+    // "Continue with Google" (dashauth.ts): the client id for the button, then the ID token Google gave the page.
+    if (route === '/v1/dashboard/google' && method === 'GET') return send(res, 200, { clientId: googleClientId() });
+    if (route === '/v1/dashboard/google' && method === 'POST') {
+      const { credential } = await readJson(req);
+      let email: string;
+      try { email = await verifyGoogle(String(credential ?? '')); } catch (e: any) { return send(res, 401, { error: e.message }); }
+      const secure = String(req.headers['x-forwarded-proto'] ?? '').toLowerCase() === 'https' || process.env.K_SERVICE ? '; Secure' : '';
+      res.setHeader('Set-Cookie', `${DASH_COOKIE}=${signSession(email)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${DASH_DAYS * 86400}${secure}`);
+      return send(res, 200, { email });
     }
 
     const client = authenticateRequest(req);

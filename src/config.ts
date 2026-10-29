@@ -161,6 +161,12 @@ export type Settings = {
     tools: Record<string, 'local' | 'cloudrun'>;
     cloudrun: { urls: { light?: string; heavy?: string }; bucket: string | null; concurrent: number };
   };
+  /**
+   * The dashboard's "Continue with Google" (src/dashauth.ts): the Google OAuth web client whose sign-in button it shows
+   * (its Authorized JavaScript origins must list this Gen's address), and the Google accounts let in as the owner.
+   * Without both, only the key sign-in is offered.
+   */
+  dashboard: { googleClientId: string | null; googleEmails: string[] };
 };
 
 export type UnityBackend = 'builder' | 'cloudrun' | 'vm';
@@ -188,7 +194,15 @@ export const SETTINGS_DEFAULTS: Settings = {
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' } },
   cpu: { backend: 'local', tools: {}, cloudrun: { urls: {}, bucket: null, concurrent: 16 } },
+  dashboard: { googleClientId: null, googleEmails: [] },
 };
+
+/** settings.dashboard, checked: a Google web client id and plain email addresses (lower case). */
+function cleanDashboard(d: Partial<Settings['dashboard']> | undefined): Settings['dashboard'] {
+  const id = typeof d?.googleClientId === 'string' && /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(d.googleClientId.trim()) ? d.googleClientId.trim() : null;
+  const emails = (Array.isArray(d?.googleEmails) ? d.googleEmails : []).map((e) => String(e).trim().toLowerCase()).filter((e) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(e));
+  return { googleClientId: id, googleEmails: [...new Set(emails)].slice(0, 20) };
+}
 
 /** settings.cpu, checked: known backends, tool ids, an https URL, a bucket name, sizes Cloud Run allows. */
 function cleanCpu(c: Partial<Settings['cpu']> | undefined): Settings['cpu'] {
@@ -299,6 +313,7 @@ function clean(s: Settings): Settings {
     gpu: cleanGpu(s.gpu),
     playtest: cleanPlaytest(s.playtest),
     cpu: cleanCpu(s.cpu),
+    dashboard: cleanDashboard(s.dashboard),
   };
 }
 
@@ -348,7 +363,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } }, dashboard: { ...SETTINGS_DEFAULTS.dashboard, ...raw.dashboard } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -371,6 +386,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) }, vm: { ...cur.unityBuild.vm, ...(patch.unityBuild?.vm ?? {}) } },
     playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) } },
     cpu: { ...cur.cpu, ...(patch.cpu ?? {}), tools: { ...cur.cpu.tools, ...(patch.cpu?.tools ?? {}) }, cloudrun: { ...cur.cpu.cloudrun, ...(patch.cpu?.cloudrun ?? {}), urls: { ...cur.cpu.cloudrun.urls, ...(patch.cpu?.cloudrun?.urls ?? {}) } } },
+    dashboard: { ...cur.dashboard, ...(patch.dashboard ?? {}) },
   });
   fs.writeFileSync(paths.settings, JSON.stringify(next, null, 2));
   return next;
