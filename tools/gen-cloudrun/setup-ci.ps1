@@ -34,5 +34,7 @@ Retry { & $g storage buckets add-iam-policy-binding "gs://${Project}_cloudbuild"
 Retry { & $g iam service-accounts add-iam-policy-binding $runtime --member="serviceAccount:$sa" --role=roles/iam.serviceAccountUser --project $Project --format=none } 'act as gen-control'
 # Only main of this repo may become gen-deployer.
 $num = (& $g projects describe $Project --format='value(projectNumber)')
+# Cloud Build runs the build as the project's default compute account, and the caller must be allowed to act as it.
+Retry { & $g iam service-accounts add-iam-policy-binding "$num-compute@developer.gserviceaccount.com" --member="serviceAccount:$sa" --role=roles/iam.serviceAccountUser --project $Project --format=none } "act as Cloud Build's account"
 Retry { & $g iam service-accounts add-iam-policy-binding $sa --role=roles/iam.workloadIdentityUser --member="principalSet://iam.googleapis.com/projects/$num/locations/global/workloadIdentityPools/github/attribute.repository/$Repo" --project $Project --format=none } 'GitHub may act as gen-deployer'
 Write-Host "Done. A push to $Repo main now deploys Gen to Cloud Run." -ForegroundColor Green
