@@ -67,6 +67,13 @@ function toBig(ip: string): { v: bigint; bits: 32 | 128 } | null {
   return { v: groups.reduce((n, g) => (n << 16n) + BigInt(parseInt(g || '0', 16)), 0n), bits: 128 };
 }
 
+/** Whether an IP is inside any of these CIDRs (a short fixed list: collect.ts's Cloudflare edge). */
+export function inCidrs(ip: string, cidrs: string[]): boolean {
+  const b = toBig(ip);
+  if (!b) return false;
+  return cidrs.some((c) => { const r = rangeOf(c); return !!r && r.bits === b.bits && b.v >= r.start && b.v <= r.end; });
+}
+
 function rangeOf(cidr: string): { start: bigint; end: bigint; bits: 32 | 128 } | null {
   const [ip, len] = cidr.trim().split('/');
   const b = toBig(ip ?? '');

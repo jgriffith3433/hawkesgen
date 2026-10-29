@@ -1,0 +1,13 @@
+// gen.hawkesgen.ai: a Cloudflare Worker that passes every request to Hawkes Gen on Cloud Run (docs/gen-cloudrun.md,
+// "The address"). Deploy from this folder: npx wrangler deploy (the first time: npx wrangler login).
+{
+  "name": "hawkes-gen-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "routes": [{ "pattern": "gen.hawkesgen.ai", "custom_domain": true }],
+  "vars": {
+    // The Cloud Run service's own address (tools/gen-cloudrun/deploy.mjs prints it).
+    "GEN_ORIGIN": "https://gen-f6ruen5wfa-uk.a.run.app"
+  },
+  "observability": { "enabled": true }
+}
