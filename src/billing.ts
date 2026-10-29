@@ -506,6 +506,7 @@ export async function createStripeCheckoutSession(
   form.set('customer_email', user.email);
   form.set('success_url', successUrl);
   form.set('cancel_url', cancelUrl);
+  form.set('metadata[product]', 'gen');
   form.set('metadata[user_id]', user.id);
   form.set('metadata[pack_id]', pack.id);
   form.set('metadata[credits]', String(pack.credits));
@@ -578,6 +579,18 @@ export function verifyStripeSignature(rawBody: Buffer | string, signatureHeader:
   }
 }
 
+/** Whether a Stripe event is Gen's: tagged product "gen" (every checkout Gen makes is), else about a subscription Gen
+ *  knows, else for a Gen account (untagged checkouts from before the tag). Another product's tag is never Gen's. */
+export function isGenEvent(event: any): boolean {
+  const o = event?.data?.object ?? {};
+  const meta = { ...(o.parent?.subscription_details?.metadata ?? {}), ...(o.subscription_details?.metadata ?? {}), ...(o.metadata ?? {}) };
+  if (typeof meta.product === 'string' && meta.product) return meta.product === 'gen';
+  const subId = String(event?.type ?? '').startsWith('customer.subscription.') ? o.id : (o.subscription ?? o.parent?.subscription_details?.subscription);
+  if (subId && db.prepare('SELECT 1 FROM user_subscriptions WHERE stripe_subscription_id = ?').get(String(subId))) return true;
+  const userId = String(meta.user_id ?? o.client_reference_id ?? '');
+  return Boolean(userId && getUserById(userId));
+}
+
 export function handleStripeWebhook(rawBody: Buffer | string, signatureHeader: string) {
   verifyStripeSignature(rawBody, signatureHeader);
   let event: any;
@@ -586,6 +599,10 @@ export function handleStripeWebhook(rawBody: Buffer | string, signatureHeader: s
   } catch {
     throw new GenError('Webhook body is not valid JSON', { status: 400 });
   }
+
+  // One Stripe account serves the portal, Gen and Studio (J, 2026-10-29), and every endpoint gets every event: Gen acts
+  // only on its own and answers 200 to the rest, so Stripe never retries or disables this endpoint over them.
+  if (!isGenEvent(event)) return { ok: true, type: event?.type ?? 'unknown', ignored: 'not a Hawkes Gen event' };
 
   // Subscriptions (subscriptions.ts): their checkout, invoices and status changes.
   const sub = subscriptionEvent(event);

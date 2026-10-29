@@ -183,6 +183,10 @@ portal and Studio use Gen in the back end with their own keys.
     cancel and status, and mark a failed payment `past_due` (still the current plan).
   - **Management:** cancel and resume at the month's end (`/v1/subscriptions/cancel|resume`), and Stripe's billing
     portal (`POST /v1/billing/portal`).
+  - **One Stripe account for three products** (J, 2026-10-29): the portal, Gen and Studio share it, so every webhook
+    endpoint gets every event. Gen tags what it makes (`metadata.product = "gen"`, on the checkout and the
+    subscription) and acts only on its own (`billing.ts isGenEvent`: the tag, else a subscription it knows, else a Gen
+    account). Others' events get a 200 and nothing else, so Stripe never retries or disables the endpoint over them.
   - **Set-up:** Stripe needs its keys on each lane (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, or
     `POST /v1/billing/config`) and a webhook endpoint at `https://<gen>/v1/billing/webhook` for
     `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` and

@@ -95,3 +95,23 @@ test('a forged webhook is refused', async () => {
   const r = await fetch(`${base}/v1/billing/webhook`, { method: 'POST', headers: { 'Stripe-Signature': `t=${Math.floor(Date.now() / 1000)},v1=deadbeef` }, body: JSON.stringify({ type: 'invoice.paid' }) });
   assert.notEqual(r.status, 200);
 });
+
+test('one Stripe account for three products: the others\' events are answered 200 and ignored', async () => {
+  const before = await credits();
+  // The portal's subscription checkout and invoice (tagged), and an untagged one for an account Gen doesn't have.
+  for (const ev of [
+    { type: 'checkout.session.completed', data: { object: { mode: 'subscription', subscription: 'sub_portal', metadata: { product: 'portal', user_id: 'usr_1234abcd', plan_id: 'maker' }, payment_status: 'paid' } } },
+    { type: 'invoice.paid', data: { object: { id: 'in_p', subscription: 'sub_portal', subscription_details: { metadata: { product: 'portal', user_id: 'usr_1234abcd' } } } } },
+    { type: 'checkout.session.completed', data: { object: { mode: 'payment', payment_status: 'paid', id: 'cs_x', metadata: { user_id: 'usr_9999', credits: '1000' } } } },
+    { type: 'customer.subscription.updated', data: { object: { id: 'sub_studio', status: 'active', metadata: { product: 'studio' } } } },
+  ]) {
+    const r = await hook(ev);
+    assert.equal(r.status, 200, `${ev.type}: ${await r.clone().text()}`);
+    assert.match(String(((await r.json()) as any).ignored), /not a Hawkes Gen event/);
+  }
+  assert.equal(await credits(), before);
+  // Gen's own checkout is tagged.
+  await call('/v1/subscriptions/checkout', { planId: 'gen_creator' });
+  assert.equal(asked.at(-1)!.form.get('metadata[product]'), 'gen');
+  assert.equal(asked.at(-1)!.form.get('subscription_data[metadata][product]'), 'gen');
+});

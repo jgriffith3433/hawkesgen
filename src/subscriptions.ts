@@ -54,8 +54,11 @@ export async function subscriptionCheckout(user: UserRow, planId: string, origin
   else form.set('customer_email', user.email);
   form.set('success_url', `${origin}/?checkout=success#create`);
   form.set('cancel_url', `${origin}/?checkout=cancelled#create`);
+  // The product tag: the portal and Studio share this Stripe account and ignore what isn't theirs (billing.ts isGenEvent).
+  form.set('metadata[product]', 'gen');
   form.set('metadata[user_id]', user.id);
   form.set('metadata[plan_id]', plan.id);
+  form.set('subscription_data[metadata][product]', 'gen');
   form.set('subscription_data[metadata][user_id]', user.id);
   form.set('subscription_data[metadata][plan_id]', plan.id);
   form.set('line_items[0][quantity]', '1');
