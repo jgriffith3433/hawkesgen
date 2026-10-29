@@ -107,7 +107,10 @@ until then, runs of archived web builds fail at the connection.
 
 ## The session protocol (conductor ⇄ native runner), version 1
 
-One WebSocket per run: `wss://<runner>/session`, headers `X-Hawkes-Token` (the runner's key) and `X-Hawkes-Job`.
+One WebSocket per run: `wss://<runner>/session`, headers `X-Hawkes-Token` (the runner's key) and `X-Hawkes-Job`,
+plus `Authorization: Bearer <key>` when the runner sits behind a gateway that wants one (the entry's `gatewayKeyEnv`:
+`RUNPOD_API_KEY` for RunPod's load balancer). The desktop runner (`hawkes-play-native`, docs/play-native.md) speaks this
+through `server/play-native/genproto.mjs`; `test/play-native-proto.test.ts` plays this client against it.
 Text messages are JSON with a `type`; binary messages start with a type byte: `1` a live frame (JPEG), `2` a chunk of the
 file being sent. `t` is seconds since the run started.
 

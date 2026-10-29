@@ -695,6 +695,23 @@ export class Run {
     const reportFile = path.join(out, 'report.json');
     fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
 
+    // Gen's protocol (genproto.mjs): every file back over the session, then its result; no upload URLs.
+    if (this.m.inband && this.io.finish) {
+      this.setPhase('sending');
+      const files = [];
+      if (video?.bytes && video.file) files.push({ name: 'video.mp4', kind: 'video', mime: 'video/mp4', path: video.file });
+      for (const s of this.shots) files.push({ name: s.name, kind: 'shot', mime: 'image/jpeg', path: path.join(out, 'shots', s.name), t: s.t, reason: s.label });
+      if (collected.logs) files.push({ name: collected.logs, kind: 'log', mime: 'text/plain', path: path.join(out, collected.logs) });
+      if (collected.dumps) files.push({ name: collected.dumps, kind: 'dump', mime: 'application/gzip', path: path.join(out, collected.dumps) });
+      files.push({ name: 'report.json', kind: 'report', mime: 'application/json', path: reportFile });
+      await this.io.finish(report, files);
+      const { output: _o, timeline, logs, ...brief } = report;
+      this.result = { ...brief, perf: { ...brief.perf, samples: brief.perf.samples.length }, timeline: timeline.length, logs: logs.length };
+      this.setPhase('done');
+      if (process.env.HAWKES_KEEP_RUNS !== '1') fs.rmSync(this.dir, { recursive: true, force: true });
+      return;
+    }
+
     this.setPhase('uploading');
     const up = this.m.upload ?? {};
     const uploads = {};

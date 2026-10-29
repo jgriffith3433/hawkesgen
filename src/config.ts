@@ -265,6 +265,9 @@ export type PlaytestRunner = {
   maxConcurrent: number;
   /** A native runner's key: the name of the environment variable or secret that holds it (sent as X-Hawkes-Token). */
   tokenEnv: string | null;
+  /** A native runner behind a gateway that wants its own key (RunPod's load balancer: RUNPOD_API_KEY), sent as
+   *  Authorization: Bearer; null for none. */
+  gatewayKeyEnv?: string | null;
   enabled: boolean;
 };
 
@@ -394,6 +397,7 @@ export function cleanRunners(list: unknown): PlaytestRunner[] {
       pricePerSecond: Number.isFinite(price) && price >= 0 && price <= 0.1 ? price : 0,
       maxConcurrent: Math.max(1, Math.min(200, Math.round(Number(r.maxConcurrent)) || 1)),
       tokenEnv: typeof r.tokenEnv === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(r.tokenEnv) ? r.tokenEnv : null,
+      gatewayKeyEnv: typeof r.gatewayKeyEnv === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(r.gatewayKeyEnv) ? r.gatewayKeyEnv : null,
       enabled: r.enabled !== false,
     });
   }

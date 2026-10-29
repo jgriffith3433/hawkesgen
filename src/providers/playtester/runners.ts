@@ -14,7 +14,7 @@ import { cloudPlaytestsFor, runpodPlaytest, loadSpec, SPEC_FILE, specPricePerSec
 export type Lane = 'studio' | 'customer';
 export type RunnerChoice =
   | { kind: 'browser'; runner: PlaytestRunner; cloud: CloudPlaytest }
-  | { kind: 'native'; runner: PlaytestRunner; url: string; token: string | null };
+  | { kind: 'native'; runner: PlaytestRunner; url: string; token: string | null; gatewayKey: string | null };
 export type RunnerCandidates = { choices: RunnerChoice[]; skipped: string[] };
 
 /** Targets a browser runner plays (Playwright over a connection: pages). Electron apps and desktop builds are launched on
@@ -122,7 +122,9 @@ export function runnerCandidates(
       if (!isNativeTarget(target)) { skipped.push(`${r.id}: a native runner doesn't play pages`); continue; }
       const token = r.tokenEnv ? get(r.tokenEnv) ?? null : null;
       if (r.tokenEnv && !token) { skipped.push(`${r.id}: ${r.tokenEnv} is not set`); continue; }
-      choice = { kind: 'native', runner: r, url: r.url!, token };
+      const gatewayKey = r.gatewayKeyEnv ? get(r.gatewayKeyEnv) ?? null : null;
+      if (r.gatewayKeyEnv && !gatewayKey) { skipped.push(`${r.id}: ${r.gatewayKeyEnv} is not set`); continue; }
+      choice = { kind: 'native', runner: r, url: r.url!, token, gatewayKey };
     } else {
       if (isNativeTarget(target)) { skipped.push(`${r.id}: a browser runner doesn't play ${target} builds`); continue; }
       const svc = cloud ?? browserService(r, settings, specs);

@@ -18,6 +18,8 @@
 //                        dumps, shots:[...]}}   (each upload target: a signed URL, or {url, headers, method})
 //                      {type:"input", id?, kind:"key"|"pointer"|"pad"|"text"|"action", ...}   (Run.input)
 //                      {type:"stop"}
+// Gen speaks its own version of this (a start with v: 1, docs/playtest-runners.md): genproto.mjs translates both ways
+// and sends the files back over the session instead of to upload URLs.
 //   runner -> client   {type:"status", phase}, {type:"log", source, line}, {type:"hello"}, {type:"state"},
 //                      {type:"event"}, {type:"problem"}, {type:"first-frame"}, {type:"exit"}, {type:"ack", re},
 //                      binary JPEG frames, and last {type:"result", result}; then the runner closes (1000).
@@ -30,6 +32,7 @@ import { WebSocketServer } from 'ws';
 import { ensureDriver, gpuInfo } from './driver.mjs';
 import { selfTest } from './display.mjs';
 import { Run, startProblem, killPlayer, PREFIX_TEMPLATE, PLAYER_UID, PLAYER_GID } from './session.mjs';
+import { isGenStart, runStart, genIo, finishGen } from './genproto.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const TOKEN = process.env.HAWKES_TOKEN || '';
@@ -209,12 +212,17 @@ function session(ws, job) {
     let m;
     try { m = JSON.parse(String(data)); } catch { return out({ type: 'error', error: 'not JSON' }); }
     if (m.type === 'start') {
-      if (mine || run) return out({ type: 'error', error: 'a run is already going' });
-      const why = startProblem(m, { allowHttp: ALLOW_HTTP });
-      if (why) { out({ type: 'error', error: why }); return ws.close(4002, why.slice(0, 120)); }
+      // Gen's protocol (v: 1, genproto.mjs) or the runner's own (the local test conductor).
+      const gen = isGenStart(m) ? genIo(ws, io, ctx) : null;
+      const start = gen ? runStart(m) : m;
+      const say = gen ? gen.io.send : out;
+      if (mine || run) return say({ type: 'error', error: 'a run is already going' });
+      const why = startProblem(start, { allowHttp: ALLOW_HTTP });
+      if (why) { say({ type: 'error', error: why }); return ws.close(4002, why.slice(0, 120)); }
       clearTimeout(startTimer);
-      liveFrames = m.live?.frames !== false;
-      mine = run = new Run(m, io, ctx);
+      liveFrames = start.live?.frames !== false;
+      if (gen) gen.accepted();
+      mine = run = new Run(start, gen ? { ...gen.io, finish: (report, files) => finishGen(gen, report, files) } : io, ctx);
       // A Proton run waits for the worker's warm prefix (the first minute after a cold start), at most 4 minutes.
       if (m.target === 'proton' && ctx.prefix) await Promise.race([ctx.prefix, new Promise((r) => setTimeout(r, 240_000))]);
       log(`session ${job || '?'}: run ${mine.id} (${m.target}) started`);

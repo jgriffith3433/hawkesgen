@@ -70,7 +70,7 @@ export const sessionUrl = (url: string) => `${url.replace(/^http/, 'ws').replace
  * RunnerUnavailable when the runner refuses or can't be reached before it accepts.
  */
 export function runSession(
-  runner: { url: string; token: string | null; id: string },
+  runner: { url: string; token: string | null; id: string; gatewayKey?: string | null },
   start: Omit<StartMessage, 'type' | 'v'>,
   { handlers = {}, signal, limitMs, acceptMs = 5 * 60_000, tmp, WebSocket: WS = (globalThis as any).WebSocket }: {
     handlers?: SessionHandlers; signal?: AbortSignal; limitMs: number; acceptMs?: number;
@@ -78,7 +78,7 @@ export function runSession(
   },
 ): Promise<SessionResult> {
   const out: SessionResult = { accepted: null, result: null, crashes: [], logs: [], perf: null, perfSamples: [], states: [], events: [], files: [], closed: null };
-  const ws = new WS(sessionUrl(runner.url), { headers: { ...(runner.token ? { 'X-Hawkes-Token': runner.token } : {}), 'X-Hawkes-Job': start.job } });
+  const ws = new WS(sessionUrl(runner.url), { headers: { ...(runner.gatewayKey ? { Authorization: `Bearer ${runner.gatewayKey}` } : {}), ...(runner.token ? { 'X-Hawkes-Token': runner.token } : {}), 'X-Hawkes-Job': start.job } });
   ws.binaryType = 'arraybuffer';
   return new Promise<SessionResult>((resolve, reject) => {
     let settled = false;

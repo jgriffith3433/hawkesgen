@@ -60,8 +60,19 @@ The conductor opens `wss://<endpoint>.api.runpod.ai/session` with two headers:
 - `Authorization: Bearer RUNPOD_API_KEY`, which RunPod's gateway checks and drops
 - `X-Hawkes-Token`, which the image checks against `HAWKES_TOKEN`
 
-The image holds no cloud credentials. A worker plays **one run at a time**; a second connection gets 429. The full
-message list is at the top of `server.mjs`. In short:
+The image holds no cloud credentials. A worker plays **one run at a time**; a second connection gets 429.
+
+**Two dialects.** Gen speaks its session protocol, version 1 (docs/playtest-runners.md, "The session protocol"): a
+`start` with `v: 1`. `genproto.mjs` translates it into the Run's own start, and translates the Run's messages into
+Gen's:
+- `accepted` first, then steps, logs by stream, state and events
+- a `crash` for an early exit, and a final `perf`
+- every file back over the session, then `result`
+- live frames with type byte 1
+
+Gen gets no upload URLs; its files come over the socket. `test/play-native-proto.test.ts` plays Gen's real client
+against this adapter. A start without `v` is the runner's own dialect below (upload URLs), which `tools/play-native/test.mjs`
+uses. The full message list is at the top of `server.mjs`. In short:
 
 ```
 start {build:{url, sha256?}, target:"linux"|"proton", exe?, args?, env?, scenario?, options?, limits?,
@@ -277,8 +288,11 @@ has the SDK. The result JSON and the uploads land in `--out`.
    Look at `display.kind` (`xorg-nvidia` hoped for), `vulkan.device` (the NVIDIA card), `nvenc.ok` and `driver`.
    Then run `tools/play-native/test.mjs` against it. The build must be at a public https URL; the test's own HTTP
    server only works locally.
-4. **Gen's router** (separate work) adds the runner to `settings.playtest.runners`. `setup.mjs` prints the entry. The
-   conductor signs the build and upload URLs per run.
+4. **Gen's router.** Add the runner to `settings.playtest.runners` (`setup.mjs` prints the entry). For example:
+   `{ "id": "play-native", "provider": "native", "url": "https://<endpoint>.api.runpod.ai", "targets": ["linux",
+   "proton"], "lanes": ["studio", "customer"], "pricePerSecond": 0.00016, "maxConcurrent": 2, "tokenEnv":
+   "PLAY_NATIVE_TOKEN", "gatewayKeyEnv": "RUNPOD_API_KEY", "enabled": true }`. Gen signs the build's link per run;
+   files come back over the session.
 
 **Cost** (RunPod serverless flex, 16 GB class, $0.58/h while a worker runs):
 

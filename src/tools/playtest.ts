@@ -744,7 +744,7 @@ async function runNative(ctx: RunContext, p: Record<string, any>, target: Playte
       try {
         ctx.step(`starting the ${target} build on ${choice.runner.id}`);
         runnerName = choice.runner.id;
-        session = await runSession({ url: choice.url, token: choice.token, id: choice.runner.id }, {
+        session = await runSession({ url: choice.url, token: choice.token, gatewayKey: choice.gatewayKey, id: choice.runner.id }, {
           job: ctx.job.id, project: ctx.job.project, target, build: { url: f.url, kind: f.kind, sha256: f.sha256, name: f.name, bytes: f.bytes },
           exe: p.exe ?? null, args: p.args ?? [], scenario: p.scenario, mode: p.mode, options: p.options ?? null, seed: p.seed, speed: p.speed,
           timeout: p.timeout ?? 600, bootTimeout: p.bootTimeout, width: p.width, height: p.height, shotEvery: p.shotEvery, liveFps: 4,
