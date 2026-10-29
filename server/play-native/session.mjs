@@ -14,6 +14,7 @@ import { listen } from './contract/ws-server.mjs';
 import { RunnerSession, CLOSE, launchWith } from './contract/protocol.mjs';
 import { startCapture } from './capture.mjs';
 import { frameStats, frameDiff, isBlack } from './display.mjs';
+import { eglVendorDirs } from './driver.mjs';
 
 export const PLAYER_UID = 1000;
 export const PLAYER_GID = 1000;
@@ -437,7 +438,7 @@ export class Run {
       SDL_JOYSTICK_DISABLE_UDEV: '1', SDL_AUDIODRIVER: 'dummy', __GL_SHADER_DISK_CACHE_PATH: path.join(this.dir, 'tmp'),
       ...(process.env.LD_LIBRARY_PATH ? { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH } : {}),
       ...(st.vulkan?.icd ? { VK_ICD_FILENAMES: st.vulkan.icd, VK_DRIVER_FILES: st.vulkan.icd } : {}),
-      __EGL_VENDOR_LIBRARY_DIRS: '/usr/share/glvnd/egl_vendor.d',
+      __EGL_VENDOR_LIBRARY_DIRS: eglVendorDirs(),
     };
     if (st.mangohud && this.m.options?.mangohud !== false) {
       // MangoHud writes its CSV when logging stops, not as it goes (a killed game leaves none), so it logs a window:

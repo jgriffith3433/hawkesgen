@@ -98,6 +98,7 @@ test('helpers: renderers, bus ids, encoders', () => {
   assert.equal(classifyRenderer('llvmpipe (LLVM 19.1.1, 256 bits)'), 'software');
   assert.equal(classifyRenderer(''), 'unknown');
   assert.equal(xorgBusId('00000000:3B:00.0'), 'PCI:59:0:0');
+  assert.equal(xorgBusId('00000001:C1:00.0'), 'PCI:193@1:0:0');
   assert.equal(xorgBusId('nonsense'), null);
   assert.equal(encoderArgs(true)[0], 'h264_nvenc');
   assert.equal(encoderArgs(false)[0], 'libx264');

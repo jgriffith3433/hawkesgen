@@ -8,6 +8,12 @@
 //   node tools/play-native/setup.mjs --apply              create or update the template and the endpoint
 //   options: --image ghcr.io/jgriffith3433/hawkes-play-native:latest  --name hawkes-play-native
 //            --gpu AMPERE_16,AMPERE_24  --gpu-types "NVIDIA RTX A4000,..."  --max 2  --idle 60  --max-seconds 3600
+//            --recreate   delete the endpoint of this name first and make a new one (a new GPU list needs one)
+//
+// A new endpoint is made with no workers allowed (workersMax 0), given its exact GPU models, and only then opened to
+// --max workers: RunPod places standby workers as soon as an endpoint exists, on the pools' GPUs, and a worker stays
+// on the machine it was first placed on. The first endpoint (xkhpihvfrfsx6g, 2026-10-29) got an RTX PRO 6000 MIG
+// slice that way, before its GPU list was set.
 //
 // Creating or updating a template or an endpoint costs nothing: RunPod bills only while a worker runs (from its start
 // to `--idle` seconds after the last connection). Workers min stays 0. The script never starts a worker.
@@ -15,6 +21,8 @@
 // Secrets (hawkesgen/.env, never printed): RUNPOD_API_KEY, and the token the image checks as HAWKES_TOKEN:
 // PLAY_NATIVE_TOKEN, else PLAYTEST_RUNPOD_TOKEN, else GPU_WORKER_TOKEN, else none (then only RunPod's key guards it).
 import { APPLY, arg, secret, say, header, redact } from '../gpu-providers/lib.mjs';
+
+const flag = (n) => process.argv.includes(`--${n}`);
 
 // Copied from tools/playtest-runpod/setup.mjs (importing it would run that script). RunPod serverless flex prices per
 // worker hour, 2026-10-29.
@@ -51,6 +59,13 @@ const endpoint = {
   executionTimeoutMs: (maxSeconds + 900) * 1000,
 };
 
+async function rest(method, id, body) {
+  const r = await fetch(`https://rest.runpod.io/v1/endpoints/${id}`, { method, headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const text = await r.text();
+  if (!r.ok) throw new Error(`RunPod REST ${method}: ${r.status} ${text.slice(0, 400)}`);
+  try { return JSON.parse(text); } catch { return {}; }
+}
+
 async function gql(query, variables) {
   const r = await fetch(GQL, { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify({ query, variables }) });
   const j = await r.json().catch(() => ({}));
@@ -73,13 +88,21 @@ if (APPLY) {
   const oldT = mine.podTemplates.find((t) => t.name === name);
   const t = (await gql('mutation($i: SaveTemplateInput) { saveTemplate(input: $i) { id } }', { i: { ...(oldT ? { id: oldT.id } : {}), ...template } })).saveTemplate;
   say(`\n${oldT ? 'updated' : 'made'} template ${t.id}`);
-  const oldE = mine.endpoints.find((e) => e.name === name || e.name === `${name} -fb`);
-  const e = (await gql('mutation($i: EndpointInput!) { saveEndpoint(input: $i) { id type } }', { i: { ...(oldE ? { id: oldE.id } : {}), ...endpoint, templateId: t.id } })).saveEndpoint;
+  let oldE = mine.endpoints.find((e) => e.name === name || e.name === `${name} -fb`);
+  if (oldE && flag('recreate')) {
+    await rest('PATCH', oldE.id, { workersMin: 0, workersMax: 0 });
+    await rest('DELETE', oldE.id);
+    say(`deleted endpoint ${oldE.id}`);
+    oldE = null;
+  }
+  // New: no workers until the GPU models are set (see the top).
+  const e = (await gql('mutation($i: EndpointInput!) { saveEndpoint(input: $i) { id type } }', { i: { ...(oldE ? { id: oldE.id } : {}), ...endpoint, ...(oldE ? {} : { workersMax: 0 }), templateId: t.id } })).saveEndpoint;
   endpointId = e.id;
   say(`${oldE ? 'updated' : 'made'} endpoint ${e.id} (type ${e.type})`);
-  const r = await fetch(`https://rest.runpod.io/v1/endpoints/${e.id}`, { method: 'PATCH', headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify({ gpuTypeIds: gpuTypes, gpuCount: 1 }) });
-  if (!r.ok) throw new Error(`RunPod REST: ${r.status} ${(await r.text()).slice(0, 400)}`);
-  say(`endpoint ${e.id} GPU models: ${((await r.json()).gpuTypeIds ?? gpuTypes).join(', ')}`);
+  const set = await rest('PATCH', e.id, { gpuTypeIds: gpuTypes, gpuCount: 1 });
+  say(`endpoint ${e.id} GPU models: ${(set.gpuTypeIds ?? gpuTypes).join(', ')}`);
+  if (!oldE) { await rest('PATCH', e.id, { workersMax: max }); say(`endpoint ${e.id} open to ${max} workers`); }
+  else say('An endpoint that existed keeps the workers it placed: --recreate if its GPU list changed.');
 } else say('\n(dry run: --apply creates or updates them; that costs nothing until a playtest starts a worker)');
 
 const url = `https://${endpointId ?? '<endpoint id>'}.api.runpod.ai`;

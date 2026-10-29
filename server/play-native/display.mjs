@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
-import { gpuInfo, NVIDIA_ICD, LAVAPIPE_ICD, nvencWorks } from './driver.mjs';
+import { gpuInfo, nvidiaIcd, xorgModules, LAVAPIPE_ICD, nvencWorks } from './driver.mjs';
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -85,13 +85,23 @@ export async function startDisplay(kind, { num = 0, width = 1280, height = 720, 
   if (kind === 'xorg-nvidia') {
     const gpu = gpuInfo();
     if (!gpu?.busId) return { error: 'no NVIDIA GPU bus id (nvidia-smi)' };
-    if (!fs.existsSync('/usr/lib/xorg/modules/drivers/nvidia_drv.so')) return { error: 'no NVIDIA Xorg driver (driver.mjs ensureDriver)' };
+    const modules = xorgModules();
+    if (!modules) return { error: 'no NVIDIA Xorg driver (driver.mjs ensureDriver)' };
     const conf = fs.readFileSync(new URL('./xorg-nvidia.conf', import.meta.url), 'utf8')
       .replace('__BUSID__', gpu.busId).replace('__W__', String(width)).replace('__H__', String(height));
+    // The config by a name relative to /etc/X11 (Xorg takes absolute ones only when it is sure it runs as root), and
+    // the NVIDIA modules first on the module path (/opt/nvidia-gl/xorg when driver.mjs fetched them). vt7 with
+    // -sharevts -novtswitch -keeptty: a container has no console to take (checked in Docker with the dummy driver).
     fs.mkdirSync('/etc/X11', { recursive: true });
     fs.writeFileSync('/etc/X11/xorg-hawkes.conf', conf);
+    fs.rmSync('/tmp/Xorg.hawkes.log', { force: true });
     cmd = 'Xorg';
-    args = [display, '-config', '/etc/X11/xorg-hawkes.conf', '-noreset', '-nolisten', 'tcp', '-ac', '-novtswitch', '-sharevts', '-logfile', '/tmp/Xorg.hawkes.log', '+extension', 'GLX', '+extension', 'RANDR', '+extension', 'MIT-SHM'];
+    const modulepath = [modules, '/usr/lib/xorg/modules'].filter((d, i, a) => a.indexOf(d) === i).join(',');
+    args = [display, 'vt7', '-config', 'xorg-hawkes.conf', '-modulepath', modulepath, '-noreset', '-nolisten', 'tcp', '-ac', '-novtswitch', '-sharevts', '-keeptty', '-logfile', '/tmp/Xorg.hawkes.log', '+extension', 'GLX', '+extension', 'RANDR', '+extension', 'MIT-SHM'];
+  } else if (kind === 'xvfb-noglx') {
+    // Xvfb without its GLX (Mesa) extension: Vulkan only. Xvfb with GLX crashed at start on a RunPod host (2026-10-29).
+    cmd = 'Xvfb';
+    args = [display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-ac', '-noreset', '-extension', 'GLX', '+extension', 'RANDR', '+extension', 'MIT-SHM'];
   } else {
     cmd = 'Xvfb';
     args = [display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-ac', '-noreset', '+extension', 'GLX', '+extension', 'RANDR', '+extension', 'MIT-SHM'];
@@ -102,8 +112,9 @@ export async function startDisplay(kind, { num = 0, width = 1280, height = 720, 
   const up = await waitForX(display, proc);
   if (!up) {
     proc.kill('SIGKILL');
-    const xlog = kind === 'xorg-nvidia' ? fs.existsSync('/tmp/Xorg.hawkes.log') ? fs.readFileSync('/tmp/Xorg.hawkes.log', 'utf8').split('\n').filter((l) => /\(EE\)|Fatal|error/i.test(l)).slice(-8) : [] : [];
-    return { error: `${cmd} did not start: ${[...lines.slice(-6), ...xlog].join(' | ').slice(0, 1200)}` };
+    const xlog = kind === 'xorg-nvidia' && fs.existsSync('/tmp/Xorg.hawkes.log') ? fs.readFileSync('/tmp/Xorg.hawkes.log', 'utf8').split('\n').filter((l) => /\(EE\)|\(WW\)|Fatal|error|NVIDIA/i.test(l)).slice(-20) : [];
+    const exit = proc.exitCode !== null ? `exit ${proc.exitCode}` : proc.signalCode ? `signal ${proc.signalCode}` : 'no answer';
+    return { error: `${cmd} did not start (${exit}): ${[...lines.slice(-10), ...xlog].join(' | ').slice(0, 3000)}` };
   }
   log(`${kind} up on ${display} (${width}x${height})`);
   return { kind, display, proc, width, height, log: () => lines.slice() };
@@ -147,12 +158,12 @@ export async function drawTest(display, icd, ms = 4000) {
 export async function selfTest({ width = 1280, height = 720, allowSoftware = false, log = () => {}, driver = null } = {}) {
   const t0 = Date.now();
   const gpu = gpuInfo();
-  const kinds = (process.env.HAWKES_DISPLAY ? [process.env.HAWKES_DISPLAY] : gpu ? ['xorg-nvidia', 'xvfb'] : ['xvfb']);
+  const kinds = (process.env.HAWKES_DISPLAY ? [process.env.HAWKES_DISPLAY] : gpu ? ['xorg-nvidia', 'xvfb', 'xvfb-noglx'] : ['xvfb']);
   const tried = [];
   for (const kind of kinds) {
     const d = await startDisplay(kind, { width, height, log });
     if (d.error) { tried.push({ kind, ok: false, error: d.error }); log(`display ${kind}: ${d.error}`); continue; }
-    const icds = [gpu && fs.existsSync(NVIDIA_ICD) ? NVIDIA_ICD : null, fs.existsSync(LAVAPIPE_ICD) ? LAVAPIPE_ICD : null].filter(Boolean);
+    const icds = [gpu ? nvidiaIcd() : null, fs.existsSync(LAVAPIPE_ICD) ? LAVAPIPE_ICD : null].filter(Boolean);
     let chosen = null;
     const vk = [];
     for (const icd of icds) {

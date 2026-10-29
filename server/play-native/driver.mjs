@@ -3,8 +3,13 @@
 // Adapted from server/playtest-cloudrun/gpu.mjs ensureGraphicsLibs (keep the two in step): fetch the .run installer of
 // the exact version the host's kernel module runs (~300 MB), extract it only (nothing is installed or loaded into the
 // kernel), and copy the graphics libraries to /opt/nvidia-gl. This runner also needs the Xorg driver
-// (nvidia_drv.so) and the GLX server module (libglxserver_nvidia.so) for its headless Xorg (display.mjs), so those are
-// copied into Xorg's module folders. Pure helpers are at the top; the fetch is ensureDriver().
+// (nvidia_drv.so) and the GLX server module (libglxserver_nvidia.so) for its headless Xorg (display.mjs), so those go
+// to /opt/nvidia-gl/xorg (Xorg's -modulepath, before its own). Pure helpers are at the top; the fetch is ensureDriver().
+//
+// Nothing here writes outside /opt/nvidia-gl: when the NVIDIA runtime mounts the graphics libraries it also bind-mounts
+// their loader files (/usr/share/glvnd/egl_vendor.d/10_nvidia.json, the Vulkan ICD) read-only (EROFS on RunPod,
+// 2026-10-29). Those are used as they are; fetched libraries get their own loader files in /opt/nvidia-gl, which
+// nvidiaIcd() and eglVendorDirs() name for the self-test and the game.
 
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -16,8 +21,12 @@ export const GRAPHICS_LIBS = /^lib(EGL_nvidia|GLESv2_nvidia|GLESv1_CM_nvidia|GLX
 export const DRIVER_URL = (v) => `https://download.nvidia.com/XFree86/Linux-x86_64/${v}/NVIDIA-Linux-x86_64-${v}.run`;
 export const DRIVER_URL_DC = (v) => `https://us.download.nvidia.com/tesla/${v}/NVIDIA-Linux-x86_64-${v}.run`;
 export const GL_DIR = '/opt/nvidia-gl';
-export const XORG_DRIVERS = '/usr/lib/xorg/modules/drivers';
-export const XORG_EXTENSIONS = '/usr/lib/xorg/modules/extensions';
+export const XORG_MODULES = `${GL_DIR}/xorg`;
+const XORG_DRIVERS = `${XORG_MODULES}/drivers`;
+const XORG_EXTENSIONS = `${XORG_MODULES}/extensions`;
+const OWN_ICD = `${GL_DIR}/icd.d/nvidia_icd.json`;
+const OWN_EGL = `${GL_DIR}/egl_vendor.d`;
+const SYSTEM_EGL = '/usr/share/glvnd/egl_vendor.d';
 
 const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
 const ls = (d) => { try { return fs.readdirSync(d); } catch { return []; } };
@@ -34,11 +43,12 @@ export function gpuInfo() {
   return { name, version, busId: xorgBusId(bus), memory };
 }
 
-/** nvidia-smi's "00000000:3B:00.0" (hex) to Xorg's "PCI:59:0:0" (decimal). */
+/** nvidia-smi's "00000000:3B:00.0" (hex) to Xorg's "PCI:59:0:0" (decimal), with "@domain" when the domain isn't 0. */
 export function xorgBusId(bus) {
-  const m = /([0-9a-f]+):([0-9a-f]+):([0-9a-f]+)\.([0-9a-f]+)$/i.exec(String(bus ?? ''));
+  const m = /(?:([0-9a-f]+):)?([0-9a-f]+):([0-9a-f]+)\.([0-9a-f]+)$/i.exec(String(bus ?? ''));
   if (!m) return null;
-  return `PCI:${parseInt(m[2], 16)}:${parseInt(m[3], 16)}:${parseInt(m[4], 16)}`;
+  const domain = m[1] ? parseInt(m[1], 16) : 0;
+  return `PCI:${parseInt(m[2], 16)}${domain ? `@${domain}` : ''}:${parseInt(m[3], 16)}:${parseInt(m[4], 16)}`;
 }
 
 /** Where the mounted (or fetched) EGL/GLX libraries are, if anywhere. */
@@ -59,8 +69,8 @@ export async function ensureDriver({ log = () => {}, xorg = true } = {}) {
   if (!gpu?.version) return { done: false, why: 'no NVIDIA driver here', gpu };
   const v = gpu.version;
   const haveGl = mountedGraphics();
-  const haveXorg = fs.existsSync(`${XORG_DRIVERS}/nvidia_drv.so`) && ls(XORG_EXTENSIONS).some((f) => f.startsWith('libglxserver_nvidia.so'));
-  if (haveGl && (!xorg || haveXorg)) return { done: false, why: 'already here', gpu, gl: haveGl };
+  const haveXorg = Boolean(xorgModules());
+  if (haveGl && (!xorg || haveXorg)) { useLoaders(haveGl.dir); return { done: false, why: 'already here', gpu, gl: haveGl, xorgModules: xorgModules() }; }
   if (process.env.HAWKES_FETCH_DRIVER === '0') return { done: false, why: 'HAWKES_FETCH_DRIVER=0', gpu };
   const t0 = Date.now();
   const tmp = fs.mkdtempSync('/tmp/nvdrv-');
@@ -101,8 +111,8 @@ export async function ensureDriver({ log = () => {}, xorg = true } = {}) {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
   const gl = mountedGraphics();
-  pointLoadersAt(gl?.dir ?? GL_DIR);
-  return { done: true, gpu, gl, xorgDriver: fs.existsSync(`${XORG_DRIVERS}/nvidia_drv.so`), seconds: Math.round((Date.now() - t0) / 100) / 10 };
+  useLoaders(gl?.dir ?? GL_DIR);
+  return { done: true, gpu, gl, xorgModules: xorgModules(), icd: nvidiaIcd(), eglDirs: eglVendorDirs(), seconds: Math.round((Date.now() - t0) / 100) / 10 };
 }
 
 /** The sonames the loaders open (libEGL_nvidia.so.0, libGLX_nvidia.so.0, libGLESv2_nvidia.so.2, ...). */
@@ -117,17 +127,42 @@ function linkSonames(dir) {
   }
 }
 
-/** The GLVND EGL vendor file and the Vulkan ICD file pointing at the NVIDIA libraries in `dir`. */
-export function pointLoadersAt(dir) {
-  const lib = (n) => (dir === '/usr/lib/x86_64-linux-gnu' ? n : `${dir}/${n}`);
-  fs.mkdirSync('/usr/share/glvnd/egl_vendor.d', { recursive: true });
-  fs.writeFileSync('/usr/share/glvnd/egl_vendor.d/10_nvidia.json', JSON.stringify({ file_format_version: '1.0.0', ICD: { library_path: lib('libEGL_nvidia.so.0') } }));
-  fs.mkdirSync('/etc/vulkan/icd.d', { recursive: true });
-  fs.writeFileSync(NVIDIA_ICD, JSON.stringify({ file_format_version: '1.0.1', ICD: { library_path: lib('libGLX_nvidia.so.0'), api_version: '1.3.0' } }));
-  if (dir !== '/usr/lib/x86_64-linux-gnu') process.env.LD_LIBRARY_PATH = [dir, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':');
+/** Where the NVIDIA Xorg modules are (the runtime's own, else the fetched ones), or null. Xorg's -modulepath. */
+export function xorgModules() {
+  for (const d of [XORG_MODULES, '/usr/lib/xorg/modules', '/usr/lib/x86_64-linux-gnu/nvidia/xorg']) {
+    const drv = fs.existsSync(`${d}/drivers/nvidia_drv.so`) || fs.existsSync(`${d}/nvidia_drv.so`);
+    const glx = [...ls(`${d}/extensions`), ...ls(d)].some((f) => f.startsWith('libglxserver_nvidia.so'));
+    if (drv && glx) return d;
+  }
+  return null;
 }
 
-export const NVIDIA_ICD = '/etc/vulkan/icd.d/nvidia_icd.json';
+/** The NVIDIA Vulkan ICD file to use: ours (fetched libraries), else the runtime's mounted one, else null. */
+export function nvidiaIcd() {
+  return [OWN_ICD, '/etc/vulkan/icd.d/nvidia_icd.json', '/usr/share/vulkan/icd.d/nvidia_icd.json'].find((f) => fs.existsSync(f)) ?? null;
+}
+
+/** __EGL_VENDOR_LIBRARY_DIRS: ours first (fetched libraries), then the system's. */
+export function eglVendorDirs() {
+  return [fs.existsSync(`${OWN_EGL}/10_nvidia.json`) ? OWN_EGL : null, SYSTEM_EGL].filter(Boolean).join(':');
+}
+
+/**
+ * Loader files for the NVIDIA libraries in `dir`. Libraries the runtime mounted come with their own (read-only) files,
+ * so only libraries outside the system folder get files of ours, in /opt/nvidia-gl. Sets this process's environment,
+ * which the display and the game inherit.
+ */
+export function useLoaders(dir) {
+  if (dir !== '/usr/lib/x86_64-linux-gnu') {
+    fs.mkdirSync(OWN_EGL, { recursive: true });
+    fs.writeFileSync(`${OWN_EGL}/10_nvidia.json`, JSON.stringify({ file_format_version: '1.0.0', ICD: { library_path: `${dir}/libEGL_nvidia.so.0` } }));
+    fs.mkdirSync(`${GL_DIR}/icd.d`, { recursive: true });
+    fs.writeFileSync(OWN_ICD, JSON.stringify({ file_format_version: '1.0.1', ICD: { library_path: `${dir}/libGLX_nvidia.so.0`, api_version: '1.3.0' } }));
+    if (!(process.env.LD_LIBRARY_PATH ?? '').split(':').includes(dir)) process.env.LD_LIBRARY_PATH = [dir, process.env.LD_LIBRARY_PATH].filter(Boolean).join(':');
+  }
+  process.env.__EGL_VENDOR_LIBRARY_DIRS = eglVendorDirs();
+}
+
 export const LAVAPIPE_ICD = ['/usr/share/vulkan/icd.d/lvp_icd.json', '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json'].find((f) => fs.existsSync(f)) ?? '/usr/share/vulkan/icd.d/lvp_icd.json';
 
 /** Whether ffmpeg can encode H.264 on the GPU here (libnvidia-encode from the mounted driver). */

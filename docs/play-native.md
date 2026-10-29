@@ -33,7 +33,17 @@ One X display per worker. The self-test picks it once and every run uses it:
    module either. `driver.mjs` fetches the `.run` installer for the host's exact driver version (~300 MB, extracted
    only, nothing goes into the kernel). It copies out the EGL/GLX/Vulkan libraries, `nvidia_drv.so` and
    `libglxserver_nvidia.so`. This is the browser runner's `ensureGraphicsLibs` plus the two Xorg files.
-2. **Xvfb** as the fallback. GL is Mesa's llvmpipe. Vulkan is NVIDIA's if it can present to a non-NVIDIA X server,
+   - **Everything it writes goes under `/opt/nvidia-gl`** (libraries, `xorg/` for Xorg's `-modulepath`, its own
+     `icd.d/nvidia_icd.json` and `egl_vendor.d/10_nvidia.json`). When the runtime mounts the graphics libraries it
+     bind-mounts their loader files read-only, so the first worker's attempt to rewrite
+     `/usr/share/glvnd/egl_vendor.d/10_nvidia.json` failed with EROFS (2026-10-29). Mounted loader files are now used
+     as they are; `nvidiaIcd()` and `eglVendorDirs()` name the files the self-test pins and the game gets
+     (`VK_ICD_FILENAMES`, `__EGL_VENDOR_LIBRARY_DIRS`).
+   - Xorg runs as `Xorg :0 vt7 -config xorg-hawkes.conf -modulepath /opt/nvidia-gl/xorg,/usr/lib/xorg/modules
+     -sharevts -novtswitch -keeptty ...`. The flags were checked in Docker with the dummy driver (no console in a
+     container is fine). The BusID carries the PCI domain when it isn't 0 (`PCI:193@1:0:0`).
+2. **Xvfb** as the fallback, then **Xvfb without GLX** (Vulkan only: Xvfb with GLX crashed at start on the first
+   RunPod worker, a MIG slice). GL is Mesa's llvmpipe. Vulkan is NVIDIA's if it can present to a non-NVIDIA X server,
    else lavapipe. In GPU mode the self-test accepts a display only when its Vulkan device is the NVIDIA GPU. Vulkan is
    what DXVK and VKD3D use, so it decides how Windows games run.
 
