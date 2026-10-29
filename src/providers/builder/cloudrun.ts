@@ -136,10 +136,19 @@ export function siteInput(site: string, siteDir?: string) {
 
 type CloudJob = { execution: string; prefix: string; started: number; repo: string; saveKey: string | null; stateKey: string; clean: boolean };
 const jobFile = (jobId: string) => path.join(paths.builder, 'cloud-jobs', `${jobId}.json`);
-const loadJob = (jobId: string): CloudJob | null => { try { return JSON.parse(fs.readFileSync(jobFile(jobId), 'utf8')); } catch { return null; } };
-function saveJob(jobId: string, j: CloudJob) {
+// The running execution is noted here and next to the build's spec in the bucket: on Cloud Run this folder is the
+// instance's memory, so a replaced instance found no note, started the build again beside the one still running, and
+// the second waited for the first's quota (Sick Of It, 2026-10-29).
+const jobKey = (jobId: string) => `unity-builds/${jobId}/cloud-job.json`;
+async function loadJob(jobId: string, bucket?: string): Promise<CloudJob | null> {
+  try { return JSON.parse(fs.readFileSync(jobFile(jobId), 'utf8')); } catch {}
+  if (!bucket) return null;
+  try { const b = await gcsRead(bucket, jobKey(jobId)); return b ? JSON.parse(b.toString('utf8')) : null; } catch { return null; }
+}
+async function saveJob(jobId: string, j: CloudJob, bucket?: string) {
   fs.mkdirSync(path.dirname(jobFile(jobId)), { recursive: true });
   fs.writeFileSync(jobFile(jobId), JSON.stringify(j));
+  if (bucket) await gcsWrite(bucket, jobKey(jobId), Buffer.from(JSON.stringify(j)), 'application/json').catch(() => {});
 }
 
 // ------------------------------------------------------------------ build
@@ -247,7 +256,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   spec = checked.spec;
   const tmp = fs.mkdtempSync(path.join(paths.tmp, 'cloudbuild-'));
 
-  let job = loadJob(jobId);
+  let job = await loadJob(jobId, cfg.gcp.bucket);
   if (job) {
     hooks.log(`the cloud build was already started (${job.execution.split('/').pop()}); following it`);
   } else {
@@ -262,7 +271,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     // The execution may run 15 minutes past the build's own limit (fetch, cache, upload); Gen cancels it after that.
     const execution = await runJob(cfg.target, { HAWKES_SPEC: p.specUri }, (cfg.timeoutMinutes + 15) * 60);
     job = { execution, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
-    saveJob(jobId, job);
+    await saveJob(jobId, job, cfg.gcp.bucket);
     hooks.log(`cloud build started: ${execution.split('/').pop()} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
   }
 
