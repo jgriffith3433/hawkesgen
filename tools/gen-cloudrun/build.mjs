@@ -51,7 +51,10 @@ for (const f of ['.env', '.data']) if (fs.existsSync(path.join(dir, f))) die(`${
 fs.copyFileSync(path.join(dir, 'server', 'gen-cloudrun', 'Dockerfile'), path.join(dir, 'Dockerfile'));
 console.log(`\nBuild context: ${dir}`);
 
-gcloud(['builds', 'submit', dir, `--project=${project}`, `--region=${region}`, `--tag=${tag}`, '--timeout=1800s']);
+// The staging folder is named so gcloud doesn't check the default bucket's owner (that needs project-wide bucket
+// listing, which CI's gen-deployer lacks); logs aren't streamed (that needs project Viewer). Failures still exit non-zero.
+gcloud(['builds', 'submit', dir, `--project=${project}`, `--region=${region}`, `--tag=${tag}`, '--timeout=1800s',
+  `--gcs-source-staging-dir=gs://${project}_cloudbuild/source`, ...(process.env.CI ? ['--suppress-logs'] : [])]);
 if (!apply) {
   console.log('\nDry run: nothing built. Add --apply to build.');
   process.exit(0);
