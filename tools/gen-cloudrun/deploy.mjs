@@ -118,6 +118,11 @@ if (!ownerKey) {
   putSecret(ownerSecret, ownerKey);
 }
 mounted.push(`HAWKESGEN_OWNER_KEY=${ownerSecret}:latest`);
+// The key that encrypts customers' own Claude keys and sign-in tokens (src/orgsecrets.ts): made once per lane, never
+// printed. Replacing it makes every stored customer key unreadable, so it is only ever made when missing.
+const secretsKeyName = `${service}-secrets-key`;
+if (!gcloudQuery(['secrets', 'versions', 'access', 'latest', `--secret=${secretsKeyName}`, P])) putSecret(secretsKeyName, crypto.randomBytes(32).toString('base64'));
+mounted.push(`HAWKESGEN_SECRETS_KEY=${secretsKeyName}:latest`);
 
 console.log('\n# The service');
 const envVars = [
