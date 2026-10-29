@@ -38,6 +38,23 @@ while an instance lives (us-east4). An instance lives while requests come in or 
    secrets from `.env`, the service, its URL, the starting settings, and `~/.hawkes/client.json` (old one kept as
    `client.aws.json`). Every step is safe to repeat. A new image later: build, then run the script again.
 
+## Deploys
+
+A push to `main` deploys (`.github/workflows/ci.yml`): GitHub signs in to Google with its own OIDC token (no stored key:
+the `github-gen` provider of the `github` Workload Identity pool trusts only this repo's main, as `gen-deployer@`), builds
+the image of that commit with `tools/gen-cloudrun/build.mjs`, points the `gen` service at it, and checks
+`https://gen.hawkesgen.ai/v1/health`; if the new revision doesn't answer within three minutes, traffic goes back to the
+previous one and the run fails. GitHub runs no tests (J, 2026-10-25): run `npm run typecheck` and `npm test` before
+pushing. One-time setup: `powershell -ExecutionPolicy Bypass -File tools\gen-cloudrun\setup-ci.ps1` (J). By hand, as
+before: `build.mjs --apply`, then `gcloud run services update gen --image <tag>` (or `deploy.ps1` when settings, secrets
+or permissions change).
+
+## The address
+
+`https://gen.hawkesgen.ai` is a Cloudflare Worker (`server/gen-edge/`, `npx wrangler deploy` there) that passes every
+request to the service's own address and the visitor's IP as `X-Hawkes-Client-IP`, which Gen believes only from
+Cloudflare's ranges (`src/analytics/collect.ts clientIp`).
+
 ## Known limits
 
 - **One instance**: fine for Studio and a few customers; a crowd needs the database off SQLite first.
