@@ -33,6 +33,14 @@ const token = secret('PLAYTEST_RUNPOD_TOKEN') || secret('GPU_WORKER_TOKEN');
 export const POOL_PRICES = { AMPERE_16: 0.58, AMPERE_24: 0.69, ADA_24: 1.10, AMPERE_48: 1.22, ADA_48_PRO: 1.75 };
 export const POOL_GPUS = { AMPERE_16: 'RTX A4000 class (16 GB)', AMPERE_24: 'L4 / A5000 class (24 GB)', ADA_24: 'RTX 4090 (24 GB)', AMPERE_48: 'A6000 / A40 (48 GB)', ADA_48_PRO: 'L40S class (48 GB)' };
 const first = gpus.split(',')[0].trim();
+/**
+ * The exact GPU models the endpoint may use (RunPod REST `gpuTypeIds`), in RunPod's order of preference. A pool alone
+ * isn't enough: RunPod put "RTX PRO 6000 Blackwell MIG 1g.24gb" slices in AMPERE_24 (2026-10-29), and a MIG slice has
+ * CUDA but no graphics (no EGL, OpenGL or Vulkan), so Chromium only had software WebGL and every playtest fell back to
+ * the CPU service. These are whole cards with a display engine. `--gpu-types a,b` replaces the list.
+ */
+export const GRAPHICS_GPUS = ['NVIDIA RTX A4000', 'NVIDIA RTX A4500', 'NVIDIA RTX 4000 Ada Generation', 'NVIDIA RTX 2000 Ada Generation', 'NVIDIA RTX A5000', 'NVIDIA L4', 'NVIDIA GeForce RTX 3090'];
+const gpuTypes = arg('gpu-types', '') ? arg('gpu-types', '').split(',').map((s) => s.trim()).filter(Boolean) : GRAPHICS_GPUS;
 
 const template = {
   name, imageName: image, isServerless: true, containerDiskInGb: 20, volumeInGb: 0, ports: '8080/http', dockerArgs: '', readme: '',
@@ -60,7 +68,8 @@ header(`RunPod template ${name}`);
 say(JSON.stringify({ ...template, env: template.env.map((e) => (e.key === 'HAWKES_TOKEN' ? { ...e, value: redact(e.value) } : e)) }, null, 2));
 header(`RunPod load-balancer endpoint ${name}`);
 say(JSON.stringify(endpoint, null, 2));
-say(`GPU pools ${gpus}: ${gpus.split(',').map((g) => POOL_GPUS[g.trim()] ?? g).join(', ')}; about $${POOL_PRICES[first] ?? '?'}/h per worker while it runs.`);
+say(`GPU models (only these, never a MIG slice): ${gpuTypes.join(', ')}`);
+say(`GPU pools ${gpus}:${gpus.split(',').map((g) => POOL_GPUS[g.trim()] ?? g).join(', ')}; about $${POOL_PRICES[first] ?? '?'}/h per worker while it runs.`);
 say(`RUNPOD_API_KEY: ${redact(key)}; HAWKES_TOKEN (PLAYTEST_RUNPOD_TOKEN or GPU_WORKER_TOKEN): ${redact(token)}`);
 
 let endpointId = null;
@@ -74,6 +83,10 @@ if (APPLY) {
   const e = (await gql('mutation($i: EndpointInput!) { saveEndpoint(input: $i) { id type } }', { i: { ...(oldE ? { id: oldE.id } : {}), ...endpoint, templateId: t.id } })).saveEndpoint;
   endpointId = e.id;
   say(`${oldE ? 'updated' : 'made'} endpoint ${e.id} (type ${e.type})`);
+  // GraphQL's saveEndpoint takes pools only; the exact models go through the REST API.
+  const r = await fetch(`https://rest.runpod.io/v1/endpoints/${e.id}`, { method: 'PATCH', headers: { Authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify({ gpuTypeIds: gpuTypes, gpuCount: 1 }) });
+  if (!r.ok) throw new Error(`RunPod REST: ${r.status} ${(await r.text()).slice(0, 400)}`);
+  say(`endpoint ${e.id} GPU models: ${((await r.json()).gpuTypeIds ?? gpuTypes).join(', ')}`);
 } else say('\n(dry run: --apply creates or updates them; that costs nothing until a playtest starts a worker)');
 
 header('Then Gen\'s settings (POST /v1/settings, or the dashboard\'s settings JSON)');
