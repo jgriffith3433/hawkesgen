@@ -154,3 +154,51 @@ test('playtests: a customer plays only its own builds, public URLs only, and its
   const base = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool: 'playtest.run', params: { url: 'https://example.com/', baseline: aJob } } }));
   assert.equal(base.status, 404, JSON.stringify(base.body));
 });
+
+test('the editor\'s tools: a mask, a video or a clip to revoice must be the customer\'s own', async () => {
+  const pic = await json(await call(portal, '/v1/blobs', { project: 'usr_aaaa', raw: Buffer.from('aaaa picture') }));
+  const msk = await json(await call(portal, '/v1/blobs', { project: 'usr_aaaa', raw: Buffer.from('aaaa mask') }));
+  const mine = await json(await call(portal, '/v1/blobs', { project: 'usr_bbbb', raw: Buffer.from('bbbb picture') }));
+  // B's own picture with A's blob as the mask: as if it didn't exist.
+  const asMask = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool: 'image.repaint', params: { prompt: 'x' }, inputs: { image: mine.body.blob, mask: msk.body.blob } } }));
+  assert.equal(asMask.status, 404, JSON.stringify(asMask.body));
+  assert.match(asMask.body.error, /No blob/);
+  const tries: [string, Record<string, string>, Record<string, unknown>][] = [
+    ['video.change', { video: pic.body.blob }, { prompt: 'x' }],
+    ['video.change', { video: mine.body.blob, mask: msk.body.blob }, { prompt: 'x' }],
+    ['video.frame', { video: pic.body.blob }, {}],
+    ['video.still', { image: pic.body.blob }, {}],
+    ['image.expand', { image: pic.body.blob }, { aspect: '16:9' }],
+    ['media.normalize', { file: pic.body.blob }, {}],
+    ['audio.revoice', { audio: pic.body.blob }, { description: 'a calm voice' }],
+    ['audio.transcribe', { video: pic.body.blob }, {}],
+  ];
+  for (const [tool, inputs, params] of tries) {
+    const r = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool, params, inputs } }));
+    assert.equal(r.status, 404, `${tool} ${JSON.stringify(r.body)}`);
+  }
+  // A may use its own picture and mask.
+  const a = await json(await call(portal, '/v1/jobs', { project: 'usr_aaaa', body: { tool: 'image.repaint', params: { prompt: 'x' }, inputs: { image: pic.body.blob, mask: msk.body.blob } } }));
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE id = ?").run(a.body.jobs[0].id);
+});
+
+test('an upload that needs normalizing queues media.normalize in the uploader\'s project, out of other customers\' sight', async () => {
+  // Not a picture ffprobe can read, but named .heic: it goes by its extension.
+  const up = await json(await call(portal, '/v1/assets?filename=photo.heic', { project: 'usr_aaaa', raw: Buffer.from('not really a heic') }));
+  assert.equal(up.status, 200, JSON.stringify(up.body));
+  assert.equal(up.body.needsNormalize, true);
+  const jobId = up.body.normalizeJob as string;
+  assert.match(jobId, /^j_/, JSON.stringify(up.body));
+  const row = db.prepare('SELECT project, tool FROM jobs WHERE id = ?').get(jobId) as any;
+  assert.equal(row.project, 'usr_aaaa');
+  assert.equal(row.tool, 'media.normalize');
+  db.prepare("UPDATE jobs SET status = 'cancelled' WHERE id = ?").run(jobId);
+  assert.notEqual((await call(portal, `/v1/jobs/${jobId}`, { project: 'usr_bbbb' })).status, 200);
+  // A plain file is just stored, as before; ?normalize=0 only reports.
+  const txt = await json(await call(portal, '/v1/assets?filename=notes.txt', { project: 'usr_aaaa', raw: Buffer.from('hello') }));
+  assert.equal(txt.body.needsNormalize, false);
+  const only = await json(await call(portal, '/v1/assets?filename=b.heic&normalize=0', { project: 'usr_aaaa', raw: Buffer.from('also not a heic') }));
+  assert.equal(only.body.needsNormalize, true);
+  assert.equal(only.body.normalizeJob, undefined);
+});
