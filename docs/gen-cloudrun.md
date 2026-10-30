@@ -65,8 +65,8 @@ or permissions change).
 `npx wrangler deploy` there, `--env beta` for beta) that passes every request to the service's own address and the
 visitor's IP as `X-Hawkes-Client-IP`, which Gen believes only from Cloudflare's ranges (`src/analytics/collect.ts
 clientIp`). Until 2026-10-29 Gen was gen.hawkesgen.ai (gen-beta.hawkesgen.ai) and these names were the customer portal's,
-which moved to hawkesgames.com (hawkesgenwebsite `docs/domain-move.md`). The old gen. names still route to the same
-Worker until nothing calls them, then their routes come off. On the portal's old names the Worker keeps the portal's
+which moved to hawkesgames.com (hawkesgenwebsite `docs/domain-move.md`). J retired the gen. names the same day
+(their routes and DNS records are gone). On the portal's old names the Worker keeps the portal's
 links working (`PORTAL_ORIGIN`, `PORTAL_HOSTS`): everything goes to Gen first; a portal OAuth token, or its session on
 `/v1` and `/mcp`, goes to the portal; what Gen answers 404 is the portal's (pages redirected, the rest passed on), and so
 is a key Gen refuses (401) on `/v1` and `/mcp`. Test `test/gen-edge.test.ts`.

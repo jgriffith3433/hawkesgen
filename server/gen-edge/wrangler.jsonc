@@ -1,8 +1,8 @@
 // Hawkes Gen's address: hawkesgen.ai and www (live), beta.hawkesgen.ai (beta). A Cloudflare Worker that passes every
 // request to Gen on Cloud Run (docs/gen-cloudrun.md, "The address"). Deploy from this folder: npx wrangler deploy (the
 // first time: npx wrangler login); beta: npx wrangler deploy --env beta.
-// gen.hawkesgen.ai and gen-beta.hawkesgen.ai are Gen's old names: still routed here until nothing calls them (J,
-// 2026-10-29: they are going away). The names hawkesgen.ai, www and beta.hawkesgen.ai were the customer portal's before it
+// gen.hawkesgen.ai and gen-beta.hawkesgen.ai were Gen's names until 2026-10-29; J retired them the same day (their routes
+// and DNS records are gone). The names hawkesgen.ai, www and beta.hawkesgen.ai were the customer portal's before it
 // moved to hawkesgames.com (hawkesgenwebsite docs/domain-move.md): the Worker still answers the portal's old links there
 // (src/index.ts, PORTAL_HOSTS).
 {
@@ -10,7 +10,6 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "routes": [
-    { "pattern": "gen.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
     { "pattern": "hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
     { "pattern": "www.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }
   ],
@@ -24,7 +23,6 @@
   "env": {
     "beta": {
       "routes": [
-        { "pattern": "gen-beta.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
         { "pattern": "beta.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }
       ],
       // Cloud Run's deterministic address for the service gen-beta (<service>-<project number>.<region>.run.app).
