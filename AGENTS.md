@@ -160,17 +160,40 @@ chosen one.
 Hawkes Gen is a product of its own (J, 2026-10-29): people sign up at gen.hawkesgen.ai with Gen's own accounts
 (`src/users.ts`: email and password, starter credits, Stripe packs), separate from hawkesgen.ai's and Studio's. The
 portal and Studio use Gen in the back end with their own keys.
-- **The app** (`dashboard/gen/`: plain HTML, CSS and JS over `/v1`) is at `/`:
-  - **Create:** a prompt (plus an optional style chip, words added to the prompt) makes an image (`image.generate`),
-    or the person uploads their own (`POST /v1/assets` into their project). Every image card offers Animate (`video.i2v`,
-    sized from the image's shape), Edit with words (`image.edit`), Remove background (`image.cutout`, CPU) and Upscale
-    (`image.upscale`). After a reload, Create shows the account's recent work. Failed cards show one plain line
-    (`plainError`), never a stack trace.
-  - **Library:** what the account made (Animate, Edit, Reuse prompt).
-  - **Editor:** a timeline of clips with in/out, transitions and captions, plus music (`audio.music` or a library
-    track), voice-overs (`audio.voice` with a voice described in words: the open voice models) and sound effects
-    (`audio.sfx`) at a start time (music ducks under the voice), previewed in the page and rendered by
-    `video.compose` (CPU, a 3-credit floor). `test/saas-ui.test.ts` checks every id `gen.js` looks up is on the page.
+- **The app** (`dashboard/gen/`: plain HTML, CSS and ES modules over `/v1`, no build step) is at `/`: a video editor
+  with generative AI built in (J, 2026-10-29: "a proper video editor" with "a bad ass AI editor on the right pane").
+  - Layout: Media and Generate on the left (`media.js`), the viewer with the tools for what's selected in the middle
+    (`player.js`, `tools.js`), the AI editor on the right (`ai.js`), the timeline below (`timeline.js`). Panes resize
+    (sizes kept per browser); on a phone one pane at a time behind bottom tabs.
+  - **The project** (`project.js`, `src/editor.ts`): one timeline document per project, saved to Gen
+    (`/v1/editor/projects`, with a version: a save that crosses another one gets 409 and the newer document), undo and
+    redo, waiting clips filled in when their jobs end, edits made elsewhere (the AI, MCP, another tab) picked up. Tracks:
+    V1 the main video track (magnetic: clips back to back, pictures as stills), T1 text on screen, A1 music, A2 voice,
+    A3 sound. Nothing is added that the person didn't ask for: no fades or transitions unless set.
+  - **Timeline:** drag to move (V1 reorders), edge handles to trim, snapping, split (S), delete, duplicate, a selected
+    time range (drag on an empty track or shift-drag the ruler; I and O), transitions at V1's joins, speed, volume,
+    mute, push-in, zoom (Ctrl+wheel), keyboard (Space, arrows, Ctrl+Z / Ctrl+Shift+Z, T for text). Thumbnails and
+    waveforms are made in the browser (`lib.js`).
+  - **Tools on what's selected** (`tools.js`; only tools this Gen has, from `GET /v1/editor/tools`): pictures: Animate
+    (`video.i2v`), Edit (`image.edit`), Repaint area (`image.repaint`, a painted mask), Expand (`image.expand`), Relight,
+    Remove background (`image.cutout`), Upscale. Clips: Change something (`video.change`, mask on the first frame),
+    Restyle, Swap a person (`video.replace`), Continue the shot (`video.frame` last, then `video.i2v`), Grab this frame,
+    New voice (`audio.revoice`), Upscale, Smooth motion. A result on a timeline clip replaces it in its spot.
+  - **Animate's prompt:** Wan follows a description of motion, not an instruction. "Make it fly" on a bird gave a
+    still bird; the same words wrapped by `motionPrompt` took off, and a full description (what the AI editor writes)
+    did best (A/B on gen-beta, 2026-10-29). `video.i2v` also defaults its negative to Wan's standard one
+    (`WAN_NEGATIVE`, v2).
+  - **Generate:** image (with styles), video from words (`video.t2v`), music, voice-over, sound effect, each priced;
+    sounds land at the playhead on their track. **Uploads** by button or drop anywhere (on the timeline: placed too).
+  - **Export** maps the timeline onto `video.compose` (pictures first become clips with `video.still`); captions burned in.
+  - **The AI editor** (`ai.js`, `src/editor.ts` `assistantTurn`): it sees the timeline, the selection (clips, a range,
+    the playhead, a painted mask) and recent media, and answers with edits (`applyOps`, the same code the API and MCP
+    use) that Gen applies. Generation over `autoCredits` (40) comes back as `proposed` for one tap. Every AI edit is one
+    undo step. It runs on the account's own Claude (Account > Your AI: `/v1/users/me/ai/anthropic` or
+    `/claude-subscription`, stored like orgs' keys under `genAccountOrg`), never ours; without one the pane says how to
+    connect it. MCP: `hawkesgen_editor`, `hawkesgen_editor_apply`, `hawkesgen_editor_ask`.
+  - `test/editor.test.ts` covers the document and routes; `test/saas-ui.test.ts` checks every id the modules look up
+    is on the page.
 
   Sign-in is **Continue with Google** (`POST /v1/users/google`, `users.ts googleSignin`), inline: the first Generate
   asks, then goes on. One Google account signs in to every product (portal, Studio, Gen), each keeping its own

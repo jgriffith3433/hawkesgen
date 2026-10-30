@@ -1,0 +1,192 @@
+// Shared helpers for the Gen app: DOM, the API, toasts, time formatting, media info and thumbnails, icons.
+
+export const $ = (s, el = document) => el.querySelector(s);
+export const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+export const h = (tag, attrs = {}, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') el.className = v;
+    else if (k === 'html') el.innerHTML = v;
+    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else el.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
+  return el;
+};
+export const fileUrl = (id) => `/v1/assets/${encodeURIComponent(id)}/file`;
+
+export class ApiError extends Error {
+  constructor(message, status, data) { super(message); this.status = status; this.data = data; }
+}
+export async function api(path, { method, body } = {}) {
+  const r = await fetch(path, {
+    method: method ?? (body ? 'POST' : 'GET'), credentials: 'same-origin',
+    headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await r.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+  if (!r.ok) throw new ApiError(data?.error ?? `HTTP ${r.status}`, r.status, data);
+  return data;
+}
+
+let toastTimer = 0;
+export function toast(msg, { action, onAction, ms = 4500 } = {}) {
+  const t = $('#toast');
+  t.replaceChildren(h('span', {}, msg), action ? h('button', { class: 'link', onclick: () => { t.hidden = true; onAction?.(); } }, action) : '');
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
+}
+
+/** An error as a person should read it: no terminal colors or stack traces, one short line. */
+export function plainError(msg) {
+  const lines = String(msg ?? '').replace(/\u001b\[[0-9;]*m/g, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.some((l) => /^Traceback|^\s*at |^File "/.test(l))) return 'Something went wrong on our side. Your credits were returned; please try again.';
+  const line = lines[0] ?? 'Something went wrong.';
+  return line.length > 220 ? `${line.slice(0, 217)}…` : line;
+}
+
+/** 0:03.4, 1:02.0 */
+export function fmt(t, frac = 1) {
+  t = Math.max(0, t || 0);
+  const m = Math.floor(t / 60);
+  const s = t - m * 60;
+  return `${m}:${s.toFixed(frac).padStart(frac ? 3 + frac : 2, '0')}`;
+}
+
+// Media info (duration, size) and a thumbnail, per asset, loaded once.
+const infoCache = new Map();
+export function mediaInfo(id, kind) {
+  const key = `${kind}:${id}`;
+  if (!infoCache.has(key)) {
+    infoCache.set(key, new Promise((resolve) => {
+      if (kind === 'image') {
+        const img = new Image();
+        img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight, duration: null });
+        img.onerror = () => resolve({ width: 1024, height: 1024, duration: null });
+        img.src = fileUrl(id);
+        return;
+      }
+      const el = document.createElement(kind === 'audio' ? 'audio' : 'video');
+      el.preload = 'metadata';
+      el.muted = true;
+      el.onloadedmetadata = () => resolve({ width: el.videoWidth || null, height: el.videoHeight || null, duration: Number.isFinite(el.duration) ? el.duration : null });
+      el.onerror = () => resolve({ width: null, height: null, duration: null });
+      el.src = fileUrl(id);
+    }));
+  }
+  return infoCache.get(key);
+}
+
+const thumbCache = new Map();
+/** A small still of a video (or an image's own URL), as a URL for CSS backgrounds. */
+export function thumb(id, kind) {
+  if (kind === 'image') return Promise.resolve(fileUrl(id));
+  if (!thumbCache.has(id)) {
+    thumbCache.set(id, new Promise((resolve) => {
+      const v = document.createElement('video');
+      v.muted = true; v.preload = 'auto'; v.crossOrigin = 'anonymous';
+      const done = (url) => { v.removeAttribute('src'); v.load(); resolve(url); };
+      v.onloadeddata = () => { v.currentTime = Math.min(0.2, (v.duration || 1) / 3); };
+      v.onseeked = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.height = 72; c.width = Math.max(1, Math.round(72 * (v.videoWidth / v.videoHeight || 16 / 9)));
+          c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+          done(c.toDataURL('image/jpeg', 0.7));
+        } catch { done(''); }
+      };
+      v.onerror = () => done('');
+      v.src = fileUrl(id);
+    }));
+  }
+  return thumbCache.get(id);
+}
+
+const peaksCache = new Map();
+/** Loudness peaks of an audio (or video's) track for a waveform: 0..1 values, `n` of them. */
+export function peaks(id, n = 600) {
+  if (!peaksCache.has(id)) {
+    peaksCache.set(id, (async () => {
+      try {
+        const buf = await (await fetch(fileUrl(id))).arrayBuffer();
+        if (buf.byteLength > 40 * 1024 * 1024) return null;
+        const ctx = new (window.OfflineAudioContext || window.webkitOfflineAudioContext)(1, 1, 44100);
+        const audio = await ctx.decodeAudioData(buf);
+        const data = audio.getChannelData(0);
+        const step = Math.max(1, Math.floor(data.length / n));
+        const out = [];
+        let max = 0;
+        for (let i = 0; i < n; i++) {
+          let m = 0;
+          for (let j = i * step; j < Math.min(data.length, (i + 1) * step); j += 16) m = Math.max(m, Math.abs(data[j]));
+          out.push(m); max = Math.max(max, m);
+        }
+        return { values: out.map((x) => (max ? x / max : 0)), duration: audio.duration };
+      } catch { return null; }
+    })());
+  }
+  return peaksCache.get(id);
+}
+
+/** Uploads a mask (or any canvas) as a blob Gen can use as an input. */
+export async function uploadCanvas(canvas, name = 'mask.png') {
+  const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+  const r = await fetch('/v1/blobs', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'image/png', 'X-Filename': name }, body: blob });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(j.error ?? `HTTP ${r.status}`, r.status);
+  return j.blob;
+}
+
+// Icons: small inline SVGs (stroke = currentColor).
+const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
+export const ICON = {
+  play: svg('<path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/>'),
+  pause: svg('<rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/>'),
+  back: svg('<path d="M15 6l-6 6 6 6"/>'),
+  fwd: svg('<path d="M9 6l6 6-6 6"/>'),
+  undo: svg('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>'),
+  redo: svg('<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 000 12h3"/>'),
+  split: svg('<path d="M12 3v18"/><path d="M5 8l-2 4 2 4M19 8l2 4-2 4"/>'),
+  trash: svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
+  upload: svg('<path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v4h16v-4"/>'),
+  sparkle: svg('<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>'),
+  film: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/>'),
+  image: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>'),
+  music: svg('<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>'),
+  mic: svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/>'),
+  text: svg('<path d="M5 6V4h14v2M12 4v16M9 20h6"/>'),
+  brush: svg('<path d="M18 3l3 3-9 9-3-3z"/><path d="M9 12c-3 0-5 2-5 5 0 1-1 2-2 2 2 2 7 2 9-1 1-1.5 1-3 1-3"/>'),
+  expand: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
+  wand: svg('<path d="M15 4V2M15 10V8M11 6h2M17 6h2M4 20L14 10"/>'),
+  cut: svg('<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12"/>'),
+  plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
+  send: svg('<path d="M4 12l16-8-6 16-2-7z"/>'),
+  person: svg('<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-7 8-7s8 3 8 7"/>'),
+  speed: svg('<path d="M12 13l4-4"/><path d="M3 13a9 9 0 0118 0"/>'),
+  volume: svg('<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 010 6M18.5 6.5a8 8 0 010 11"/>'),
+  frame: svg('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 4v16"/>'),
+  continue: svg('<path d="M5 12h12M13 6l6 6-6 6"/><path d="M3 5v14"/>'),
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/>'),
+  layers: svg('<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>'),
+  download: svg('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>'),
+  magnet: svg('<path d="M6 3v8a6 6 0 0012 0V3"/><path d="M6 7h4M14 7h4"/>'),
+  zoomIn: svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4M11 8v6M8 11h6"/>'),
+  zoomOut: svg('<circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4M8 11h6"/>'),
+  smooth: svg('<path d="M3 17c3-8 6-8 9 0s6 8 9 0"/>'),
+  swap: svg('<path d="M7 7h11l-3-3M17 17H6l3 3"/>'),
+  folder: svg('<path d="M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>'),
+  more: svg('<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>'),
+};
+export const icon = (name, cls = 'ico') => h('span', { class: cls, html: ICON[name] ?? '' });
+
+/** A tiny event hub the modules talk through. */
+const subs = new Map();
+export const bus = {
+  on(ev, fn) { if (!subs.has(ev)) subs.set(ev, new Set()); subs.get(ev).add(fn); return () => subs.get(ev).delete(fn); },
+  emit(ev, data) { for (const fn of subs.get(ev) ?? []) { try { fn(data); } catch (e) { console.error(ev, e); } } },
+};

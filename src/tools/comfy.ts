@@ -143,12 +143,20 @@ const wanSettings: Record<string, ParamSpec> = {
   motionAmplitude: { type: 'number', min: 1, max: 2, default: 1, description: 'Above 1 pushes motion (start frame only).', advanced: true },
 };
 
+/**
+ * Wan's own standard negative (from its model card; the t2v and motion workflows carry it too). It names stillness
+ * ("静态", "静止", "静止不动的画面": static, still, motionless frame), so with cfgHigh > 1 the clip is pushed to move.
+ * Without it "Make it fly" on a bird gave six nearly identical frames; with it the bird took off (A/B on gen-beta,
+ * 2026-10-29). Used whenever a caller gives no negative of its own.
+ */
+export const WAN_NEGATIVE = '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走';
+
 /** Wan wants 4n + 1 frames. */
 const wanFrames = (n: number) => Math.max(5, Math.round((n - 1) / 4) * 4 + 1);
 
 export const videoI2vTool: Tool = {
   id: 'video.i2v',
-  version: 1,
+  version: 2,
   title: 'Image to video',
   description: 'Wan 2.2 14B: a short clip that starts on an image and, with an end image, ends on it (the same image twice makes a clean loop). Characters, screen loops, ambient motion.',
   provider: 'comfy',
@@ -160,7 +168,7 @@ export const videoI2vTool: Tool = {
   },
   params: {
     prompt: { type: 'text', required: true },
-    negative: { type: 'text', default: '', advanced: true },
+    negative: { type: 'text', default: '', description: 'Empty: the standard Wan negative (WAN_NEGATIVE), which keeps clips from coming out still.', advanced: true },
     width: { type: 'integer', min: 256, max: 1280, default: 640 },
     height: { type: 'integer', min: 256, max: 1280, default: 640 },
     frames: { type: 'integer', min: 5, max: 161, default: 33, description: 'Frame count (rounded to 4n + 1).' },
@@ -177,7 +185,7 @@ export const videoI2vTool: Tool = {
     const image = await c.upload(ctx.inputs.start);
     const end = ctx.inputs.end ? (ctx.inputs.end === ctx.inputs.start ? image : await c.upload(ctx.inputs.end)) : undefined;
     const frames = wanFrames(p.frames);
-    await takes(ctx, (seed) => imageToVideo({ image, end, prompt: p.prompt, negative: p.negative, width: p.width, height: p.height, frames, fps: p.fps, seed, prefix: `hawkesgen/${ctx.job.project}`, s: p }).graph, '.mp4', `clip (${frames} frames)`);
+    await takes(ctx, (seed) => imageToVideo({ image, end, prompt: p.prompt, negative: String(p.negative ?? '').trim() ? p.negative : WAN_NEGATIVE, width: p.width, height: p.height, frames, fps: p.fps, seed, prefix: `hawkesgen/${ctx.job.project}`, s: p }).graph, '.mp4', `clip (${frames} frames)`);
   },
 };
 

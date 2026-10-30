@@ -135,6 +135,44 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
         return { total: r.total, items: r.items.map((x: any) => ({ id: x.id, kind: x.kind, project: x.project, tool: x.tool, title: x.title, labels: x.labels, tags: x.tags?.length ? x.tags : undefined, duration: x.meta?.duration, loop: x.meta?.loop, path: String(x.id).startsWith('motion:') ? x.id : (remote ? `${filesUrl}/v1/files/${x.id}` : x.path), prompt: x.recipe?.params?.prompt, created: new Date(x.created).toISOString() })) };
       },
     },
+    // The Gen app's editor (src/editor.ts): the same projects the person edits at gen.hawkesgen.ai, so Claude anywhere
+    // can cut, arrange and generate into them; the app shows the changes.
+    {
+      name: 'hawkesgen_editor',
+      description:
+        'Video editor projects (the Gen app\'s timeline: V1 main video track, clips back to back; T1 text on screen; A1 music, A2 voice, A3 sound). ' +
+        'Without id: list projects. With id: the project (every clip: id, track, start, in/out of its source, asset or the job it waits on). ' +
+        'create: true makes a new one (title). Change a project with hawkesgen_editor_apply.',
+      inputSchema: obj({ id: str('Project id ep_... (optional)'), create: { type: 'boolean' }, title: str('Title for a new project'), project: str('Library project (default: your account\'s)') }),
+      run: async (a) => {
+        if (a.create) return gen.request('/editor/projects', { method: 'POST', body: { title: a.title, ...(a.project ? { project: a.project } : {}) } });
+        if (a.id) return gen.request(`/editor/projects/${a.id}`);
+        return gen.request(`/editor/projects${a.project ? `?project=${encodeURIComponent(a.project)}` : ''}`);
+      },
+    },
+    {
+      name: 'hawkesgen_editor_apply',
+      description:
+        'Edits a video editor project, in order (an edit that fails is reported and the rest still apply). Ops: ' +
+        'add {track, asset, in, out, start | index | after}; generate {tool, params, inputs ("clip:c_..." for a clip\'s file), place: {track, after|start} | {replace: clipId} | {library: true}, label} ' +
+        '(a waiting clip shows until the job ends; costs credits); trim {id, in, out | length}; split {id, at}; move {id, index | after | start}; delete {id}; ' +
+        'deleteRange {start, end, tracks}; set {id, volume, speed, muted, transition, transitionSeconds, zoom, text}; text {text, start, end}; settings {width, height, fps, title}. ' +
+        'Times in seconds (in/out: of the clip\'s source; start/at: on the timeline).',
+      inputSchema: obj({ id: str('Project id ep_...'), ops: { type: 'array', items: { type: 'object' }, description: 'The edits' } }, ['id', 'ops']),
+      run: async (a) => {
+        const r = await gen.request(`/editor/projects/${a.id}/apply`, { method: 'POST', body: { ops: a.ops } });
+        return { results: r.results, version: r.project.version, clips: r.project.doc.clips };
+      },
+    },
+    {
+      name: 'hawkesgen_editor_ask',
+      description: 'Asks a project\'s AI editor (on the account\'s own Claude) to do something in words, with an optional selection ({clips: [ids], range: {start, end}, playhead}). Returns what it said and did; costly generation comes back as `proposed` (apply those ops with hawkesgen_editor_apply to run them).',
+      inputSchema: obj({ id: str('Project id ep_...'), say: str('What to do'), selection: { type: 'object' } }, ['id', 'say']),
+      run: async (a) => {
+        const r = await gen.request(`/editor/projects/${a.id}/assistant`, { method: 'POST', body: { messages: [{ role: 'user', text: a.say }], selection: a.selection ?? {} } });
+        return { say: r.say, results: r.results, proposed: r.proposed, version: r.project.version };
+      },
+    },
     {
       name: 'hawkesgen_entities',
       description:

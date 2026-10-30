@@ -494,6 +494,101 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/users/me' && method === 'GET') {
       return send(res, 200, getUserProfile(client));
     }
+    // A Gen account's own AI (the editor's AI runs on it, never ours): its Anthropic API key or its Claude subscription's
+    // token, in the same encrypted store as orgs' (orgsecrets.ts genAccountOrg). Only "set" and the last 4 come back.
+    const ai_ = /^\/v1\/users\/me\/ai(?:\/(anthropic|claude-subscription))?$/.exec(route);
+    if (ai_) {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in with your Gen account', { status: 403 });
+      const os_ = await import('./orgsecrets.ts');
+      const org = os_.genAccountOrg(user.project);
+      if (!ai_[1]) {
+        if (method !== 'GET') throw new GenError('Name what to set: /v1/users/me/ai/anthropic or /claude-subscription', { status: 405 });
+        return send(res, 200, { anthropic: os_.orgSecretInfo(org, 'anthropic'), claudeSubscription: os_.orgSecretInfo(org, 'claude-subscription') });
+      }
+      const kind = ai_[1] as 'anthropic' | 'claude-subscription';
+      if (method === 'GET') return send(res, 200, os_.orgSecretInfo(org, kind));
+      if (method === 'PUT' || method === 'POST') return send(res, 200, os_.setOrgSecret(org, kind, String((await readJson(req)).key ?? ''), user.email));
+      if (method === 'DELETE') return send(res, 200, os_.deleteOrgSecret(org, kind));
+    }
+
+    // --------------------------------------------------------------- the editor (src/editor.ts)
+    if (route.startsWith('/v1/editor/')) {
+      const ed = await import('./editor.ts');
+      const user = getUserForClient(client);
+      const canSee = (p: string) => canProject(client, p);
+      const projectOf = (asked?: unknown) => {
+        const p = fixedProject(client) ?? (typeof asked === 'string' && asked ? asked : user?.project ?? '');
+        if (!p || !canProject(client, p)) throw new GenError('Name a project you can use', { status: 403 });
+        return p;
+      };
+      const submitFor = (project: string, editorId: string): import('./editor.ts').Submit => (spec) =>
+        submit(client, { project, tool: spec.tool, params: spec.params, inputs: spec.inputs, labels: { by: client.name, editor: editorId, ...(spec.label ? { title: spec.label } : {}) } } as JobSpec);
+      if (route === '/v1/editor/tools' && method === 'GET') return send(res, 200, { tools: ed.availableEditorTools(), tracks: ed.TRACKS });
+      if (route === '/v1/editor/projects' && method === 'GET') return send(res, 200, { items: ed.listProjects(projectOf(q('project'))) });
+      if (route === '/v1/editor/projects' && method === 'POST') {
+        const b = await readJson(req);
+        return send(res, 200, ed.createProject(projectOf(b.project), b.doc ?? (b.title ? { title: b.title } : undefined)));
+      }
+      const pm = /^\/v1\/editor\/projects\/(ep_[0-9a-f]{12})(?:\/(apply|assistant))?$/.exec(route);
+      if (pm) {
+        const [, id, action] = pm;
+        if (!action && method === 'GET') return send(res, 200, ed.getProject(id, canSee));
+        if (!action && method === 'DELETE') { ed.deleteProject(id, canSee); return send(res, 200, { ok: true }); }
+        if (!action && method === 'PUT') {
+          const b = await readJson(req);
+          try {
+            return send(res, 200, ed.saveDoc(ed.getProject(id, canSee), b.doc, b.version == null ? undefined : Number(b.version)));
+          } catch (e: any) {
+            if (e.status === 409) return send(res, 409, { error: e.message, project: e.project });
+            throw e;
+          }
+        }
+        if (action === 'apply' && method === 'POST') {
+          const b = await readJson(req);
+          const p = ed.getProject(id, canSee);
+          const r = ed.applyOps(p.doc, Array.isArray(b.ops) ? b.ops : [], submitFor(p.project, id));
+          return send(res, 200, { project: ed.saveDoc(p, r.doc), results: r.results });
+        }
+        if (action === 'assistant' && method === 'POST') {
+          // The AI editor: the person's words, their selection and (optionally) their latest document in; the answer's
+          // words and edits out, already applied. Generating that costs more than the auto limit comes back as
+          // `proposed` for one tap (POST .../apply with those ops).
+          const b = await readJson(req);
+          let p = ed.getProject(id, canSee);
+          if (b.doc) {
+            try { p = ed.saveDoc(p, b.doc, b.version == null ? undefined : Number(b.version)); } catch (e: any) {
+              if (e.status === 409) return send(res, 409, { error: e.message, project: e.project });
+              throw e;
+            }
+          }
+          const messages = (Array.isArray(b.messages) ? b.messages : []).filter((m: any) => m && typeof m.text === 'string').map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', text: m.text }));
+          if (!messages.length) throw new GenError('Say something to the AI editor', { status: 400 });
+          const library = listAssets({ project: p.project, limit: 40, playtest: false, projects: client.projects }).items
+            .filter((a: any) => ['image', 'video', 'audio'].includes(a.kind))
+            .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? null, duration: a.meta?.duration ?? null }));
+          const turn = await ed.assistantTurn({ project: p.project, doc: p.doc, selection: b.selection ?? {}, messages, library });
+          const auto = Math.max(0, Number(b.autoCredits ?? 40));
+          const now: typeof turn.ops = [];
+          const proposed: typeof turn.ops = [];
+          let spend = 0;
+          for (const op of turn.ops) {
+            if (op.op !== 'generate') { now.push(op); continue; }
+            let credits = 0;
+            try { credits = Number((quoteJobCredits({ project: p.project, tool: String(op.tool), params: op.params ?? {} }) as any)?.credits ?? 0); } catch { /* unknown tool: applyOps says so */ }
+            op.credits = credits;
+            if (proposed.length || spend + credits > auto) proposed.push(op); else { spend += credits; now.push(op); }
+          }
+          const r = ed.applyOps(p.doc, now, submitFor(p.project, id));
+          const saved = ed.saveDoc(p, r.doc);
+          return send(res, 200, {
+            say: turn.say, project: saved, results: r.results, model: turn.model,
+            ...(proposed.length ? { proposed: { ops: proposed, credits: proposed.reduce((s, o) => s + (o.credits ?? 0), 0) } } : {}),
+          });
+        }
+      }
+      throw new GenError('No such editor route', { status: 404 });
+    }
     if (route === '/v1/users/api-key' && method === 'POST') {
       const user = getUserForClient(client);
       if (!user) throw new GenError('User account required', { status: 403 });

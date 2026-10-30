@@ -279,6 +279,26 @@ Hawkes Net is its own service and repo (`jgriffith3433/hawkesnet`, its `docs/net
 | `POST /v1/net/keys/rotate` | Owner: a new signing key (the old one works a day more) |
 | `GET /sdk/hawkes-net.mjs`, `/sdk/hawkes-net-core.mjs` (also `/sdk/net@1.mjs`) | **Public.** The client SDK |
 
+## The editor (src/editor.ts)
+
+The Gen app's projects: one timeline document each (tracks V1 main video, magnetic; T1 text; A1 music, A2 voice, A3
+sound; clips with `start` on the timeline and `in`/`out` of their source, `speed`, `volume`, `muted`, `transition`,
+`zoom`, `text`; a clip waiting on a job has `job` and `pending`). Scoped to the caller's project (a Gen account's own).
+
+| Route | |
+|---|---|
+| `GET /v1/editor/tools` | The tools the AI editor and the app offer on this Gen, and the tracks |
+| `GET /v1/editor/projects[?project=]` | The caller's projects, newest first |
+| `POST /v1/editor/projects` `{ title?, doc?, project? }` | A new project |
+| `GET /v1/editor/projects/:id` | One project (waiting clips whose jobs ended are filled in and saved) |
+| `PUT /v1/editor/projects/:id` `{ doc, version? }` | Save; with `version`, 409 `{ project }` when someone saved in between |
+| `DELETE /v1/editor/projects/:id` | Delete (its media stays in the library) |
+| `POST /v1/editor/projects/:id/apply` `{ ops }` | Edits in order: `add`, `generate` (runs a tool; `inputs` may say `clip:<id>`; `place` `{track, start\|index\|after}` or `{replace}` or `{library}`), `trim`, `split`, `move`, `delete`, `deleteRange`, `set`, `text`, `settings`. Returns the project and a result per op |
+| `POST /v1/editor/projects/:id/assistant` `{ messages, selection, doc?, version?, autoCredits? }` | The AI editor: on the account's own Claude, returns `say`, the applied `results`, the project, and `proposed` `{ ops, credits }` for generation over `autoCredits` (40) |
+| `GET /v1/users/me/ai`, `PUT/DELETE /v1/users/me/ai/anthropic\|claude-subscription` `{ key }` | A Gen account's own AI for the editor (encrypted; only `set` and `last4` come back) |
+
+MCP: `hawkesgen_editor` (list, get, create), `hawkesgen_editor_apply`, `hawkesgen_editor_ask`.
+
 ## Other
 
 | Route | |

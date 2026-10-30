@@ -4,134 +4,172 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Hawkes Gen</title>
-  <meta name="description" content="Make images, bring them to life as video, and cut them together. Hawkes Gen.">
+  <meta name="description" content="Make anything. Hawkes Gen is a video editor with generative AI built in: make images and clips, change what's in them, and cut them together with an AI editor beside you.">
   <link rel="icon" href="/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/gen/gen.css">
 </head>
 <body>
-  <header class="bar">
-    <a class="brand" href="#create"><img src="/favicon.svg" alt=""><b>Hawkes Gen</b></a>
-    <nav class="views" aria-label="Views">
-      <a href="#create" data-view="create">Create</a>
-      <a href="#library" data-view="library">Library</a>
-      <a href="#editor" data-view="editor">Editor</a>
-    </nav>
-    <div class="me">
-      <a id="adminLink" class="ghost small" href="/admin" hidden>Admin</a>
-      <button id="creditsPill" class="pill" hidden title="Credits (1 credit = 1 cent)"><span id="creditsCount">0</span> credits</button>
-      <button id="signInBtn" class="primary small">Sign in</button>
-      <button id="accountBtn" class="ghost small" hidden></button>
-    </div>
-  </header>
-
-  <main>
-    <!-- Create: a prompt, an image, then animate it -->
-    <section id="view-create" class="view">
-      <div class="hero">
-        <h1>Make anything.</h1>
-        <p class="sub">Describe an image. Bring it to life as video. Cut it together.</p>
-        <form id="promptForm" class="prompt" autocomplete="off">
-          <textarea id="prompt" rows="2" maxlength="2000" placeholder="A lighthouse on a cliff at dusk, storm clouds, painterly" required></textarea>
-          <div class="prompt-row">
-            <div class="chips" role="radiogroup" aria-label="Shape">
-              <button type="button" class="chip on" data-w="1024" data-h="1024">Square</button>
-              <button type="button" class="chip" data-w="1344" data-h="768">Wide</button>
-              <button type="button" class="chip" data-w="768" data-h="1344">Tall</button>
-            </div>
-            <span id="quote" class="quote"></span>
-            <button id="generateBtn" class="primary" type="submit">Generate</button>
-          </div>
-          <div class="chips styles" id="styles" role="radiogroup" aria-label="Style"></div>
-        </form>
-        <div class="examples" id="examples"><span class="muted">Try:</span></div>
-        <p class="upload-line">or <label class="linkish">upload your own image<input id="uploadInput" type="file" accept="image/png,image/jpeg,image/webp" hidden></label> to edit or animate it</p>
+  <div class="app" id="app">
+    <!-- The bar -->
+    <header class="bar">
+      <a class="brand" href="/" title="Hawkes Gen"><img src="/favicon.svg" alt=""><b>Hawkes Gen</b></a>
+      <div class="project">
+        <button class="project-menu" id="projectMenuBtn" title="Projects"><span class="ico-wrap" data-icon="folder"></span></button>
+        <input id="projectTitle" class="project-title" value="Untitled" maxlength="120" aria-label="Project name" spellcheck="false">
+        <span id="saveState" class="save-state"></span>
       </div>
-      <h3 id="recentHead" class="feed-head" hidden>Your recent work</h3>
-      <div id="feed" class="feed" aria-live="polite"></div>
-    </section>
+      <div class="bar-mid">
+        <button class="icon-btn" id="undoBtn" title="Undo (Ctrl+Z)" disabled><span class="ico-wrap" data-icon="undo"></span></button>
+        <button class="icon-btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)" disabled><span class="ico-wrap" data-icon="redo"></span></button>
+      </div>
+      <div class="me">
+        <a id="adminLink" class="ghost small" href="/admin" hidden>Admin</a>
+        <button id="creditsPill" class="pill" hidden title="Credits (1 credit = 1 cent)"><span id="creditsCount">0</span> credits</button>
+        <button id="exportBtn" class="primary small"><span class="ico-wrap" data-icon="download"></span>Export</button>
+        <button id="signInBtn" class="ghost small">Sign in</button>
+        <button id="accountBtn" class="avatar" hidden></button>
+      </div>
+    </header>
 
-    <!-- Library: everything made -->
-    <section id="view-library" class="view" hidden>
-      <div class="view-head">
-        <h2>Library</h2>
-        <div class="chips" id="libFilter">
+    <!-- Left: media and generate -->
+    <aside class="pane left" id="leftPane">
+      <div class="seg" id="paneTabs">
+        <button data-pane="media" class="on">Media</button>
+        <button data-pane="generate">Generate</button>
+      </div>
+      <div class="pane-body" id="pane-media">
+        <div class="media-top">
+          <input id="mediaSearch" type="search" placeholder="Search your media" aria-label="Search media">
+          <button class="icon-btn accent" id="uploadBtn" title="Upload images, videos or sounds"><span class="ico-wrap" data-icon="upload"></span></button>
+          <input id="uploadInput" type="file" multiple accept="image/*,video/*,audio/*,.mov,.mkv,.avi,.m4v" hidden>
+        </div>
+        <div class="chips" id="mediaFilter">
           <button class="chip on" data-kind="">All</button>
+          <button class="chip" data-kind="video">Video</button>
           <button class="chip" data-kind="image">Images</button>
-          <button class="chip" data-kind="video">Videos</button>
           <button class="chip" data-kind="audio">Audio</button>
         </div>
+        <div id="mediaGrid" class="media-grid"></div>
+        <p class="drop-hint muted small">Drop files anywhere to upload. Drag tiles onto the timeline.</p>
       </div>
-      <div id="libGrid" class="grid"></div>
-      <p id="libEmpty" class="empty" hidden>Nothing here yet. Make something on <a href="#create">Create</a>.</p>
+      <div class="pane-body" id="pane-generate" hidden>
+        <form class="gen-card" id="genImageForm">
+          <div class="gen-head"><span class="ico-wrap" data-icon="image"></span><b>Image</b></div>
+          <textarea id="genImagePrompt" rows="2" maxlength="2000" placeholder="A lighthouse on a cliff at dusk, storm clouds"></textarea>
+          <div class="chips" id="genStyles"></div>
+          <div class="gen-foot"><label class="check"><input type="checkbox" id="genImageToTl"> Add to timeline</label><span class="quote"></span><button class="primary small">Generate</button></div>
+        </form>
+        <form class="gen-card" id="genVideoForm">
+          <div class="gen-head"><span class="ico-wrap" data-icon="film"></span><b>Video from words</b></div>
+          <textarea id="genVideoPrompt" rows="2" maxlength="2000" placeholder="A drone shot gliding over a misty forest at sunrise"></textarea>
+          <div class="gen-foot"><select id="genVideoSeconds"><option value="3">3 s</option><option value="5" selected>5 s</option></select><label class="check"><input type="checkbox" id="genVideoToTl" checked> Add to timeline</label><span class="quote"></span><button class="primary small">Generate</button></div>
+        </form>
+        <form class="gen-card" id="genMusicForm">
+          <div class="gen-head"><span class="ico-wrap" data-icon="music"></span><b>Music</b></div>
+          <input id="genMusicPrompt" type="text" maxlength="300" placeholder="Uplifting cinematic piano, slow build">
+          <div class="gen-foot"><label class="check">Seconds <input id="genMusicSeconds" type="number" min="10" max="240" class="num"></label><span class="quote"></span><button class="primary small">Generate</button></div>
+        </form>
+        <form class="gen-card" id="genVoiceForm">
+          <div class="gen-head"><span class="ico-wrap" data-icon="mic"></span><b>Voice-over</b></div>
+          <textarea id="genVoiceText" rows="2" maxlength="1000" placeholder="What the narrator says"></textarea>
+          <div class="gen-foot"><select id="genVoice" aria-label="Voice"></select><span class="quote"></span><button class="primary small">Generate</button></div>
+        </form>
+        <form class="gen-card" id="genSfxForm">
+          <div class="gen-head"><span class="ico-wrap" data-icon="volume"></span><b>Sound effect</b></div>
+          <input id="genSfxText" type="text" maxlength="300" placeholder="Thunder rumbling far away">
+          <div class="gen-foot"><label class="check">Seconds <input id="genSfxSeconds" type="number" min="0.5" max="30" step="0.5" class="num" placeholder="auto"></label><span class="quote"></span><button class="primary small">Generate</button></div>
+        </form>
+        <p class="muted small gen-note">Voice-overs and sounds land at the playhead; music starts at 0.</p>
+      </div>
+    </aside>
+
+    <!-- Center: the viewer -->
+    <main class="center" id="viewerWrap">
+      <div class="viewer-mode" id="viewerMode" hidden>
+        <button class="ghost small" id="viewerBack"><span class="ico-wrap" data-icon="back"></span>Timeline</button>
+        <span id="viewerModeLabel" class="muted"></span>
+      </div>
+      <div class="viewer" id="viewer">
+        <div class="stage" id="stage">
+          <div class="stage-empty" id="stageEmpty">
+            <span class="ico-wrap big" data-icon="film"></span>
+            <p>Your video plays here.</p>
+            <p class="muted small">Drag media onto the timeline, generate something, or ask the AI editor.</p>
+          </div>
+          <div class="stage-pending" id="stagePending" hidden><div class="working">Generating…</div></div>
+        </div>
+      </div>
+      <div class="transport">
+        <button class="icon-btn" id="stepBack" title="Back one frame (←)"><span class="ico-wrap" data-icon="back"></span></button>
+        <button class="play" id="playBtn" title="Play (Space)"><span class="ico-wrap" data-icon="play"></span></button>
+        <button class="icon-btn" id="stepFwd" title="Forward one frame (→)"><span class="ico-wrap" data-icon="fwd"></span></button>
+        <span class="timecode" id="timecode">0:00.00 / 0:00.00</span>
+        <button class="chip small" id="loopBtn" title="Loop the selected range">Loop</button>
+        <select id="aspectSel" class="aspect" title="Project shape">
+          <option value="1280x720">16:9</option>
+          <option value="720x1280">9:16</option>
+          <option value="1080x1080">1:1</option>
+          <option value="1080x1350">4:5</option>
+        </select>
+      </div>
+      <div class="toolbar" id="toolbar"></div>
+    </main>
+
+    <!-- Right: the AI editor -->
+    <aside class="pane right" id="rightPane">
+      <div class="ai-head"><span class="ico-wrap" data-icon="sparkle"></span><b>AI editor</b></div>
+      <div class="ai-messages" id="aiMessages"></div>
+      <div class="ai-gate" id="aiGate" hidden></div>
+      <div class="ai-suggest chips" id="aiSuggest"></div>
+      <div class="ai-context" id="aiContext"></div>
+      <form class="ai-form" id="aiForm">
+        <textarea id="aiInput" rows="1" placeholder="Ask for anything: cut, add, change, make…" maxlength="4000"></textarea>
+        <button class="send" id="aiSend" title="Send (Enter)"><span class="ico-wrap" data-icon="send"></span></button>
+      </form>
+    </aside>
+
+    <!-- Bottom: the timeline -->
+    <section class="timeline" id="timelinePane">
+      <div class="tl-bar">
+        <button class="icon-btn" id="splitBtn" title="Split at the playhead (S)"><span class="ico-wrap" data-icon="split"></span></button>
+        <button class="icon-btn" id="deleteBtn" title="Delete (Del)"><span class="ico-wrap" data-icon="trash"></span></button>
+        <button class="icon-btn" id="textBtn" title="Add text at the playhead (T)"><span class="ico-wrap" data-icon="text"></span></button>
+        <span class="tl-sep"></span>
+        <button class="icon-btn" id="snapBtn" title="Snapping"><span class="ico-wrap" data-icon="magnet"></span></button>
+        <span class="tl-spacer"></span>
+        <button class="icon-btn" id="zoomOut" title="Zoom out (-)"><span class="ico-wrap" data-icon="zoomOut"></span></button>
+        <button class="ghost small" id="zoomFit" title="Fit the whole project">Fit</button>
+        <button class="icon-btn" id="zoomIn" title="Zoom in (+)"><span class="ico-wrap" data-icon="zoomIn"></span></button>
+      </div>
+      <div class="tl-body">
+        <div class="tl-heads" id="tlHeads"></div>
+        <div class="tl-scroll" id="tlScroll">
+          <div class="tl-canvas" id="tlCanvas">
+            <div class="tl-ruler" id="tlRuler"></div>
+            <div class="tl-tracks" id="tlTracks"></div>
+            <div class="tl-range" id="tlRange" hidden></div>
+            <div class="tl-playhead" id="tlPlayhead"><div class="tl-playhead-cap"></div></div>
+            <div class="tl-empty muted" id="tlEmpty">Drag clips, pictures and sounds here</div>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <!-- Editor: a timeline of clips, music, captions; rendered with video.compose -->
-    <section id="view-editor" class="view" hidden>
-      <div class="view-head">
-        <h2>Editor</h2>
-        <div class="row">
-          <button id="playBtn" class="ghost">Play</button>
-          <button id="clearBtn" class="ghost">Clear</button>
-          <button id="exportBtn" class="primary">Export video</button>
-        </div>
-      </div>
-      <div class="editor">
-        <div class="monitor">
-          <video id="monitor" playsinline muted></video>
-          <div id="monitorCaption" class="caption" hidden></div>
-          <p id="monitorEmpty" class="empty">Add clips from the bin below, or animate an image on Create.</p>
-        </div>
-        <div class="side">
-          <h3>Music</h3>
-          <div id="musicSlot" class="music"></div>
-          <form id="musicForm" class="inline">
-            <input id="musicPrompt" placeholder="Make music: calm piano, rain" maxlength="300">
-            <button class="ghost small" type="submit">Make</button>
-          </form>
-          <h3>Voice-over</h3>
-          <form id="voiceForm" class="stack">
-            <textarea id="voiceText" rows="2" maxlength="1000" placeholder="What the narrator says"></textarea>
-            <select id="voiceKind" aria-label="Voice">
-              <option value="A warm, calm male narrator, clear studio recording">Warm narrator (male)</option>
-              <option value="A warm, friendly female narrator, clear studio recording">Warm narrator (female)</option>
-              <option value="An energetic young trailer announcer, punchy and excited, studio recording">Trailer announcer</option>
-              <option value="A deep, slow, dramatic movie-trailer voice, studio recording">Epic trailer voice</option>
-            </select>
-            <div class="inline">
-              <label class="at">Starts at</label>
-              <input id="voiceAt" type="number" step="0.5" min="0" value="0" title="Starts at (seconds)" aria-label="Starts at (seconds)">
-              <button class="ghost small" type="submit">Make</button>
-            </div>
-          </form>
-          <h3>Sound effect</h3>
-          <form id="sfxForm" class="inline">
-            <input id="sfxText" placeholder="Thunder rumbling far away" maxlength="300">
-            <input id="sfxAt" type="number" step="0.5" min="0" value="0" title="Starts at (seconds)" aria-label="Starts at (seconds)">
-            <button class="ghost small" type="submit">Make</button>
-          </form>
-          <div id="tracks" class="tracks"></div>
-          <h3>Finish</h3>
-          <label class="field">Shape
-            <select id="exportShape">
-              <option value="1280x720">Wide 1280×720</option>
-              <option value="720x1280">Tall 720×1280</option>
-              <option value="1080x1080">Square 1080×1080</option>
-            </select>
-          </label>
-          <label class="field">Captions
-            <select id="exportCaptions"><option value="burn">Burned in</option><option value="vtt">As subtitles</option></select>
-          </label>
-          <div id="exports" class="exports"></div>
-        </div>
-      </div>
-      <h3 class="tl-head">Timeline <span id="tlLength" class="muted"></span></h3>
-      <ol id="timeline" class="timeline"></ol>
-      <h3>Bin</h3>
-      <div id="bin" class="bin"></div>
-    </section>
-  </main>
+    <!-- Phone: one pane at a time -->
+    <nav class="mobile-tabs" id="mobileTabs">
+      <button data-m="edit" class="on"><span class="ico-wrap" data-icon="film"></span>Edit</button>
+      <button data-m="media"><span class="ico-wrap" data-icon="image"></span>Media</button>
+      <button data-m="generate"><span class="ico-wrap" data-icon="plus"></span>Create</button>
+      <button data-m="ai"><span class="ico-wrap" data-icon="sparkle"></span>AI</button>
+    </nav>
+  </div>
 
-  <!-- Sign in / create an account -->
+  <div class="dropzone" id="dropzone" hidden><div><span class="ico-wrap big" data-icon="upload"></span><p>Drop to upload</p></div></div>
+
+  <!-- Sign in -->
   <dialog id="authDialog" class="sheet">
     <form id="authForm" method="dialog">
       <h2 id="authTitle">Sign in to Hawkes Gen</h2>
@@ -156,49 +194,19 @@
     </form>
   </dialog>
 
-  <!-- Animate an image -->
-  <dialog id="animateDialog" class="sheet">
-    <form id="animateForm" method="dialog">
-      <h2>Animate</h2>
-      <img id="animateFrom" class="thumb-lg" alt="">
-      <label class="field">What happens <textarea id="animatePrompt" rows="2" maxlength="1000" placeholder="Waves crash below, the light sweeps slowly, clouds roll"></textarea></label>
-      <label class="field">Length
-        <select id="animateLength"><option value="2">2 seconds</option><option value="3" selected>3 seconds</option><option value="5">5 seconds</option></select>
-      </label>
-      <p class="muted" id="animateQuote"></p>
-      <div class="row end">
-        <button type="button" class="ghost" id="animateCancel">Cancel</button>
-        <button class="primary" type="submit">Animate</button>
-      </div>
-    </form>
-  </dialog>
-
-  <!-- Edit an image with words -->
-  <dialog id="editDialog" class="sheet">
-    <form id="editForm" method="dialog">
-      <h2>Edit</h2>
-      <img id="editFrom" class="thumb-lg" alt="">
-      <label class="field">What to change <textarea id="editPrompt" rows="2" maxlength="1000" placeholder="Make it night time, add a full moon" required></textarea></label>
-      <div class="chips" id="editIdeas"></div>
-      <p class="muted" id="editQuote"></p>
-      <div class="row end">
-        <button type="button" class="ghost" id="editCancel">Cancel</button>
-        <button class="primary" type="submit">Edit</button>
-      </div>
-    </form>
-  </dialog>
-
   <!-- Account -->
   <dialog id="accountDialog" class="sheet">
     <div>
       <h2>Account</h2>
       <p id="accountEmail" class="muted"></p>
-      <p><b id="accountCredits">0</b> credits (1 credit = 1 cent)</p>
+      <p class="balance"><b id="accountCredits">0</b> credits <span class="muted small">(1 credit = 1 cent)</span></p>
       <h3>Plan</h3>
       <div id="plans" class="packs"></div>
       <h3>Add credits</h3>
       <div id="packs" class="packs"></div>
       <button class="ghost small" id="billingPortalBtn" hidden>Cards and receipts</button>
+      <h3>Your AI</h3>
+      <div id="aiKeys"></div>
       <p id="accountError" class="error" hidden></p>
       <div class="row end">
         <button class="ghost" id="signOutBtn">Sign out</button>
@@ -207,8 +215,34 @@
     </div>
   </dialog>
 
-  <footer class="foot"><a href="/legal#terms">Terms</a> · <a href="/legal#privacy">Privacy</a> · <a href="/legal#refunds">Refunds</a> · <a href="mailto:support@hawkesgen.ai">Contact</a></footer>
+  <!-- Export -->
+  <dialog id="exportDialog" class="sheet">
+    <div>
+      <h2>Export</h2>
+      <p class="muted" id="exportNote"></p>
+      <label class="field">Size
+        <select id="exportSize">
+          <option value="1280x720">Landscape 1280×720</option>
+          <option value="1920x1080">Landscape 1920×1080</option>
+          <option value="720x1280">Vertical 720×1280</option>
+          <option value="1080x1920">Vertical 1080×1920</option>
+          <option value="1080x1080">Square 1080×1080</option>
+          <option value="1080x1350">Portrait 1080×1350</option>
+        </select>
+      </label>
+      <label class="field">Clips of another shape
+        <select id="exportFit"><option value="pad">Fit (bars at the edges)</option><option value="crop">Fill (crop the edges)</option></select>
+      </label>
+      <div id="exportResult" class="export-result"></div>
+      <p id="exportError" class="error" hidden></p>
+      <div class="row end">
+        <button class="ghost" id="exportClose">Close</button>
+        <button class="primary" id="exportGo">Export video</button>
+      </div>
+    </div>
+  </dialog>
 
+  <footer class="foot" hidden><a href="/legal#terms">Terms</a> · <a href="/legal#privacy">Privacy</a> · <a href="/legal#refunds">Refunds</a> · <a href="mailto:support@hawkesgen.ai">Contact</a></footer>
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="/gen/gen.js" type="module"></script>
 </body>

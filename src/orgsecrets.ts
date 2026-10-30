@@ -24,13 +24,19 @@ function masterKey(): Buffer {
 }
 
 /** The org a project belongs to: `org_<hex>` or `org_<hex>.<game>`, or a hawkesgen.ai account's own project
- *  (`usr_<hex>`, `ustg_<hex>` on beta), whose org is its personal org `org_<hex>`. Else null. */
+ *  (`usr_<hex>`, `ustg_<hex>` on beta), whose org is its personal org `org_<hex>`, or a Gen app account's (`u_<hex>`,
+ *  src/users.ts), whose org is derived from it in a namespace of its own (`genAccountOrg`). Else null. */
 export function orgOfProject(project: string): string | null {
   const o = project.split('.')[0];
   if (ORG_ID.test(o)) return o;
   const m = /^(?:usr|ustg)_([0-9a-f]{8,32})$/.exec(o);
-  return m ? `org_${m[1]}` : null;
+  if (m) return `org_${m[1]}`;
+  const g = /^u_([0-9a-f]{8,32})$/.exec(o);
+  return g ? genAccountOrg(o) : null;
 }
+
+/** A Gen app account's own org: hashed, so it can never be a hawkesgen.ai org (Gen and the portal are separate products). */
+export const genAccountOrg = (project: string) => `org_${crypto.createHash('sha256').update(`gen-account:${project}`).digest('hex').slice(0, 24)}`;
 
 export function setOrgSecret(org: string, kind: SecretKind, value: string, by: string) {
   if (!ORG_ID.test(org)) throw new GenError('Not an org');

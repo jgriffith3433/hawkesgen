@@ -111,12 +111,18 @@ test('/ is the Gen app; the operator console is /admin (its files beside it); th
   }
 });
 
-test('the Gen app: every element gen.js looks up by id is on the page, and the new tools are offered', async () => {
+test('the Gen app: every element its modules look up by id is on the page, and the editor tools are wired', async () => {
   const page = (await fetchRoute('/')).text;
-  const js = (await fetchRoute('/gen/gen.js')).text;
+  const mods = ['gen', 'lib', 'project', 'player', 'timeline', 'media', 'tools', 'ai', 'account'];
+  let js = '';
+  for (const m of mods) {
+    const r = await fetchRoute(`/gen/${m}.js`);
+    assert.equal(r.status, 200, `/gen/${m}.js`);
+    js += r.text;
+  }
   const ids = new Set([...js.matchAll(/\$\('#([A-Za-z][\w-]*)/g)].map((m) => m[1]));
-  for (const id of ids) if (!js.includes(`id="${id}"`)) assert.match(page, new RegExp(`id="${id}"`), `#${id} is used by gen.js but missing from the page`);
-  for (const tool of ['image.edit', 'image.cutout', 'image.upscale', 'audio.voice', 'audio.sfx', 'video.compose']) assert.ok(js.includes(`'${tool}'`), tool);
+  for (const id of ids) if (!js.includes(`id: '${id}'`) && !js.includes(`id="${id}"`)) assert.match(page, new RegExp(`id="${id}"`), `#${id} is used by the app but missing from the page`);
+  for (const tool of ['image.generate', 'image.edit', 'image.repaint', 'image.expand', 'image.cutout', 'video.i2v', 'video.change', 'video.replace', 'video.frame', 'video.compose', 'video.still', 'audio.music', 'audio.voice', 'audio.sfx']) assert.ok(js.includes(`'${tool}'`), tool);
 });
 
 test('all endpoints referenced by /home and /app respond properly', async () => {
