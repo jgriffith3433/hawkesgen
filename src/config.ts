@@ -97,8 +97,8 @@ export type Settings = {
    *  project runs at once, `perProjectLane` the most slots one takes in each API or local lane (playtests count browser
    *  tabs), `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
   queue: { perProjectGpu: number; perProjectLane: number; projects: string[] };
-  /** Platform tokens from hawkesgen.ai (src/platform.ts): `issuer` the portal this lane trusts (empty: hawkesgen.ai, or
-   *  beta.hawkesgen.ai on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
+  /** Platform tokens from the portal (src/platform.ts): `issuer` the portal this lane trusts (empty: hawkesgames.com, or
+   *  beta.hawkesgames.com on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
    *  (design partners, J's own). */
   platform: { issuer: string; freeOrgs: string[] };
   /** Jobs at once for the API providers and local tools. */

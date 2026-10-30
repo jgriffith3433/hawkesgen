@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { paths } from '../config.ts';
 
 export type Env = 'live' | 'beta' | 'preview' | 'local';
-export type Product = { id: string; name: string; origins: string[]; beta?: string; levels?: string[]; funnel?: string[]; customEvents: number };
+export type Product = { id: string; name: string; origins: string[]; beta?: string; betaOrigins?: string[]; levels?: string[]; funnel?: string[]; customEvents: number };
 
 export const BETA_DOMAIN = 'hawkesgen.ai';
 
@@ -26,6 +26,7 @@ export function products(file = paths.analyticsProducts): Map<string, Product> {
       id, name: String(p.name ?? id),
       origins: (Array.isArray(p.origins) ? p.origins : []).map((o: string) => String(o).replace(/\/+$/, '').toLowerCase()),
       beta: typeof p.beta === 'string' ? p.beta.toLowerCase() : undefined,
+      betaOrigins: Array.isArray(p.betaOrigins) ? p.betaOrigins.map((o: string) => String(o).replace(/\/+$/, '').toLowerCase()) : undefined,
       levels: Array.isArray(p.levels) ? p.levels.map(String) : undefined,
       funnel: Array.isArray(p.funnel) ? p.funnel.map(String) : undefined,
       customEvents: Math.max(0, Math.min(500, Number(p.customEvents ?? 50) || 0)),
@@ -37,13 +38,14 @@ export function products(file = paths.analyticsProducts): Map<string, Product> {
 
 /**
  * The env an origin means for a product, or null when the product doesn't accept it: one of its live origins (live),
- * https://<beta>.hawkesgen.ai (beta, or preview for pages under /c/<change>/), http(s)://localhost or 127.0.0.1 on
- * any port (local).
+ * https://<beta>.hawkesgen.ai (beta, or preview for pages under /c/<change>/), one of its betaOrigins (beta: a product
+ * with a beta of its own, like the portal's beta.hawkesgames.com), http(s)://localhost or 127.0.0.1 on any port (local).
  */
 export function envFor(p: Product, origin: string, page = ''): Env | null {
   const o = origin.replace(/\/+$/, '').toLowerCase();
   if (!o) return null;
   if (p.origins.includes(o)) return 'live';
+  if (p.betaOrigins?.includes(o)) return 'beta';
   if (p.beta && o === `https://${p.beta}.${BETA_DOMAIN}`) return /^\/c\/[\w-]+(\/|$)/.test(page) ? 'preview' : 'beta';
   if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?$/.test(o)) return 'local';
   return null;

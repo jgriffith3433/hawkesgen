@@ -1,4 +1,4 @@
-// The platform token (hawkesstudio docs/platform-plan.md 4.2): hawkesgen.ai is the account system, so Gen holds no
+// The platform token (hawkesstudio docs/platform-plan.md 4.2): the portal (hawkesgames.com) is the account system, so Gen holds no
 // customer accounts of its own for the platform. A customer's call carries a short-lived JWT the portal signed (EdDSA,
 // Ed25519; minted at POST <portal>/v1/platform/token) instead of an hg_ key. Gen checks it against the portal's public
 // keys (<portal>/.well-known/jwks.json, cached) and turns its claims into a Client: role user, the org's projects only.
@@ -10,7 +10,7 @@
 // Jobs: what an org may run is its token's scopes (playtest.* needs "playtest", unity.* "build", the rest "generate").
 // Billing for jobs submitted straight to Gen with a token isn't connected yet (the portal's credits are per account, not
 // per org): until it is, only orgs on settings.platform.freeOrgs (design partners, J's own) may submit; everyone else
-// reads, and runs jobs through hawkesgen.ai as before.
+// reads, and runs jobs through the portal as before.
 
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
@@ -27,10 +27,11 @@ const ORG_ID = /^org_[0-9a-f]{8,32}$/;
 const ROLES = new Set(['owner', 'admin', 'member', 'viewer']);
 export const SCOPE_OF_TOOL = (tool: string) => (tool.startsWith('playtest.') ? 'playtest' : tool.startsWith('unity.') ? 'build' : 'generate');
 
-/** The portal this lane trusts: settings.platform.issuer, else hawkesgen.ai (live) or beta.hawkesgen.ai (beta). */
+/** The portal this lane trusts: settings.platform.issuer, else hawkesgames.com (live) or beta.hawkesgames.com (beta; the
+ *  portal was hawkesgen.ai before it moved, docs/domain-move.md in hawkesgenwebsite). */
 export function issuer(): string {
   const s = loadSettings().platform.issuer;
-  return (s || (env('HAWKESGEN_LANE') === 'beta' ? 'https://beta.hawkesgen.ai' : 'https://hawkesgen.ai')).replace(/\/+$/, '');
+  return (s || (env('HAWKESGEN_LANE') === 'beta' ? 'https://beta.hawkesgames.com' : 'https://hawkesgames.com')).replace(/\/+$/, '');
 }
 
 let keys: { iss: string; at: number; jwks: Jwk[] } | null = null;
@@ -119,6 +120,6 @@ export function checkSubmit(c: { org?: string; scopes?: string[]; orgRole?: stri
   const need = SCOPE_OF_TOOL(tool);
   if (!c.scopes?.includes(need)) throw new GenError(`This token wasn't granted "${need}" (it has: ${(c.scopes ?? []).join(', ') || 'none'})`, { status: 403 });
   if (!loadSettings().platform.freeOrgs.includes(c.org)) {
-    throw new GenError('Run jobs through hawkesgen.ai for now: billing for jobs sent straight to Gen with a platform token is not connected yet', { status: 402 });
+    throw new GenError('Run jobs through hawkesgames.com for now: billing for jobs sent straight to Gen with a platform token is not connected yet', { status: 402 });
   }
 }
