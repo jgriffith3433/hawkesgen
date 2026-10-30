@@ -65,13 +65,12 @@ or permissions change).
 request to the service's own address and the visitor's IP as `X-Hawkes-Client-IP`, which Gen believes only from
 Cloudflare's ranges (`src/analytics/collect.ts clientIp`).
 
-The same Worker has **hawkesgen.ai** and www (beta: **beta.hawkesgen.ai** beside gen-beta), the names the customer portal
-had before it moved to hawkesgames.com (hawkesgenwebsite `docs/domain-move.md`). Their routes do nothing until those
-names are proxied `AAAA 100::` records (the move's cutover). There the Worker still answers the portal's old links
-(`PORTAL_ORIGIN`, `PORTAL_HOSTS`): Gen's own paths (`/`, `/sdk/`, `/client/`, `/cdn/`) to Gen, an old portal page
-redirected, the portal's other paths passed on to it, and `/v1` and `/mcp` by the caller (a portal OAuth token or session
-to the portal, a platform token to Gen, anything else to Gen and then the portal when Gen answers 401 or 404). Test
-`test/gen-edge.test.ts`.
+The same Worker has **hawkesgen.ai** and www (beta: **beta.hawkesgen.ai** beside gen-beta): HawkesGen.ai, Gen's own app,
+on the names the customer portal had before it moved to hawkesgames.com (hawkesgenwebsite `docs/domain-move.md`). Their
+routes do nothing until those names are proxied `AAAA 100::` records (the move's cutover). There everything goes to Gen
+first, and the Worker keeps the portal's old links working (`PORTAL_ORIGIN`, `PORTAL_HOSTS`): a portal OAuth token, or
+its session on `/v1` and `/mcp`, goes to the portal; what Gen answers 404 is the portal's (pages redirected, the rest
+passed on), and so is a key Gen refuses (401) on `/v1` and `/mcp`. Test `test/gen-edge.test.ts`.
 
 ## The CDN
 
