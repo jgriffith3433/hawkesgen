@@ -415,7 +415,10 @@ async function stage() {
     h('button', { class: 'ghost small', id: 'dirPhoto', title: 'A still of the stage at the playhead, in the look' }, icon('image'), 'Photo'));
   $('#viewerWrap').insertBefore(bar, $('#toolbar'));
   try {
-    D.three = await makeStage(wrap);
+    const made = await makeStage(wrap);
+    // The tab closed (or another shot opened) while the stage was loading: this one is no longer wanted.
+    if (!wrap.isConnected || !D.open) { made.stop(); return; }
+    D.three = made;
   } catch (err) {
     wrap.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'The 3D stage couldn\'t start in this browser.'), h('p', { class: 'muted small' }, plainError(err.message))));
     return;
@@ -560,6 +563,7 @@ async function makeStage(wrap) {
   }
 
   async function rebuild() {
+    if (!D.shot || !canvas.isConnected) return;
     const my = ++build;
     const s = D.shot.doc;
     const next = new THREE.Group();
@@ -647,8 +651,9 @@ async function makeStage(wrap) {
     cam.aspect = aspect;
     cam.updateProjectionMatrix();
   }
-  const shotAspect = () => { const [w, hh] = ASPECTS[D.shot.doc.aspect]; return w / hh; };
+  const shotAspect = () => { const [w, hh] = ASPECTS[D.shot?.doc.aspect ?? '16:9']; return w / hh; };
   function layout() {
+    if (!D.shot) return;
     const box = wrap.getBoundingClientRect();
     const ar = D.view === 'camera' ? shotAspect() : box.width / Math.max(1, box.height);
     let w = box.width - 16, hh = w / ar;
@@ -657,7 +662,8 @@ async function makeStage(wrap) {
     helpers.visible = D.view === 'free';
     orbit.enabled = D.view === 'free';
   }
-  new ResizeObserver(() => layout()).observe(wrap);
+  const resize = new ResizeObserver(() => layout());
+  resize.observe(wrap);
   layout();
 
   // Dragging people, props and walk markers on the ground.
@@ -751,7 +757,10 @@ async function makeStage(wrap) {
 
   let raf = 0, last = performance.now();
   function frameLoop(now) {
+    // A stage whose canvas left the page (its tab closed while it loaded) stops itself.
+    if (!canvas.isConnected) { cancelAnimationFrame(raf); resize.disconnect(); renderer.dispose(); return; }
     raf = requestAnimationFrame(frameLoop);
+    if (!D.shot) return;
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
     if (D.playing && !D.filming) {
@@ -864,7 +873,7 @@ async function makeStage(wrap) {
       }
     },
     clipsOf: (asset) => (asset ? clipsKnown.get(asset) ?? [] : []),
-    stop: () => { cancelAnimationFrame(raf); renderer.dispose(); },
+    stop: () => { cancelAnimationFrame(raf); resize.disconnect(); renderer.dispose(); },
   };
 }
 

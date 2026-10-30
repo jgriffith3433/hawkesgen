@@ -42,6 +42,12 @@ export const sceneList = () => W.list;
 // ------------------------------------------------------------------ start
 export function initScenes() {
   $('#newSceneBtn').addEventListener('click', (e) => newSceneMenu(e.currentTarget));
+  // Too many tabs to show: a menu of every open scene, the ones out of view marked; the strip scrolls with the wheel too.
+  $('#tabsMore').addEventListener('click', (e) => tabsMenu(e.currentTarget));
+  const strip = $('#sceneTabs');
+  strip.addEventListener('scroll', () => drawMore());
+  strip.addEventListener('wheel', (e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && strip.scrollWidth > strip.clientWidth) { e.preventDefault(); strip.scrollLeft += e.deltaY; } }, { passive: false });
+  new ResizeObserver(() => drawMore()).observe(strip);
   $('#scenesSearch').addEventListener('input', drawList);
   $$('#scenesFilter .chip').forEach((c) => c.addEventListener('click', () => { $$('#scenesFilter .chip').forEach((x) => x.classList.toggle('on', x === c)); W.filter = c.dataset.kind; drawList(); }));
   $('#sceneAction').addEventListener('click', () => W.editor?.action?.run());
@@ -155,7 +161,7 @@ async function closeTab(id, { quiet = false } = {}) {
 function drawTabs() {
   const box = $('#sceneTabs');
   box.replaceChildren(...W.tabs.map((t) => {
-    const el = h('div', { class: `scene-tab${t.id === W.active ? ' on' : ''}`, title: `${kindInfo(t.kind).label}: ${t.title}`, draggable: 'true' },
+    const el = h('div', { class: `scene-tab${t.id === W.active ? ' on' : ''}`, 'data-id': t.id, title: `${kindInfo(t.kind).label}: ${t.title}`, draggable: 'true' },
       icon(kindInfo(t.kind).icon), h('span', { class: 'scene-tab-t' }, t.title),
       h('button', { class: 'scene-tab-x', title: 'Close the tab', onclick: (e) => { e.stopPropagation(); closeTab(t.id); } }, icon('close')));
     el.addEventListener('click', () => { if (t.id !== W.active) activate(t.id); });
@@ -176,6 +182,34 @@ function drawTabs() {
     return el;
   }));
   box.querySelector('.scene-tab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  drawMore();
+}
+
+/** The tabs scrolled out of view (wholly or partly), by id. */
+function hiddenTabs() {
+  const strip = $('#sceneTabs');
+  const r = strip.getBoundingClientRect();
+  return new Set([...strip.querySelectorAll('.scene-tab')].filter((el) => { const b = el.getBoundingClientRect(); return b.left < r.left - 1 || b.right > r.right + 1; }).map((el) => el.dataset.id));
+}
+/** The dropdown button shows only while some tabs don't fit, with how many are out of view. */
+function drawMore() {
+  const strip = $('#sceneTabs');
+  const btn = $('#tabsMore');
+  if (!strip || !btn) return;
+  const over = strip.scrollWidth > strip.clientWidth + 1;
+  btn.hidden = !over;
+  const n = over ? hiddenTabs().size : 0;
+  $('#tabsMoreN').textContent = n ? String(n) : '';
+  btn.title = n ? `${n} more open scene${n === 1 ? '' : 's'}` : 'Every open scene';
+}
+function tabsMenu(btn) {
+  const r = btn.getBoundingClientRect();
+  const hidden = hiddenTabs();
+  popMenu(Math.max(8, r.right - 260), r.bottom + 6, [h('div', { class: 'menu-title' }, `Open scenes (${W.tabs.length})`),
+    h('div', { class: 'menu-scroll' }, ...W.tabs.map((t) => h('button', { class: `menu-item tabs-item${t.id === W.active ? ' on' : ''}${hidden.has(t.id) ? ' out' : ''}`, onclick: () => { closeMenus(); activate(t.id).then(() => $(`#sceneTabs .scene-tab[data-id="${t.id}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' })); } },
+      h('span', { class: 'row' }, icon(kindInfo(t.kind).icon), h('span', { class: 'tabs-item-t' }, t.title)),
+      h('span', { class: 'row' }, hidden.has(t.id) ? h('span', { class: 'muted small' }, 'out of view') : '',
+        h('span', { class: 'icon-btn small', title: 'Close the tab', role: 'button', onclick: (e) => { e.stopPropagation(); closeMenus(); closeTab(t.id); } }, icon('close'))))))]);
 }
 
 function renameTab(t, el) {
