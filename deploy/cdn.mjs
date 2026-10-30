@@ -158,7 +158,7 @@ if (loadSettings().storage.cdn === url) say(`  already ${url}`);
 else if (APPLY && dist) {
   const s = loadSettings();
   saveSettings({ storage: { ...s.storage, cdn: url } });
-  say(`  set to ${url} in this checkout's settings. On the cloud server run: curl -X POST -H "Authorization: Bearer $KEY" -H 'content-type: application/json' -d '{"storage":{"bucket":"${BUCKET}","cdn":"${url}"}}' https://gen.hawkesgen.ai/v1/settings`);
+  say(`  set to ${url} in this checkout's settings. On the cloud server run: curl -X POST -H "Authorization: Bearer $KEY" -H 'content-type: application/json' -d '{"storage":{"bucket":"${BUCKET}","cdn":"${url}"}}' https://hawkesgen.ai/v1/settings`);
 } else did(`set storage.cdn to ${url}`);
 
 say(`\nCost: pay-as-you-go, no monthly fee. The free tier covers 1 TB out and 10M requests a month; after that about $0.085/GB and $0.01 per 10,000 HTTPS requests (US, PriceClass_100: US/Canada/Europe edges). S3 to CloudFront transfer is free. The certificate, OAC and policies are free; the Route 53 records cost about $0.40 a month for the alias queries at most, and CloudWatch gives the first 10 alarms free.`);

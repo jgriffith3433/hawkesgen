@@ -28,7 +28,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `CLAUDE.md` just imports this file; edit this one.
 
 **Deploys:** this folder is the private repo `jgriffith3433/hawkesgen`. Every push to `main` deploys it to the cloud
-(gen.hawkesgen.ai): CI (`.github/workflows/ci.yml`: typecheck and tests) must pass, then the control server pulls it
+(hawkesgen.ai): CI (`.github/workflows/ci.yml`: typecheck and tests) must pass, then the control server pulls it
 within a few minutes, waiting while jobs run (`hawkesstudio/deploy/hawkes-pull.mjs`). Push to main only with J's OK,
 after `npm run typecheck` and `npm test`; commit only your own files (other sessions edit here too). Roll back with
 `git revert` + push. Details: `hawkesstudio/docs/cloud.md` ("How code gets to the server").
@@ -155,9 +155,9 @@ chosen one.
   container (never main). Studio uses it for build tags (`git tag build-x && git push origin build-x` in a Unity source
   repo). docs/unity-cloudrun.md, "GitHub mode".
 
-## The app (gen.hawkesgen.ai `/`)
+## The app (hawkesgen.ai `/`)
 
-Hawkes Gen is a product of its own (J, 2026-10-29): people sign up at gen.hawkesgen.ai with Gen's own accounts
+Hawkes Gen is a product of its own (J, 2026-10-29): people sign up at hawkesgen.ai with Gen's own accounts
 (`src/users.ts`: email and password, starter credits, Stripe packs), separate from hawkesgen.ai's and Studio's. The
 portal and Studio use Gen in the back end with their own keys.
 - **The app** (`dashboard/gen/`: plain HTML, CSS and ES modules over `/v1`, no build step) is at `/`: a video editor

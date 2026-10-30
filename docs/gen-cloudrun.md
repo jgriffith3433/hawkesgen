@@ -41,7 +41,7 @@ while an instance lives (us-east4). An instance lives while requests come in or 
 ## Lanes: dev -> beta -> main
 
 J, 2026-10-28: "dev -> beta -> main". Work lands on `dev` (deploys nothing). `beta` is **gen-beta**
-(`https://gen-beta.hawkesgen.ai`): its own database, library, settings, Claude login and owner key (secret
+(`https://beta.hawkesgen.ai`): its own database, library, settings, Claude login and owner key (secret
 `gen-beta-owner-key`), the same image and provider keys, a BETA badge on the dashboard and `lane: "beta"` in
 `/v1/health`. `main` is **gen**, live. Testing on beta never touches live customers or their files. Made once with
 `deploy.ps1 -Lane beta` (client.json gets `genBetaUrl`/`genBetaKey`, live's entry is untouched) and
@@ -61,16 +61,15 @@ or permissions change).
 
 ## The address
 
-`https://gen.hawkesgen.ai` is a Cloudflare Worker (`server/gen-edge/`, `npx wrangler deploy` there) that passes every
-request to the service's own address and the visitor's IP as `X-Hawkes-Client-IP`, which Gen believes only from
-Cloudflare's ranges (`src/analytics/collect.ts clientIp`).
-
-The same Worker has **hawkesgen.ai** and www (beta: **beta.hawkesgen.ai** beside gen-beta): HawkesGen.ai, Gen's own app,
-on the names the customer portal had before it moved to hawkesgames.com (hawkesgenwebsite `docs/domain-move.md`). Their
-routes do nothing until those names are proxied `AAAA 100::` records (the move's cutover). There everything goes to Gen
-first, and the Worker keeps the portal's old links working (`PORTAL_ORIGIN`, `PORTAL_HOSTS`): a portal OAuth token, or
-its session on `/v1` and `/mcp`, goes to the portal; what Gen answers 404 is the portal's (pages redirected, the rest
-passed on), and so is a key Gen refuses (401) on `/v1` and `/mcp`. Test `test/gen-edge.test.ts`.
+`https://hawkesgen.ai` (and www; beta: `https://beta.hawkesgen.ai`) is a Cloudflare Worker (`server/gen-edge/`,
+`npx wrangler deploy` there, `--env beta` for beta) that passes every request to the service's own address and the
+visitor's IP as `X-Hawkes-Client-IP`, which Gen believes only from Cloudflare's ranges (`src/analytics/collect.ts
+clientIp`). Until 2026-10-29 Gen was gen.hawkesgen.ai (gen-beta.hawkesgen.ai) and these names were the customer portal's,
+which moved to hawkesgames.com (hawkesgenwebsite `docs/domain-move.md`). The old gen. names still route to the same
+Worker until nothing calls them, then their routes come off. On the portal's old names the Worker keeps the portal's
+links working (`PORTAL_ORIGIN`, `PORTAL_HOSTS`): everything goes to Gen first; a portal OAuth token, or its session on
+`/v1` and `/mcp`, goes to the portal; what Gen answers 404 is the portal's (pages redirected, the rest passed on), and so
+is a key Gen refuses (401) on `/v1` and `/mcp`. Test `test/gen-edge.test.ts`.
 
 ## The CDN
 

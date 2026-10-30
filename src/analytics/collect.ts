@@ -219,7 +219,7 @@ export function rateLimited(ip: string | null, events: number, now = Date.now())
 }
 export const resetRateLimits = () => windows.clear();
 
-/** Cloudflare's edge (cloudflare.com/ips): the Worker on gen.hawkesgen.ai (server/gen-edge/) reaches Cloud Run from these. */
+/** Cloudflare's edge (cloudflare.com/ips): the Worker on hawkesgen.ai (server/gen-edge/) reaches Cloud Run from these. */
 export const CLOUDFLARE_EDGE = [
   '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18',
   '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
@@ -231,7 +231,7 @@ const IP = /^[0-9a-f.:]{3,45}$/i;
 /**
  * The visitor's IP. Behind Caddy (the old server, J's PC): the last X-Forwarded-For entry, the address Caddy saw. On
  * Cloud Run the socket is Google's front end and the last entry is the address that connected to Google; when that is
- * Cloudflare's edge, the request came through the gen.hawkesgen.ai Worker, which passes the visitor's address as
+ * Cloudflare's edge, the request came through the hawkesgen.ai Worker, which passes the visitor's address as
  * X-Hawkes-Client-IP (only believed from Cloudflare's ranges).
  */
 export function clientIp(req: IncomingMessage): string | null {

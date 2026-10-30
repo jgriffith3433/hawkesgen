@@ -634,7 +634,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const user = getUserForClient(client);
       if (!user) throw new GenError('Sign in with a user account to buy credits', { status: 403 });
       const body = await readJson(req);
-      const checkout = await createStripeCheckoutSession(user, body, origin || 'https://gen.hawkesgen.ai');
+      const checkout = await createStripeCheckoutSession(user, body, origin || 'https://hawkesgen.ai');
       return send(res, 200, checkout);
     }
     if (route === '/v1/billing/ledger' && method === 'GET') {
@@ -668,7 +668,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const user = getUserForClient(client);
       if (!user) throw new GenError('Sign in to subscribe', { status: 403 });
       const S = await import('./subscriptions.ts');
-      return send(res, 200, await S.subscriptionCheckout(user, String((await readJson(req)).planId ?? ''), origin || 'https://gen.hawkesgen.ai'));
+      return send(res, 200, await S.subscriptionCheckout(user, String((await readJson(req)).planId ?? ''), origin || 'https://hawkesgen.ai'));
     }
     if ((route === '/v1/subscriptions/cancel' || route === '/v1/subscriptions/resume') && method === 'POST') {
       const user = getUserForClient(client);
@@ -680,7 +680,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const user = getUserForClient(client);
       if (!user) throw new GenError('Sign in first', { status: 403 });
       const S = await import('./subscriptions.ts');
-      return send(res, 200, await S.billingPortal(user, origin || 'https://gen.hawkesgen.ai'));
+      return send(res, 200, await S.billingPortal(user, origin || 'https://hawkesgen.ai'));
     }
     if (route === '/v1/subscriptions/me' && method === 'GET') {
       if (client.role !== 'user') throw new GenError('Subscriptions are for user accounts only', { status: 403 });

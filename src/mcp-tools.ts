@@ -135,7 +135,7 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
         return { total: r.total, items: r.items.map((x: any) => ({ id: x.id, kind: x.kind, project: x.project, tool: x.tool, title: x.title, labels: x.labels, tags: x.tags?.length ? x.tags : undefined, duration: x.meta?.duration, loop: x.meta?.loop, path: String(x.id).startsWith('motion:') ? x.id : (remote ? `${filesUrl}/v1/files/${x.id}` : x.path), prompt: x.recipe?.params?.prompt, created: new Date(x.created).toISOString() })) };
       },
     },
-    // The Gen app's editor (src/editor.ts): the same projects the person edits at gen.hawkesgen.ai, so Claude anywhere
+    // The Gen app's editor (src/editor.ts): the same projects the person edits at hawkesgen.ai, so Claude anywhere
     // can cut, arrange and generate into them; the app shows the changes.
     {
       name: 'hawkesgen_editor',

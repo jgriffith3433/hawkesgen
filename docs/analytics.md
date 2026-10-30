@@ -16,11 +16,11 @@ The SDK itself: `clients/js/hawkes-analytics.js` (quick start just below), teste
 One script tag, in every page of the product (game pages and website pages alike):
 
 ```html
-<script src="https://gen.hawkesgen.ai/sdk/analytics@1.js" data-product="phorigins" data-build="0.9.1" defer></script>
+<script src="https://hawkesgen.ai/sdk/analytics@1.js" data-product="phorigins" data-build="0.9.1" defer></script>
 ```
 
 - `data-product` (required: the id in `analytics/products.json`), `data-build` (a version string), `data-endpoint`
-  (default `https://gen.hawkesgen.ai/v1/analytics/collect`), `data-debug="1"`.
+  (default `https://hawkesgen.ai/v1/analytics/collect`), `data-debug="1"`.
 - Or set `window.HAWKES_BUILD = { version, commit, date }` before it (it wins over `data-build`), or call
   `hawkesAnalytics.init({ product, build, endpoint, debug, context })` yourself.
 - **Always load it from Gen; never keep a copy** (J, 2026-10-27): a Gen deploy then updates every site at once, and the
@@ -124,7 +124,7 @@ call to the Console).
 ### The batch
 
 ```http
-POST https://gen.hawkesgen.ai/v1/analytics/collect
+POST https://hawkesgen.ai/v1/analytics/collect
 Content-Type: text/plain;charset=UTF-8          (or application/json)
 
 {
@@ -360,7 +360,7 @@ Times are UTC. A session belongs to the range it started in; events to the range
 
 ## The public route (Caddy)
 
-The collect door and the SDK files are public on gen.hawkesgen.ai (`hawkesstudio/deploy/caddyfile.mjs`, the
+The collect door and the SDK files are public on hawkesgen.ai (`hawkesstudio/deploy/caddyfile.mjs`, the
 `@analytics` block, ahead of the sign-in). Gen checks the origin, the size and the rate itself.
 
 **Relays.** A site whose pages can't send themselves (hawkesgen.ai's games run in a sandbox with no origin) sends to
@@ -392,7 +392,7 @@ pages (and Unity games) that load the SDK from Gen get the sign-in page instead 
 sent, the game unaffected. Check with:
 
 ```bash
-curl -si https://gen.hawkesgen.ai/v1/analytics/collect -H 'Origin: https://sickofitgame.com' -A 'Mozilla/5.0 Chrome/141.0' \
+curl -si https://hawkesgen.ai/v1/analytics/collect -H 'Origin: https://sickofitgame.com' -A 'Mozilla/5.0 Chrome/141.0' \
   -H 'Content-Type: text/plain' --data '{"product":"sickofit","anon":"test_anon_1","session":"test_sess_1","flags":{"internal":true},"events":[{"name":"page_view","seq":0}]}'
 # → 202 {"ok":true,"accepted":1,...} with Access-Control-Allow-Origin: https://sickofitgame.com
 # (curl's own user agent counts as a bot: such sessions show only with bots=1)

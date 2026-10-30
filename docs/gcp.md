@@ -36,7 +36,7 @@ background task, for the dry run beside the live box).
 | GPU fleet, Windows build server, playtesters | AWS | **stay on AWS** | another workstream moves GPU and Unity work to Cloud Run; until then Gen drives EC2 as before |
 | Gen's library bucket, playtest videos (S3), cdn.hawkesgen.ai (CloudFront) | AWS | **stay on AWS** | the storage move to GCS is its own work; the VM's role keeps `s3:*` on `hawkes-*` |
 | Email (SES), Cost Explorer, Route 53 | AWS | **stay on AWS** | through the federated role (SES, CE); DNS through `hawkesgenwebsite/cloud/dns.py` |
-| Hawkes Net, the portal | their own VMs / Firebase | unchanged | they reach `gen.hawkesgen.ai` by name |
+| Hawkes Net, the portal | their own VMs / Firebase | unchanged | they reach `hawkesgen.ai` by name |
 
 us-east4 (Ashburn) is next to us-east-1 (northern Virginia): a millisecond or two to the fleet, the build server and S3.
 
@@ -175,7 +175,7 @@ helpers still write to AWS; until they learn Google, store there and run `secret
       host through Caddy on the VM.
 
    To look at the copy in a browser before the switch, point the names at the VM in J's hosts file
-   (`<new ip> studio.hawkesgen.ai gen.hawkesgen.ai`); it's a smoke copy, so nothing runs there.
+   (`<new ip> studio.hawkesgen.ai hawkesgen.ai`); it's a smoke copy, so nothing runs there.
 
 ### The switch (about an hour of downtime)
 

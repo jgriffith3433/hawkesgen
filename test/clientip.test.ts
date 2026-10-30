@@ -1,5 +1,5 @@
 // The visitor's address for analytics (src/analytics/collect.ts clientIp): behind Caddy, on Cloud Run straight, and on
-// Cloud Run through the gen.hawkesgen.ai Worker on Cloudflare. Offline.
+// Cloud Run through the hawkesgen.ai Worker on Cloudflare. Offline.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { clientIp } from '../src/analytics/collect.ts';

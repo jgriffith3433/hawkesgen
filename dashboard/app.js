@@ -175,7 +175,7 @@ async function showJob(id, refresh = false) {
 
 const render = {};
 
-// The beta lane (gen-beta.hawkesgen.ai) says so on every page, so it's never taken for live.
+// The beta lane (beta.hawkesgen.ai) says so on every page, so it's never taken for live.
 fetch('/v1/health').then((r) => r.json()).then((h) => {
   if (h.lane !== 'beta') return;
   document.title = `BETA · ${document.title}`;

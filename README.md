@@ -100,7 +100,7 @@ await gen.download(job.outputs[0].asset, 'imp.png');
 **Player analytics on a page** (`clients/js/hawkes-analytics.js`; the quick start is in `docs/analytics.md`):
 
 ```html
-<script src="https://gen.hawkesgen.ai/sdk/analytics@1.js" data-product="sickofit" data-build="1.4.2" defer></script>
+<script src="https://hawkesgen.ai/sdk/analytics@1.js" data-product="sickofit" data-build="1.4.2" defer></script>
 <script>hawkesAnalytics.levelStart(1); /* … */ hawkesAnalytics.levelEnd(1, 'complete');</script>
 ```
 

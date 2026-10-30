@@ -37,7 +37,7 @@ test.after(() => { server.close(); stripe.close(); });
 const me = signupUser({ email: 'sub@example.com', password: 'secret-123', name: 'Sub' });
 const cookie = `hg_session=${me.sessionToken}`;
 const call = (route: string, body?: unknown) => fetch(base + route, {
-  method: body === undefined ? 'GET' : 'POST', headers: { cookie, Origin: 'https://gen.hawkesgen.ai', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+  method: body === undefined ? 'GET' : 'POST', headers: { cookie, Origin: 'https://hawkesgen.ai', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
   body: body === undefined ? undefined : JSON.stringify(body),
 });
 const hook = (event: unknown) => {

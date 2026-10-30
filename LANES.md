@@ -9,8 +9,8 @@ Agents' fixes land on `beta` (pull requests Studio merges); `sync.bat` brings th
 | | Address |
 |---|---|
 | Local | [http://127.0.0.1:8790](http://127.0.0.1:8790) |
-| Beta | [https://gen-beta.hawkesgen.ai](https://gen-beta.hawkesgen.ai) |
-| Live | [https://gen.hawkesgen.ai](https://gen.hawkesgen.ai) |
+| Beta | [https://beta.hawkesgen.ai](https://beta.hawkesgen.ai) |
+| Live | [https://hawkesgen.ai](https://hawkesgen.ai) |
 | Deploys (GitHub Actions) | [github.com/jgriffith3433/hawkesgen/actions](https://github.com/jgriffith3433/hawkesgen/actions) |
 
 **How it deploys:** Push beta: GitHub Actions builds the image and deploys Cloud Run gen-beta. Push main: the same for gen (live). Health-checked, rolled back if unhealthy.

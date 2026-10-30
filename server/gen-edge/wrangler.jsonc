@@ -1,10 +1,10 @@
-// gen.hawkesgen.ai: a Cloudflare Worker that passes every request to Hawkes Gen on Cloud Run (docs/gen-cloudrun.md,
-// "The address"). Deploy from this folder: npx wrangler deploy (the first time: npx wrangler login).
-// The beta lane (gen-beta.hawkesgen.ai -> the gen-beta service): npx wrangler deploy --env beta
-// hawkesgen.ai and www (live) and beta.hawkesgen.ai (beta) were the customer portal's, which moved to hawkesgames.com
-// (docs/domain-move.md): they are Gen's now, and the Worker still answers the portal's old links there (src/index.ts,
-// PORTAL_HOSTS). Their routes do nothing while those names are DNS-only records to Firebase: the move's last step makes
-// them proxied `AAAA 100::` records, and from then on this Worker has them.
+// Hawkes Gen's address: hawkesgen.ai and www (live), beta.hawkesgen.ai (beta). A Cloudflare Worker that passes every
+// request to Gen on Cloud Run (docs/gen-cloudrun.md, "The address"). Deploy from this folder: npx wrangler deploy (the
+// first time: npx wrangler login); beta: npx wrangler deploy --env beta.
+// gen.hawkesgen.ai and gen-beta.hawkesgen.ai are Gen's old names: still routed here until nothing calls them (J,
+// 2026-10-29: they are going away). The names hawkesgen.ai, www and beta.hawkesgen.ai were the customer portal's before it
+// moved to hawkesgames.com (hawkesgenwebsite docs/domain-move.md): the Worker still answers the portal's old links there
+// (src/index.ts, PORTAL_HOSTS).
 {
   "name": "hawkes-gen-edge",
   "main": "src/index.ts",

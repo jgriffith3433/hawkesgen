@@ -2,7 +2,7 @@
   "name": "hawkes-gen-edge",
   "private": true,
   "type": "module",
-  "description": "gen.hawkesgen.ai: a Cloudflare Worker in front of Hawkes Gen on Cloud Run (docs/gen-cloudrun.md, \"The address\")",
+  "description": "hawkesgen.ai: a Cloudflare Worker in front of Hawkes Gen on Cloud Run (docs/gen-cloudrun.md, \"The address\")",
   "devDependencies": {
     "wrangler": "^4"
   },

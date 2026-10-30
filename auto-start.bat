@@ -1,8 +1,8 @@
 @echo off
 rem Hawkes now runs in the cloud (hawkesgen.ai). "auto-start.bat local" runs a copy on this PC instead.
 if /I not "%~1"=="local" if exist "%USERPROFILE%\.hawkes\client.json" (
-  echo Hawkes runs at https://gen.hawkesgen.ai/
-  start "" "https://gen.hawkesgen.ai/"
+  echo Hawkes runs at https://hawkesgen.ai/
+  start "" "https://hawkesgen.ai/"
   exit /b 0
 )
 cd /d "%~dp0"

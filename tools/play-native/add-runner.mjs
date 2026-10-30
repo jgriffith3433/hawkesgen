@@ -16,7 +16,7 @@ if (!['beta', 'live'].includes(lane) || !/^[a-z0-9]{8,32}$/.test(String(endpoint
   process.exit(1);
 }
 const c = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.hawkes', 'client.json'), 'utf8'));
-const url = (lane === 'beta' ? c.genBetaUrl ?? 'https://gen-beta.hawkesgen.ai' : c.genUrl ?? 'https://gen.hawkesgen.ai').replace(/\/+$/, '');
+const url = (lane === 'beta' ? c.genBetaUrl ?? 'https://beta.hawkesgen.ai' : c.genUrl ?? 'https://hawkesgen.ai').replace(/\/+$/, '');
 const key = String(lane === 'beta' ? c.genBetaKey : c.genKey ?? '').trim();
 if (!key) { console.error(`~/.hawkes/client.json has no ${lane === 'beta' ? 'genBetaKey' : 'genKey'}`); process.exit(1); }
 const headers = { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'User-Agent': 'hawkes-add-runner' };

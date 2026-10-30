@@ -302,7 +302,7 @@ $20**.
    gcloud iam service-accounts add-iam-policy-binding gen-control@hawkes-staging.iam.gserviceaccount.com --member=user:<J's Google account> --role=roles/iam.serviceAccountTokenCreator
    ```
    Then add `HAWKESGEN_GCP_IMPERSONATE=gen-control@hawkes-staging.iam.gserviceaccount.com` to `.env`.
-5. **Point a local Gen at it** (not gen.hawkesgen.ai):
+5. **Point a local Gen at it** (not hawkesgen.ai):
    ```
    POST /v1/settings {"gpu": {"families": {"z-image": "cloudrun", "qwen-edit": "cloudrun"}, "cloudrun": {"bucket": "hawkes-staging-gen-gpu", "urls": {…from step 3…}}}}
    ```

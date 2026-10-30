@@ -20,8 +20,8 @@ import { flag, gcloud, gcloudQuery, die, done, ROOT, APPLY } from '../unity-clou
 
 const project = flag('project', 'hawkes-staging');
 const region = flag('region', 'us-east4');
-// The lane (J, 2026-10-28: dev -> beta -> main): live is `gen` (gen.hawkesgen.ai, from main); beta is `gen-beta`
-// (gen-beta.hawkesgen.ai, from beta) with its own database, library and owner key, so testing never touches live
+// The lane (J, 2026-10-28: dev -> beta -> main): live is `gen` (hawkesgen.ai, from main); beta is `gen-beta`
+// (beta.hawkesgen.ai, from beta) with its own database, library and owner key, so testing never touches live
 // customers. Same image, same account, same provider keys.
 const lane = flag('lane', 'live');
 if (!['live', 'beta'].includes(lane)) die(`--lane is live or beta, not ${lane}`);

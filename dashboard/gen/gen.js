@@ -1,4 +1,4 @@
-// Hawkes Gen, the app (gen.hawkesgen.ai /): a video editor with generative AI built in. Media and Generate on the left
+// Hawkes Gen, the app (hawkesgen.ai /): a video editor with generative AI built in. Media and Generate on the left
 // (media.js), the viewer and the tools for what's selected in the middle (player.js, tools.js), the AI editor on the
 // right (ai.js), the timeline below (timeline.js), one project document saved to Gen (project.js, src/editor.ts).
 // Gen's own accounts (account.js: Google sign-in, credits, Stripe, the account's own AI). The admin dashboard is /admin.

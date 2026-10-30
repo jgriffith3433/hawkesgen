@@ -105,7 +105,7 @@ test('routes: projects are per account, saves check the version, edits apply ser
     const a = signupUser({ email: 'ed-a@example.com', password: 'secret-123', name: 'A' });
     const b = signupUser({ email: 'ed-b@example.com', password: 'secret-123', name: 'B' });
     const as = (who: typeof a) => (route: string, method = 'GET', body?: unknown) => fetch(base + route, {
-      method, headers: { cookie: `hg_session=${who.sessionToken}`, Origin: 'https://gen.hawkesgen.ai', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      method, headers: { cookie: `hg_session=${who.sessionToken}`, Origin: 'https://hawkesgen.ai', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const A = as(a), B = as(b);
