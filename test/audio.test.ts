@@ -266,6 +266,7 @@ test('post (ffmpeg): normalise to a target, trim silence, loop passes the loop-p
   assert.ok(Math.abs(r.after.lufs! - -16) < 1.5, `lufs ${r.after.lufs}`);
   assert.ok(r.after.leadingSilence < 0.15 && r.after.trailingSilence < 0.15, JSON.stringify(r.after));
   assert.ok(r.after.seconds < before.seconds - 0.5);
+  assert.equal(await P.rateOf(out), 44100, 'loudnorm must not resample to 192 kHz');
   const mp3 = path.join(dir, 'out.mp3');
   await P.processAudio(src, mp3, { targetLufs: -16, format: 'mp3', sampleRate: 22050 });
   assert.ok(fs.statSync(mp3).size > 1000);

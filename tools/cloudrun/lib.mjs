@@ -108,7 +108,8 @@ export function contextFiles() {
   };
   const h = crypto.createHash('sha256');
   h.update(`${m.comfyui.repo} ${m.comfyui.tag}\n`);
-  for (const [k, v] of Object.entries(files)) h.update(k).update(v);
+  // Line endings don't count: a Windows checkout (CRLF) must name the same tag GitHub's build (LF) pushes.
+  for (const [k, v] of Object.entries(files)) h.update(k).update(v.toString('utf8').replace(/\r\n/g, '\n'));
   return { files, comfy: m.comfyui, hash: h.digest('hex').slice(0, 10) };
 }
 

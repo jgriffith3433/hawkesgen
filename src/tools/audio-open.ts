@@ -115,7 +115,13 @@ async function synthesizeRemote(ctx: RunContext, c: ComfyRun, o: { model: AudioM
   const items: Record<string, any>[] = [];
   for (const it of o.items) items.push({ ...it, ref: it.refFile ? await c.upload(it.refFile) : null });
   ctx.step(`${o.task === 'sfx' ? 'making sounds' : 'speaking'} with ${o.model.id} on ${c.server.id.replace(/^cloudrun:/, '')}`);
-  const files = await c.runGraph({ hawkes_audio: { task: o.task, model: o.model.id, items: items.map(specItem), asr: Boolean(o.asr), language: o.language ?? 'en' } } as any);
+  const files = await c.runGraph({ hawkes_audio: { task: o.task, model: o.model.id, items: items.map(specItem), asr: Boolean(o.asr), language: o.language ?? 'en' } } as any).catch((e: any) => {
+    // A worker image from before the voice models hands the request to ComfyUI, which refuses it: try the next provider.
+    if (/hawkes_audio/.test(String(e?.message)) && /class_type|missing_node_type/.test(String(e?.message))) {
+      throw Object.assign(new Error(`${c.server.id.replace(/^cloudrun:/, '')} runs a GPU image without the voice models (build and deploy the current one: docs/gpu-providers.md "The image")`), { unavailable: true });
+    }
+    throw e;
+  });
   for (const f of files) fs.writeFileSync(path.join(out, path.basename(f.filename)), await c.download(f));
   return readOut(out, o.model);
 }

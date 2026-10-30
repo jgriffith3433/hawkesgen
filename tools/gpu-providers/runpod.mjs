@@ -3,6 +3,8 @@
 //
 //   node tools/gpu-providers/runpod.mjs --image ghcr.io/<owner>/hawkes-gen-gpu:<tag>            print the plan
 //   node tools/gpu-providers/runpod.mjs --image ... --apply                                      create the template
+//   node tools/gpu-providers/runpod.mjs --image ... --update <endpoint id> [--apply]           a new image on a running endpoint:
+//     its own template keeps everything (env, worker token, disk, ports) and takes the image; new workers start on it
 //   options: --name gen-gpu  --gpu "NVIDIA L40S"  --max 2  --disk 120  --registry-auth <id>  --endpoint <id>
 //
 // What it makes (--apply, with RUNPOD_API_KEY in hawkesgen/.env; costs nothing until a worker runs):
@@ -26,6 +28,36 @@ const workerToken = secret('GPU_WORKER_TOKEN');
 
 // RunPod's price for its 48 GB tier (L40S, L40, 6000 Ada), runpod.io/pricing on 2026-10-28.
 const PRICES = { 'NVIDIA L40S': 1.75, 'NVIDIA L40': 1.75, 'NVIDIA RTX 6000 Ada Generation': 1.75, 'NVIDIA A40': 1.22, 'NVIDIA RTX A6000': 1.22, 'NVIDIA A100 80GB PCIe': 2.72, 'NVIDIA H100 80GB HBM3': 4.79, 'NVIDIA L4': 0.69 };
+
+// --update: swap the image of an existing endpoint's template in place (RunPod's GraphQL saveTemplate needs every field,
+// so they are read back first). Workers already running finish on the old image; new ones start on this one.
+const update = arg('update');
+if (update) {
+  if (!key) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env'); process.exit(1); }
+  const gql = async (query, variables) => {
+    const r = await fetch('https://api.runpod.io/graphql', { method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ query, variables }) });
+    const j = await r.json();
+    if (j.errors?.length) throw new Error(j.errors.map((e) => e.message).join('; '));
+    return j.data;
+  };
+  const d = await gql('query { myself { endpoints { id name template { id name imageName containerDiskInGb volumeInGb volumeMountPath dockerArgs ports containerRegistryAuthId readme env { key value } } } } }');
+  const ep = d.myself.endpoints.find((e) => e.id === update);
+  if (!ep) { console.error(`No RunPod endpoint ${update}`); process.exit(1); }
+  const t = ep.template;
+  header(`Endpoint ${ep.name} (${ep.id}), template ${t.id}`);
+  say(`image: ${t.imageName}
+   ->  ${image}`);
+  if (t.imageName === image) { say('Already on this image.'); process.exit(0); }
+  if (!APPLY) { say('(dry run: --apply saves it)'); process.exit(0); }
+  const input = {
+    id: t.id, name: t.name, imageName: image, isServerless: true, containerDiskInGb: t.containerDiskInGb, volumeInGb: t.volumeInGb ?? 0,
+    volumeMountPath: t.volumeMountPath ?? '/workspace', dockerArgs: t.dockerArgs ?? '', ports: t.ports ?? '8080/http', readme: t.readme ?? '',
+    env: (t.env ?? []).map(({ key: k, value }) => ({ key: k, value })), ...(t.containerRegistryAuthId ? { containerRegistryAuthId: t.containerRegistryAuthId } : {}),
+  };
+  const saved = await gql('mutation($input: SaveTemplateInput) { saveTemplate(input: $input) { id imageName } }', { input });
+  say(`saved: template ${saved.saveTemplate.id} now runs ${saved.saveTemplate.imageName}`);
+  process.exit(0);
+}
 
 const template = {
   name, imageName: image, isServerless: true, containerDiskInGb: disk, category: 'NVIDIA', ports: ['8080/http'],

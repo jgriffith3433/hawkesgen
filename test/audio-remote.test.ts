@@ -79,3 +79,11 @@ test('sound effects: the Stable Audio 3 workflow, one graph per take, its models
   assert.deepEqual(f.models.map((m) => m.file).sort(), ['stable_audio_3_medium.safetensors', 't5gemma_b_b_ul2.safetensors']);
   assert.ok(s.items.every((it) => it.file.endsWith('.flac') && fs.existsSync(it.file)));
 });
+
+test('a worker image without the voice models (ComfyUI refuses hawkes_audio) makes the job try the next provider', async () => {
+  const f = fake(() => { throw new Error('modal: ComfyUI rejected the workflow: {"error": {"type": "missing_node_type", "message": "Node \'ID #hawkes_audio\' has no class_type."}}'); });
+  await assert.rejects(
+    synthesize(f.ctx, { model: modelById('qwen3-tts')!, task: 'speak', items: [{ id: 'take0', text: 'Hi.', seed: 1, language: 'en' }] }),
+    (e: any) => e.unavailable === true && /without the voice models/.test(e.message),
+  );
+});

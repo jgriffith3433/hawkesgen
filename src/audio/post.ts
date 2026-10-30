@@ -67,6 +67,13 @@ export async function durationOf(file: string, signal?: AbortSignal): Promise<nu
   return t ? Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]) : 0;
 }
 
+/** A file's sample rate (ffmpeg's stream line), or null. */
+export async function rateOf(file: string, signal?: AbortSignal): Promise<number | null> {
+  const { stderr } = await ff(['-i', file, '-f', 'null', '-'], { signal });
+  const m = /Audio: .*?, (\d+) Hz/.exec(stderr);
+  return m ? Number(m[1]) : null;
+}
+
 export async function analyze(file: string, opts: { silenceDb?: number; signal?: AbortSignal } = {}): Promise<Analysis> {
   const th = opts.silenceDb ?? -50;
   const a = await ff(['-i', file, '-af', 'ebur128=peak=true,astats=measure_perchannel=none:measure_overall=Peak_level+Number_of_samples+Peak_count,silencedetect=n=' + th + 'dB:d=0.05', '-f', 'null', '-'], { signal: opts.signal });
@@ -162,7 +169,9 @@ export async function processAudio(input: string, output: string, o: ProcessOpti
       }
     }
     const chain = [...post, ...(norm ? [norm] : [])];
-    await ff(['-y', '-i', trimmed, ...(chain.length ? ['-af', chain.join(',')] : []), ...codecArgs(o), output], { signal });
+    // loudnorm resamples to 192 kHz unless told otherwise: keep the source's rate when the caller didn't ask for one.
+    const rate = o.sampleRate ?? (norm ? await rateOf(input, signal) : null) ?? undefined;
+    await ff(['-y', '-i', trimmed, ...(chain.length ? ['-af', chain.join(',')] : []), ...codecArgs({ ...o, sampleRate: rate }), output], { signal });
   } finally {
     fs.rmSync(trimmed, { force: true });
   }

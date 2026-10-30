@@ -31,6 +31,8 @@ import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 const FRESH_MS = 60_000;
 /** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
 const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
+/** How long past its wait a provider's cold worker may take to answer at all (its first pull of a new image). */
+const COLD_START_MS = 12 * 60_000;
 
 export type CloudFile = ComfyFile & { uri: string; bytes?: number };
 export type RunDeps = {
@@ -216,9 +218,12 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
       } catch (e: any) {
         if (hooks.signal.aborted) throw cancelled(key);
         if (e.unavailable) throw e;
-        hooks.step(`${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
+        // A provider's gateway holds the request while a worker starts; a new image's first start on a host pulls it
+        // (minutes), past fetch's 5-minute wait for headers. That is a worker on its way, not an unreachable service.
+        const starting = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' && svc.provider && svc.provider !== 'cloudrun' && deps.now() < until + COLD_START_MS;
+        hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
         await deps.sleep(10_000);
-        if (deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
+        if (!starting && deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
         continue;
       }
       // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503. Wait our turn.
