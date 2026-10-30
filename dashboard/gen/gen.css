@@ -139,6 +139,8 @@ input, select, textarea { font: inherit; color: var(--text); background: var(--p
 .packs button { flex: 1; min-width: 120px; text-align: left; }
 .packs small { display: block; color: var(--muted); }
 
+.foot { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 16px 40px; }
+.foot a { color: var(--muted); }
 .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 16px; box-shadow: var(--shadow); z-index: 50; max-width: calc(100vw - 32px); }
 @media (max-width: 600px) {
   .bar { gap: 10px; padding: 10px 14px; flex-wrap: wrap; }

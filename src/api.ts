@@ -275,7 +275,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   if (!route.startsWith('/v1/') && !route.startsWith('/cdn/')) {
     const publicSaas = isPublicSaas(req);
     let rel: string;
-    if (route === '/home' || route === '/home/' || route === '/public' || route === '/public/') {
+    if (route === '/legal' || route === '/terms' || route === '/privacy' || route === '/refunds') {
+      // Gen's terms, privacy and refunds (dashboard/gen/legal.html); /terms, /privacy and /refunds land on the same page.
+      rel = 'gen/legal.html';
+    } else if (route === '/home' || route === '/home/' || route === '/public' || route === '/public/') {
       rel = 'public/landing.html';
     } else if (route === '/app' || route === '/app/') {
       rel = 'public/game-editor.html';

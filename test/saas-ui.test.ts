@@ -104,6 +104,7 @@ test('/ is the Gen app; the operator console is /admin (its files beside it); th
       }
       assert.equal((await fetchRoute('/admin/style.css')).status, 200);
       assert.match((await fetchRoute('/home')).text, /Build Web Games with AI/);
+      for (const r of ['/legal', '/terms', '/privacy', '/refunds']) assert.match((await fetchRoute(r)).text, /Terms, privacy and refunds/);
     } finally {
       delete process.env.HAWKESGEN_PUBLIC_SAAS;
     }
