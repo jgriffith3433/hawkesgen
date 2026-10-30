@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { makeTools } from './mcp-make.ts';
 import { obj, str, type McpTool, type McpServer } from './mcp-core.ts';
 
 export const INSTRUCTIONS = "Hawkes Gen: shared generative AI for the Hawkes Biomedical projects. Use hawkesgen_presets for a project's art direction before generating; GPU tools cost money while servers run.";
@@ -29,7 +30,15 @@ function envLabels(): Record<string, string> {
   }
 }
 
-export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: boolean; filesUrl?: string } = {}): McpServer {
+export function genMcp(gen: any, { remote = false, filesUrl = '', account, fileLink, uploadLink }: {
+  remote?: boolean; filesUrl?: string;
+  /** A Gen account's own project: the default project of every tool (mcp-http.ts). */
+  account?: string;
+  /** A link that downloads an output without a credential (src/links.ts); remote only. */
+  fileLink?: (assetId: string, name: string) => string;
+  /** A one-time upload link (src/links.ts); remote only. */
+  uploadLink?: (filename: string) => string;
+} = {}): McpServer {
   function summarizeJob(j: any) {
     return {
       id: j.id, tool: j.tool, project: j.project, status: j.status, detail: j.detail, error: j.error ?? undefined,
@@ -43,7 +52,7 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
     if (remote && saveTo) throw new Error('save_to only works with the local MCP server (bin/hawkesgen-mcp.mjs). Over HTTP, download the output URLs instead.');
     for (const o of job.outputs ?? []) {
       if (remote) {
-        files.push(`${filesUrl}/v1/files/${o.asset}`);
+        files.push(fileLink ? fileLink(o.asset, `${job.tool.replace(/\./g, '-')}-${o.title ? String(o.title).replace(/[^\w.-]+/g, '_') : o.asset}`) : `${filesUrl}/v1/files/${o.asset}`);
         continue;
       }
       const a = await gen.asset(o.asset);
@@ -84,10 +93,10 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
         wait: { type: 'boolean', description: 'Wait for it to finish (default true). False returns the job id.' },
         timeout_minutes: { type: 'number', description: 'How long to wait (default 30)' },
         wait_for_server: { type: 'boolean', description: 'Wait even when no GPU server is running (default false: return at once, queued)' },
-      }, ['project']),
+      }, account ? [] : ['project']),
       run: async (a) => {
         if (remote) for (const v of Object.values<any>(a.inputs ?? {}).flat()) if (typeof v !== 'string' || !/^(asset|blob):/.test(v)) throw new Error('Over the remote MCP endpoint, inputs must be asset:<id> or blob:<sha> (upload files with POST /v1/blobs first).');
-        const job = await gen.submit(a.tool, { project: a.project, params: a.params ?? {}, inputs: a.inputs ?? {}, labels: { ...envLabels(), ...(a.labels ?? {}) }, preset: a.preset, reuse: a.reuse !== false });
+        const job = await gen.submit(a.tool, { project: a.project ?? account, params: a.params ?? {}, inputs: a.inputs ?? {}, labels: { ...envLabels(), ...(a.labels ?? {}) }, preset: a.preset, reuse: a.reuse !== false });
         if (a.wait === false) return summarizeJob(job);
         // No GPU server running: the job waits in the queue until J starts one. Say so now instead of blocking.
         const first = job.status === 'queued' ? await new Promise((r) => setTimeout(r, 2000)).then(() => gen.job(job.id)) : job;
@@ -281,5 +290,7 @@ export function genMcp(gen: any, { remote = false, filesUrl = '' }: { remote?: b
     },
   ];
 
-  return { name: 'hawkesgen', version: '0.3.0', instructions: INSTRUCTIONS, tools };
+  // The friendly tools (src/mcp-make.ts): what the app's Create tab makes, by plain name, run as the caller.
+  tools.push(...makeTools({ gen, account, remote, uploadLink, finish: async (job: any) => withFiles(await gen.wait(job.id, { timeoutMs: 30 * 60_000, throwOnFail: false })) }));
+  return { name: 'hawkesgen', version: '0.4.0', instructions: INSTRUCTIONS, tools };
 }

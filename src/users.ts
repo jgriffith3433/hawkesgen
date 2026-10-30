@@ -7,6 +7,7 @@ import { db } from './db.ts';
 import { env, loadSettings } from './config.ts';
 import { authenticate, createClient, getClient, setClientDisabled, type Client } from './auth.ts';
 import { id, sha256, GenError } from './util.ts';
+import { genOAuth } from './genoauth.ts';
 
 export type AuthClient = Client & { userId?: string };
 
@@ -313,6 +314,15 @@ export function authenticateRequest(req: IncomingMessage): AuthClient | null {
   }
 
   const authHeader = String(req.headers.authorization ?? '');
+  // An editor signed in through OAuth (src/genoauth.ts): its hgm_ token is the Gen account that allowed it.
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (genOAuth.owns(bearerToken)) {
+    const access = genOAuth.verify(bearerToken);
+    const user = access && getUserById(access.userId);
+    if (!user || isDisabled(user.id)) return null;
+    if (isGenAdmin(user)) return { id: user.id, name: user.email, role: 'owner', projects: ['*'], userId: user.id };
+    return { id: user.id, name: user.email, role: 'user', projects: [user.project], userId: user.id };
+  }
   const hasApiKey =
     (authHeader.startsWith('Bearer ') && authHeader.slice(7).trim().length > 0) ||
     String(req.headers['x-hawkesgen-key'] ?? '').trim().length > 0;

@@ -5,6 +5,8 @@
 // The names that used to be the customer portal (PORTAL_HOSTS: hawkesgen.ai and www before the portal moved to
 // hawkesgames.com, docs/domain-move.md) are Gen's now: Gen's app, its sign-in, /legal, /admin, the API. Links, editors
 // and code out there still name the portal there, so:
+//   - Gen's MCP and its sign-in (/mcp, /oauth/, /.well-known/oauth-*) and its signed links (/dl/, /up/) are Gen's alone
+//     (2026-10-30: the portal's MCP moved here, signing in with Gen accounts);
 //   - a portal OAuth token (hgo_) goes to the portal, and so does the portal's session cookie on /v1 and /mcp;
 //     a platform token (a JWT) only to Gen;
 //   - everything else goes to Gen first. What Gen doesn't have (404) is the portal's: a page (a browser asking for HTML)
@@ -14,6 +16,8 @@
 type Env = { GEN_ORIGIN: string; PORTAL_ORIGIN?: string; PORTAL_HOSTS?: string };
 
 const isApi = (p: string) => p.startsWith('/v1/') || p === '/mcp' || p.startsWith('/mcp/');
+/** Gen's own sign-in for editors (src/genoauth.ts, 2026-10-30): its MCP and OAuth are never the portal's, refused or not. */
+const genOnly = (p: string) => p === '/mcp' || p.startsWith('/mcp/') || p.startsWith('/oauth/') || p.startsWith('/.well-known/oauth-') || p === '/.well-known/openid-configuration' || p.startsWith('/dl/') || p.startsWith('/up/');
 /** The largest body kept to send again to the portal (its own limit for an upload in a request is 30 MB). */
 const REPLAY_MAX = 32 * 1024 * 1024;
 
@@ -42,6 +46,7 @@ export function callerOf(request: Request): 'gen' | 'portal' | 'either' {
 async function onPortalHost(request: Request, env: Env & { PORTAL_ORIGIN: string }): Promise<Response> {
   const url = new URL(request.url);
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+  if (genOnly(url.pathname)) return forward(request, env.GEN_ORIGIN, hasBody ? request.body : null);
   const who = callerOf(request);
   if (who !== 'either') return forward(request, who === 'gen' ? env.GEN_ORIGIN : env.PORTAL_ORIGIN, hasBody ? request.body : null);
   // Gen first; the portal for what Gen doesn't have. A body too big to keep goes to Gen alone.

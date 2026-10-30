@@ -27,6 +27,8 @@ function key(): Buffer {
 export const resetDashKey = () => { secret = null; };
 
 const mac = (payload: string) => crypto.createHmac('sha256', key()).update(payload).digest('base64url');
+/** The same secret's MAC for other signed things (src/links.ts: download and upload links). */
+export const signPayload = (payload: string) => mac(payload);
 
 /** The emails let in, from settings (lower case). */
 export const allowedEmails = () => loadSettings().dashboard.googleEmails;

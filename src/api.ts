@@ -45,6 +45,8 @@ import * as claude from './providers/anthropic.ts';
 import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
+import { genOAuth } from './genoauth.ts';
+import { handleUpload, downloadTarget } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
@@ -260,6 +262,21 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   const method = req.method ?? 'GET';
   noteRoute(method, route);
+
+  // Signing in to the MCP from an editor (src/genoauth.ts, src/mcp-oauth.ts): discovery, registration, the consent page
+  // and tokens. Before the CORS below: these carry their own.
+  if (route.startsWith('/oauth/') || route.startsWith('/.well-known/oauth-') || route === '/.well-known/openid-configuration') {
+    if (await genOAuth.handle(req, res, route)) return;
+  }
+  // Signed links for MCP editors (src/links.ts): a one-time upload, and a download that needs no credential for a day.
+  if (route.startsWith('/up/') && (await handleUpload(req, res, route))) return;
+  if (route.startsWith('/dl/') && (method === 'GET' || method === 'HEAD')) {
+    const assetId = downloadTarget(route);
+    const a = assetId ? getAsset(assetId) : null;
+    if (!a) return send(res, 404, { error: 'This link is invalid or expired' });
+    if (!fs.existsSync(a.path) && !(await storage.ensureLocal({ path: a.path, sha256: a.sha256 } as any))) return send(res, 404, { error: 'The file is missing' });
+    return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=300', 'Content-Disposition': `attachment; filename="${route.split('/').pop()}"` });
+  }
 
   // Player analytics from every product's pages: public, with its own CORS for the registered origins (src/analytics/).
   if (route === '/v1/analytics/collect') return handleCollect(req, res);
@@ -497,6 +514,16 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     await primePlatform(req);
     const client = authenticateRequest(req);
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
+    // The editors connected to this account's MCP (src/genoauth.ts): listed, and disconnected one at a time.
+    if (route === '/v1/users/me/connections' && method === 'GET') {
+      if (!client.userId) return send(res, 400, { error: 'Connections belong to a Gen account (sign in to the app)' });
+      return send(res, 200, { connections: genOAuth.connections(client.userId) });
+    }
+    const conn = /^\/v1\/users\/me\/connections\/(conn_[\w-]+)$/.exec(route);
+    if (conn && method === 'DELETE') {
+      if (!client.userId) return send(res, 400, { error: 'Connections belong to a Gen account (sign in to the app)' });
+      return genOAuth.revoke(client.userId, conn[1]) ? send(res, 200, { ok: true }) : send(res, 404, { error: 'No such connection' });
+    }
 
     if (route === '/v1/me') return send(res, 200, client);
     // An org's own Claude access (orgsecrets.ts): its Anthropic API key or its Claude subscription's sign-in token. Its

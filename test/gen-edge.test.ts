@@ -48,16 +48,16 @@ test("hawkesgen.ai: an old portal page Gen doesn't have is redirected to hawkesg
   assert.deepEqual(to(seen), ['https://gen.run.app/play/my-game?room=x']);
 });
 
-test("hawkesgen.ai: the portal's other paths are passed on (an upload link with curl -T, a token refresh)", async () => {
-  const up = await run('https://hawkesgen.ai/up/tok/hero.png', { method: 'PUT', body: 'bytes', headers: { 'Content-Length': '5' } }, { 'https://gen.run.app': 404 });
-  assert.deepEqual(up.seen.map((s) => [s.to, s.method, s.body]), [['https://gen.run.app/up/tok/hero.png', 'PUT', 'bytes'], ['https://hawkesgames.com/up/tok/hero.png', 'PUT', 'bytes']]);
-  const tok = await run('https://hawkesgen.ai/oauth/token', { method: 'POST', body: 'grant_type=refresh_token', headers: { 'Content-Length': '24' } }, { 'https://gen.run.app': 404 });
-  assert.deepEqual(to(tok.seen), ['https://gen.run.app/oauth/token', 'https://hawkesgames.com/oauth/token']);
+test("hawkesgen.ai: the portal's other paths Gen doesn't have are passed on (a play asset, a report)", async () => {
+  const asset = await run('https://hawkesgen.ai/play-asset/g/abc/hero.glb', {}, { 'https://gen.run.app': 404 });
+  assert.deepEqual(to(asset.seen), ['https://gen.run.app/play-asset/g/abc/hero.glb', 'https://hawkesgames.com/play-asset/g/abc/hero.glb']);
+  const report = await run('https://hawkesgen.ai/v1/play/my-game/report', { method: 'POST', body: 'broken', headers: { 'Content-Length': '6' } }, { 'https://gen.run.app': 404 });
+  assert.deepEqual(report.seen.map((s) => [s.to, s.body]), [['https://gen.run.app/v1/play/my-game/report', 'broken'], ['https://hawkesgames.com/v1/play/my-game/report', 'broken']]);
 });
 
 test('hawkesgen.ai: by what the caller carries', async () => {
-  const oauth = await run('https://hawkesgen.ai/mcp', { method: 'POST', body: '{}', headers: { Authorization: 'Bearer hgo_abc' } });
-  assert.deepEqual(to(oauth.seen), ['https://hawkesgames.com/mcp'], 'a portal OAuth token');
+  const oauth = await run('https://hawkesgen.ai/v1/jobs', { method: 'POST', body: '{}', headers: { Authorization: 'Bearer hgo_abc' } });
+  assert.deepEqual(to(oauth.seen), ['https://hawkesgames.com/v1/jobs'], 'a portal OAuth token');
   const cookie = await run('https://hawkesgen.ai/v1/users/me', { headers: { Cookie: 'a=1; __session=s' } });
   assert.deepEqual(to(cookie.seen), ['https://hawkesgames.com/v1/users/me'], "the portal's session on the API");
   const page = await run('https://hawkesgen.ai/', { headers: { ...HTML, Cookie: '__session=s' } });
@@ -85,4 +85,12 @@ test("hawkesgen.ai: Gen's Stripe webhook is Gen's (the portal's moved to hawkesg
 test('hawkesgen.ai: a body of unknown size goes to Gen alone (nothing kept to send twice)', async () => {
   const { seen } = await run('https://hawkesgen.ai/v1/assets', { method: 'POST', body: 'x' }, { 'https://gen.run.app': 401 });
   assert.deepEqual(to(seen), ['https://gen.run.app/v1/assets']);
+});
+
+test("hawkesgen.ai: Gen's MCP, its sign-in and its signed links are Gen's alone, refused or not (2026-10-30)", async () => {
+  for (const p of ['/mcp', '/oauth/token', '/oauth/authorize?x=1', '/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-authorization-server', '/dl/a.b/x.png', '/up/a.b/x.png']) {
+    const { res, seen } = await run(`https://hawkesgen.ai${p}`, { method: 'POST', body: '{}', headers: { 'Content-Length': '2', Authorization: 'Bearer hgo_old' } }, { 'https://gen.run.app': 401 });
+    assert.equal(res.status, 401, p);
+    assert.deepEqual(to(seen), [`https://gen.run.app${p}`], p);
+  }
 });
