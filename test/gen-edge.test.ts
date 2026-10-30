@@ -1,4 +1,4 @@
-// The gen.hawkesgen.ai Worker (server/gen-edge/src/index.ts) on the names that were the customer portal's: hawkesgen.ai
+// The hawkesgen.ai Worker (server/gen-edge/src/index.ts) on the names that were the customer portal's: hawkesgen.ai
 // is Hawkes Gen's own app now (J, 2026-10-29: three products, HawkesGen.ai, hawkesgames.com, Studio), and what Gen
 // doesn't have is the portal's, which moved to hawkesgames.com (hawkesgenwebsite docs/domain-move.md). Offline: fetch is
 // a fake that answers per origin and path.
@@ -26,12 +26,6 @@ async function run(url: string, init: RequestInit = {}, answers: Record<string, 
   }
 }
 const to = (s: { to: string }[]) => s.map((x) => x.to);
-
-test('gen.hawkesgen.ai: everything to Gen, as before', async () => {
-  const { res, seen } = await run('https://gen.hawkesgen.ai/connect', { headers: HTML }, { 'https://gen.run.app': 404 });
-  assert.equal(res.status, 404);
-  assert.deepEqual(to(seen), ['https://gen.run.app/connect']);
-});
 
 test("hawkesgen.ai: Gen's app and pages are Gen's (the app, /legal, /admin, the SDKs)", async () => {
   for (const p of ['/', '/legal', '/admin', '/admin/app.js', '/gen/app.js', '/sdk/analytics@1.js', '/client/hawkesgen.mjs']) {

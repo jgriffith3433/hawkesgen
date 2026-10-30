@@ -324,9 +324,9 @@ const gen = new HawkesGen({ url: 'https://hawkesgen.ai', key: 'hg_YOUR_KEY' });
 const job = await gen.run('image.generate', { prompt: 'Seamless sci-fi hull plating', seamless: true });</pre>
         </div>
         <div>
-          <div style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">Unity Editor (<code>com.hawkes.gen</code>) &amp; MCP (<code>/mcp</code>)</div>
-          <pre class="code-snippet" id="snippetUnity">// Unity Editor: Window > Hawkes Gen -> Server: https://hawkesgen.ai | API Key: hg_YOUR_KEY
-// Claude MCP (.mcp.json): { "mcpServers": { "hawkesgen": { "url": "https://hawkesgen.ai/mcp", "headers": { "Authorization": "Bearer hg_YOUR_KEY" } } } }</pre>
+          <div style="font-size:0.8rem;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">MCP (<code>/mcp</code>, signs in with OAuth)</div>
+          <pre class="code-snippet" id="snippetUnity">// Claude Code: claude mcp add --transport http hawkesgen https://hawkesgen.ai/mcp
+// Claude, Cursor, VS Code: add https://hawkesgen.ai/mcp as an MCP server; it opens the browser to sign in (no key)</pre>
         </div>
       </div>
     </div>
