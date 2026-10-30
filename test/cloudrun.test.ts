@@ -417,3 +417,19 @@ test('a provider worker still starting (no headers for 5 minutes) is waited for,
   never.deps.fetch = (async () => { await never.deps.sleep(300_000); throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } }); }) as any;
   await assert.rejects(cloudComfyRun({ id: 'j_never' }, ep as any, hooks() as any, never.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any), (e: any) => e.unavailable === true);
 });
+
+test('RunPod\'s "failed to assign worker" (no GPU free right now) is waited out like a busy service', async () => {
+  let calls = 0;
+  const fake = fakeCloud(succeed);
+  const real = fake.deps.fetch;
+  fake.deps.fetch = (async (url: string, init: any) => {
+    if (++calls <= 2) return new Response(JSON.stringify({ status: 400, title: 'Bad Request', detail: 'failed to assign worker' }), { status: 400 });
+    return real(url, init);
+  }) as any;
+  const h = hooks();
+  const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 3 * 60_000, preload: new Set() });
+  const files = await cloudComfyRun({ id: 'j_assign' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any);
+  assert.equal(files.length, 1);
+  assert.equal(calls, 3);
+  assert.ok(h.steps.some((s: string) => /waiting for a free/.test(s)), JSON.stringify(h.steps));
+});

@@ -226,8 +226,10 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
         if (!starting && deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
         continue;
       }
-      // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503. Wait our turn.
-      if (r.status === 429 || r.status === 503) {
+      // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503, RunPod's load balancer
+      // 400 "failed to assign worker" (no GPU of its types free right now). Wait our turn.
+      const noWorker = r.status === 400 && svc.provider === 'runpod' && /failed to assign worker/i.test(await r.clone().text().catch(() => ''));
+      if (r.status === 429 || r.status === 503 || noWorker) {
         await r.body?.cancel().catch(() => undefined);
         if (deps.now() > until) throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.round((svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS) / 60_000)} minutes`, { capacity: true });
         if (!told) hooks.step(`${svc.name}: waiting for a free ${where} GPU`);
