@@ -5,9 +5,10 @@
 import { $, $$, h, api, toast, fmt, bus, icon, mediaInfo, uploadCanvas, plainError } from './lib.js';
 import { P, byId, selectedClips, clipLength, clipEnd, onTrack, setClip, remember, changed, docLength, splitAt, deleteSelected, duplicateSelected } from './project.js';
 import { currentSource, showSource, closeSource, startPainter, stopPainter, pause } from './player.js';
-import { runJob, quote, credits, waitJob, placeAsset, showPane } from './media.js';
+import { runJob, quote, credits, waitJob, placeAsset, showPane, assetKindLabel } from './media.js';
 import { popMenu, closeMenus } from './timeline.js';
 import { state, needSignIn } from './account.js';
+import { toolsTaking } from './studio.js';
 
 let available = new Set();
 export async function loadAvailable() {
@@ -35,7 +36,7 @@ const framesFor = (seconds, fps = 16) => Math.min(161, Math.round((seconds * fps
 /** What the tools act on: the one selected clip with a file, else the file open in the viewer. */
 function target() {
   const src = currentSource();
-  if (src) return { from: 'source', asset: src.id, kind: src.kind, title: src.title, prompt: src.prompt, width: src.width, height: src.height, duration: src.duration };
+  if (src) return { from: 'source', asset: src.id, kind: src.kind, title: src.title, prompt: src.prompt, width: src.width, height: src.height, duration: src.duration, tool: src.tool, recipe: src.recipe };
   const cs = selectedClips();
   if (cs.length === 1) {
     const c = cs[0];
@@ -81,7 +82,7 @@ export function drawToolbar() {
     bar.append(h('span', { class: 'muted hint' }, `${t.clips.length} clips selected`), tbtn('trash', 'Delete', () => deleteSelected()), tbtn('plus', 'Duplicate', () => duplicateSelected()));
     return;
   }
-  if (t.from === 'source') bar.append(h('button', { class: 'tb primary', onclick: () => { placeAsset({ id: t.asset, kind: t.kind, title: t.title, prompt: t.prompt, duration: t.duration }); closeSource(); } }, icon('plus'), 'Add to timeline'));
+  if (t.from === 'source' && ['image', 'video', 'audio'].includes(t.kind)) bar.append(h('button', { class: 'tb primary', onclick: () => { placeAsset({ id: t.asset, kind: t.kind, title: t.title, prompt: t.prompt, duration: t.duration }); closeSource(); } }, icon('plus'), 'Add to timeline'));
   if (t.clip?.pending) { bar.append(h('span', { class: 'muted hint' }, 'Generating…')); return; }
   if (t.clip?.failed) {
     bar.append(h('span', { class: 'error hint' }, plainError(t.clip.failed)), tbtn('trash', 'Remove', () => deleteSelected()));
@@ -90,6 +91,11 @@ export function drawToolbar() {
   for (const tool of TOOLS[t.kind === 'text' ? 'none' : t.kind] ?? []) {
     if (!has(tool.tool)) continue;
     bar.append(tbtn(tool.icon, tool.label, () => openTool(tool.id, t)));
+  }
+  // Any library file: every tool that takes it, its file, and the recipe that made it.
+  if (t.asset && t.kind !== 'text') {
+    bar.append(h('span', { class: 'tb-sep' }), tbtn('more', 'Use in…', (e) => useInMenu(t, e)));
+    if (t.from === 'source') bar.append(tbtn('download', 'Download', () => { const a = h('a', { href: `/v1/assets/${t.asset}/file`, download: '' }); document.body.append(a); a.click(); a.remove(); }), tbtn('info', 'Details', () => details(t)));
   }
   if (t.from === 'clip') {
     bar.append(h('span', { class: 'tb-sep' }));
@@ -101,6 +107,34 @@ export function drawToolbar() {
   }
 }
 const tbtn = (ic, label, fn) => h('button', { class: 'tb', title: label, onclick: fn }, icon(ic), h('span', {}, label));
+
+function useInMenu(t, e) {
+  const r = e.currentTarget.getBoundingClientRect();
+  const list = toolsTaking(t.kind);
+  popMenu(r.left, Math.max(8, r.top - Math.min(420, 34 + list.length * 33)), [h('div', { class: 'menu-title' }, 'Use in'),
+    h('div', { class: 'menu-scroll' }, ...(list.length ? list.map((x) => h('button', { class: 'menu-item', onclick: () => { closeMenus(); bus.emit('useIn', { tool: x.id, asset: { id: t.asset, kind: t.kind, title: t.title } }); } }, x.label)) : [h('div', { class: 'muted small menu-title' }, 'No tool takes this yet.')]))]);
+}
+/** A recipe's inputs are the files' hashes; Gen takes them back as blob: refs. */
+const recipeInputs = (ins = {}) => Object.fromEntries(Object.entries(ins).map(([k, v]) => [k, Array.isArray(v) ? v.map((x) => `blob:${x}`) : `blob:${v}`]));
+/** What made this file: the tool and its settings (the recipe Gen keeps with every output). */
+async function details(t) {
+  let a = null;
+  try { a = await api(`/v1/assets/${t.asset}`); } catch { /* */ }
+  const tool = a?.tool ?? t.tool;
+  // Uploads are filed by file.import (and converted by media.normalize): nothing to make again.
+  const uploaded = !tool || /^(file\.import|media\.)/.test(tool);
+  const rec = uploaded ? null : a?.recipe ?? t.recipe;
+  const params = rec?.params ? Object.entries(rec.params).filter(([k]) => !['seed', 'count'].includes(k) || rec.params[k] != null) : [];
+  const body = [
+    h('p', { class: 'muted small' }, `${assetKindLabel(a?.kind ?? t.kind)}${uploaded ? ' · uploaded' : ` · made by ${tool}`}${a?.created ? ` · ${new Date(a.created).toLocaleString()}` : ''}`),
+    params.length ? h('dl', { class: 'recipe' }, ...params.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, typeof v === 'string' ? v : JSON.stringify(v))])) : h('p', { class: 'muted small' }, 'No recipe: this file was uploaded.'),
+  ];
+  sheet(t.title || 'Details', body, rec?.params && tool ? {
+    runLabel: 'Make another',
+    quoteOf: () => ({ tool, params: { ...rec.params, seed: undefined } }),
+    run: () => { runJob({ tool, params: { ...rec.params, ...(rec.params.seed != null ? { seed: Math.floor(Math.random() * 2 ** 31) } : {}) }, inputs: recipeInputs(rec.inputs), label: `Again: ${t.title ?? tool}` }); toast('Making another. It shows in Media.'); },
+  } : { runLabel: 'Close', run: () => {} });
+}
 
 // ------------------------------------------------------------------ tool sheets
 /** Where a tool's result goes: back into the clip (keeping its spot), or into Media. */

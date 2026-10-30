@@ -550,6 +550,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         submit(client, { project, tool: spec.tool, params: spec.params, inputs: spec.inputs, labels: { by: client.name, editor: editorId, ...(spec.label ? { title: spec.label } : {}) } } as JobSpec);
       if (route === '/v1/editor/tools' && method === 'GET') return send(res, 200, { tools: ed.availableEditorTools(), tracks: ed.TRACKS });
       if (route === '/v1/editor/voices' && method === 'GET') return send(res, 200, { voices: await ed.editorVoices() });
+      if (route === '/v1/editor/catalog' && method === 'GET') {
+        const { isDown } = await import('./providers/gpu/health.ts');
+        const noAws = (() => { try { fleet.awsConfig(); return false; } catch { return true; } })();
+        const list = client.role === 'user' ? TOOLS.filter((t) => !isInternalOnlyTool(t.id)) : TOOLS;
+        return send(res, 200, { tools: await ed.catalog(describeTool, list, noAws || Boolean(isDown('fleet'))) });
+      }
       if (route === '/v1/editor/projects' && method === 'GET') return send(res, 200, { items: ed.listProjects(projectOf(q('project'))) });
       if (route === '/v1/editor/projects' && method === 'POST') {
         const b = await readJson(req);
@@ -590,7 +596,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const messages = (Array.isArray(b.messages) ? b.messages : []).filter((m: any) => m && typeof m.text === 'string').map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', text: m.text }));
           if (!messages.length) throw new GenError('Say something to the AI editor', { status: 400 });
           const library = listAssets({ project: p.project, limit: 40, playtest: false, projects: client.projects }).items
-            .filter((a: any) => ['image', 'video', 'audio'].includes(a.kind))
+            .filter((a: any) => ['image', 'video', 'audio', 'mesh'].includes(a.kind))
             .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? null, duration: a.meta?.duration ?? null }));
           const turn = await ed.assistantTurn({ project: p.project, doc: p.doc, selection: b.selection ?? {}, messages, library, voices: await ed.editorVoices() });
           const auto = Math.max(0, Number(b.autoCredits ?? 40));

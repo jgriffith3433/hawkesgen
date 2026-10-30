@@ -180,6 +180,8 @@ export const ICON = {
   smooth: svg('<path d="M3 17c3-8 6-8 9 0s6 8 9 0"/>'),
   swap: svg('<path d="M7 7h11l-3-3M17 17H6l3 3"/>'),
   folder: svg('<path d="M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>'),
+  cube: svg('<path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/>'),
+  info: svg('<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>'),
   more: svg('<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>'),
 };
 export const icon = (name, cls = 'ico') => h('span', { class: cls, html: ICON[name] ?? '' });

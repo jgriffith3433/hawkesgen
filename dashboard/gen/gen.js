@@ -1,5 +1,5 @@
-// Hawkes Gen, the app (hawkesgen.ai /): a video editor with generative AI built in. Media and Generate on the left
-// (media.js), the viewer and the tools for what's selected in the middle (player.js, tools.js), the AI editor on the
+// Hawkes Gen, the app (hawkesgen.ai /): one page for everything Gen makes. Media (the library) and Create (every tool:
+// images, video, 3D and rigging, animation, voice and music, chains) on the left (media.js, studio.js), the viewer and the tools for what's selected in the middle (player.js, tools.js), the AI editor on the
 // right (ai.js), the timeline below (timeline.js), one project document saved to Gen (project.js, src/editor.ts).
 // Gen's own accounts (account.js: Google sign-in, credits, Stripe, the account's own AI). The admin dashboard is /admin.
 
@@ -10,6 +10,7 @@ import { initTimeline, transitionMenu, popMenu, closeMenus, addText, fit } from 
 import { initMedia, uploadFiles, showPane } from './media.js';
 import { initTools, closeSheet } from './tools.js';
 import { initAi } from './ai.js';
+import { initStudio } from './studio.js';
 import { initAccount, loadMe, state } from './account.js';
 
 // Icons in the markup: <span class="ico-wrap" data-icon="name">.
@@ -20,6 +21,7 @@ initPlayer();
 initTimeline();
 initMedia();
 initTools();
+initStudio();
 initAi();
 
 // ------------------------------------------------------------------ the bar

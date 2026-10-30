@@ -289,6 +289,7 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 | Route | |
 |---|---|
 | `GET /v1/editor/tools` | The tools the AI editor and the app offer on this Gen, and the tracks |
+| `GET /v1/editor/catalog` | Every tool the app's Create pane offers: Gen's own description of each (params, inputs) and `ready` (false for tools that need the SSH GPU fleet while it is unavailable). Machinery an account never runs (unity, playtests, comfy.graph, asset.lod, video.compose...) is left out |
 | `GET /v1/editor/projects[?project=]` | The caller's projects, newest first |
 | `POST /v1/editor/projects` `{ title?, doc?, project? }` | A new project |
 | `GET /v1/editor/projects/:id` | One project (waiting clips whose jobs ended are filled in and saved) |

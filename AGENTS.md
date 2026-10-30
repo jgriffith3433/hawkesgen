@@ -160,9 +160,22 @@ chosen one.
 Hawkes Gen is a product of its own (J, 2026-10-29): people sign up at hawkesgen.ai with Gen's own accounts
 (`src/users.ts`: email and password, starter credits, Stripe packs), separate from hawkesgen.ai's and Studio's. The
 portal and Studio use Gen in the back end with their own keys.
-- **The app** (`dashboard/gen/`: plain HTML, CSS and ES modules over `/v1`, no build step) is at `/`: a video editor
-  with generative AI built in (J, 2026-10-29: "a proper video editor" with "a bad ass AI editor on the right pane").
-  - Layout: Media and Generate on the left (`media.js`), the viewer with the tools for what's selected in the middle
+- **The app** (`dashboard/gen/`: plain HTML, CSS and ES modules over `/v1`, no build step) is at `/`: one page for
+  everything Gen makes, a video editor with generative AI built in (J, 2026-10-29: "a proper video editor" with "a bad
+  ass AI editor on the right pane"), and the whole studio the portal's Asset Studio was heading for (J, 2026-10-29:
+  "keep this sleek interface and do much much more", "all in one place", the assistant on the side, one page).
+  - **Create** (`studio.js`, the left pane's second tab): every tool from `GET /v1/editor/catalog`, in groups (images
+    and textures, video, 3D and rigging, animation, voice and sound, chains). `GROUPS` names and orders them with a
+    plain one-line description each; a tool Gen adds that no group names shows under "More" by itself. Each form is
+    drawn from the tool's own params and inputs (advanced ones under "More settings"), with friendlier controls where
+    they help: a shape instead of width and height, seconds instead of frames, the voice list, styles for images.
+    Inputs come from the library (a picker, a dragged Media tile, the file open in the viewer) or an upload. Results
+    go to Media and open in the viewer; pictures, clips and sounds can go straight onto the timeline. Chains are
+    `asset.make` steps (`$prev`). Tools that need the SSH fleet show "Offline" while it is down.
+  - **The library** is Media: pictures, clips, sounds and 3D models (GLB in `<model-viewer>`, loaded from jsdelivr on
+    first use). A file open in the viewer has **Use in…** (every tool whose first or required input takes it),
+    Download, and Details (its recipe, and Make another with a new seed).
+  - Layout: Media and Create on the left (`media.js`, `studio.js`), the viewer with the tools for what's selected in the middle
     (`player.js`, `tools.js`), the AI editor on the right (`ai.js`), the timeline below (`timeline.js`). Panes resize
     (sizes kept per browser); on a phone one pane at a time behind bottom tabs.
   - **The project** (`project.js`, `src/editor.ts`): one timeline document per project, saved to Gen
@@ -183,14 +196,15 @@ portal and Studio use Gen in the back end with their own keys.
     still bird; the same words wrapped by `motionPrompt` took off, and a full description (what the AI editor writes)
     did best (A/B on gen-beta, 2026-10-29). `video.i2v` also defaults its negative to Wan's standard one
     (`WAN_NEGATIVE`, v2).
-  - **Generate:** image (with styles), video from words (`video.t2v`), music, voice-over, sound effect, each priced;
-    sounds land at the playhead on their track. Voice-overs and sound effects run on ElevenLabs (`provider:
+  - **Generate** is now part of Create: image (with styles), video from words (`video.t2v`), music, voice-over, sound
+    effect, each priced; with "Add to timeline", sounds land at the playhead on their track and music at 0. Voice-overs and sound effects run on ElevenLabs (`provider:
     "elevenlabs"`) with its premade voices only (`GET /v1/editor/voices`, `editorVoices`: never the account's cloned or
     designed character voices), because the open audio models run only on the SSH GPU fleet (AWS, suspended); for the
     same reason `audio.revoice` is left out of the editor's tools until they have a GPU provider. **Uploads** by button or drop anywhere (on the timeline: placed too).
   - **Export** maps the timeline onto `video.compose` (pictures first become clips with `video.still`); captions burned in.
   - **The AI editor** (`ai.js`, `src/editor.ts` `assistantTurn`): it sees the timeline, the selection (clips, a range,
-    the playhead, a painted mask) and recent media, and answers with edits (`applyOps`, the same code the API and MCP
+    the playhead, a painted mask) and recent media (3D models too), makes library things with the studio tools in
+    `EDITOR_TOOLS` (skyboxes, material maps, 4-view sheets, 3D models; placed `{"library":true}`), and answers with edits (`applyOps`, the same code the API and MCP
     use) that Gen applies. Generation over `autoCredits` (40) comes back as `proposed` for one tap. Every AI edit is one
     undo step. It runs on the account's own Claude (Account > Your AI: `/v1/users/me/ai/anthropic` or
     `/claude-subscription`, stored like orgs' keys under `genAccountOrg`), never ours; without one the pane says how to

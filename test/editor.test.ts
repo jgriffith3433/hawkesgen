@@ -128,6 +128,14 @@ test('routes: projects are per account, saves check the version, edits apply ser
     const set = await (await A('/v1/users/me/ai/anthropic', 'PUT', { key: `sk-ant-api03-${'x'.repeat(30)}` })).json();
     assert.deepEqual([set.set, set.last4], [true, 'xxxx']);
     assert.equal((await (await B('/v1/users/me/ai')).json()).anthropic.set, false);
+    // Create's catalog: Gen's own tool descriptions, without the machinery an account never runs.
+    const cat = (await (await A('/v1/editor/catalog')).json()).tools;
+    const ids = new Set(cat.map((t: any) => t.id));
+    for (const t of ['image.generate', 'texture.maps', 'image.panorama', 'mesh.views3d', 'audio.music']) assert.ok(ids.has(t), t);
+    for (const t of ['unity.build', 'asset.lod', 'comfy.graph', 'playtest.run', 'video.compose']) assert.ok(!ids.has(t), t);
+    assert.ok(cat.find((t: any) => t.id === 'image.generate').params.prompt.required);
+    assert.equal(typeof cat[0].ready, 'boolean');
+
     assert.equal((await A(`/v1/editor/projects/${made.id}`, 'DELETE')).status, 200);
     assert.equal((await A(`/v1/editor/projects/${made.id}`)).status, 404);
   } finally {

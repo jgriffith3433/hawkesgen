@@ -54,7 +54,7 @@ function drawSuggestions(clips) {
   const s = $('#aiSuggest');
   const one = clips.length === 1 ? clips[0] : null;
   let list;
-  if (!P.doc.clips.length) list = ['Make a 15-second trailer about a lighthouse in a storm', 'Make a cozy morning coffee video for social', 'Turn my latest pictures into a slideshow with music'];
+  if (!P.doc.clips.length) list = ['Make a 15-second trailer about a lighthouse in a storm', 'Make a 3D model of a treasure chest', 'Make a mossy stone texture with material maps', 'Turn my latest pictures into a slideshow with music'];
   else if (one?.kind === 'video') list = ['Make this slow motion', 'Cut this to the best 2 seconds', 'Continue this shot', 'Make it look like an anime'];
   else if (one?.kind === 'image') list = ['Animate this', 'Make it night time', 'Widen it to 16:9'];
   else if (one?.kind === 'audio') list = ['Lower this under the voice', 'Trim it to the video'];

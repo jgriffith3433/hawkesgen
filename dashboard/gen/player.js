@@ -176,7 +176,13 @@ export async function showSource(asset) {
   let el;
   if (asset.kind === 'image') el = h('img', { id: 'sourceEl', src: fileUrl(asset.id), alt: '' });
   else if (asset.kind === 'video') el = h('video', { id: 'sourceEl', src: fileUrl(asset.id), playsinline: true, preload: 'auto' });
-  else el = h('div', { id: 'sourceEl', class: 'source-audio' }, icon('music', 'ico big'), h('audio', { src: fileUrl(asset.id), controls: true }));
+  else if (asset.kind === 'audio') el = h('div', { id: 'sourceEl', class: 'source-audio' }, icon('music', 'ico big'), h('audio', { src: fileUrl(asset.id), controls: true }));
+  else if (asset.kind === 'mesh') {
+    // 3D models (GLB) turn in Google's <model-viewer>, loaded the first time one is opened.
+    loadModelViewer();
+    S.source.ratio = 4 / 3;
+    el = h('model-viewer', { id: 'sourceEl', class: 'source-mesh', src: fileUrl(asset.id), 'camera-controls': true, 'auto-rotate': true, loading: 'eager', 'shadow-intensity': '1', exposure: '1', 'environment-image': 'neutral', alt: asset.title || '3D model' });
+  } else el = h('div', { id: 'sourceEl', class: 'source-audio source-file' }, icon('folder', 'ico big'), h('a', { class: 'btn primary', href: fileUrl(asset.id), download: '' }, 'Download'));
   stage.append(el);
   S.source.el = el.tagName === 'VIDEO' ? el : el.querySelector?.('audio') ?? null;
   if (el.tagName === 'VIDEO') {
@@ -185,9 +191,15 @@ export async function showSource(asset) {
   }
   if (el.tagName === 'IMG') el.addEventListener('load', () => { S.source.ratio = el.naturalWidth / el.naturalHeight; fitStage(); });
   $('#viewerMode').hidden = false;
-  $('#viewerModeLabel').textContent = asset.title || (asset.kind === 'image' ? 'Image' : asset.kind === 'video' ? 'Clip' : 'Sound');
+  $('#viewerModeLabel').textContent = asset.title || ({ image: 'Image', video: 'Clip', audio: 'Sound', mesh: '3D model' }[asset.kind] ?? 'File');
   fitStage();
   bus.emit('source', S.source);
+}
+let mvLoading = null;
+function loadModelViewer() {
+  if (customElements.get('model-viewer') || mvLoading) return;
+  mvLoading = h('script', { type: 'module', src: 'https://cdn.jsdelivr.net/npm/@google/model-viewer@3.5.0/dist/model-viewer.min.js' });
+  document.head.append(mvLoading);
 }
 export function closeSource() {
   if (!S.source) return;

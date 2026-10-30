@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Hawkes Gen</title>
-  <meta name="description" content="Make anything. Hawkes Gen is a video editor with generative AI built in: make images and clips, change what's in them, and cut them together with an AI editor beside you.">
+  <meta name="description" content="Make anything. Hawkes Gen is a studio with generative AI built in: images and textures, video, 3D models and rigs, voices, sound and music, a library of everything you make, and a video editor with an AI beside you.">
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -38,7 +38,7 @@
     <aside class="pane left" id="leftPane">
       <div class="seg" id="paneTabs">
         <button data-pane="media" class="on">Media</button>
-        <button data-pane="generate">Generate</button>
+        <button data-pane="generate">Create</button>
       </div>
       <div class="pane-body" id="pane-media">
         <div class="media-top">
@@ -51,38 +51,21 @@
           <button class="chip" data-kind="video">Video</button>
           <button class="chip" data-kind="image">Images</button>
           <button class="chip" data-kind="audio">Audio</button>
+          <button class="chip" data-kind="mesh">3D</button>
         </div>
         <div id="mediaGrid" class="media-grid"></div>
         <p class="drop-hint muted small">Drop files anywhere to upload. Drag tiles onto the timeline.</p>
       </div>
       <div class="pane-body" id="pane-generate" hidden>
-        <form class="gen-card" id="genImageForm">
-          <div class="gen-head"><span class="ico-wrap" data-icon="image"></span><b>Image</b></div>
-          <textarea id="genImagePrompt" rows="2" maxlength="2000" placeholder="A lighthouse on a cliff at dusk, storm clouds"></textarea>
-          <div class="chips" id="genStyles"></div>
-          <div class="gen-foot"><label class="check"><input type="checkbox" id="genImageToTl"> Add to timeline</label><span class="quote"></span><button class="primary small">Generate</button></div>
-        </form>
-        <form class="gen-card" id="genVideoForm">
-          <div class="gen-head"><span class="ico-wrap" data-icon="film"></span><b>Video from words</b></div>
-          <textarea id="genVideoPrompt" rows="2" maxlength="2000" placeholder="A drone shot gliding over a misty forest at sunrise"></textarea>
-          <div class="gen-foot"><select id="genVideoSeconds"><option value="3">3 s</option><option value="5" selected>5 s</option></select><label class="check"><input type="checkbox" id="genVideoToTl" checked> Add to timeline</label><span class="quote"></span><button class="primary small">Generate</button></div>
-        </form>
-        <form class="gen-card" id="genMusicForm">
-          <div class="gen-head"><span class="ico-wrap" data-icon="music"></span><b>Music</b></div>
-          <input id="genMusicPrompt" type="text" maxlength="300" placeholder="Uplifting cinematic piano, slow build">
-          <div class="gen-foot"><label class="check">Seconds <input id="genMusicSeconds" type="number" min="10" max="240" class="num"></label><span class="quote"></span><button class="primary small">Generate</button></div>
-        </form>
-        <form class="gen-card" id="genVoiceForm">
-          <div class="gen-head"><span class="ico-wrap" data-icon="mic"></span><b>Voice-over</b></div>
-          <textarea id="genVoiceText" rows="2" maxlength="1000" placeholder="What the narrator says"></textarea>
-          <div class="gen-foot"><select id="genVoice" aria-label="Voice"></select><span class="quote"></span><button class="primary small">Generate</button></div>
-        </form>
-        <form class="gen-card" id="genSfxForm">
-          <div class="gen-head"><span class="ico-wrap" data-icon="volume"></span><b>Sound effect</b></div>
-          <input id="genSfxText" type="text" maxlength="300" placeholder="Thunder rumbling far away">
-          <div class="gen-foot"><label class="check">Seconds <input id="genSfxSeconds" type="number" min="0.5" max="30" step="0.5" class="num" placeholder="auto"></label><span class="quote"></span><button class="primary small">Generate</button></div>
-        </form>
-        <p class="muted small gen-note">Voice-overs and sounds land at the playhead; music starts at 0.</p>
+        <div id="createHome">
+          <input id="createSearch" type="search" placeholder="Search every tool" aria-label="Search tools">
+          <div class="chips create-groups" id="createGroups"></div>
+          <div id="createList" class="create-list"></div>
+        </div>
+        <div id="createTool" hidden>
+          <button type="button" class="ghost small" id="createBack"><span class="ico-wrap" data-icon="back"></span>All tools</button>
+          <div id="createBody"></div>
+        </div>
       </div>
     </aside>
 

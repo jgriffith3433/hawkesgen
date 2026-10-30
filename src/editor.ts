@@ -384,7 +384,27 @@ export const EDITOR_TOOLS: { tool: string; use: string }[] = [
   { tool: 'audio.sfx', use: 'a sound effect. params text, duration, provider "elevenlabs"' },
   // audio.revoice and the open voice models run only on the SSH GPU fleet (AWS, suspended since 2026-10-28): offered
   // again once the open audio models have a GPU provider.
+  // The studio's tools: game art, 3D and sound. Their results go to the library (place {"library":true}), never the timeline.
+  { tool: 'image.panorama', use: 'a 360° equirectangular skybox. params prompt. Library only' },
+  { tool: 'texture.maps', use: 'PBR material maps (normal, roughness, height...) from a seamless texture. inputs image. Library only' },
+  { tool: 'image.angles', use: 'a character turnaround from 8 angles. inputs image. Library only' },
+  { tool: 'image.viewsheet', use: 'a 4-view sheet (front, back, left, right) of a character for 3D. inputs image (front view, clean background); params form (what it is). Library only' },
+  { tool: 'mesh.views3d', use: 'a textured 3D model (GLB) from a 4-view sheet. inputs image (the sheet from image.viewsheet). Library only' },
+  { tool: 'mesh.textured', use: 'a textured 3D model (GLB) from one image of a prop; params allowSingleView true. inputs image. Library only' },
+  { tool: 'video.talk', use: 'a portrait talks along to an audio line. inputs image, audio; params prompt' },
+  { tool: 'video.animate', use: 'a character image moves like a driving video. inputs reference (image), motion (video); params prompt' },
 ];
+
+/** Tools the app never lists in Create: the studio's machinery, plumbing the editor runs itself, and admin work. */
+const NOT_IN_CATALOG = /^(comfy\.graph|unity\.|playtest\.|asset\.lod|media\.|file\.import|library\.|lora\.train|audio\.voice-(list|delete|save)|film\.|video\.compose|video\.still|image\.frame|video\.fit|llm\.)/;
+
+/**
+ * Every tool the app's Create pane offers: Gen's own description of it (params, inputs, outputs), and whether it can
+ * run now. Tools that work over SSH need the GPU fleet (AWS, suspended since 2026-10-28) and say so with ready: false.
+ */
+export async function catalog(describe: (t: any) => any, all: any[], fleetDown: boolean) {
+  return all.filter((t) => !NOT_IN_CATALOG.test(t.id)).map((t) => ({ ...describe(t), ready: !(t.server === 'ssh' && fleetDown) }));
+}
 
 // ------------------------------------------------------------------ voices
 export type EditorVoice = { id: string; name: string; about: string; preview: string };
@@ -421,7 +441,7 @@ const OPS_DOC = `Edits (each an object in "ops"):
 - {"op":"settings","width":w,"height":h,"fps":n,"title":"...","fit":"crop"|"pad"}  (fit: clips of another shape fill the frame, cropped, or fit inside it with bars)`;
 
 function systemPrompt() {
-  return `You are the AI editor inside Hawkes Gen, a video editor on a generative AI platform. The person edits a timeline and talks to you; you change their project by returning edits. Be decisive and do what they ask in as few edits as it takes. When something is ambiguous, make the sensible choice and say what you did; ask a question only when you truly can't proceed.
+  return `You are the AI inside Hawkes Gen, a creative studio on a generative AI platform: a video editor, plus tools for images and textures, 3D models, voices, sound and music, and a library of everything the person makes. The person edits a timeline and talks to you; you change their project by returning edits, and you make things for their library (game art, skyboxes, materials, 3D models) with generate ops placed {"library":true}. A 3D model (kind "mesh") never goes on the timeline. Be decisive and do what they ask in as few edits as it takes. When something is ambiguous, make the sensible choice and say what you did; ask a question only when you truly can't proceed.
 
 The timeline: V1 is the main video track (clips play back to back in order; images show as stills), T1 is text on screen, A1 music, A2 voice, A3 sound effects (audio clips start at any time). Times are seconds. The person's selection tells you what "this", "these", "here" mean: selected clips, a selected time range, the playhead, and possibly a painted mask (selection.mask, a blob to pass as the mask input) on a frame.
 

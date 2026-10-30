@@ -1,6 +1,6 @@
-// The left pane. Media: everything the account made or uploaded (search, filter, drag onto the timeline, click to look
-// at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Generate: images,
-// video from words, music, voice-overs, sound effects, each with its price. Also the one way every tool runs (runJob).
+// The left pane. Media: the library, everything the account made or uploaded (pictures, clips, sounds, 3D models) (search, filter, drag onto the timeline, click to look
+// at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Create (every tool) is studio.js.
+// Also the one way every tool runs (runJob).
 
 import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, mediaInfo, plainError, ApiError } from './lib.js';
 import { P, addClip, newId, changed, remember, clipEnd } from './project.js';
@@ -20,7 +20,6 @@ export function initMedia() {
   $('#mediaSearch').addEventListener('input', (e) => { clearTimeout(qt); qt = setTimeout(() => { M.q = e.target.value.trim(); loadMedia(); }, 250); });
   $('#uploadBtn').addEventListener('click', () => $('#uploadInput').click());
   $('#uploadInput').addEventListener('change', (e) => { const files = [...(e.target.files ?? [])]; e.target.value = ''; uploadFiles(files); });
-  initGenerate();
   bus.on('signedIn', loadMedia);
   bus.on('ready', loadMedia);
   bus.on('jobDone', () => loadMedia());
@@ -44,7 +43,7 @@ export async function loadMedia() {
     if (M.kind) q.set('kind', M.kind);
     if (M.q) q.set('q', M.q);
     const r = await api(`/v1/assets?${q}`);
-    M.items = (r.items ?? []).filter((a) => ['image', 'video', 'audio'].includes(a.kind));
+    M.items = (r.items ?? []).filter((a) => ['image', 'video', 'audio', 'mesh', 'file'].includes(a.kind));
   } catch { M.items = []; }
   drawMedia();
 }
@@ -54,7 +53,7 @@ function drawMedia() {
   const busy = [...M.inflight.values()].map((j) => h('div', { class: 'tile busy' }, h('div', { class: 'working' }, j.step || 'Starting'), h('div', { class: 'tile-cap' }, j.label)));
   const tiles = M.items.map(tileFor);
   grid.replaceChildren(...busy, ...tiles);
-  if (!busy.length && !tiles.length) grid.append(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'), h('p', { class: 'muted' }, 'Upload files, or make something in Generate.')));
+  if (!busy.length && !tiles.length) grid.append(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'), h('p', { class: 'muted' }, 'Upload files, or make something in Create.')));
 }
 
 const durationOf = (a) => a.meta?.duration ?? null;
@@ -62,13 +61,14 @@ function tileFor(a) {
   const prompt = a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? a.title ?? '';
   const media = a.kind === 'image' ? h('img', { src: fileUrl(a.id), alt: '', loading: 'lazy', draggable: 'false' })
     : a.kind === 'video' ? h('video', { src: `${fileUrl(a.id)}#t=0.1`, muted: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => { e.target.pause(); } })
-    : h('div', { class: 'tile-audio' }, icon(a.tool === 'audio.music' ? 'music' : a.tool?.startsWith('audio.voice') ? 'mic' : 'volume', 'ico big'));
+    : a.kind === 'audio' ? h('div', { class: 'tile-audio' }, icon(a.tool === 'audio.music' ? 'music' : a.tool?.startsWith('audio.voice') ? 'mic' : 'volume', 'ico big'))
+    : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
   const d = durationOf(a);
   const el = h('div', { class: `tile kind-${a.kind}`, draggable: 'true', tabindex: '0', title: prompt },
     media,
     d ? h('span', { class: 'badge' }, fmt(d, 0)) : '',
     h('div', { class: 'tile-cap' }, a.title || prompt || a.kind),
-    h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(a)); } }, icon('plus')));
+    onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(a)); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
   el.addEventListener('click', () => openAsset(a));
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(a); });
   el.addEventListener('dragstart', (e) => {
@@ -77,16 +77,18 @@ function tileFor(a) {
   });
   return el;
 }
+const onTimeline = (kind) => ['image', 'video', 'audio'].includes(kind);
 const assetLite = (a) => ({ id: a.id, kind: a.kind, title: a.title ?? a.recipe?.params?.prompt ?? '', prompt: a.recipe?.params?.prompt ?? '', duration: durationOf(a), width: a.meta?.width ?? a.recipe?.params?.width ?? null, height: a.meta?.height ?? a.recipe?.params?.height ?? null, tool: a.tool });
 
 export async function openAsset(a) {
-  const lite = a.id && a.kind ? assetLite(a) : a;
-  const info = await mediaInfo(lite.id, lite.kind);
+  const lite = a.id && a.kind ? { ...assetLite(a), tool: a.tool, recipe: a.recipe ?? null } : a;
+  const info = onTimeline(lite.kind) ? await mediaInfo(lite.id, lite.kind) : {};
   showSource({ ...lite, width: info.width ?? lite.width, height: info.height ?? lite.height, duration: info.duration ?? lite.duration });
 }
 
 /** Puts a library file on the timeline: images and clips on V1, sounds on an audio track. */
 export async function placeAsset(a, { track, start } = {}) {
+  if (!onTimeline(a.kind)) { toast(`A ${assetKindLabel(a.kind).toLowerCase()} can't go on the timeline.`); return null; }
   const info = await mediaInfo(a.id, a.kind);
   const kind = a.kind === 'audio' ? 'audio' : a.kind;
   const t = track ?? (kind === 'audio' ? (a.tool?.startsWith('audio.voice') || a.tool === 'audio.revoice' ? 'A2' : a.tool?.startsWith('audio.sfx') ? 'A3' : 'A1') : 'V1');
@@ -210,79 +212,5 @@ export async function uploadFiles(files, { toTimeline = false } = {}) {
   }, 'login');
 }
 
-// ------------------------------------------------------------------ Generate
-const STYLES = [
-  ['', 'Any'], ['photograph, natural light, sharp focus, high detail', 'Photo'], ['cinematic film still, dramatic lighting, anamorphic, color graded', 'Cinematic'],
-  ['digital illustration, clean lines, rich color', 'Illustration'], ['anime style, cel shading, vibrant', 'Anime'], ['3D render, soft studio lighting, high detail', '3D'],
-  ['pixel art, 16-bit, crisp pixels, limited palette', 'Pixel'], ['watercolor painting, soft washes, paper texture', 'Watercolor'],
-];
-/** Width and height for the project's shape (wide, tall, square), at a size each tool likes. */
-function shapeFor(kind) {
-  const ar = P.doc.width / P.doc.height;
-  if (kind === 'image') return ar > 1.2 ? { width: 1344, height: 768 } : ar < 0.83 ? { width: 768, height: 1344 } : { width: 1024, height: 1024 };
-  return ar > 1.2 ? { width: 832, height: 480 } : ar < 0.83 ? { width: 480, height: 832 } : { width: 640, height: 640 };
-}
-
-function initGenerate() {
-  let style = '';
-  $('#genStyles').append(...STYLES.map(([w, label]) => h('button', { type: 'button', class: `chip${w === style ? ' on' : ''}`, onclick: (e) => { style = w; $$('#genStyles .chip').forEach((x) => x.classList.toggle('on', x === e.currentTarget)); } }, label)));
-  // Voices: Gen's premade voice list (GET /v1/editor/voices); the open models' described voices come back when they
-  // have a GPU provider again.
-  const loadVoices = async () => {
-    try {
-      const { voices } = await api('/v1/editor/voices');
-      $('#genVoice').replaceChildren(...voices.map((v) => h('option', { value: v.id, title: v.about }, `${v.name}${v.about ? ` · ${v.about.split(',').slice(0, 2).join(',')}` : ''}`)));
-    } catch { /* signed out: filled after sign-in */ }
-  };
-  loadVoices();
-  bus.on('ready', loadVoices);
-  bus.on('signedIn', loadVoices);
-  const forms = {
-    genImageForm: () => {
-      const prompt = $('#genImagePrompt').value.trim();
-      if (!prompt) return null;
-      const s = shapeFor('image');
-      return { tool: 'image.generate', params: { prompt: style ? `${prompt}, ${style}` : prompt, ...s, seed: Math.floor(Math.random() * 2 ** 31) }, label: prompt, place: $('#genImageToTl').checked ? { track: 'V1', start: undefined, seconds: 3 } : null };
-    },
-    genVideoForm: () => {
-      const prompt = $('#genVideoPrompt').value.trim();
-      if (!prompt) return null;
-      const seconds = Number($('#genVideoSeconds').value);
-      return { tool: 'video.t2v', params: { prompt, seconds, ...shapeFor('video') }, label: prompt, place: $('#genVideoToTl').checked ? { track: 'V1', seconds } : null };
-    },
-    genMusicForm: () => {
-      const prompt = $('#genMusicPrompt').value.trim();
-      if (!prompt) return null;
-      const seconds = Math.min(240, Math.max(10, Math.ceil(Number($('#genMusicSeconds').value || $('#genMusicSeconds').placeholder) || 30)));
-      return { tool: 'audio.music', params: { prompt, seconds }, label: prompt, place: { track: 'A1', start: 0, seconds } };
-    },
-    genVoiceForm: () => {
-      const text = $('#genVoiceText').value.trim();
-      if (!text) return null;
-      if (!$('#genVoice').value) return null;
-      return { tool: 'audio.voice', params: { text, voice: $('#genVoice').value, provider: 'elevenlabs' }, label: text.slice(0, 60), place: { track: 'A2', start: P.playhead, seconds: Math.max(1.5, text.split(/\s+/).length / 2.6) } };
-    },
-    genSfxForm: () => {
-      const text = $('#genSfxText').value.trim();
-      if (!text) return null;
-      const duration = Number($('#genSfxSeconds').value) || undefined;
-      return { tool: 'audio.sfx', params: { text, provider: 'elevenlabs', ...(duration ? { duration } : {}) }, label: text, place: { track: 'A3', start: P.playhead, seconds: duration ?? 3 } };
-    },
-  };
-  for (const [id, build] of Object.entries(forms)) {
-    const form = $(`#${id}`);
-    const q = form.querySelector('.quote');
-    let t = 0;
-    form.addEventListener('input', () => { clearTimeout(t); t = setTimeout(async () => { const spec = build(); const r = spec ? await quote(spec.tool, spec.params) : null; q.textContent = credits(r); }, 350); });
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const spec = build();
-      if (!spec) return;
-      runJob(spec).catch(() => {});
-      if (!spec.place) showPane('media');
-      form.querySelector('textarea, input[type=text]')?.select();
-    });
-  }
-  $('#genMusicSeconds').placeholder = '30';
-  bus.on('doc', () => { const len = Math.ceil(P.doc.clips.reduce((m, c) => Math.max(m, c.start + (c.out - c.in) / (c.speed || 1)), 0)); if (len) $('#genMusicSeconds').placeholder = String(Math.max(10, len)); });
-}
+/** A library kind as a person says it. */
+export const assetKindLabel = (k) => ({ image: 'Image', video: 'Clip', audio: 'Sound', mesh: '3D model', text: 'Text', file: 'File' }[k] ?? 'File');
