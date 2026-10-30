@@ -76,6 +76,7 @@ import {
   saveStripeConfig,
 } from './billing.ts';
 import { getPortfolio } from './portfolio.ts';
+import { probe as probeMedia, normalizeCheck, type ProbeInfo } from './tools/media.ts';
 
 const VERSION = JSON.parse(fs.readFileSync(path.join(paths.server, '..', 'package.json'), 'utf8')).version;
 
@@ -198,6 +199,29 @@ const OPS_ROUTES = /^\/v1\/(fleet|machines|builder|cpu|playtester|playtests\/liv
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
+}
+
+/**
+ * POST /v1/assets: does this upload need media.normalize (src/tools/media.ts normalizeCheck), and if so its job. Files
+ * that aren't media (a GLB, JSON) and media that are fine answer { needsNormalize: false }. `normalize=0` checks only.
+ * A failure to queue (no credits) is reported, never fails the upload.
+ */
+async function uploadNormalize(client: Client, project: string, asset: { id: string; path?: string }, ext: string, ctype: string, flag: string | null | undefined) {
+  const mediaLike = /^(image|video|audio)\//.test(ctype) || /^\.(mp4|m4v|mov|webm|mkv|avi|wmv|flv|mpg|mpeg|3gp|ts|mts|m2ts|ogv|png|jpe?g|jfif|webp|gif|bmp|tiff?|heic|heif|avif|mp3|wav|m4a|aac|ogg|oga|opus|flac|wma|aiff?|amr|weba)$/.test(ext);
+  if (!mediaLike || !asset.path) return { needsNormalize: false };
+  let info: ProbeInfo | null = null;
+  try { info = await probeMedia(asset.path, AbortSignal.timeout(20_000)); } catch { /* unreadable by ffprobe: the extension decides */ }
+  const check = normalizeCheck(info, ext);
+  if (!check.needed || check.kind === 'other') return { needsNormalize: false };
+  const out: Record<string, unknown> = { needsNormalize: true, normalizeReasons: check.reasons };
+  if (/^(0|false|off|no)$/i.test(flag ?? '')) return out;
+  try {
+    const job = submit(client, { tool: 'media.normalize', project, inputs: { file: `asset:${asset.id}` }, labels: { normalizeOf: asset.id }, key: `normalize:${asset.id}` });
+    out.normalizeJob = job.id;
+  } catch (e) {
+    out.normalizeError = e instanceof Error ? e.message : String(e);
+  }
+  return out;
 }
 
 const STATIC: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -1013,7 +1037,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       });
       // An uploaded image or model gets its levels of detail like a made one (src/lod.ts).
       queueLods([asset.id]);
-      return send(res, 200, { ...asset, asset, blob: `blob:${sha}` });
+      // A video, image or sound that the editor's tools or a browser can't use as it is (WebM, HEVC, variable frame rate,
+      // WebP, HEIC, CMYK JPEG, Opus...) gets a media.normalize job queued, unless ?normalize=0. The upload itself is kept
+      // as sent; the app waits for the job and uses its output instead (docs/api.md, "Uploads").
+      const norm = await uploadNormalize(client, targetProject, asset, ext, ctype, q('normalize'));
+      return send(res, 200, { ...asset, asset, blob: `blob:${sha}`, ...norm });
     }
     if ((route === '/v1/assets' || route === '/v1/library') && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });

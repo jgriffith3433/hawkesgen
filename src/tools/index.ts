@@ -25,6 +25,9 @@ import { sheetTool } from './sheet.ts';
 import { viewSheetTool } from './viewsheet.ts';
 import { decorateMeshTool, orderTools } from './threed.ts';
 import { assetLodTool } from '../lod.ts';
+import { imageRepaintTool, imageExpandTool } from './edit.ts';
+import { videoFrameTool, videoStillTool, mediaNormalizeTool } from './media.ts';
+import { videoChangeTool, audioRevoiceTool } from './chain.ts';
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
@@ -36,6 +39,7 @@ const BUILT_IN: Tool[] = [
   blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
   assetLodTool,
+  imageRepaintTool, imageExpandTool, videoFrameTool, videoStillTool, mediaNormalizeTool, videoChangeTool, audioRevoiceTool,
   ...AUDIO_OPEN_TOOLS,
 ];
 

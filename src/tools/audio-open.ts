@@ -518,5 +518,51 @@ export const musicLoopTool: Tool = {
 };
 
 /** Every open-audio tool (src/tools/index.ts adds these). */
-export const AUDIO_OPEN_TOOLS: Tool[] = [voiceOpenTool, voiceDesignOpenTool, voiceSaveOpenTool, voiceListOpenTool, voiceDeleteOpenTool, voiceCloneTool, sfxOpenTool, dialogueOpenTool, audioProcessTool, audioAnalyzeTool, musicLoopTool];
+// ---- audio.transcribe ------------------------------------------------------------------------------------------
+
+export const transcribeTool: Tool = {
+  id: 'audio.transcribe', version: 1, title: 'Write down what is said',
+  description: 'Transcribes the speech in a clip (audio, or a video\'s sound) with faster-whisper (small) on a GPU server: the same transcriber the voice tools use to check their takes. Returns { text, language }. audio.revoice uses it; use it for captions too.',
+  provider, server: 'ssh', family: MOCK ? undefined : `audio:${ASR_ID}`, output: 'json',
+  inputs: {
+    audio: { kind: 'audio', description: 'The speech.' },
+    video: { kind: 'video', description: 'Or a video: its sound is transcribed.' },
+  },
+  params: {
+    language: { type: 'string', description: 'Language code (en, es, ...); empty detects it.' },
+    text: { type: 'text', description: 'Tests and the mock only: the transcript to return.', advanced: true },
+  },
+  gpuSeconds: () => 20,
+  async run(ctx) {
+    const src = (ctx.inputs.audio ?? ctx.inputs.video) as string | undefined;
+    if (!src) throw new GenError('Give audio or a video');
+    const wav = ctx.tmp('speech.wav');
+    ctx.step('taking the sound');
+    await ff(['-y', '-i', src, '-vn', '-ac', '1', '-ar', '16000', wav], { signal: ctx.signal });
+    const seconds = await durationOf(wav, ctx.signal);
+    if (MOCK) {
+      ctx.result({ text: String(ctx.params.text ?? ''), language: ctx.params.language || 'en', seconds, mock: true });
+      return;
+    }
+    const c = ctx.comfy!;
+    await ensureAudio(c.server.id, ASR_ID, ctx.step, ctx.signal);
+    const ws = await blenderWorkspace(c.server.id, ctx.job.id);
+    try {
+      await ws.put({ 'in/speech.wav': wav });
+      const lang = /^[a-z]{2,3}$/i.test(String(ctx.params.language ?? '')) ? String(ctx.params.language).toLowerCase() : '';
+      const script = ['set -euo pipefail', `export HF_HOME=${AUDIO_ROOT}/hf HF_HUB_ENABLE_HF_TRANSFER=0 HF_HUB_OFFLINE=1`, `cd ${ws.dir}`, 'mkdir -p out', `${venvPython(ASR_ID)} ${AUDIO_ROOT}/asr.py in/speech.wav ${lang} > out/asr.json`].join('\n');
+      ctx.step('transcribing');
+      await c.timed(() => ws.run(script, { signal: ctx.signal, timeoutMs: 20 * 60_000 }));
+      const out = ctx.tmp('asr');
+      fs.mkdirSync(out, { recursive: true });
+      await ws.get('out', out);
+      const r = JSON.parse(fs.readFileSync(path.join(out, 'asr.json'), 'utf8'));
+      ctx.result({ text: String(r.text ?? '').trim(), language: r.language ?? (lang || null), seconds });
+    } finally {
+      await ws.clean();
+    }
+  },
+};
+
+export const AUDIO_OPEN_TOOLS: Tool[] = [transcribeTool, voiceOpenTool, voiceDesignOpenTool, voiceSaveOpenTool, voiceListOpenTool, voiceDeleteOpenTool, voiceCloneTool, sfxOpenTool, dialogueOpenTool, audioProcessTool, audioAnalyzeTool, musicLoopTool];
 

@@ -9,14 +9,14 @@ import { imageEdit, imageToVideo, animate, FAMILY_MODELS, ANGLES_LORA } from '..
 import type { Graph } from '../providers/comfy/client.ts';
 import { GenError } from '../util.ts';
 
-const common: Record<string, ParamSpec> = {
+export const common: Record<string, ParamSpec> = {
   seed: { type: 'integer', min: 1, max: 2 ** 48, description: 'Seed for the first output; the next ones count up. Random when empty.' },
   count: { type: 'integer', min: 1, max: 8, default: 1, description: 'How many outputs (takes) to make.' },
   sampler: { type: 'string', default: 'euler', advanced: true },
   scheduler: { type: 'string', default: 'simple', advanced: true },
 };
 
-const qwenSettings: Record<string, ParamSpec> = {
+export const qwenSettings: Record<string, ParamSpec> = {
   steps: { type: 'integer', min: 1, max: 60, default: 4, advanced: true },
   cfg: { type: 'number', min: 0, max: 20, default: 1, advanced: true },
   shift: { type: 'number', min: 0, max: 20, default: 3.1, advanced: true },
@@ -24,7 +24,7 @@ const qwenSettings: Record<string, ParamSpec> = {
   denoise: { type: 'number', min: 0, max: 1, default: 1, description: 'Below 1 keeps more of image 1 (its shapes and layout).' },
 };
 
-const qwenS = (p: Record<string, any>) => ({ steps: p.steps, cfg: p.cfg, shift: p.shift, lora: p.lora, sampler: p.sampler, scheduler: p.scheduler, denoise: p.denoise, angles: p.angles });
+export const qwenS = (p: Record<string, any>) => ({ steps: p.steps, cfg: p.cfg, shift: p.shift, lora: p.lora, sampler: p.sampler, scheduler: p.scheduler, denoise: p.denoise, angles: p.angles });
 
 /** Saves every take of a graph-per-seed tool. */
 async function takes(ctx: RunContext, build: (seed: number) => Graph, ext: string, label: string) {

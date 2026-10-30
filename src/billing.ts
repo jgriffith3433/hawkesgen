@@ -236,6 +236,14 @@ export function getCreditPack(packId: string): CreditPack | null {
  * Sensible minimum floor in credits (1 credit = $0.01) for a single execution of a tool.
  */
 export function toolFloorCredits(toolId: string): number {
+  // The editor's plumbing (ffmpeg on the CPU): a frame, a still as a clip, an upload made editor-ready.
+  if (toolId === 'video.frame' || toolId === 'media.normalize') return 1;
+  if (toolId === 'video.still') return 2;
+  // Chains, priced for their children too (those run on Gen's own key, unbilled): a frame edit plus a video.control
+  // clip; a transcription plus a spoken line.
+  if (toolId === 'video.change') return 60;
+  if (toolId === 'audio.revoice') return 20;
+  if (toolId === 'audio.transcribe') return 5;
   if (toolId === 'texture.maps' || toolId === 'image.normals' || toolId === 'image.albedo' || toolId === 'image.depth' || toolId === 'image.segment') {
     return 5;
   }
