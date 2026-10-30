@@ -1,9 +1,10 @@
 // What you can do to the thing you're looking at: the toolbar under the viewer for the selected clip (or the library
 // file open in the viewer), each tool's sheet (prompt, options, price, run), painting masks, clip settings (speed,
-// volume, mute, text), and Export (the timeline rendered by video.compose).
+// volume, mute, text), and a video scene's Export (video.compose for a plain cut; a layered timeline renders in the
+// browser: editor.js renderInBrowser).
 
 import { $, $$, h, api, toast, fmt, bus, icon, mediaInfo, uploadCanvas, plainError } from './lib.js';
-import { P, byId, selectedClips, clipLength, clipEnd, onTrack, setClip, remember, changed, docLength, splitAt, deleteSelected, duplicateSelected } from './project.js';
+import { P, byId, selectedClips, clipLength, clipEnd, onTrack, setClip, remember, changed, docLength, splitAt, deleteSelected, duplicateSelected, mainTrack, trackOf, audible, isVisual } from './project.js';
 import { currentSource, showSource, closeSource, startPainter, stopPainter, pause } from './player.js';
 import { runJob, quote, credits, waitJob, placeAsset, showPane, assetKindLabel } from './media.js';
 import { popMenu, closeMenus } from './timeline.js';
@@ -75,7 +76,7 @@ export function drawToolbar() {
   const t = target();
   bar.replaceChildren();
   if (!t) {
-    bar.append(h('span', { class: 'muted hint' }, P.doc.clips.length ? 'Select a clip to edit it, or drag on the timeline to select a stretch.' : 'Drag media onto the timeline, or ask the AI editor to make something.'));
+    bar.append(h('span', { class: 'muted hint' }, P.doc.clips.length ? 'Select a clip to edit it (on the timeline or right here), or drag on the timeline to select a stretch.' : 'Drag media onto any track, or ask the AI to make something.'));
     return;
   }
   if (t.from === 'many') {
@@ -88,24 +89,38 @@ export function drawToolbar() {
     bar.append(h('span', { class: 'error hint' }, plainError(t.clip.failed)), tbtn('trash', 'Remove', () => deleteSelected()));
     return;
   }
-  for (const tool of TOOLS[t.kind === 'text' ? 'none' : t.kind] ?? []) {
-    if (!has(tool.tool)) continue;
+  for (const tool of TOOLS[t.kind] ?? []) {
+    if (!has(tool.tool) && !(tool.id === 'cutout' && has('image.remove-background'))) continue;
     bar.append(tbtn(tool.icon, tool.label, () => openTool(tool.id, t)));
   }
   // Any library file: every tool that takes it, its file, and the recipe that made it.
-  if (t.asset && t.kind !== 'text') {
+  if (t.asset && t.kind !== 'text' && t.kind !== 'fill') {
     bar.append(h('span', { class: 'tb-sep' }), tbtn('more', 'Use in…', (e) => useInMenu(t, e)));
     if (t.from === 'source') bar.append(tbtn('download', 'Download', () => { const a = h('a', { href: `/v1/assets/${t.asset}/file`, download: '' }); document.body.append(a); a.click(); a.remove(); }), tbtn('info', 'Details', () => details(t)));
   }
   if (t.from === 'clip') {
     bar.append(h('span', { class: 'tb-sep' }));
     if (t.kind === 'text') bar.append(tbtn('text', 'Edit text', () => editText(t.clip)));
-    if (t.kind !== 'text') bar.append(tbtn('speed', 'Speed', (e) => speedMenu(t.clip, e)));
+    if (t.kind !== 'text' && t.kind !== 'fill' && t.kind !== 'image') bar.append(tbtn('speed', 'Speed', (e) => speedMenu(t.clip, e)));
     if (t.kind === 'video' || t.kind === 'audio') bar.append(tbtn('volume', 'Volume', (e) => volumeMenu(t.clip, e)));
     if (t.kind === 'image' || t.kind === 'video') bar.append(tbtn('zoomIn', 'Push in', (e) => zoomMenu(t.clip, e)));
     bar.append(tbtn('split', 'Split', () => splitAt()), tbtn('trash', 'Delete', () => deleteSelected()));
   }
 }
+/**
+ * Gen's tools for a clip, ready to run on it (the Inspector and the clip's menu list them): for a picture, Remove
+ * background, Edit, Repaint, Expand, Relight, Upscale, Animate; for a clip, Change, Restyle, Swap, Continue, Grab a
+ * frame, Upscale, Smooth. The result replaces the clip's file in its spot.
+ */
+export function clipTools(c) {
+  if (!c?.asset || c.pending) return [];
+  const t = { from: 'clip', clip: c, asset: c.asset, kind: c.kind, title: c.label, prompt: c.label };
+  const order = { cutout: 0, edit: 1, repaint: 2, expand: 3, relight: 4, upscale: 5, animate: 6 };
+  return (TOOLS[c.kind] ?? []).filter((x) => has(x.tool) || (x.id === 'cutout' && has('image.remove-background')))
+    .sort((a, b) => (order[a.id] ?? 9) - (order[b.id] ?? 9))
+    .map((x) => ({ ...x, run: () => { P.selection.clips = new Set([c.id]); bus.emit('selection'); openTool(x.id, t); } }));
+}
+
 const tbtn = (ic, label, fn) => h('button', { class: 'tb', title: label, onclick: fn }, icon(ic), h('span', {}, label));
 
 function useInMenu(t, e) {
@@ -244,7 +259,7 @@ async function openTool(id, t) {
       { runLabel: 'Expand', quoteOf: spec, run: () => { runJob({ ...spec(), inputs: input(), label: `Expand to ${spec().params.aspect}`, place }); } });
   }
   if (id === 'cutout' || id === 'upscale' || id === 'vupscale' || id === 'smooth') {
-    const map = { cutout: ['image.cutout', { crop: false }, 'Remove background'], upscale: ['image.upscale', {}, 'Upscale'], vupscale: ['video.upscale', {}, 'Upscale'], smooth: ['video.interpolate', { multiplier: 2 }, 'Smooth motion'] };
+    const map = { cutout: [has('image.cutout') ? 'image.cutout' : 'image.remove-background', has('image.cutout') ? { crop: false } : {}, 'Remove background'], upscale: ['image.upscale', {}, 'Upscale'], vupscale: ['video.upscale', {}, 'Upscale'], smooth: ['video.interpolate', { multiplier: 2 }, 'Smooth motion'] };
     const [tool, params, label] = map[id];
     const spec = () => ({ tool, params });
     return sheet(label, [h('p', { class: 'muted small' }, {
@@ -280,7 +295,7 @@ async function openTool(id, t) {
         const frame = last.outputs.find((o) => o.kind === 'image') ?? last.outputs[0];
         const s = i2vSize(sz.w, sz.h);
         const after = t.from === 'clip' ? t.clip : null;
-        const job = runJob({ tool: 'video.i2v', params: { prompt: motionPrompt(p.value, t.prompt), ...s, frames: framesFor(Number(len.value)), fps: 16 }, inputs: { start: `asset:${frame.asset}` }, label: `Then: ${p.value}`, place: after ? { track: 'V1', start: clipEnd(after) - 0.0002, seconds: Number(len.value) } : null });
+        const job = runJob({ tool: 'video.i2v', params: { prompt: motionPrompt(p.value, t.prompt), ...s, frames: framesFor(Number(len.value)), fps: 16 }, inputs: { start: `asset:${frame.asset}` }, label: `Then: ${p.value}`, place: after ? { track: after.track, start: clipEnd(after) - 0.0002, seconds: Number(len.value) } : null });
         job.catch(() => {});
       },
     });
@@ -328,15 +343,20 @@ export function editText(c) {
 export function openExport() {
   needSignIn(async () => {
     const d = $('#exportDialog');
-    const v1 = onTrack('V1');
+    const v1 = P.doc.clips.filter((c) => isVisual(c) && !trackOf(c.track)?.hidden);
     $('#exportError').hidden = true;
     $('#exportResult').replaceChildren();
     const waiting = P.doc.clips.filter((c) => c.pending).length;
     const broken = P.doc.clips.filter((c) => c.failed).length;
-    $('#exportNote').textContent = !v1.length ? 'Put some clips on the Video track first.'
+    const { composable } = await import('./editor.js');
+    const layered = !composable();
+    $('#exportNote').textContent = !v1.length ? 'Put some pictures or clips on the timeline first.'
       : waiting ? `${waiting} clip${waiting === 1 ? ' is' : 's are'} still being made. Export when they're done.`
       : broken ? `${broken} clip${broken === 1 ? '' : 's'} failed to make. Remove ${broken === 1 ? 'it' : 'them'} first.`
-      : `${v1.length} clip${v1.length === 1 ? '' : 's'}, ${fmt(docLength(), 1)} long.`;
+      : `${v1.length} clip${v1.length === 1 ? '' : 's'}, ${fmt(docLength(), 1)} long.${layered ? ' Its tracks are layered, so it renders here in your browser as it plays (keep this tab open), at the scene\'s own size.' : ''}`;
+    $('#exportSize').disabled = layered;
+    $('#exportFit').disabled = layered;
+    d.dataset.layered = layered ? '1' : '';
     $('#exportGo').disabled = !v1.length || waiting > 0 || broken > 0;
     const shape = `${P.doc.width}x${P.doc.height}`;
     if ([...$('#exportSize').options].some((o) => o.value === shape)) $('#exportSize').value = shape;
@@ -355,7 +375,16 @@ export async function runExport() {
   out.replaceChildren(status);
   $('#exportGo').disabled = true;
   try {
-    const v1 = onTrack('V1');
+    if ($('#exportDialog').dataset.layered) {
+      const { renderInBrowser } = await import('./editor.js');
+      $('#exportDialog').close();
+      toast('Rendering: the timeline plays once while it records.');
+      const id = await renderInBrowser((s) => { status.firstChild.textContent = s; $('#saveState').textContent = s; });
+      $('#exportDialog').showModal();
+      return finish(out, id);
+    }
+    const main = mainTrack()?.id;
+    const v1 = onTrack(main).filter(() => !trackOf(main)?.hidden);
     const stills = v1.filter((c) => c.kind === 'image');
     const stillOf = new Map();
     if (stills.length) {
@@ -368,27 +397,25 @@ export async function runExport() {
       }));
     }
     const clipsIn = v1.map((c) => `asset:${stillOf.get(c.id) ?? c.asset}`);
-    const audio = P.doc.clips.filter((c) => c.track.startsWith('A') && c.asset);
-    const texts = P.doc.clips.filter((c) => c.track === 'T1' && c.text?.trim());
+    const audio = P.doc.clips.filter((c) => c.kind === 'audio' && c.asset && audible(c.track));
+    const texts = P.doc.clips.filter((c) => c.kind === 'text' && c.text?.trim() && !trackOf(c.track)?.hidden);
+    const voice = (c) => /voice|dialog|line/i.test(trackOf(c.track)?.name ?? '');
+    const music = (c) => /music|score|song/i.test(trackOf(c.track)?.name ?? '');
     const timeline = {
       clips: v1.map((c, i) => ({
         clip: i, in: stillOf.has(c.id) ? 0 : c.in, out: stillOf.has(c.id) ? clipLength(c) * (c.speed || 1) : c.out,
-        ...(c.speed && c.speed !== 1 ? { speed: c.speed } : {}), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted ? { sound: false } : {}),
+        ...(c.speed && c.speed !== 1 ? { speed: c.speed } : {}), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted || !audible(main) ? { sound: false } : {}),
         ...(c.zoom && !stillOf.has(c.id) ? { zoom: c.zoom } : {}),
         ...(i < v1.length - 1 && c.transition ? { transition: c.transition, seconds: c.transitionSeconds ?? 0.5 } : {}),
       })),
-      audio: audio.map((c, j) => ({ audio: j, start: c.start, in: c.in, seconds: clipLength(c), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted ? { volume: 0 } : {}), ...(c.track === 'A2' ? { dialogue: true } : {}), ...(c.track === 'A1' && audio.some((x) => x.track === 'A2') ? { duck: true } : {}) })),
+      audio: audio.map((c, j) => ({ audio: j, start: c.start, in: c.in, seconds: clipLength(c), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted ? { volume: 0 } : {}), ...(voice(c) ? { dialogue: true } : {}), ...(music(c) && audio.some(voice) ? { duck: true } : {}) })),
       captions: texts.map((c) => ({ text: c.text, start: c.start, end: clipEnd(c) })),
     };
     status.firstChild.textContent = 'Rendering';
     const r = await api('/v1/jobs', { body: { project: state.user.project, tool: 'video.compose', params: { timeline, width: w, height: hh, fps: P.doc.fps, fit, captions: texts.length ? 'burn' : 'vtt' }, inputs: { clips: clipsIn, ...(audio.length ? { audio: audio.map((c) => `asset:${c.asset}`) } : {}) }, labels: { title: `Export: ${P.doc.title}`, editor: P.id } } });
     const done = await waitJob(r.jobs[0].id, (s) => { status.firstChild.textContent = `Rendering: ${s}`; });
     const v = done.outputs.find((o) => o.kind === 'video') ?? done.outputs[0];
-    out.replaceChildren(h('video', { src: `/v1/assets/${v.asset}/file`, controls: true, playsinline: true }),
-      h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/v1/assets/${v.asset}/file`, download: `${P.doc.title || 'hawkes-gen'}.mp4` }, icon('download'), 'Download'), h('span', { class: 'muted small' }, 'Also saved to Media.')));
-    bus.emit('jobDone', done);
-    // The export is this video scene's render: scenes that play it can update to it.
-    if (P.id) import('./scenes.js').then((sc) => sc.setRender(P.id, v.asset, 'video')).catch(() => {});
+    finish(out, v.asset);
   } catch (err) {
     out.replaceChildren();
     $('#exportError').textContent = plainError(err.message);
@@ -396,6 +423,14 @@ export async function runExport() {
   } finally {
     $('#exportGo').disabled = false;
   }
+}
+
+/** The export is shown, saved to Media, and becomes this video scene's render (scenes that play it can update to it). */
+function finish(out, asset) {
+  out.replaceChildren(h('video', { src: `/v1/assets/${asset}/file`, controls: true, playsinline: true }),
+    h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/v1/assets/${asset}/file`, download: `${P.doc.title || 'hawkes-gen'}.mp4` }, icon('download'), 'Download'), h('span', { class: 'muted small' }, 'Also saved to Media.')));
+  bus.emit('jobDone');
+  if (P.id) import('./scenes.js').then((sc) => sc.setRender(P.id, asset, 'video')).then((s) => { if (s && s.id === P.id) { P.version = s.version; P.doc.render = s.doc.render; } }).catch(() => {});
 }
 
 export function initTools() {

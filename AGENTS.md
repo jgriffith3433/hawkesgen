@@ -182,34 +182,35 @@ portal and Studio use Gen in the back end with their own keys.
     each other ... the edit tab shouldn't just be about videos ... Make tabs too"). Everything a person makes is a scene
     of a kind, in one table (`scenes`: id, project, kind, title, doc, version), each kind registering how its document is
     checked (`registerKind`: normalize, blank, resolve finished jobs, the scenes it uses):
-    - `video` (src/editor.ts): the timeline. `stage` (src/director.ts): a 3D shot. `image`, `audio`, `character`
-      (src/scenekinds.ts): layers; a multitrack; a person or creature to cast.
+    - `video`, `image`, `audio`: a timeline (src/timeline.ts, registered in src/editor.ts). `stage` (src/director.ts): a
+      3D shot. `character` (src/scenekinds.ts): a person or creature to cast.
     - The editor's projects (`editor_projects`, live) and the director's shots came in once with their ids
       (`scene_migrations`); `/v1/editor/projects` and `/v1/director/shots` are views onto the store (MCP keeps working).
-    - **Plug and play:** a document names other scenes (a video clip's `scene`, an image layer's `scene`, an audio clip's
-      `scene`, a stage cast member's `character`); `uses` lists them with their render. A scene's `render` is its latest
+    - **Plug and play:** a document names other scenes (a timeline clip's `scene`, a stage cast member's `character`);
+      `uses` lists them with their render. A scene's `render` is its latest
       output (`PUT /v1/scenes/:id/render`: the export, the film, the flattened picture, the mixdown, a character's face).
       A clip or layer that plays a scene keeps `sceneVersion`; when the scene renders again, the editor offers to update
       (`staleBar`). A character's name, look, voice, height and model reach every shot that casts them
       (`castFromCharacters`, on every read and save).
-    - Elements of image, audio and character scenes can wait on jobs (`pending`, filled in on read: `resolveElements`).
+    - Timeline clips and a character's pictures and model can wait on jobs (filled in on read: `resolvePending`,
+      `resolveElements`).
     - **The app:** open scenes are tabs in the bar (open, close, reorder by drag, rename by double-click, remembered per
       browser; "+" makes any kind). Each kind has an editor with one shape (`registerEditor`: mount, unmount, panel,
-      undo/redo, the bar's action, accepts/drop, rename): `video.js` (the timeline editor below), `director.js` (stage:
-      the Shot panel, Film it, Photo), `image.js` (Layers panel; canvas with move, size and turn handles; Gen's image
-      tools on a layer keep its size; Render flattens in the browser), `audio.js` (tracks with volume, pan, mute, solo;
-      clips with trim, gain, fades, split; WebAudio playback; Mixdown renders the same graph offline to a WAV),
-      `character.js` (the sheet: look, voice with preview, pictures by role, the 3D model and its clips; Make their
-      pictures; Make the 3D model through cutout, view sheet and mesh.views3d, optionally rigged; Stage them).
-      `scenedoc.js` is the image, audio and character editors' document (versioned saves, undo, following jobs).
-    - The left pane's **Scenes** tab lists every scene (search, kind); drag one into the scene in front (onto the center,
-      the timeline, an audio lane): a character onto a stage, a stage's film, an image or a video onto a timeline, an
-      audio scene's mixdown onto a track, an image scene or a stage photo into an image. Each row's menu has Open, Use in
+      undo/redo, the bar's action, accepts/drop, rename, and either `timelineKind` or the lanes it lends the timeline):
+      `editor.js` (video, image and audio: the timeline below), `director.js` (stage: the Shot panel, Film it, Photo; it
+      lends the timeline its lanes), `character.js` (the sheet: look, voice with preview, pictures by role, the 3D model
+      and its clips; Make their pictures; Make the 3D model through cutout, view sheet and mesh.views3d, optionally
+      rigged; Stage them). `scenedoc.js` is the character editor's document (versioned saves, undo, following jobs).
+    - The left pane's **Scenes** tab lists every scene (search, kind); drag one into the scene in front (onto the center
+      or a track): a character onto a stage; a stage's film, an image scene's picture, a video's export or an audio
+      scene's mixdown onto any track of a timeline. Each row's menu has Open, Use in
       the scene in front, Duplicate and Delete.
-    - **The AI for image, audio and character scenes** (`src/sceneai.ts`, `POST /v1/scenes/:id/assistant`): it answers
-      with the whole scene and the jobs to run; an element to make is marked `gen: n`, a job's input `el:<id>` is an
-      element's file; over the auto limit it comes back as a proposal (`POST .../apply`). House AI and credits as the
-      others. The AI pane follows the tab in front (AI editor, AI director, Image AI, Audio AI, Character AI).
+    - **The AI:** video, image and audio scenes have the AI editor (`applyOps` over the timeline, told the kind: an image
+      is the frame at the playhead, audio is the mix). **The character AI** (`src/sceneai.ts`, `POST
+      /v1/scenes/:id/assistant`) answers with the whole sheet and the jobs to run; an element to make is marked `gen: n`,
+      a job's input `el:<id>` is an element's file; over the auto limit it comes back as a proposal (`POST .../apply`).
+      House AI and credits as the others. The AI pane follows the tab in front (AI editor, AI director, Image AI, Audio
+      AI, Character AI).
     - Sequences (a stage's shot list) were called scenes before: `stage_sequences`, `doc.sequence`,
       `/v1/director/sequences/:id`. Filming a sequence makes a new video scene whose clips play each shot.
   - Buttons: primary actions are solid (`--text` on dark), never gradients (J, 2026-10-29: "Get rid of these blue gradient
@@ -228,18 +229,66 @@ portal and Studio use Gen in the back end with their own keys.
     first use). A file open in the viewer has **Use in…** (every tool whose first or required input takes it),
     Download, and Details (its recipe, and Make another with a new seed). Results open the cutout, not the mask, when a
     tool returns both.
-  - Layout (a video scene in front): Media, Create and Scenes on the left (`media.js`, `studio.js`, `scenes.js`), the viewer with the tools for what's selected in the middle
-    (`player.js`, `tools.js`), the AI editor on the right (`ai.js`), the timeline below (`timeline.js`). Panes resize
-    (sizes kept per browser); on a phone one pane at a time behind bottom tabs.
-  - **The project** (`project.js`, `src/editor.ts`): one timeline document per project, saved to Gen
-    (`/v1/editor/projects`, with a version: a save that crosses another one gets 409 and the newer document), undo and
-    redo, waiting clips filled in when their jobs end, edits made elsewhere (the AI, MCP, another tab) picked up. Tracks:
-    V1 the main video track (magnetic: clips back to back, pictures as stills), T1 text on screen, A1 music, A2 voice,
-    A3 sound. Nothing is added that the person didn't ask for: no fades or transitions unless set.
-  - **Timeline:** drag to move (V1 reorders), edge handles to trim, snapping, split (S), delete, duplicate, a selected
-    time range (drag on an empty track or shift-drag the ruler; I and O), transitions at V1's joins, speed, volume,
-    mute, push-in, zoom (Ctrl+wheel), keyboard (Space, arrows, Ctrl+Z / Ctrl+Shift+Z, T for text). Thumbnails and
-    waveforms are made in the browser (`lib.js`).
+  - **The timeline is everything** (J, 2026-10-29: "I think we can have everything be on a timeline. Let's make the
+    timeline always visible and the center should always be the visualization of what you are scrubbed on ... There
+    should be a way to layer more than one type of scene on each track ... make things like unity editor (just minus the
+    docking) ... on mobile I can drag and drop things onto the timeline"):
+    - **One document** (`src/timeline.ts`, version 2) under video, image and audio scenes: tracks top first (a higher
+      track draws over the ones below), each with a role (main, video, text, audio, any), `magnetic` (clips back to back;
+      off unless the person turns it on: J, 2026-10-30, "you should be able to place them where ever in time"), hidden,
+      locked, mute, solo, volume, pan. Clips on one track never overlap (`fitStart`: a dragged clip stops against its
+      neighbours or jumps to the nearest gap; trims stop at them). Any clip on any track: video, image, audio, text or
+      a color `fill`, placed on the frame by `x`, `y` (its center, shares of the frame) and `w` (a share of the width;
+      none: fit the frame), turned, faded, blended; sound with volume and fades. Version 1 video documents and the first
+      image (layers) and audio (tracks of clips) documents convert on read, keeping their clip ids. Edits (`applyOps`)
+      add `track` ops (add, set, remove) and placement on `add`/`set`. `test/timeline.test.ts`.
+    - **The center** (`player.js`) is the timeline drawn live at the playhead on one canvas at the scene's size: every
+      visible track from the bottom up, transitions at the main track's joins, text, push-ins. Sound goes through
+      WebAudio (clip gain and fades, track volume, pan, mute, solo) into an analyser; an audio scene's center shows each
+      track's waveform scrolling past the playhead, the spectrum while it plays, and the words being said (text clips,
+      voice lines' labels). The selected visual clip has handles on the canvas (move, size from a corner, turn from the
+      top; snaps to the middle and to 15°).
+    - **Exports** become the scene's render: a video scene's is `video.compose` when the cut is plain (pictures and
+      clips only on the magnetic track, fitting the frame; text as captions; sound anywhere), else the timeline plays
+      once in the browser and records (canvas + mix, `recordTimeline`, webm converted by Gen); an image scene's is the
+      frame at the playhead as a PNG (`frameAt`); an audio scene's is the mixdown WAV (`mixdown`, an
+      OfflineAudioContext over the same rules).
+    - **Adding** goes to the selected track at the playhead whatever its kind (Media's "+", the Inspector, Create's "Add
+      to timeline"); with none selected, the track that fits. Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste clips at the
+      playhead (between scenes too: the clipboard is kept in the browser), keeping their spacing and tracks. Adding where a clip already is makes a new layer (a track
+      over that one; for sound, under it); with no track asked for, the nearest free track of the same sort first.
+      Dropping onto the empty row under the tracks makes a new track.
+    - **Saving:** every editor saves on its own a moment after a change; the tab shows `*` until it has, Ctrl+S saves
+      now. Ctrl+O (or "+" > Open a scene…) opens a picker of every scene, fresh from Gen. The interface isn't selectable
+      text (only fields and the AI's words). The center outlines the frame and shows its size.
+    - **Media:** a click picks a tile, a double-click shows it in the center, the "+" adds it.
+    - **The Inspector** (`editor.js`, the left pane's tab): Gen's tools for the selected clip first (`tools.js clipTools`:
+      Remove background, Edit, Repaint, Expand, Relight, Upscale, Animate; for clips Change, Restyle, Swap, Continue...;
+      also at the top of a clip's right-click menu), then the clip (track, start, length, speed, place,
+      size, turn, opacity, blend, push-in, words and their style, color, volume, fades), the selected track (name,
+      color, hide, lock, magnetic, mute, solo, volume, pan), or the scene (shape, fit, background, length, tempo, fps).
+    - **Other kinds keep the timeline on screen:** a stage lends it lanes (each person's moves, which stretch; camera
+      keys and lines, which move; the playhead is the stage's: `director.js` `LANES`); a character says it has none.
+  - Layout: Media, Create, Scenes and the Inspector on the left (`media.js`, `studio.js`, `scenes.js`, `editor.js`), the
+    center with the tools for what's selected (`player.js`, `tools.js`), the AI on the right (`ai.js`), the timeline
+    below (`timeline.js`). **Areas size like a desktop editor's** (`gen.js` `AREAS`): drag an edge; drag it past half its
+    smallest size and the area folds away (its edge stays to drag it back; the timeline folds to its bar); double-click
+    an edge to fold or unfold; sizes kept per browser. **On a phone** the center and the timeline stay on screen with a
+    sheet below for Media, Create, Scenes, the Inspector or the AI (bottom tabs; the sheet and the timeline size by their
+    top edges), and a Media tile or a Scenes row drags onto a track with a finger: hold it, then drag (`dragdrop.js`:
+    a ghost follows, the track lights up; the timeline and the center register as drop targets).
+  - **The project** (`project.js`, `src/editor.ts`): the timeline scene in front, saved to Gen
+    (`/v1/editor/projects/:id`, any timeline kind, with a version: a save that crosses another one gets 409 and the
+    newer document), undo and redo, waiting clips filled in when their jobs end, edits made elsewhere (the AI, MCP,
+    another tab) picked up. A new video starts with Text, Video (magnetic), Music, Voice and Sound; an image with Top,
+    Middle and Background; audio with Music, Voice and Sound. Nothing is added that the person didn't ask for: no fades
+    or transitions unless set.
+  - **Timeline:** track heads (name: double-click to rename; hide, lock, mute, solo; a menu with volume, pan, magnetic,
+    move up or down, add above or below, remove); drag a clip to move it, to any unlocked track (a magnetic track
+    reorders); edge handles trim; snapping; split (S); delete; duplicate; a selected time range (drag on an empty track
+    or shift-drag the ruler; I and O); transitions at the main track's joins; zoom (Ctrl+wheel); bars on the ruler for
+    an audio scene with a tempo; keyboard (Space, arrows, Ctrl+Z / Ctrl+Shift+Z, T for text; arrows nudge the selected
+    picture in an image scene, Alt+arrows elsewhere). Thumbnails and waveforms are made in the browser (`lib.js`).
   - **Tools on what's selected** (`tools.js`; only tools this Gen has, from `GET /v1/editor/tools`): pictures: Animate
     (`video.i2v`), Edit (`image.edit`), Repaint area (`image.repaint`, a painted mask), Expand (`image.expand`), Relight,
     Remove background (`image.cutout`), Upscale. Clips: Change something (`video.change`, mask on the first frame),
@@ -254,7 +303,9 @@ portal and Studio use Gen in the back end with their own keys.
     "elevenlabs"`) with its premade voices only (`GET /v1/editor/voices`, `editorVoices`: never the account's cloned or
     designed character voices), because the open audio models run only on the SSH GPU fleet (AWS, suspended); for the
     same reason `audio.revoice` is left out of the editor's tools until they have a GPU provider. **Uploads** by button or drop anywhere (on the timeline: placed too).
-  - **Export** maps the timeline onto `video.compose` (pictures first become clips with `video.still`); captions burned in.
+  - **Export** (a video scene) maps a plain cut onto `video.compose` (pictures first become clips with `video.still`;
+    captions burned in; a track named Voice is dialogue, one named Music ducks under it), and renders a layered one in
+    the browser (above).
   - **The AI editor** (`ai.js`, `src/editor.ts` `assistantTurn`): it knows every tool (`toolMap`, the usual ones with
     how the editor uses them, chains through `asset.make` and node settings: `CRAFT_DOC`) and gets the full craft of the
     tools a request likely needs (`relevantTools`); it sees the timeline, the selection (clips, a range,
@@ -314,14 +365,25 @@ portal and Studio use Gen in the back end with their own keys.
       document; nothing saves meanwhile), all filmed at once, each take becoming its shot's render, then cut into a new
       video scene (`cutOf`: clips that play each shot, lines on Voice, a talk shot's sound muted). A failed shot is
       reported and the rest are cut. Filming one shot makes its take the stage's render ("Put it in a new video").
+    - **Placing things** (J, 2026-10-30): click a person or prop to select it, then its gizmo (three.js
+      TransformControls): Move on the ground, Turn, Size (a person's height), switched by the bar at the top of the stage
+      or W, E, R; Delete removes, Escape lets go; walk markers still drag on the ground. Right-click a person or prop
+      for its menu (modes, face the camera, point the camera at them, add a walk, make a model a person, change the
+      model or what a screen shows, duplicate, remove), or the ground to add a person, a box, a model, a picture or a
+      character there. The UI says "3D", never "Blender".
+    - **Drops on the stage** put things where they're dropped: a character joins the cast, a 3D model becomes a prop, and
+      a picture, a video or a scene's render (an image, a video, another stage's film) becomes a **screen** (a prop with
+      `shape: "screen"`, `media`, and `scene` / `sceneVersion` when it shows a scene; `size` is its width). Screens are
+      filmed as they look; the 3D render pipeline leaves them out.
     - **Photo**: the stage at the playhead through the shot camera, painted in the look; it opens as an image scene, or
       animates (video.i2v).
     - The Create list starts with **Direct a shot or a scene**, which opens a new stage tab.
     - **Blender** (`POST .../blender`, `?quote=1` prices it): the same shot through `film/recipes.ts cinemaPass` as one
       `asset.make` (gate, blender.render, best-of-3 keyframe, video.control, upscale). Every cast member needs a model;
       it queues until the fleet is back.
-  - `test/editor.test.ts` covers the document and routes; `test/scenes.test.ts` the store, the migration, the kinds,
-    characters in shots, the scene AI's answers and the routes; `test/director.test.ts` the house AI, admin accounts and
+  - `test/editor.test.ts` covers the document and routes; `test/timeline.test.ts` the timeline (old documents
+    converted, any clip on any track, track edits); `test/scenes.test.ts` the store, the migration, the kinds,
+    characters in shots, the character AI's answers and the routes; `test/director.test.ts` the house AI, admin accounts and
     the director; `test/saas-ui.test.ts` checks every id the modules look up
     is on the page.
 

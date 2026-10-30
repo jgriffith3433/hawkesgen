@@ -294,7 +294,7 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 | `GET/PUT/DELETE /v1/scenes/:id` | One scene (with `uses`: the scenes it plays and their renders; a stage's `sequenceInfo`); PUT `{ doc, version }` (409 with the newer scene) |
 | `PUT /v1/scenes/:id/render` | `{ asset, kind? }`: the scene's latest output, for the scenes that use it (the caller must see the file) |
 | `POST /v1/scenes/:id/duplicate` | A copy, without its render |
-| `POST /v1/scenes/:id/assistant`, `.../apply` | The image, audio and character AI (src/sceneai.ts): `{ messages, selection? }` in, `{ say, scene, started, errors, proposed? }` out; apply runs a confirmed proposal `{ doc, jobs }` |
+| `POST /v1/scenes/:id/assistant`, `.../apply` | The character AI (src/sceneai.ts; video, image and audio scenes use the editor's AI at `/v1/editor/projects/:id/assistant`): `{ messages, selection? }` in, `{ say, scene, started, errors, proposed? }` out; apply runs a confirmed proposal `{ doc, jobs }` |
 | `GET/POST /v1/director/shots`, `GET/PUT/DELETE /v1/director/shots/:id` | The director's shots (src/director.ts), per account; PUT with `version` (409 with the newer shot) |
 | `POST /v1/director/shots/:id/next` | A new shot after this one in its sequence (makes the sequence first) |
 | `GET/PUT /v1/director/sequences/:id` | A sequence (a stage's shot list): its title and shots in order; PUT `{ title?, order?: [shotId...] }` |

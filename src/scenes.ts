@@ -3,8 +3,8 @@
 // to edit any kind of scene"). A kind decides what its document is and how it's checked:
 //   video      a timeline (src/editor.ts): clips, text, music, voice, sound
 //   stage      a 3D shot (src/director.ts): cast, props, set, camera, lines, how it's filmed
-//   image      a picture in layers (src/scenekinds.ts): images, text, fills, each with Gen's image tools
-//   audio      a multitrack (src/scenekinds.ts): tracks of clips with gain, pan, fades, mute and solo
+//   image      a timeline whose frame at the playhead is the picture (src/timeline.ts): tracks as layers
+//   audio      a timeline of sound (src/timeline.ts): tracks with volume, pan, mute and solo; export is the mixdown
 //   character  a person or creature (src/scenekinds.ts): look, voice, height, 3D model, references, clips
 // Scenes plug into each other: a scene's document can name others (a stage cast member is a character scene, a video
 // clip is a filmed stage or a rendered image, an audio clip is another audio scene's mixdown); `uses` lists them, and a

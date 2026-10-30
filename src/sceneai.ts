@@ -1,8 +1,8 @@
-// The AI for image, audio and character scenes (video has the AI editor, src/editor.ts; stage the AI director,
-// src/director.ts). It sees the scene and the person's selection, knows every tool (src/knowledge.ts toolMap, chains,
+// The AI for character scenes (video, image and audio are timelines with the AI editor, src/editor.ts; stage has the AI
+// director, src/director.ts). It sees the scene and the person's selection, knows every tool (src/knowledge.ts toolMap, chains,
 // node settings) and the craft of the ones a request needs, and answers with the whole scene changed plus the jobs to run.
 // An element to make is marked `gen: n` (jobs[n] makes its file); a job's input "el:<id>" is that element's current file,
-// so "relight this layer" is the layer marked and a job on el:<its id>. Jobs are submitted here and the marked elements
+// so "a new portrait" is the picture marked and a job on el:<the front picture's id>. Jobs are submitted here and the marked elements
 // wait on them (`pending`, filled when they end: src/scenekinds.ts). Generation over `autoCredits` comes back as a
 // proposal for one tap (applyScene with confirm).
 
@@ -16,18 +16,6 @@ import { getTool } from './tools/index.ts';
 import { GenError } from './util.ts';
 
 const DOCS: Record<string, string> = {
-  image: `An image scene (JSON): {"title", "width", "height", "background": "#rrggbb" or null (transparent),
- "layers": [bottom first: {"id": keep it, "name", "type": "image" | "text" | "fill",
-   image layers: "asset": "a_..." | "scene": an image or stage scene's id (it shows that scene's render) | "gen": n (jobs[n] makes or remakes its picture),
-   "x", "y": the layer's center in pixels, "w": its width in pixels (the height follows the picture's shape; null: the file's own size), "rotation": degrees, "opacity": 0-1,
-   "blend": "normal" | "multiply" | "screen" | "overlay" | "lighten" | "darken" | "soft-light" | "difference", "hidden", "locked",
-   text layers: "text", "font", "size" (px), "weight" (100-900), "color", "align"; fill layers: "color" (covers the canvas)}]}
-To change a layer's picture with a tool (image.edit, image.repaint, image.relight, image.cutout, image.upscale, image.expand...): give that layer "gen": n and make jobs[n] take "el:<that layer's id>" as its image. To add a picture, add an image layer with "gen": n. Size new pictures to the canvas (width, height params) unless they're elements placed on it.`,
-  audio: `An audio scene (JSON): {"title", "bpm": null or a number,
- "tracks": [{"id": keep it, "name", "volume": 0-2 (1 as recorded), "pan": -1 (left) to 1 (right), "mute", "solo",
-   "clips": [{"id": keep it, "label", "asset": "a_..." | "scene": an audio scene's id (its mixdown) | "gen": n (jobs[n] makes it),
-     "start": seconds on the timeline, "in", "out": the part of the file that plays (seconds into it), "gain": 0-4, "fadeIn", "fadeOut": seconds}]}]}
-New sounds are clips with "gen": n: music (audio.music: prompt, seconds), a voice line (audio.voice: text, voice from the voices list, provider "elevenlabs"), a sound effect (audio.sfx: text, duration, provider "elevenlabs"). Set "out" to the length you ask for. Keep a track per role (music, voices, effects, ambience).`,
   character: `A character scene (JSON): {"title": their name, "description": how they look (face, build, hair, clothes, colors, era): every tool paints them from these words, "height": meters, "color": "#rrggbb" (their stand-in on a stage), "voice": a voice id from the voices list or null,
  "model": {"asset": "a_..." a GLB} | {"gen": n} | null,
  "pictures": [{"id": keep it, "role": "portrait" | "front" | "cutout" | "sheet" | "turnaround" | "reference", "asset": "a_..." | "gen": n}],

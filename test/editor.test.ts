@@ -15,9 +15,11 @@ const ed = await import('../src/editor.ts');
 const { orgOfProject, genAccountOrg } = await import('../src/orgsecrets.ts');
 
 const vid = (asset: string, len: number) => ({ op: 'add', track: 'V1', asset, out: len, duration: len });
+/** A video scene whose Video track is magnetic (a person turns that on; tracks are free by default). */
+const mag = () => { const d = ed.newDoc(); d.tracks.find((t) => t.id === 'V1')!.magnetic = true; return d; };
 
-test('V1 is magnetic: clips sit back to back in order, and add/move place by index or after a clip', () => {
-  let { doc } = ed.applyOps(ed.newDoc(), [vid('a_1', 4), vid('a_2', 2), vid('a_3', 3)]);
+test('a magnetic V1: clips sit back to back in order, and add/move place by index or after a clip', () => {
+  let { doc } = ed.applyOps(mag(), [vid('a_1', 4), vid('a_2', 2), vid('a_3', 3)]);
   assert.deepEqual(doc.clips.map((c) => [c.asset, c.start]), [['a_1', 0], ['a_2', 4], ['a_3', 6]]);
   const [c1, , c3] = doc.clips;
   ({ doc } = ed.applyOps(doc, [{ op: 'move', id: c3.id, index: 0 }]));
@@ -28,7 +30,7 @@ test('V1 is magnetic: clips sit back to back in order, and add/move place by ind
 });
 
 test('split cuts a clip in two at a timeline time; trim and speed change its length; a bad op reports and the rest still apply', () => {
-  let { doc } = ed.applyOps(ed.newDoc(), [vid('a_1', 6), vid('a_2', 2)]);
+  let { doc } = ed.applyOps(mag(), [vid('a_1', 6), vid('a_2', 2)]);
   const id = doc.clips[0].id;
   const r = ed.applyOps(doc, [{ op: 'split', id, at: 2.5 }, { op: 'split', id: 'c_nope', at: 1 }, { op: 'set', id, speed: 2 }]);
   doc = r.doc;
@@ -45,7 +47,7 @@ test('split cuts a clip in two at a timeline time; trim and speed change its len
 });
 
 test('deleteRange cuts a stretch out of every track: V1 closes up, audio and text slide back, clips across the edges are trimmed', () => {
-  let { doc } = ed.applyOps(ed.newDoc(), [vid('a_1', 4), vid('a_2', 4), { op: 'add', track: 'A1', asset: 'a_m', start: 0, out: 8, duration: 8 }, { op: 'text', text: 'late', start: 6, end: 7 }]);
+  let { doc } = ed.applyOps(mag(), [vid('a_1', 4), vid('a_2', 4), { op: 'add', track: 'A1', asset: 'a_m', start: 0, out: 8, duration: 8 }, { op: 'text', text: 'late', start: 6, end: 7 }]);
   ({ doc } = ed.applyOps(doc, [{ op: 'deleteRange', start: 3, end: 5 }]));
   const v = doc.clips.filter((c) => c.track === 'V1');
   assert.deepEqual(v.map((c) => [c.asset, c.start, c.in, c.out]), [['a_1', 0, 0, 3], ['a_2', 3, 1, 4]]);
@@ -56,7 +58,7 @@ test('deleteRange cuts a stretch out of every track: V1 closes up, audio and tex
 });
 
 test('generate submits the job with clip: inputs resolved, shows a waiting clip, and resolvePending fills it in (or says why it failed)', () => {
-  let { doc } = ed.applyOps(ed.newDoc(), [vid('a_1', 4)]);
+  let { doc } = ed.applyOps(mag(), [vid('a_1', 4)]);
   const first = doc.clips[0].id;
   const asked: any[] = [];
   const submit = (s: any) => { asked.push(s); return { id: `j_${asked.length}` }; };

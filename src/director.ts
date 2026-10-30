@@ -47,7 +47,11 @@ export type Beat = { to?: XY; seconds?: number; animation?: string; lookAt?: num
 export type Member = { id: string; character?: string | null; name: string; description: string; asset?: string | null; animation?: string | null; voice?: string | null; height: number; position: XY; facing: number; color: string; beats: Beat[] };
 /** A spoken line: who says it (a cast index), what, and when in the shot (seconds). */
 export type Line = { who: number; text: string; at: number };
-export type Prop = { id: string; name: string; description: string; asset?: string | null; shape: 'box' | 'cylinder' | 'sphere'; position: XY; facing: number; size: number; color: string };
+/**
+ * A thing on the set: a library 3D model (`asset`), a shape, or a `screen` (a standing picture or video: `media` is the
+ * file, `scene` the scene whose render it shows, kept up to date like a timeline clip's; `size` is its width).
+ */
+export type Prop = { id: string; name: string; description: string; asset?: string | null; shape: 'box' | 'cylinder' | 'sphere' | 'screen'; media?: string | null; scene?: string | null; sceneVersion?: number; position: XY; facing: number; size: number; color: string };
 export type CameraKey = { t: number; angle: number; distance: number; height: number; lens: number; aimHeight?: number };
 export type Camera = { move: typeof MOVES[number]; target: number | [number, number, number]; angle: number; distance: number; height: number; lens: number; amount?: number; aimHeight: number; handheld: number; keys?: CameraKey[] };
 /** How the shot is filmed (the Shot tab's Filming section; the AI sets it too). nodes: the video workflow's node settings. */
@@ -121,7 +125,9 @@ export function normalizeShot(input: any): ShotDoc {
     name: str(p?.name, 60, `Prop ${i + 1}`) || `Prop ${i + 1}`,
     description: str(p?.description, 400),
     asset: assetId(p?.asset),
-    shape: ['box', 'cylinder', 'sphere'].includes(p?.shape) ? p.shape : 'box',
+    shape: ['box', 'cylinder', 'sphere', 'screen'].includes(p?.shape) ? p.shape : 'box',
+    ...(p?.shape === 'screen' && assetId(p?.media) ? { media: assetId(p.media) } : {}),
+    ...(sceneRef(p?.scene) ? { scene: sceneRef(p.scene), ...(Number.isFinite(Number(p?.sceneVersion)) ? { sceneVersion: Number(p.sceneVersion) } : {}) } : {}),
     position: xy(p?.position, [i, 2]),
     facing: r2(num(p?.facing, 0) % 360),
     size: r2(clamp(num(p?.size, 1), 0.05, 30)),
@@ -195,7 +201,7 @@ export function castFromCharacters(doc: ShotDoc, project: string): boolean {
 registerKind('stage', {
   normalize: normalizeShot,
   blank: (title) => newShot(title),
-  uses: (doc: ShotDoc) => [...doc.cast.map((c) => c.character).filter(Boolean) as string[]],
+  uses: (doc: ShotDoc) => [...doc.cast.map((c) => c.character).filter(Boolean) as string[], ...doc.props.map((p) => p.scene).filter(Boolean) as string[]],
 });
 
 export const listShots = (project: string, limit = 60) => listScenes(project, 'stage', limit);
@@ -308,7 +314,7 @@ const SHOT_DOC = `The shot (JSON). Coordinates in meters on the ground: x to the
  "look": "what the finished frame looks like: the place, the era, the style (live-action film still, anime, claymation...), the light and weather, and every character's appearance. This paints the first frame.",
  "action": "what happens over the shot, in order, and what it sounds like (dialogue in quotes). This drives the video.",
  "cast": [{"id": keep it, "character": "a character scene's id, or null" (when set, name, look, voice, height and model come from it: keep them as they are), "name": "...", "description": "how they look", "voice": "a voice id from the voices list, or null", "asset": "a_... a 3D model (kind mesh) from the library, or null for a stand-in", "animation": "a clip name in the model, or null", "height": meters, "position": [x, y], "facing": degrees, "beats": [{"to": [x, y], "seconds": s} | {"lookAt": cast index, "seconds": s} | {"facing": degrees, "seconds": s}]}],
- "props": [{"id": keep it, "name": "...", "description": "...", "asset": "a_... or null", "shape": "box"|"cylinder"|"sphere", "position": [x, y], "facing": degrees, "size": meters (its largest side), "color": "#rrggbb"}],
+ "props": [{"id": keep it, "name": "...", "description": "...", "asset": "a_... or null", "shape": "box"|"cylinder"|"sphere"|"screen" (a standing picture or video: "media" the file, "scene" the scene it shows; keep both), "position": [x, y], "facing": degrees, "size": meters (its largest side; a screen's width), "color": "#rrggbb"}],
  "set": {"ground": "#rrggbb", "sky": "a_... a 360° panorama image from the library, or null", "skyColor": "#rrggbb", "lights": "studio"|"sun"|"night"},
  "film": {"engine": "ltx" (LTX-2.3 video.control: 24 fps, sound) | "wan" (video.control-wan: 16 fps, no sound, steadier faces), "keyframe": "image.control" (paints the stage frame, keeps the layout) | "image.edit" (Qwen edit: closer to references), "strength": 0-1 how strictly the video follows the stage (lower for life, 1 for exact camera moves), "imageStrength": 0-1 how strictly frame 1 matches the keyframe, "nodes": {"<node>.<input>": value} the video workflow's node settings, "keyframeNodes": the same for the keyframe tool},
  "camera": {"keys": [{"t": seconds, "angle", "distance", "height", "lens", "aimHeight"?}] optional: the camera at those times, eased between them (when there are keys they replace the move; target, follow and handheld still apply), "${MOVES.join('"|"')}", "target": cast index or [x, y, z], "angle": degrees around the target (0 in front of it, 90 from its right side), "distance": meters, "height": meters (camera height above the ground), "lens": mm (18 wide, 35 normal, 85 close), "amount": how far the move goes (a share of the distance for push/pull, degrees for orbit, meters for pan/truck/crane), "aimHeight": share of the target's height to aim at (0.55), "handheld": 0-2}

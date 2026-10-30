@@ -34,11 +34,56 @@ export function initDirector() {
     action: { label: 'Film it', icon: 'film', run: () => openFilm() },
     save: () => flushSave(),
     rename(title) { if (!D.shot) return; remember(); D.shot.doc.title = title; changed({ panel: true }); },
-    accepts: (it) => it.kind === 'character',
-    drop: (it) => addCharacter(it.scene),
+    timeline: LANES,
+    panelFirst: true,
+    // Plug and play (J, 2026-10-30: "Scenes should be able to be put in 3D too"): a character joins the cast, a 3D model
+    // becomes a prop, a picture or a video (or a scene's render: an image, a video, another stage's film) a screen.
+    accepts: (it) => (it.asset ? ['mesh', 'image', 'video'].includes(it.assetKind) : ['character', 'image', 'video', 'stage'].includes(it.kind)),
+    drop: (it, e) => dropOnStage(it, e),
     uses: (sc) => [{ label: 'Film it into a new video', run: () => openScene(sc.id) }],
   });
 }
+
+/**
+ * The stage's lanes on the timeline (timeline.js): each person's moves in order (stretch one to make it slower), the
+ * camera keys (drag one to another moment) and the lines (drag a line to when it's said). The playhead is the stage's.
+ */
+const words = (t) => String(t ?? '').split(/\s+/).filter(Boolean).length;
+const LANES = {
+  length: () => D.shot?.doc.seconds ?? 5,
+  playhead: () => D.t,
+  playing: () => D.playing,
+  range: () => (D.range ? { start: D.range[0], end: D.range[1] } : null),
+  seek(t) { D.playing = false; D.t = Math.max(0, Math.min(D.shot?.doc.seconds ?? 0, t)); drawPlay(); },
+  empty: 'Add people and moves, camera keys or lines in the Shot tab: they are timed here.',
+  lanes() {
+    const s = D.shot?.doc;
+    if (!s) return [];
+    const out = s.cast.map((c, i) => {
+      let at = 0;
+      const items = (c.beats ?? []).map((b, j) => {
+        const dur = b.seconds ?? (b.to ? 2 : 1);
+        const it = { id: `b${j}`, start: at, end: at + dur, label: b.to ? 'Walk' : b.lookAt != null ? 'Look' : b.facing != null ? 'Turn' : 'Wait', kind: 'beat' };
+        at += dur;
+        return it;
+      });
+      return { id: `cast${i}`, name: c.name, icon: 'person', color: c.color, items };
+    });
+    out.push({ id: 'camera', name: 'Camera', icon: 'film', color: '#8b7bff', items: (s.camera.keys ?? []).map((k, j) => ({ id: `k${j}`, start: k.t, label: `Camera key at ${k.t} s`, kind: 'key' })) });
+    out.push({ id: 'lines', name: 'Lines', icon: 'mic', color: '#e0a83a', items: s.lines.map((l, j) => ({ id: `l${j}`, start: l.at, end: Math.min(s.seconds, l.at + Math.max(1, words(l.text) / 2.6)), label: `${s.cast[l.who]?.name ?? '?'}: ${l.text || '(no words yet)'}`, kind: 'line' })) });
+    return out;
+  },
+  move(lane, item, { start, end }) {
+    if (!D.shot) return;
+    remember();
+    const s = D.shot.doc;
+    const j = Number(item.slice(1));
+    if (lane === 'camera') { s.camera.keys[j].t = start; s.camera.keys.sort((a, b) => a.t - b.t); }
+    else if (lane === 'lines') s.lines[j].at = start;
+    else if (lane.startsWith('cast') && end != null) { const b = s.cast[Number(lane.slice(4))].beats[j]; b.seconds = Math.max(0.2, Math.round((end - start) * 10) / 10); }
+    changed({ panel: true });
+  },
+};
 
 /** A new stage (Create's "Direct a shot or a scene"), open in a tab. */
 export const openDirector = () => newScene('stage', { title: 'Untitled shot' });
@@ -98,6 +143,8 @@ let saveTimer = 0;
 function changed({ panel = false, history = true } = {}) {
   if (panel) drawPanel();
   if (D.shot) bus.emit('sceneTitle', { id: D.shot.id, title: D.shot.doc.title });
+  bus.emit('lanes');
+  bus.emit('save', 'dirty');
   D.three?.rebuild();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flushSave, 700);
@@ -115,9 +162,11 @@ async function flushSave() {
     // People and props added here get their ids from Gen: keep them, so the next save doesn't make new ones.
     for (const k of ['cast', 'props']) D.shot.doc[k].forEach((x, i) => { if (!x.id && s.doc[k][i]) x.id = s.doc[k][i].id; });
     if ($('#dirSave')) $('#dirSave').textContent = 'Saved';
+    bus.emit('save', 'saved');
   } catch (err) {
     if (err.status === 409 && err.data?.shot) { take(err.data.shot); toast('This shot changed somewhere else: here is the newest.'); return; }
     if ($('#dirSave')) $('#dirSave').textContent = 'Couldn\'t save';
+    bus.emit('save', 'error');
   }
 }
 
@@ -310,19 +359,45 @@ function keysBox(s) {
 }
 
 /** Casts a character scene: they join the shot where there's room, playing that character. */
-function addCharacter(id) {
+function addCharacter(id, at = null) {
   const ch = sceneList().find((x) => x.id === id);
   if (!D.shot) return;
   const s = D.shot.doc;
   if (s.cast.some((c) => c.character === id)) { toast(`${ch?.title ?? 'They'} are already in this shot.`); return; }
   remember();
   const n = s.cast.length;
-  s.cast.push({ character: id, name: ch?.title ?? 'Character', description: '', asset: null, animation: null, height: 1.75, position: [n % 2 ? 1.2 : -1.2, Math.floor(n / 2) * 1.5], facing: n % 2 ? -60 : 60, color: '#c8a27a', beats: [] });
+  s.cast.push({ character: id, name: ch?.title ?? 'Character', description: '', asset: null, animation: null, height: 1.75, position: at ?? [n % 2 ? 1.2 : -1.2, Math.floor(n / 2) * 1.5], facing: n % 2 ? -60 : 60, color: '#c8a27a', beats: [] });
   if (typeof s.camera.target !== 'number') s.camera.target = 0;
   D.sel = { type: 'cast', i: n };
   changed({ panel: true });
   flushSave().then(() => api(`/v1/director/shots/${D.shot.id}`)).then((x) => take(x)).catch(() => {});
 }
+/** Something dropped on the stage, where it was dropped (on the ground under the pointer). */
+async function dropOnStage(it, e) {
+  if (!D.shot) return;
+  const at = e?.clientX != null ? D.three?.groundAt(e.clientX, e.clientY) ?? null : null;
+  if (it.scene && it.kind === 'character') return addCharacter(it.scene, at);
+  if (it.asset && it.assetKind === 'mesh') return addThing({ name: it.title || '3D model', asset: it.asset, size: 1 }, at);
+  let media = it.asset, scene = null, version = null;
+  if (!media) {
+    const r = it.render ?? (await api(`/v1/scenes/${it.scene}`)).doc.render;
+    if (!r?.asset) { toast(`"${it.title}" has no render yet: render it, then add it.`, { action: 'Open it', onAction: () => openScene(it.scene) }); return; }
+    if (!['image', 'video'].includes(r.kind)) { toast(`A ${r.kind} can't stand on a stage.`); return; }
+    media = r.asset; scene = it.scene; version = r.version;
+  }
+  addThing({ name: it.title || 'Screen', shape: 'screen', media, ...(scene ? { scene, sceneVersion: version } : {}), size: 2 }, at);
+}
+/** A prop (a model, a shape or a screen) at a spot on the ground, selected. */
+function addThing(p, at) {
+  const s = D.shot.doc;
+  if (s.props.length >= 16) return toast('A shot holds 16 props at most.');
+  remember();
+  s.props.push({ description: '', asset: null, shape: 'box', facing: 0, color: '#8a8f99', size: 1, ...p, position: at ?? [0, 2 + s.props.length * 0.5] });
+  D.sel = { type: 'prop', i: s.props.length - 1 };
+  changed({ panel: true });
+  D.three?.select();
+}
+
 function characterMenu(btn) {
   const r = btn.getBoundingClientRect();
   const list = sceneList().filter((x) => x.kind === 'character');
@@ -367,16 +442,20 @@ function propCard(p, i) {
   const open = D.sel?.type === 'prop' && D.sel.i === i;
   return h('div', { class: `dir-card${open ? ' on' : ''}` },
     h('button', { type: 'button', class: 'dir-card-head', onclick: () => { D.sel = open ? null : { type: 'prop', i }; drawPanel(); D.three?.select(); } },
-      h('span', { class: 'dir-dot sq', style: { background: p.color } }), h('b', {}, p.name), h('span', { class: 'muted small' }, p.asset ? '3D model' : p.shape)),
+      h('span', { class: 'dir-dot sq', style: { background: p.color } }), h('b', {}, p.name), h('span', { class: 'muted small' }, p.asset ? '3D model' : p.shape === 'screen' ? (p.scene ? 'Screen · a scene' : 'Screen') : p.shape)),
     open ? h('div', { class: 'dir-card-body' },
       textField('Name', p.name, (v) => set((m) => { m.name = v; })),
       textField('What it is', p.description, (v) => set((m) => { m.description = v; }), { rows: 2 }),
+      p.shape === 'screen' ? h('div', { class: 'field' }, 'Shows', h('div', { class: 'row' },
+        h('span', { class: 'muted small' }, p.scene ? 'A scene\'s render' : 'A picture or video'),
+        h('button', { type: 'button', class: 'ghost small', onclick: () => libraryPicker(null, (a) => set((m) => { m.media = a.id; delete m.scene; delete m.sceneVersion; }, { panel: true })) }, 'Change'),
+        p.scene ? h('button', { type: 'button', class: 'link small', onclick: () => openScene(p.scene) }, 'Open the scene') : '')) :
       h('div', { class: 'field' }, '3D model', h('div', { class: 'row' },
         h('button', { type: 'button', class: 'ghost small', onclick: () => libraryPicker('mesh', (a) => set((m) => { m.asset = a.id; }, { panel: true })) }, p.asset ? 'Change' : 'Pick a model'),
         p.asset ? h('button', { type: 'button', class: 'link small', onclick: () => set((m) => { m.asset = null; }, { panel: true }) }, 'Use a shape') : '')),
-      p.asset ? '' : select('Shape', p.shape, [['box', 'Box'], ['cylinder', 'Cylinder'], ['sphere', 'Sphere']], (v) => set((m) => { m.shape = v; })),
-      p.asset ? '' : colorField('Color', p.color, (v) => set((m) => { m.color = v; })),
-      sliderRow('Size', p.size, { min: 0.1, max: 20, step: 0.05, unit: ' m' }, (v) => set((m) => { m.size = v; })),
+      p.asset || p.shape === 'screen' ? '' : select('Shape', p.shape, [['box', 'Box'], ['cylinder', 'Cylinder'], ['sphere', 'Sphere']], (v) => set((m) => { m.shape = v; })),
+      p.asset || p.shape === 'screen' ? '' : colorField('Color', p.color, (v) => set((m) => { m.color = v; })),
+      sliderRow(p.shape === 'screen' ? 'Width' : 'Size', p.size, { min: 0.1, max: 20, step: 0.05, unit: ' m' }, (v) => set((m) => { m.size = v; })),
       sliderRow('Facing', p.facing, { min: -180, max: 180, step: 1, unit: '°' }, (v) => set((m) => { m.facing = v; })),
       numPair('Stands at', p.position, (v) => set((m) => { m.position = v; })),
       h('button', { type: 'button', class: 'link small danger', onclick: () => { s.props.splice(i, 1); D.sel = null; changed({ panel: true }); } }, 'Remove')) : '');
@@ -410,7 +489,7 @@ async function stage() {
     h('div', { class: 'seg dir-view dir-pass', title: 'What the video model is given' }, h('button', { 'data-p': 'look', class: 'on' }, 'Look'), h('button', { 'data-p': 'depth' }, 'Depth')),
     h('span', { class: 'muted small', id: 'dirSave' }, ''),
     h('span', { class: 'tl-spacer' }),
-    h('button', { class: 'ghost small', id: 'dirBlender', title: 'Film it with Gen\'s Blender pipeline (every character needs a 3D model)' }, icon('layers'), 'Blender'),
+    h('button', { class: 'ghost small', id: 'dirBlender', title: 'Film it with Gen\'s full 3D pipeline (every character needs a 3D model)' }, icon('layers'), '3D render'),
 
     h('button', { class: 'ghost small', id: 'dirPhoto', title: 'A still of the stage at the playhead, in the look' }, icon('image'), 'Photo'));
   $('#viewerWrap').insertBefore(bar, $('#toolbar'));
@@ -471,7 +550,66 @@ function drawPlay() {
 addEventListener('keydown', (e) => {
   if (!D.open || e.target.closest?.('input, textarea, select, [contenteditable]')) return;
   if (e.key === ' ') { e.preventDefault(); e.stopImmediatePropagation(); $('#dirPlay')?.click(); }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  // The gizmo, like a 3D editor's: W move, E turn, R size.
+  const mode = { w: 'translate', e: 'rotate', r: 'scale' }[e.key.toLowerCase()];
+  if (mode) { e.preventDefault(); e.stopImmediatePropagation(); D.three?.setMode(mode); }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && D.sel) { e.preventDefault(); e.stopImmediatePropagation(); removeSelected(); }
+  if (e.key === 'Escape' && D.sel) { D.sel = null; drawPanel(); D.three?.select(); }
 }, true);
+/** Takes the selected person or prop out of the shot. */
+function removeSelected() {
+  if (!D.sel || !D.shot) return;
+  remember();
+  const s = D.shot.doc;
+  if (D.sel.type === 'cast') s.cast.splice(D.sel.i, 1); else s.props.splice(D.sel.i, 1);
+  D.sel = null;
+  changed({ panel: true });
+}
+function duplicateSelected() {
+  if (!D.sel || !D.shot) return;
+  const s = D.shot.doc;
+  const list = D.sel.type === 'cast' ? s.cast : s.props;
+  const o = list[D.sel.i];
+  if (!o) return;
+  if (D.sel.type === 'cast' && o.character) return toast('A character is in a shot once: add a stand-in instead.');
+  remember();
+  const copy = { ...JSON.parse(JSON.stringify(o)), id: undefined, name: `${o.name} copy`, position: [Math.round((o.position[0] + 1) * 10) / 10, o.position[1]] };
+  if (D.sel.type === 'cast') copy.beats = [];
+  list.push(copy);
+  D.sel = { type: D.sel.type, i: list.length - 1 };
+  changed({ panel: true });
+}
+/** The right-click menu on the stage: for a person or prop, or for the ground (add things there). */
+function stageMenu(x, y, hit, at) {
+  const s = D.shot.doc;
+  const mode = (m, label, key) => h('button', { class: `menu-item${D.gizmo === m ? ' on' : ''}`, onclick: () => { closeMenus(); D.three?.setMode(m); } }, h('span', {}, label), h('span', { class: 'muted small' }, key));
+  if (!hit) {
+    return popMenu(x, y, [h('div', { class: 'menu-title' }, 'Here'),
+      h('button', { class: 'menu-item', onclick: () => { closeMenus(); remember(); addMember(); const c = s.cast[s.cast.length - 1]; if (at) c.position = at; changed({ panel: true }); } }, 'Add a person'),
+      h('button', { class: 'menu-item', onclick: () => { closeMenus(); addThing({ name: `Prop ${s.props.length + 1}` }, at); } }, 'Add a box'),
+      h('button', { class: 'menu-item', onclick: () => { closeMenus(); libraryPicker('mesh', (a) => addThing({ name: a.title || '3D model', asset: a.id }, at)); } }, 'Add a 3D model…'),
+      h('button', { class: 'menu-item', onclick: () => { closeMenus(); libraryPicker(null, (a) => addThing({ name: a.title || 'Screen', shape: 'screen', media: a.id, size: 2 }, at)); } }, 'Add a picture or video…'),
+      h('button', { class: 'menu-item', onclick: () => { closeMenus(); characterMenu({ getBoundingClientRect: () => ({ left: x, bottom: y }) }); } }, 'Add a character…')]);
+  }
+  const cast = hit.type === 'cast';
+  const o = cast ? s.cast[hit.i] : s.props[hit.i];
+  const camPos = D.three?.cameraGround();
+  return popMenu(x, y, [h('div', { class: 'menu-title' }, o.name),
+    mode('translate', 'Move', 'W'), mode('rotate', 'Turn', 'E'), mode('scale', cast ? 'Height' : 'Size', 'R'),
+    h('div', { class: 'menu-sep' }),
+    camPos ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); remember(); o.facing = Math.round(Math.atan2(camPos[0] - o.position[0], camPos[1] - o.position[1]) * 180 / Math.PI); changed({ panel: true }); } }, 'Face the camera') : '',
+    cast ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); remember(); s.camera.target = hit.i; changed({ panel: true }); } }, s.camera.target === hit.i ? 'The camera is on them' : 'Point the camera at them') : '',
+    cast ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); remember(); const from = o.beats.filter((b) => b.to).pop()?.to ?? o.position; o.beats.push({ to: [Math.round((from[0] + 2) * 10) / 10, from[1]], seconds: 2 }); changed({ panel: true }); } }, 'Add a walk (drag its marker)') : '',
+    !cast && o.asset ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); remember(); s.props.splice(hit.i, 1); s.cast.push({ name: o.name, description: o.description, asset: o.asset, animation: null, height: 1.75, position: o.position, facing: o.facing, color: '#c8a27a', beats: [] }); D.sel = { type: 'cast', i: s.cast.length - 1 }; changed({ panel: true }); } }, 'Make it a person (it can walk and talk)') : '',
+    !cast && o.shape === 'screen' ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); libraryPicker(null, (a) => { remember(); o.media = a.id; delete o.scene; delete o.sceneVersion; changed({ panel: true }); }); } }, 'Show something else…') : '',
+    (cast && !o.character) || (!cast && o.shape !== 'screen') ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); libraryPicker('mesh', (a) => { remember(); o.asset = a.id; changed({ panel: true }); }); } }, o.asset ? 'Change the 3D model…' : 'Give it a 3D model…') : '',
+    cast && o.character ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); openScene(o.character); } }, 'Open the character') : '',
+    !cast && o.scene ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); openScene(o.scene); } }, 'Open the scene it shows') : '',
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); duplicateSelected(); } }, 'Duplicate'),
+    h('div', { class: 'menu-sep' }),
+    h('button', { class: 'menu-item danger', onclick: () => { closeMenus(); removeSelected(); } }, h('span', {}, cast ? 'Remove from the shot' : 'Remove'), h('span', { class: 'muted small' }, 'Del'))]);
+}
 
 // Blender's coordinates (x right, y away, z up) to three.js's (x right, y up, z toward the camera).
 const V = (THREE, x, y, z = 0) => new THREE.Vector3(x, z, -y);
@@ -481,11 +619,16 @@ async function makeStage(wrap) {
   const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
   const { OrbitControls } = await import('three/addons/controls/OrbitControls.js');
   const SkeletonUtils = await import('three/addons/utils/SkeletonUtils.js');
+  const { TransformControls } = await import('three/addons/controls/TransformControls.js');
   wrap.replaceChildren();
   const canvas = h('canvas', { class: 'dir-canvas' });
   const frame = h('div', { class: 'dir-frame' }, canvas);
-  const hint = h('div', { class: 'dir-hint muted small' }, 'Drag people and props to place them.');
-  wrap.append(frame, hint);
+  const hint = h('div', { class: 'dir-hint muted small' }, 'Click a person or a prop, then drag its handles. W move · E turn · R size · right-click for more.');
+  // The gizmo's mode, switched here or with W, E, R.
+  D.gizmo ??= 'translate';
+  const modeBar = h('div', { class: 'seg dir-gizmo', role: 'toolbar', 'aria-label': 'Gizmo' },
+    ...[['translate', 'move', 'Move (W)'], ['rotate', 'turn', 'Turn (E)'], ['scale', 'size', 'Size (R)']].map(([m, ic, t]) => h('button', { 'data-mode': m, title: t, class: D.gizmo === m ? 'on' : '' }, icon(ic), h('span', {}, t.split(' ')[0]))));
+  wrap.append(frame, hint, modeBar);
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(2, devicePixelRatio));
   renderer.shadowMap.enabled = true;
@@ -505,12 +648,83 @@ async function makeStage(wrap) {
   scene.add(helpers);
   const world = new THREE.Group();
   scene.add(world);
+  // The gizmo: arrows to move on the ground, a ring to turn, handles to size (people: their height).
+  const gizmo = new TransformControls(freeCam, canvas);
+  const gizmoHelper = gizmo.getHelper ? gizmo.getHelper() : gizmo;
+  scene.add(gizmoHelper);
+  gizmo.setSpace('world');
+  let gStart = null;
+  function setMode(m) {
+    D.gizmo = m;
+    gizmo.setMode(m);
+    gizmo.showX = m !== 'rotate';
+    gizmo.showZ = m !== 'rotate';
+    gizmo.showY = m !== 'translate';
+    modeBar.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+  }
+  modeBar.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+  setMode(D.gizmo);
+  gizmo.addEventListener('dragging-changed', (e) => {
+    orbit.enabled = !e.value && D.view === 'free';
+    const o = gizmo.object;
+    if (!o || !D.shot) return;
+    const u = o.userData;
+    const item = u.type === 'cast' ? D.shot.doc.cast[u.i] : D.shot.doc.props[u.i];
+    if (e.value) {
+      remember();
+      D.playing = false;
+      if (u.type === 'cast') { D.t = 0; drawPlay(); }
+      gStart = { sx: o.scale.x, sy: o.scale.y, sz: o.scale.z, height: item?.height, size: item?.size };
+    } else { gStart = null; live = null; changed({ panel: true }); }
+  });
+  gizmo.addEventListener('objectChange', () => {
+    const o = gizmo.object;
+    if (!o || !D.shot || !gStart) return;
+    const u = o.userData;
+    const s = D.shot.doc;
+    const item = u.type === 'cast' ? s.cast[u.i] : s.props[u.i];
+    if (!item) return;
+    if (D.gizmo === 'translate') {
+      // Near the horizon a small move is a huge distance: keep things on the set (25 m around its middle).
+      const d = Math.hypot(o.position.x, o.position.z);
+      if (d > 25) { o.position.x *= 25 / d; o.position.z *= 25 / d; }
+      o.position.y = u.type === 'cast' ? o.position.y : 0;
+      item.position = [Math.round(o.position.x * 20) / 20, Math.round(-o.position.z * 20) / 20];
+    } else if (D.gizmo === 'rotate') {
+      item.facing = Math.round(((o.rotation.y * 180) / Math.PI + 540) % 360 - 180);
+    } else {
+      // One size, whichever handle is pulled.
+      const k = Math.max(0.05, (o.scale.x / gStart.sx + o.scale.y / gStart.sy + o.scale.z / gStart.sz) / 3);
+      o.scale.set(gStart.sx * k, gStart.sy * k, gStart.sz * k);
+      if (u.type === 'cast') item.height = Math.round(Math.min(6, Math.max(0.3, gStart.height * k)) * 100) / 100;
+      else item.size = Math.round(Math.min(30, Math.max(0.05, gStart.size * k)) * 100) / 100;
+    }
+  });
   const loader = new GLTFLoader();
   const gltfCache = new Map();
   const loadGltf = (id) => { if (!gltfCache.has(id)) gltfCache.set(id, new Promise((ok) => loader.load(fileUrl(id), ok, undefined, () => ok(null)))); return gltfCache.get(id); };
   const clipsKnown = new Map();
   const texCache = new Map();
   let actors = [], propsObj = [], markers = [], build = 0;
+  /** A picture's or a video's texture (videos play muted, looping), and its shape. */
+  const screens = new Map();
+  function screenTexture(id) {
+    if (!screens.has(id)) screens.set(id, (async () => {
+      let kind = 'image';
+      try { kind = (await api(`/v1/assets/${id}`)).kind; } catch { /* */ }
+      if (kind === 'video') {
+        const v = h('video', { src: fileUrl(id), muted: true, loop: true, playsinline: true, crossorigin: 'use-credentials' });
+        v.muted = true;
+        await new Promise((ok) => { v.addEventListener('loadeddata', ok, { once: true }); v.addEventListener('error', ok, { once: true }); setTimeout(ok, 8000); });
+        v.play().catch(() => {});
+        const tex = new THREE.VideoTexture(v);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        return { tex, aspect: (v.videoWidth || 16) / (v.videoHeight || 9) };
+      }
+      return new Promise((ok) => new THREE.TextureLoader().load(fileUrl(id), (t) => { t.colorSpace = THREE.SRGBColorSpace; ok({ tex: t, aspect: t.image.width / t.image.height }); }, undefined, () => ok(null)));
+    })());
+    return screens.get(id);
+  }
 
   function mannequin(c) {
     const g = new THREE.Group();
@@ -587,6 +801,15 @@ async function makeStage(wrap) {
     for (const [i, p] of s.props.entries()) {
       let obj = null;
       if (p.asset) { const m = await modelOf(p.asset, 1); if (m) { obj = m.group; const b = new THREE.Box3().setFromObject(obj).getSize(new THREE.Vector3()); obj.scale.setScalar(p.size / Math.max(0.01, b.x, b.y, b.z)); } }
+      if (!obj && p.shape === 'screen') {
+        // A standing picture or video, `size` wide, its foot on the ground.
+        const tex = p.media ? await screenTexture(p.media) : null;
+        const w = p.size, hh = w / (tex?.aspect || 16 / 9);
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, hh), new THREE.MeshBasicMaterial({ map: tex?.tex ?? null, color: tex ? 0xffffff : 0x3a3f4c, side: THREE.DoubleSide, toneMapped: false }));
+        mesh.position.y = hh / 2;
+        mesh.castShadow = true;
+        obj = new THREE.Group(); obj.add(mesh);
+      }
       if (!obj) {
         const mat = new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.7 });
         const geo = p.shape === 'sphere' ? new THREE.SphereGeometry(p.size / 2, 24, 18) : p.shape === 'cylinder' ? new THREE.CylinderGeometry(p.size / 3, p.size / 3, p.size, 24) : new THREE.BoxGeometry(p.size, p.size, p.size);
@@ -672,20 +895,56 @@ async function makeStage(wrap) {
   let drag = null;
   const ndc = (e) => { const r = canvas.getBoundingClientRect(); return new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1); };
   const viewCam = () => (D.view === 'camera' ? shotCam : freeCam);
-  canvas.addEventListener('pointerdown', (e) => {
+  /** What's under a point on the canvas: a walk marker, a person or a prop (its userData), or null. */
+  function pick(e) {
     ray.setFromCamera(ndc(e), viewCam());
     const hit = ray.intersectObjects([...markers, ...actors.map((a) => a.group), ...propsObj], true)[0];
-    if (!hit) return;
-    let o = hit.object;
+    let o = hit?.object;
     while (o && !o.userData?.type) o = o.parent;
-    if (!o) return;
-    drag = o.userData;
-    remember();
-    orbit.enabled = false;
-    canvas.setPointerCapture(e.pointerId);
-    if (drag.type !== 'beat') { D.sel = { type: drag.type, i: drag.i }; drawPanel(); }
-    D.playing = false;
+    return o?.userData ?? null;
+  }
+  /** Where a point on the screen meets the ground, in the shot's meters, or null. */
+  function groundAt(x, y) {
+    const r = canvas.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+    ray.setFromCamera(new THREE.Vector2(((x - r.left) / r.width) * 2 - 1, -((y - r.top) / r.height) * 2 + 1), viewCam());
+    const p = new THREE.Vector3();
+    if (!ray.ray.intersectPlane(floor, p) || Math.hypot(p.x, p.z) > 25) return null;
+    return [Math.round(p.x * 20) / 20, Math.round(-p.z * 20) / 20];
+  }
+  let down = null;
+  canvas.addEventListener('pointerdown', (e) => {
+    if (gizmo.dragging || gizmo.axis) return; // the gizmo's own handles
+    down = { x: e.clientX, y: e.clientY };
+    if (e.button !== 0) return;
+    const u = pick(e);
+    if (!u) return;
+    if (u.type === 'beat') {
+      // Walk markers drag on the ground.
+      drag = u;
+      remember();
+      orbit.enabled = false;
+      canvas.setPointerCapture(e.pointerId);
+      D.playing = false;
+      e.preventDefault();
+      return;
+    }
+    D.sel = { type: u.type, i: u.i };
+    drawPanel();
+    select();
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    // A click on nothing lets go of the selection.
+    if (down && !drag && e.button === 0 && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4 && !gizmo.dragging && !gizmo.axis && !pick(e) && D.sel) { D.sel = null; drawPanel(); select(); }
+    down = null;
+  });
+  canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
+    if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return; // a right-drag turned the view
+    const u = pick(e);
+    const hit = u && u.type !== 'beat' ? u : null;
+    if (hit) { D.sel = { type: hit.type, i: hit.i }; drawPanel(); select(); }
+    stageMenu(e.clientX, e.clientY, hit, groundAt(e.clientX, e.clientY));
   });
   canvas.addEventListener('pointermove', (e) => {
     if (!drag) return;
@@ -696,12 +955,8 @@ async function makeStage(wrap) {
     if (Math.hypot(p.x, p.z) > 25) return;
     const xy = [Math.round(p.x * 20) / 20, Math.round(-p.z * 20) / 20];
     const s = D.shot.doc;
-    if (drag.type === 'cast') s.cast[drag.i].position = xy;
-    else if (drag.type === 'prop') s.props[drag.i].position = xy;
-    else s.cast[drag.i].beats[drag.j].to = xy;
-    D.t = drag.type === 'beat' ? D.t : 0;
-    if (drag.type === 'beat') markers.find((m) => m.userData.i === drag.i && m.userData.j === drag.j)?.position.copy(V(THREE, xy[0], xy[1], 0.01));
-    else if (drag.type === 'prop') propsObj[drag.i]?.position.copy(V(THREE, xy[0], xy[1]));
+    s.cast[drag.i].beats[drag.j].to = xy;
+    markers.find((m) => m.userData.i === drag.i && m.userData.j === drag.j)?.position.copy(V(THREE, xy[0], xy[1], 0.01));
   });
   canvas.addEventListener('pointerup', () => { if (!drag) return; drag = null; live = null; orbit.enabled = D.view === 'free'; changed({ panel: true }); });
 
@@ -709,7 +964,7 @@ async function makeStage(wrap) {
   function select() {
     if (selBox) { scene.remove(selBox); selBox = null; }
     const o = D.sel?.type === 'cast' ? actors[D.sel.i]?.group : D.sel?.type === 'prop' ? propsObj[D.sel.i] : null;
-    if (o) { selBox = new THREE.BoxHelper(o, 0x8b7bff); scene.add(selBox); }
+    if (o) { selBox = new THREE.BoxHelper(o, 0x8b7bff); scene.add(selBox); gizmo.attach(o); } else gizmo.detach();
   }
 
   /** Depth as the video model gets it: white near, black far, between near and far meters from the camera. */
@@ -773,11 +1028,13 @@ async function makeStage(wrap) {
     placeCamera(shotCam, D.t, shotAspect());
     camHelper.update();
     selBox?.update();
+    if (gizmo.camera !== viewCam()) gizmo.camera = viewCam();
     orbit.update();
     if (D.pass === 'depth') {
       const bg = scene.background;
       helpers.visible = false;
       if (selBox) selBox.visible = false;
+      gizmoHelper.visible = false;
       scene.overrideMaterial = liveDepth();
       scene.background = new THREE.Color(0x000000);
       pose(D.t);
@@ -786,6 +1043,7 @@ async function makeStage(wrap) {
       scene.background = bg;
       helpers.visible = D.view === 'free';
       if (selBox) selBox.visible = true;
+      gizmoHelper.visible = true;
       return;
     }
     renderer.render(scene, D.view === 'camera' ? shotCam : freeCam);
@@ -806,6 +1064,7 @@ async function makeStage(wrap) {
     const cam = new THREE.PerspectiveCamera(40, w / hh, 0.05, 400);
     helpers.visible = false;
     selBox && (selBox.visible = false);
+    gizmoHelper.visible = false;
     try {
       // The first frame, as it looks.
       pose(0);
@@ -845,6 +1104,7 @@ async function makeStage(wrap) {
       scene.overrideMaterial = null;
       helpers.visible = D.view === 'free';
       if (selBox) selBox.visible = true;
+      gizmoHelper.visible = true;
       r2.dispose();
     }
   }
@@ -852,7 +1112,9 @@ async function makeStage(wrap) {
   await rebuild();
   return {
     rebuild: () => rebuild().catch((err) => console.error('stage', err)),
-    select, layout, record,
+    select, layout, record, setMode, groundAt,
+    /** Where the shot camera stands now, on the ground (for "face the camera"). */
+    cameraGround() { placeCamera(shotCam, D.t, shotAspect()); return [shotCam.position.x, -shotCam.position.z]; },
     /** One frame of the stage at time t, through the shot camera, at the film's size: a PNG. */
     async still(t) {
       const [w, hh] = ASPECTS[D.shot.doc.aspect];
@@ -862,6 +1124,7 @@ async function makeStage(wrap) {
       const cam = new THREE.PerspectiveCamera(40, w / hh, 0.05, 400);
       helpers.visible = false;
       if (selBox) selBox.visible = false;
+      gizmoHelper.visible = false;
       try {
         pose(t); placeCamera(cam, t, w / hh);
         r2.render(scene, cam);
@@ -869,6 +1132,7 @@ async function makeStage(wrap) {
       } finally {
         helpers.visible = D.view === 'free';
         if (selBox) selBox.visible = true;
+        gizmoHelper.visible = true;
         r2.dispose();
       }
     },
@@ -1160,14 +1424,14 @@ async function openPhoto() {
 
 async function openBlender() {
   await flushSave();
-  if (!hasTool('blender.render')) return toast('This Gen has no Blender.');
+  if (!hasTool('blender.render')) return toast('This Gen has no 3D renderer.');
   let qd;
   try { qd = await api(`/v1/director/shots/${D.shot.id}/blender?quote=1`, { method: 'POST' }); } catch (err) { return toast(plainError(err.message)); }
   const status = h('div', { class: 'muted small dir-status' });
-  const go = h('button', { class: 'primary' }, icon('layers'), 'Film in Blender');
-  sheetIn('Film it in Blender', [
-    h('p', { class: 'muted small' }, 'The full pipeline: a director checks the staging first, Blender renders depth, pose and edges, the best of three keyframes is picked, then the shot is filmed and upscaled.'),
-    toolReady('blender.render') ? '' : h('p', { class: 'warn small' }, 'Gen\'s Blender servers are offline right now. It will wait in line until they\'re back. "Film it" works now.'),
+  const go = h('button', { class: 'primary' }, icon('layers'), 'Film in 3D');
+  sheetIn('Film it in 3D', [
+    h('p', { class: 'muted small' }, 'The full pipeline: a director checks the staging first, the 3D renderer makes depth, pose and edges, the best of three keyframes is picked, then the shot is filmed and upscaled.'),
+    toolReady('blender.render') ? '' : h('p', { class: 'warn small' }, 'Gen\'s 3D render servers are offline right now. It will wait in line until they\'re back. "Film it" works now.'),
     ...(qd.notes ?? []).map((n) => h('p', { class: 'muted small' }, n)),
     status,
   ], h('div', { class: 'sheet-foot' }, h('span', { class: 'quote' }, qd.quote ? credits(qd.quote) : ''), go));

@@ -817,7 +817,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (action === 'apply' && method === 'POST') {
           const b = await readJson(req);
           const p = ed.getProject(id, canSee);
-          const r = ed.applyOps(p.doc, Array.isArray(b.ops) ? b.ops : [], submitFor(p.project, id));
+          const r = ed.applyOps(p.doc, Array.isArray(b.ops) ? b.ops : [], submitFor(p.project, id), ed.timelineKind(p.kind));
           return send(res, 200, { project: ed.saveDoc(p, r.doc), results: r.results });
         }
         if (action === 'assistant' && method === 'POST') {
@@ -843,7 +843,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const ownAi = Boolean(ownOrg && (secretInfo(ownOrg, 'anthropic').set || secretInfo(ownOrg, 'claude-subscription').set));
           const payer = user && isGenAccountProject(p.project) && !ownAi ? user : null;
           if (payer) house.checkCanPay(getUserById(payer.id)?.credits ?? 0);
-          const turn = await ed.assistantTurn({ project: p.project, doc: p.doc, selection: b.selection ?? {}, messages, library, voices: await ed.editorVoices() });
+          const turn = await ed.assistantTurn({ project: p.project, doc: p.doc, selection: b.selection ?? {}, messages, library, voices: await ed.editorVoices(), kind: ed.timelineKind(p.kind) });
           const aiCharge = payer && turn.house ? chargeCredits(payer.id, house.turnCredits(turn.cost), 'ai_turn', `AI editor: ${String(messages[messages.length - 1].text).slice(0, 80)}`) : null;
           const auto = Math.max(0, Number(b.autoCredits ?? 40));
           const now: typeof turn.ops = [];
@@ -856,7 +856,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
             op.credits = credits;
             if (proposed.length || spend + credits > auto) proposed.push(op); else { spend += credits; now.push(op); }
           }
-          const r = ed.applyOps(p.doc, now, submitFor(p.project, id));
+          const r = ed.applyOps(p.doc, now, submitFor(p.project, id), ed.timelineKind(p.kind));
           const saved = ed.saveDoc(p, r.doc);
           return send(res, 200, {
             say: turn.say, project: saved, results: r.results, model: turn.model, ...(aiCharge ? { aiCredits: aiCharge.charged } : {}),

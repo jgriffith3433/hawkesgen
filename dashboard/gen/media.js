@@ -3,9 +3,10 @@
 // Also the one way every tool runs (runJob).
 
 import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, mediaInfo, plainError, ApiError } from './lib.js';
-import { P, addClip, newId, changed, remember, clipEnd } from './project.js';
+import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack } from './project.js';
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
+import { touchDrag } from './dragdrop.js';
 
 const M = { kind: '', q: '', items: [], inflight: new Map() };
 
@@ -30,6 +31,7 @@ export function initMedia() {
 export function showPane(name) {
   $$('#paneTabs button').forEach((b) => b.classList.toggle('on', b.dataset.pane === name));
   $$('.pane-body').forEach((p) => { p.hidden = p.id !== `pane-${name}`; });
+  if (name === 'scenes') import('./scenes.js').then((s) => s.loadList()).catch(() => {});
 }
 
 export async function loadMedia() {
@@ -64,17 +66,22 @@ function tileFor(a) {
     : a.kind === 'audio' ? h('div', { class: 'tile-audio' }, icon(a.tool === 'audio.music' ? 'music' : a.tool?.startsWith('audio.voice') ? 'mic' : 'volume', 'ico big'))
     : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
   const d = durationOf(a);
-  const el = h('div', { class: `tile kind-${a.kind}`, draggable: 'true', tabindex: '0', title: prompt },
+  const el = h('div', { class: `tile kind-${a.kind}`, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
+` : ''}Double-click to look at it; drag it onto a track` },
     media,
     d ? h('span', { class: 'badge' }, fmt(d, 0)) : '',
     h('div', { class: 'tile-cap' }, a.title || prompt || a.kind),
     onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(a)); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
-  el.addEventListener('click', () => openAsset(a));
+  // One click picks a tile (the "+" adds it); a double-click looks at it in the center (J, 2026-10-30).
+  el.addEventListener('click', () => { $$('#mediaGrid .tile.sel').forEach((x) => x.classList.remove('sel')); el.classList.add('sel'); });
+  el.addEventListener('dblclick', () => openAsset(a));
   el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(a); });
   el.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('application/x-hg-asset', JSON.stringify(assetLite(a)));
     e.dataTransfer.effectAllowed = 'copy';
   });
+  // Phones: hold a tile, then drag it onto a track (dragdrop.js).
+  if (onTimeline(a.kind)) touchDrag(el, () => { const x = assetLite(a); return { asset: x.id, assetKind: x.kind, title: x.title, duration: x.duration }; });
   return el;
 }
 const onTimeline = (kind) => ['image', 'video', 'audio'].includes(kind);
@@ -86,18 +93,28 @@ export async function openAsset(a) {
   showSource({ ...lite, width: info.width ?? lite.width, height: info.height ?? lite.height, duration: info.duration ?? lite.duration });
 }
 
-/** Puts a library file on the timeline: images and clips on V1, sounds on an audio track. */
-export async function placeAsset(a, { track, start } = {}) {
+/** A sound's usual track by what made it: voices on a voice track, effects on a sound track, the rest on music. */
+function soundTrack(a) {
+  const want = a.tool?.startsWith('audio.voice') || a.tool === 'audio.revoice' ? /voice|dialog|line/i : a.tool?.startsWith('audio.sfx') ? /sound|sfx|effect/i : /music|score|song/i;
+  return P.doc.tracks.find((t) => t.role === 'audio' && !t.locked && want.test(t.name))?.id ?? null;
+}
+/**
+ * Puts a library file on the timeline at the playhead: on the track picked (the selected one), whatever its kind; with
+ * none picked, on the track that fits (a sound by what made it).
+ */
+export async function placeAsset(a, { track, start, place } = {}) {
   if (!onTimeline(a.kind)) { toast(`A ${assetKindLabel(a.kind).toLowerCase()} can't go on the timeline.`); return null; }
   const info = await mediaInfo(a.id, a.kind);
-  const kind = a.kind === 'audio' ? 'audio' : a.kind;
-  const t = track ?? (kind === 'audio' ? (a.tool?.startsWith('audio.voice') || a.tool === 'audio.revoice' ? 'A2' : a.tool?.startsWith('audio.sfx') ? 'A3' : 'A1') : 'V1');
-  const c = addClip({ track: t, asset: a.id, kind, duration: info.duration ?? a.duration ?? null, start: start ?? P.playhead, label: a.title || a.prompt || undefined });
+  const kind = a.kind;
+  const picked = track ?? (trackOf(P.selection.track) && !trackOf(P.selection.track).locked ? P.selection.track : null);
+  const t = picked ?? (kind === 'audio' ? soundTrack(a) : null) ?? defaultTrack(kind);
+  const c = addClip({ track: t, asset: a.id, kind, duration: info.duration ?? a.duration ?? null, start: start ?? (P.kind === 'image' && kind === 'image' ? 0 : P.playhead), label: a.title || a.prompt || undefined, place });
   P.selection.clips.clear();
   P.selection.clips.add(c.id);
+  P.selection.track = c.track;
   bus.emit('selection');
-  // Like any editor: the playhead moves past what was just put on the video track, so the next one follows it.
-  if (t === 'V1' && start == null) seek(clipEnd(c));
+  // Like any editor: the playhead moves past what was just put on a magnetic track, so the next one follows it.
+  if ((isMagnetic(c.track) || c.track === mainTrack()?.id) && start == null) seek(clipEnd(c));
   return c;
 }
 
@@ -117,8 +134,10 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart }
         if (c) { remember(); Object.assign(c, { job: job.id, pending: true, label: label ?? c.label }); delete c.failed; changed(); }
       } else if (place?.track) {
         remember();
-        const c = { id: newId(), track: place.track, kind: place.track === 'V1' ? (tool.startsWith('image.') ? 'image' : 'video') : 'audio', start: place.start ?? P.playhead, in: 0, out: place.seconds ?? 5, duration: place.seconds ?? null, job: job.id, pending: true, label: label ?? tool };
-        if (place.track === 'V1') c.start = place.start ?? Number.MAX_SAFE_INTEGER;
+        const kind = tool.startsWith('audio.') ? 'audio' : tool.startsWith('image.') ? 'image' : 'video';
+        const track = trackOf(place.track) ? place.track : kind === 'audio' ? soundTrack({ tool }) ?? defaultTrack('audio') : defaultTrack(kind);
+        const c = { id: newId(), track, kind, start: place.start ?? P.playhead, in: 0, out: place.seconds ?? 5, duration: kind === 'image' ? null : place.seconds ?? null, job: job.id, pending: true, label: label ?? tool };
+        if (isMagnetic(track)) c.start = place.start ?? Number.MAX_SAFE_INTEGER;
         P.doc.clips.push(c);
         changed();
       }
@@ -136,7 +155,8 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart }
           if (!out) continue;
           const info = await mediaInfo(out.asset, out.kind);
           c.asset = out.asset;
-          if (c.track === 'V1') c.kind = out.kind === 'image' ? 'image' : 'video';
+          if (isVisual(c) && (out.kind === 'image' || out.kind === 'video')) c.kind = out.kind;
+          if (c.kind === 'image') { c.duration = null; delete c.pending; continue; }
           if (info.duration) { c.duration = info.duration; if (place.track || c.out > info.duration) { c.in = Math.min(c.in, Math.max(0, info.duration - 0.1)); c.out = place.track ? info.duration : Math.min(c.out, info.duration); } }
           delete c.pending;
         }

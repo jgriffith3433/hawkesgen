@@ -1,21 +1,24 @@
 // Scenes in the app (src/scenes.ts): every kind of document a person makes, open side by side as tabs in the bar. A
-// tab's kind decides its editor: video (the timeline: video.js over project.js, player.js, timeline.js, tools.js),
-// stage (the 3D director: director.js), image (layers: image.js), audio (a multitrack: audio.js), character (a sheet:
-// character.js). Each editor is a module with the same shape (EDITOR below): it mounts into the shared panes (the viewer,
-// the timeline row, the left pane's context tab, the bar's main action), unmounts saving its work, and says what it
-// takes when something is dropped on it. The Scenes tab on the left lists every scene: open one, or drag it into another
+// tab's kind decides its editor: video, image and audio are timelines (editor.js over project.js, player.js,
+// timeline.js, tools.js), stage the 3D director (director.js), character a sheet (character.js). Each editor is a module
+// with the same shape (EDITOR below): it mounts into the shared panes (the center, the left pane's context tab, the bar's
+// main action), unmounts saving its work, and says what it takes when something is dropped on it. The timeline stays
+// on screen for every kind: a stage lends it its lanes (people's moves, camera keys, lines). The Scenes tab on the left lists every scene: open one, or drag it into another
 // (a character onto a stage, a stage or image into a video, an audio scene into a track): that's plug and play.
 
 import { $, $$, h, api, toast, bus, icon, fileUrl, plainError } from './lib.js';
 import { state, needSignIn } from './account.js';
 import { showPane } from './media.js';
-import { popMenu, closeMenus } from './timeline.js';
+import { popMenu, closeMenus, lendTimeline } from './timeline.js';
+import { touchDrag } from './dragdrop.js';
 
 /**
  * An editor:
  *   kind, label, icon, about           what it is
  *   mount(scene) / unmount()           take over the panes for this scene / save and let go
- *   panel                              the left pane's context tab name ("Shot", "Layers"), or null
+ *   panel, panelFirst                  the left pane's context tab name ("Shot", "Inspector"); panelFirst: show it on opening
+ *   timelineKind                       a timeline scene (the timeline is its document); else
+ *   timeline                           the lanes it lends the timeline (timeline.js lendTimeline), or none
  *   undo(), redo(), canUndo(), canRedo()
  *   action                             the bar's main action: { label, icon, run } ("Export", "Render", "Mixdown"...)
  *   accepts(item) / drop(item, at)     plug and play: a dragged scene or file ({ scene } or { asset }) it can take
@@ -25,8 +28,8 @@ export const EDITORS = {};
 export const KINDS = [
   { kind: 'video', label: 'Video', icon: 'film', about: 'A timeline: clips, text, music, voice' },
   { kind: 'stage', label: 'Stage', icon: 'cube', about: 'A 3D shot: cast, camera, dialogue, filmed by Gen' },
-  { kind: 'image', label: 'Image', icon: 'image', about: 'Layers of pictures, text and color' },
-  { kind: 'audio', label: 'Audio', icon: 'music', about: 'Tracks of music, voices and sound' },
+  { kind: 'image', label: 'Image', icon: 'image', about: 'A picture in layers: the frame at the playhead' },
+  { kind: 'audio', label: 'Audio', icon: 'music', about: 'Tracks of music, voices and sound, mixed down' },
   { kind: 'character', label: 'Character', icon: 'person', about: 'A person or creature to cast: look, voice, 3D model' },
 ];
 export const kindInfo = (k) => KINDS.find((x) => x.kind === k) ?? KINDS[0];
@@ -54,6 +57,7 @@ export function initScenes() {
   $('#undoBtn').addEventListener('click', () => W.editor?.undo?.());
   $('#redoBtn').addEventListener('click', () => W.editor?.redo?.());
   bus.on('history', drawUndo);
+  bus.on('save', (s) => { const was = W.unsaved; W.unsaved = ['dirty', 'saving', 'error'].includes(s) ? W.active : null; if (was !== W.unsaved) drawTabs(); });
   bus.on('sceneTitle', ({ id, title }) => { const t = W.tabs.find((x) => x.id === id); if (t && t.title !== title) { t.title = title; keepTabs(); drawTabs(); } const l = W.list.find((x) => x.id === id); if (l) { l.title = title; drawList(); } });
   bus.on('sceneRendered', () => loadList());
   bus.on('jobDone', () => { if (W.list.length) loadList(); });
@@ -124,6 +128,7 @@ async function activate(id) {
     drawTabs();
     const ed = EDITORS[t.kind];
     $('#app').dataset.kind = t.kind;
+    lendTimeline(ed?.timelineKind ? null : ed?.timeline ?? NO_LANES);
     $('#kindTab').hidden = !ed?.panel;
     $('#kindTab').textContent = ed?.panel ?? '';
     if (!ed) { toast(`No editor for ${t.kind} scenes yet.`); return; }
@@ -133,8 +138,9 @@ async function activate(id) {
       t.title = scene.title;
       W.editor = ed;
       await ed.mount(scene);
-      if (ed.panel) showPane('kind');
-      else if (!$('#pane-kind').hidden) showPane('media');
+      if (ed.panel && ed.panelFirst) showPane('kind');
+      else if (!ed.panel && !$('#pane-kind').hidden) showPane('media');
+      if (ed.timeline) lendTimeline(ed.timeline);
     } catch (err) {
       toast(plainError(err.message));
       if (err.status === 404) closeTab(id, { quiet: true });
@@ -146,6 +152,9 @@ async function activate(id) {
   })();
   try { await W.switching; } finally { W.switching = null; }
 }
+
+/** A kind with nothing timed (a character) still keeps the timeline on screen, saying so. */
+const NO_LANES = { length: () => 10, playhead: () => 0, seek() {}, lanes: () => [], move() {}, empty: 'A character has no timeline of their own: drag them onto a stage, where their moves and lines are timed.' };
 
 async function closeTab(id, { quiet = false } = {}) {
   const i = W.tabs.findIndex((x) => x.id === id);
@@ -162,7 +171,7 @@ function drawTabs() {
   const box = $('#sceneTabs');
   box.replaceChildren(...W.tabs.map((t) => {
     const el = h('div', { class: `scene-tab${t.id === W.active ? ' on' : ''}`, 'data-id': t.id, title: `${kindInfo(t.kind).label}: ${t.title}`, draggable: 'true' },
-      icon(kindInfo(t.kind).icon), h('span', { class: 'scene-tab-t' }, t.title),
+      icon(kindInfo(t.kind).icon), h('span', { class: 'scene-tab-t' }, t.title, t.id === W.unsaved ? h('span', { class: 'unsaved', title: 'Not saved yet: it saves on its own in a moment, or press Ctrl+S' }, ' *') : ''),
       h('button', { class: 'scene-tab-x', title: 'Close the tab', onclick: (e) => { e.stopPropagation(); closeTab(t.id); } }, icon('close')));
     el.addEventListener('click', () => { if (t.id !== W.active) activate(t.id); });
     el.addEventListener('dblclick', () => renameTab(t, el));
@@ -232,7 +241,34 @@ function newSceneMenu(btn) {
     ...KINDS.map((k) => h('button', { class: 'menu-item', onclick: () => { closeMenus(); newScene(k.kind).catch((err) => toast(err.message)); } },
       h('span', { class: 'row' }, icon(k.icon), h('span', {}, h('b', {}, k.label), h('div', { class: 'muted small' }, k.about))))),
     h('div', { class: 'menu-sep' }),
-    h('button', { class: 'menu-item', onclick: () => { closeMenus(); showPane('scenes'); } }, 'Open a scene…')]);
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); openPicker(); } }, h('span', {}, 'Open a scene…'), h('span', { class: 'muted small' }, 'Ctrl+O'))]);
+}
+
+/** Every scene of the account, fresh from Gen, newest first: search, filter by kind, open one (Ctrl+O). */
+export async function openPicker() {
+  if (!state.user) return needSignIn(openPicker, 'login');
+  closeMenus();
+  $('#scenePicker')?.remove();
+  let kind = '';
+  const q = h('input', { type: 'search', placeholder: 'Search your scenes' });
+  const list = h('div', { class: 'scenes-list picker-list' }, h('div', { class: 'working' }, 'Loading'));
+  const chips = h('div', { class: 'chips' }, ...[['', 'All'], ...KINDS.map((k) => [k.kind, k.label])].map(([k, l]) => h('button', { type: 'button', class: `chip${k === kind ? ' on' : ''}`, onclick: (e) => { kind = k; chips.querySelectorAll('.chip').forEach((x) => x.classList.toggle('on', x === e.currentTarget)); draw(); } }, l)));
+  const pop = h('div', { class: 'picker scene-picker', id: 'scenePicker' },
+    h('div', { class: 'sheet-head' }, h('b', {}, 'Open a scene'), h('button', { type: 'button', class: 'icon-btn', onclick: () => pop.remove() }, icon('close'))), q, chips, list);
+  document.body.append(pop);
+  q.focus();
+  const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : new Date(t).toLocaleDateString(); };
+  function draw() {
+    const words = q.value.trim().toLowerCase();
+    const items = W.list.filter((x) => (!kind || x.kind === kind) && (!words || x.title.toLowerCase().includes(words)));
+    list.replaceChildren(...(items.length ? items.map((x) => h('button', { type: 'button', class: `scene-row${W.tabs.some((t) => t.id === x.id) ? ' on' : ''}`, onclick: () => { pop.remove(); openScene(x.id); } },
+      h('div', { class: 'scene-thumb' }, x.render?.asset && x.render.kind === 'image' ? h('img', { src: fileUrl(x.render.asset), alt: '', loading: 'lazy' }) : h('span', { class: 'scene-ico' }, icon(kindInfo(x.kind).icon, 'ico'))),
+      h('div', { class: 'scene-txt' }, h('b', {}, x.title), h('span', { class: 'muted small' }, `${kindInfo(x.kind).label} · ${ago(x.updated)}${W.tabs.some((t) => t.id === x.id) ? ' · open' : ''}`)))) : [h('p', { class: 'muted small' }, words || kind ? 'Nothing matches.' : 'No scenes yet.')]));
+  }
+  q.addEventListener('input', draw);
+  q.addEventListener('keydown', (e) => { if (e.key === 'Escape') pop.remove(); if (e.key === 'Enter') list.querySelector('.scene-row')?.click(); });
+  await loadList();
+  draw();
 }
 
 function drawAction() {
@@ -286,6 +322,7 @@ function drawList() {
     el.addEventListener('click', () => openScene(s.id));
     el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openScene(s.id); });
     el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-hg-scene', JSON.stringify(sceneItem(s))); e.dataTransfer.effectAllowed = 'copy'; });
+    touchDrag(el, () => sceneItem(s));
     return el;
   }));
 }

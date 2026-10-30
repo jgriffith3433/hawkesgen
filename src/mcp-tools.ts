@@ -149,8 +149,8 @@ export function genMcp(gen: any, { remote = false, filesUrl = '', account, fileL
     {
       name: 'hawkesgen_editor',
       description:
-        'Video editor projects (the Gen app\'s timeline: V1 main video track, clips back to back; T1 text on screen; A1 music, A2 voice, A3 sound). ' +
-        'Without id: list projects. With id: the project (every clip: id, track, start, in/out of its source, asset or the job it waits on). ' +
+        'Timeline scenes: video, image and audio (the Gen app\'s timeline: tracks top first, a higher one drawing over the ones below; any clip on any track; a magnetic track plays its clips back to back). ' +
+        'Without id: list video projects. With id: the scene (its tracks, and every clip: id, track, start, in/out of its source, asset or the job it waits on, placement). ' +
         'create: true makes a new one (title). Change a project with hawkesgen_editor_apply.',
       inputSchema: obj({ id: str('Project id ep_... (optional)'), create: { type: 'boolean' }, title: str('Title for a new project'), project: str('Library project (default: your account\'s)') }),
       run: async (a) => {

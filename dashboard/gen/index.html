@@ -58,7 +58,7 @@
           <button class="chip" data-kind="mesh">3D</button>
         </div>
         <div id="mediaGrid" class="media-grid"></div>
-        <p class="drop-hint muted small">Drop files anywhere to upload. Drag tiles onto the timeline.</p>
+        <p class="drop-hint muted small">Drop files anywhere to upload. Drag tiles onto any track (on a phone: hold a tile, then drag).</p>
       </div>
       <div class="pane-body" id="pane-kind" hidden><div id="kindPanel"></div></div>
       <div class="pane-body" id="pane-scenes" hidden>
@@ -99,8 +99,8 @@
         <div class="stage" id="stage">
           <div class="stage-empty" id="stageEmpty">
             <span class="ico-wrap big" data-icon="film"></span>
-            <p>Your video plays here.</p>
-            <p class="muted small">Drag media onto the timeline, generate something, or ask the AI editor.</p>
+            <p>What's at the playhead shows here.</p>
+            <p class="muted small">Drag media onto any track below, generate something, or ask the AI.</p>
           </div>
           <div class="stage-pending" id="stagePending" hidden><div class="working">Generating…</div></div>
         </div>
@@ -140,6 +140,7 @@
         <button class="icon-btn" id="splitBtn" title="Split at the playhead (S)"><span class="ico-wrap" data-icon="split"></span></button>
         <button class="icon-btn" id="deleteBtn" title="Delete (Del)"><span class="ico-wrap" data-icon="trash"></span></button>
         <button class="icon-btn" id="textBtn" title="Add text at the playhead (T)"><span class="ico-wrap" data-icon="text"></span></button>
+        <button class="icon-btn" id="addTrackBtn" title="Add a track"><span class="ico-wrap" data-icon="layers"></span></button>
         <span class="tl-sep"></span>
         <button class="icon-btn" id="snapBtn" title="Snapping"><span class="ico-wrap" data-icon="magnet"></span></button>
         <span class="tl-spacer"></span>
@@ -161,11 +162,14 @@
       </div>
     </section>
 
-    <!-- Phone: one pane at a time -->
+    <!-- Phone: the center and the timeline stay; a sheet below shows one of these (drag its top edge to size it) -->
+    <div class="sheet-grip" id="sheetGrip" title="Drag to size"></div>
     <nav class="mobile-tabs" id="mobileTabs">
       <button data-m="edit" class="on"><span class="ico-wrap" data-icon="film"></span>Edit</button>
       <button data-m="media"><span class="ico-wrap" data-icon="image"></span>Media</button>
       <button data-m="generate"><span class="ico-wrap" data-icon="plus"></span>Create</button>
+      <button data-m="scenes"><span class="ico-wrap" data-icon="layers"></span>Scenes</button>
+      <button data-m="kind"><span class="ico-wrap" data-icon="sliders"></span>Inspect</button>
       <button data-m="ai"><span class="ico-wrap" data-icon="sparkle"></span>AI</button>
     </nav>
   </div>

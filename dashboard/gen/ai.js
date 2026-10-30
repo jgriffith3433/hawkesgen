@@ -3,9 +3,9 @@
 // time range, the playhead, a painted area) and recent media, and answers with edits Gen applies to the project
 // (src/editor.ts). Every AI edit is one undo step. Generation over the auto limit waits for a tap. It runs on Gen's
 // house AI (a credit or so a message), or the account's own Claude when it connected one. While the director is open
-// (director.js) the same pane is the AI director: it talks about the shot and changes it. For an image, audio or
-// character scene it's that kind's AI (src/sceneai.ts): it changes the scene and makes what it needs, and asks before
-// spending more than the auto limit.
+// (director.js) the same pane is the AI director: it talks about the shot and changes it. Image and audio scenes are
+// timelines too, so their AI is the AI editor told which kind it's in. For a character it's the character AI
+// (src/sceneai.ts): it changes the sheet and makes what it needs, and asks before spending more than the auto limit.
 
 import { $, h, api, toast, fmt, bus, icon, plainError } from './lib.js';
 import { P, selectedClips, remember, take, save, docLength, clipLength } from './project.js';
@@ -38,7 +38,7 @@ export function initAi() {
 
 function load(id) { try { return JSON.parse(localStorage.getItem(KEY(id)) || '[]'); } catch { return []; } }
 // The image, audio and character scenes' conversations, one per scene.
-const OTHER = new Set(['image', 'audio', 'character']);
+const OTHER = new Set(['character']);
 const other = () => OTHER.has(activeKind());
 const SC = { id: null, messages: [] };
 function loadSceneMessages() {
@@ -64,6 +64,7 @@ export function selectionForAi() {
   if (clips.length) sel.clips = clips.map((c) => c.id);
   if (P.selection.range) sel.range = { start: Math.round(P.selection.range.start * 100) / 100, end: Math.round(P.selection.range.end * 100) / 100 };
   if (P.selection.mask) sel.mask = P.selection.mask;
+  if (P.selection.track) sel.track = P.selection.track;
   return sel;
 }
 const SCENE_TIPS = {
@@ -72,6 +73,7 @@ const SCENE_TIPS = {
   character: ['Make them a battle-worn space pilot', 'Make their pictures', 'Give them a voice that fits', 'Make their 3D model'],
 };
 function drawContext() {
+  drawTips();
   const box = $('#aiContext');
   if (other()) {
     const t = activeScene();
@@ -99,7 +101,8 @@ function drawSuggestions(clips) {
   const s = $('#aiSuggest');
   const one = clips.length === 1 ? clips[0] : null;
   let list;
-  if (!P.doc.clips.length) list = ['Make a 15-second trailer about a lighthouse in a storm', 'Make a 3D model of a treasure chest', 'Make a mossy stone texture with material maps', 'Turn my latest pictures into a slideshow with music'];
+  if (P.kind !== 'video' && !one && !P.selection.range) list = SCENE_TIPS[P.kind];
+  else if (!P.doc.clips.length) list = ['Make a 15-second trailer about a lighthouse in a storm', 'Make a 3D model of a treasure chest', 'Make a mossy stone texture with material maps', 'Turn my latest pictures into a slideshow with music'];
   else if (one?.kind === 'video') list = ['Make this slow motion', 'Cut this to the best 2 seconds', 'Continue this shot', 'Make it look like an anime'];
   else if (one?.kind === 'image') list = ['Animate this', 'Make it night time', 'Widen it to 16:9'];
   else if (one?.kind === 'audio') list = ['Lower this under the voice', 'Trim it to the video'];
@@ -123,7 +126,11 @@ function drawGate() {
   gate.replaceChildren(h('p', {}, h('b', {}, 'Connect your AI'), ' to use the AI editor. It runs on your own Claude, so you choose what it costs.'), keys);
 }
 
+/** Suggestions are for starting: once a conversation has begun they go away (J, 2026-10-30). */
+function drawTips() { $('#aiSuggest').hidden = msgs().some((m) => m.role === 'user'); }
+
 function drawMessages() {
+  drawTips();
   const list = $('#aiMessages');
   if (!msgs().length && directorOpen()) {
     list.replaceChildren(h('div', { class: 'ai-hello' }, icon('film', 'ico big'), h('h3', {}, 'What\'s the shot?'),
@@ -136,8 +143,11 @@ function drawMessages() {
     return;
   }
   if (!A.messages.length && !directorOpen()) {
-    list.replaceChildren(h('div', { class: 'ai-hello' }, icon('sparkle', 'ico big'), h('h3', {}, 'What are we making?'),
-      h('p', { class: 'muted' }, 'Select clips or drag across the timeline, then ask. "Make this slow motion", "replace the sky with a sunset", "add a punchy voice-over"…')));
+    const words = {
+      image: ['What should it look like?', 'Layers, text, light, mood: say it and the AI builds it on the tracks, using every image tool Gen has. The frame at the playhead is the picture.'],
+      audio: ['What should it sound like?', 'Music, voices, effects, the mix: say it and the AI lays it out on the tracks.'],
+    }[P.kind] ?? ['What are we making?', 'Select clips or drag across the timeline, then ask. "Make this slow motion", "replace the sky with a sunset", "add a punchy voice-over"…'];
+    list.replaceChildren(h('div', { class: 'ai-hello' }, icon(P.kind === 'audio' ? 'music' : P.kind === 'image' ? 'image' : 'sparkle', 'ico big'), h('h3', {}, words[0]), h('p', { class: 'muted' }, words[1])));
     return;
   }
   list.replaceChildren(...msgs().map(msgEl));
@@ -157,7 +167,7 @@ function msgEl(m) {
   if (m.undoable) el.append(h('button', { class: 'link small', onclick: () => { bus.emit('undo'); m.undoable = false; keep(); drawMessages(); } }, 'Undo this'));
   return el;
 }
-const OP_WORDS = { add: 'Added a clip', generate: 'Making', trim: 'Trimmed', split: 'Split', move: 'Moved', delete: 'Deleted a clip', deleteRange: 'Cut a stretch out', set: 'Changed a clip', text: 'Added text', settings: 'Changed the project' };
+const OP_WORDS = { add: 'Added a clip', generate: 'Making', trim: 'Trimmed', split: 'Split', move: 'Moved', delete: 'Deleted a clip', deleteRange: 'Cut a stretch out', set: 'Changed a clip', text: 'Added text', track: 'Changed the tracks', settings: 'Changed the scene' };
 const describe = (r) => (r.op === 'generate' && r.label ? `Making ${r.label}` : OP_WORDS[r.op] ?? r.op);
 
 async function send() {

@@ -6,7 +6,7 @@
 // Results go to Media and open in the viewer; pictures, clips and sounds can go straight onto the timeline.
 
 import { $, $$, h, api, toast, fileUrl, bus, icon, plainError, ApiError } from './lib.js';
-import { P } from './project.js';
+import { P, trackOf, isMagnetic } from './project.js';
 import { currentSource, showSource } from './player.js';
 import { runJob, quote, credits, showPane, assetKindLabel } from './media.js';
 import { state, needSignIn } from './account.js';
@@ -36,7 +36,7 @@ const GROUPS = [
   { id: 'mesh', label: '3D & rigging', icon: 'cube', tools: [
     ['image.viewsheet', '4-view sheet for 3D', 'Front, back, left and right views of a character, checked for consistency. The first step to 3D.'], ['mesh.views3d', '4-view sheet → 3D model', 'A textured 3D model (GLB) from a 4-view sheet.'], ['mesh.textured', 'Image → textured 3D model', 'A textured 3D model from one picture of a prop.'],
     ['mesh.from-image', 'Image → 3D shape', 'An untextured 3D shape from one picture.'], ['mesh.from-views', 'Views → 3D model', 'A 3D model from several views.'], ['mesh.rig', 'Auto-rig a 3D model', 'Add a skeleton and skinning to a 3D model so it can move.'],
-    ['blender.character', 'Blender character pipeline', 'Clean up, retarget, bake and export a 3D character in Blender.'], ['image.geometry', 'Depth and normals (MoGe)', 'Depth and normals from one picture.'], ['splat.build', 'Gaussian splat', 'A Gaussian splat scene from a picture.'],
+    ['blender.render', '3D shot render', 'Render a 3D shot, with its depth, pose and edge videos for filming.'], ['blender.character', '3D character pipeline', 'Clean up, retarget, bake and export a 3D character.'], ['image.geometry', 'Depth and normals (MoGe)', 'Depth and normals from one picture.'], ['splat.build', 'Gaussian splat', 'A Gaussian splat scene from a picture.'],
   ] },
   { id: 'motion', label: 'Animation', icon: 'person', tools: [
     ['motion.from-text', 'Text to 3D skeletal motion', 'A humanoid animation from words, on your rigged character.'], ['sprite.sheet', 'Sprite sheet from a clip', 'A clip or frames as a game sprite sheet.'], ['image.pose-detect', 'Detect a pose', 'Find the body pose in a picture.'],
@@ -289,7 +289,8 @@ function toolForm(t, prefill, prefillNodes) {
     let spec;
     try { spec = build(); } catch (err) { return toast(err.message); }
     const label = String(spec.params.prompt ?? spec.params.text ?? spec.params.description ?? CURATED.get(t.id)?.label ?? t.title).slice(0, 80);
-    const place = toTl?.checked ? { track: tl.track, start: tl.start ?? (tl.track === 'V1' ? undefined : P.playhead), seconds: tl.seconds ?? spec.params.seconds ?? spec.params.duration ?? (hasFrames ? Number(secondsSel.value) : 5) } : null;
+    const into = trackOf(P.selection.track) && !trackOf(P.selection.track).locked ? P.selection.track : tl.track;
+    const place = toTl?.checked ? { track: into, start: tl.start ?? (isMagnetic(into) ? undefined : P.playhead), seconds: tl.seconds ?? spec.params.seconds ?? spec.params.duration ?? (hasFrames ? Number(secondsSel.value) : 5) } : null;
     go({ ...spec, label, place }, form, result);
   });
   return form;
@@ -451,9 +452,9 @@ export function libraryPicker(kind, onPick) {
     } catch (err) { toast(plainError(err.message)); pop.remove(); }
   });
   const q = new URLSearchParams({ limit: '80', project: state.user.project });
-  if (kind !== 'file') q.set('kind', kind);
+  if (kind && kind !== 'file') q.set('kind', kind);
   api(`/v1/assets?${q}`).then((r) => {
-    const items = (r.items ?? []).filter((a) => kind !== 'file' || !['image', 'video', 'audio'].includes(a.kind));
+    const items = (r.items ?? []).filter((a) => (kind ? kind !== 'file' || !['image', 'video', 'audio'].includes(a.kind) : ['image', 'video', 'audio'].includes(a.kind)));
     grid.replaceChildren(...items.map((a) => h('button', { type: 'button', class: 'pick', title: a.title ?? a.recipe?.params?.prompt ?? '', onclick: () => { onPick({ id: a.id, kind: a.kind, title: a.title ?? a.recipe?.params?.prompt ?? '' }); pop.remove(); } }, thumbOf({ id: a.id, kind: a.kind, title: a.title }))));
     if (!items.length) grid.replaceChildren(h('p', { class: 'muted small' }, 'Nothing of that kind yet. Upload one or make one.'));
   }).catch(() => grid.replaceChildren(h('p', { class: 'muted small' }, 'Couldn\'t load your library.')));
