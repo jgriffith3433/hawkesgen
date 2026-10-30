@@ -167,18 +167,21 @@ finish() {
   secs=$(jq -c --argjson t $(( $(date +%s) - T0 )) '. + {total: $t}' <<<"$secs")
   local logkey="$OUT_PREFIX/unity.log"
   [ -f "$OUT/unity.log" ] && gs_put "$OUT_BUCKET" "$logkey" "$OUT/unity.log" text/plain || logkey=""
+  # The output and errors go in from files: a big build's output lists every changed file (Sick Of It: 3658), which as
+  # an argument was too long for jq ("Argument list too long", 2026-10-30), and result.json came out empty.
+  printf '%s' "$OUTPUT_JSON" > "$WORK/result-output.json"; printf '%s' "$ERRORS_JSON" > "$WORK/result-errors.json"
   jq -n --argjson ok "$OK" --arg stage "$STAGE_LAST" --arg kind "$KIND" --arg error "$ERROR" --arg exit "$EXIT_CODE" \
     --argjson seconds "$secs" --arg unity "$UNITY_VERSION" --arg restored "$RESTORED" --argjson rbytes "${RESTORED_BYTES:-0}" \
     --argjson clean "$CLEAN" --arg reason "$CACHE_REASON" --argjson saved "$SAVED" --arg skey "$SAVED_KEY" --argjson sbytes "${SAVED_BYTES:-0}" \
-    --arg skipped "$SAVE_SKIPPED" --argjson output "$OUTPUT_JSON" --arg results "$RESULTS_KEY" --arg log "$logkey" \
-    --arg peak "$(mem_peak)" --argjson errors "$ERRORS_JSON" --argjson pushed "${PUSHED_JSON:-null}" --argjson packages "$PACKAGES_JSON" '{
+    --arg skipped "$SAVE_SKIPPED" --slurpfile output "$WORK/result-output.json" --arg results "$RESULTS_KEY" --arg log "$logkey" \
+    --arg peak "$(mem_peak)" --slurpfile errors "$WORK/result-errors.json" --argjson pushed "${PUSHED_JSON:-null}" --argjson packages "$PACKAGES_JSON" '{
       v: 1, ok: $ok, stage: $stage, kind: (if $kind == "null" or $kind == "" then null else $kind end),
       error: (if $error == "" then null else $error end), exitCode: (if $exit == "null" then null else ($exit|tonumber) end),
       seconds: $seconds, unity: $unity,
       cache: { restoredFrom: (if $restored == "" then null else $restored end), restoredBytes: $rbytes, clean: $clean, reason: $reason,
                saved: $saved, savedKey: (if $skey == "" then null else $skey end), savedBytes: $sbytes, skipped: (if $skipped == "" then null else $skipped end) },
-      output: $output, results: (if $results == "" then null else $results end), log: (if $log == "" then null else $log end),
-      memoryPeakBytes: (try ($peak|tonumber) catch null), errors: $errors, pushed: $pushed, packages: $packages }' > "$OUT/result.json"
+      output: $output[0], results: (if $results == "" then null else $results end), log: (if $log == "" then null else $log end),
+      memoryPeakBytes: (try ($peak|tonumber) catch null), errors: $errors[0], pushed: $pushed, packages: $packages }' > "$OUT/result.json"
   gs_put "$OUT_BUCKET" "$OUT_PREFIX/result.json" "$OUT/result.json" application/json || echo "couldn't upload result.json"
   log "done: ok=$OK kind=$KIND"
   exit 0
