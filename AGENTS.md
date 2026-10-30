@@ -184,7 +184,10 @@ portal and Studio use Gen in the back end with their own keys.
     did best (A/B on gen-beta, 2026-10-29). `video.i2v` also defaults its negative to Wan's standard one
     (`WAN_NEGATIVE`, v2).
   - **Generate:** image (with styles), video from words (`video.t2v`), music, voice-over, sound effect, each priced;
-    sounds land at the playhead on their track. **Uploads** by button or drop anywhere (on the timeline: placed too).
+    sounds land at the playhead on their track. Voice-overs and sound effects run on ElevenLabs (`provider:
+    "elevenlabs"`) with its premade voices only (`GET /v1/editor/voices`, `editorVoices`: never the account's cloned or
+    designed character voices), because the open audio models run only on the SSH GPU fleet (AWS, suspended); for the
+    same reason `audio.revoice` is left out of the editor's tools until they have a GPU provider. **Uploads** by button or drop anywhere (on the timeline: placed too).
   - **Export** maps the timeline onto `video.compose` (pictures first become clips with `video.still`); captions burned in.
   - **The AI editor** (`ai.js`, `src/editor.ts` `assistantTurn`): it sees the timeline, the selection (clips, a range,
     the playhead, a painted mask) and recent media, and answers with edits (`applyOps`, the same code the API and MCP

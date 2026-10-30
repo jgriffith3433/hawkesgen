@@ -380,10 +380,30 @@ export const EDITOR_TOOLS: { tool: string; use: string }[] = [
   { tool: 'video.interpolate', use: 'smoother motion (more frames). inputs video; params multiplier' },
   { tool: 'video.lipsync', use: 'a character from an image says an audio line. inputs image, audio; params prompt' },
   { tool: 'audio.music', use: 'music. params prompt, seconds' },
-  { tool: 'audio.voice', use: 'a spoken line. params text, description (the voice in words: age, tone, accent)' },
-  { tool: 'audio.sfx', use: 'a sound effect. params text, duration' },
-  { tool: 'audio.revoice', use: 'a clip\'s speech in a new voice. inputs video or audio; params description' },
+  { tool: 'audio.voice', use: 'a spoken line. params text, voice (an id from "voices" in the project data: pick by name, gender, age, accent), provider "elevenlabs"' },
+  { tool: 'audio.sfx', use: 'a sound effect. params text, duration, provider "elevenlabs"' },
+  // audio.revoice and the open voice models run only on the SSH GPU fleet (AWS, suspended since 2026-10-28): offered
+  // again once the open audio models have a GPU provider.
 ];
+
+// ------------------------------------------------------------------ voices
+export type EditorVoice = { id: string; name: string; about: string; preview: string };
+/**
+ * The voices the app and the AI editor offer: ElevenLabs' own premade voices only (never the account's cloned or
+ * designed ones: those are the studio's characters). Empty when ElevenLabs isn't set up.
+ */
+export async function editorVoices(): Promise<EditorVoice[]> {
+  try {
+    const eleven = await import('./providers/elevenlabs.ts');
+    if (!eleven.configured()) return [];
+    return (await eleven.voices()).filter((v: any) => v.category === 'premade').map((v: any) => ({
+      id: v.id, name: v.name, preview: v.preview,
+      about: [v.labels?.gender, v.labels?.age, v.labels?.accent, v.labels?.descriptive ?? v.labels?.description, v.labels?.use_case ?? v.labels?.['use case']].filter(Boolean).join(', ') || v.description || '',
+    })).slice(0, 40);
+  } catch {
+    return [];
+  }
+}
 export const availableEditorTools = () => EDITOR_TOOLS.filter((t) => getTool(t.tool));
 
 export type AssistantMessage = { role: 'user' | 'assistant'; text: string };
@@ -421,7 +441,7 @@ const ANSWER_SCHEMA = {
 };
 
 /** What the AI sees of the project: the clips (no internals), lengths, the selection, and recent library files. */
-export function contextFor(doc: Doc, selection: Selection, library: { id: string; kind: string; title?: string | null; prompt?: string | null; duration?: number | null }[]) {
+export function contextFor(doc: Doc, selection: Selection, library: { id: string; kind: string; title?: string | null; prompt?: string | null; duration?: number | null }[], voices: EditorVoice[] = []) {
   const clips = doc.clips.map((c) => ({
     id: c.id, track: c.track, kind: c.kind, start: r3(c.start), length: r3(clipLength(c)), in: c.in, out: c.out,
     ...(c.duration ? { sourceLength: c.duration } : {}), ...(c.asset ? { asset: c.asset } : {}), ...(c.pending ? { pending: true } : {}),
@@ -429,7 +449,7 @@ export function contextFor(doc: Doc, selection: Selection, library: { id: string
     ...(c.speed ? { speed: c.speed } : {}), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted ? { muted: true } : {}),
     ...(c.transition ? { transition: c.transition } : {}),
   }));
-  return { project: { title: doc.title, width: doc.width, height: doc.height, fps: doc.fps, fit: doc.fit ?? 'pad', length: r3(docLength(doc)) }, clips, selection, library: library.slice(0, 40) };
+  return { project: { title: doc.title, width: doc.width, height: doc.height, fps: doc.fps, fit: doc.fit ?? 'pad', length: r3(docLength(doc)) }, clips, selection, library: library.slice(0, 40), ...(voices.length ? { voices: voices.map((v) => ({ id: v.id, name: v.name, about: v.about })) } : {}) };
 }
 
 /** Pulls the answer's JSON out (models sometimes wrap it in a fence or a sentence). */
@@ -447,12 +467,12 @@ export function parseAnswer(text: string): { say: string; ops: Op[] } {
   }
 }
 
-type TurnInput = { project: string; doc: Doc; selection: Selection; messages: AssistantMessage[]; library: Parameters<typeof contextFor>[2] };
+type TurnInput = { project: string; doc: Doc; selection: Selection; messages: AssistantMessage[]; library: Parameters<typeof contextFor>[2]; voices?: EditorVoice[] };
 
 /** The AI editor's request: its instructions, and the project, selection and conversation. */
 export function assistantPrompt(a: TurnInput) {
   const convo = a.messages.slice(-16).map((m) => `${m.role === 'user' ? 'Person' : 'You'}: ${String(m.text).slice(0, 4000)}`).join('\n\n');
-  const prompt = `The project now:\n${JSON.stringify(contextFor(a.doc, a.selection, a.library))}\n\nThe conversation (the last line is what to do now):\n${convo}`;
+  const prompt = `The project now:\n${JSON.stringify(contextFor(a.doc, a.selection, a.library, a.voices ?? []))}\n\nThe conversation (the last line is what to do now):\n${convo}`;
   return { system: systemPrompt(), prompt, schema: ANSWER_SCHEMA, maxTokens: 4000, effort: 'medium' };
 }
 

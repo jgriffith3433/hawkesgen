@@ -173,9 +173,9 @@ input.num { width: 70px; }
 .hint { font-size: 12.5px; }
 
 /* Tool sheets */
-.sheet-pop { position: absolute; z-index: 20; left: 50%; bottom: 58px; transform: translateX(-50%); width: min(440px, calc(100% - 24px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 9px; animation: rise .14s ease-out; }
-.sheet-pop.wide { width: min(620px, calc(100% - 24px)); }
-@keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } }
+.sheet-pop { flex: none; align-self: center; width: min(620px, calc(100% - 24px)); margin: 0 12px 12px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 9px; animation: rise .14s ease-out; max-height: 46%; overflow-y: auto; }
+.sheet-pop.wide { width: min(720px, calc(100% - 24px)); }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; }
 .sheet-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .sheet-pop textarea { background: var(--panel-2); }
@@ -332,5 +332,5 @@ input.num { width: 70px; }
   .tb { padding: 8px; }
   .aspect { position: static; }
   .timecode { min-width: 0; }
-  .sheet-pop { bottom: 10px; }
+  .sheet-pop { margin: 0 8px 8px; max-height: 55%; }
 }

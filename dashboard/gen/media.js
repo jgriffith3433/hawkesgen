@@ -216,11 +216,6 @@ const STYLES = [
   ['digital illustration, clean lines, rich color', 'Illustration'], ['anime style, cel shading, vibrant', 'Anime'], ['3D render, soft studio lighting, high detail', '3D'],
   ['pixel art, 16-bit, crisp pixels, limited palette', 'Pixel'], ['watercolor painting, soft washes, paper texture', 'Watercolor'],
 ];
-const VOICES = [
-  ['A warm, calm male narrator, clear studio recording', 'Warm narrator (male)'], ['A warm, friendly female narrator, clear studio recording', 'Warm narrator (female)'],
-  ['An energetic young trailer announcer, punchy and excited, studio recording', 'Trailer announcer'], ['A deep, slow, dramatic movie-trailer voice, studio recording', 'Epic trailer voice'],
-  ['A cheerful young kid, playful, clear recording', 'Playful kid'], ['An old wise storyteller, gravelly and slow, close microphone', 'Old storyteller'],
-];
 /** Width and height for the project's shape (wide, tall, square), at a size each tool likes. */
 function shapeFor(kind) {
   const ar = P.doc.width / P.doc.height;
@@ -231,7 +226,17 @@ function shapeFor(kind) {
 function initGenerate() {
   let style = '';
   $('#genStyles').append(...STYLES.map(([w, label]) => h('button', { type: 'button', class: `chip${w === style ? ' on' : ''}`, onclick: (e) => { style = w; $$('#genStyles .chip').forEach((x) => x.classList.toggle('on', x === e.currentTarget)); } }, label)));
-  $('#genVoice').append(...VOICES.map(([v, l]) => h('option', { value: v }, l)));
+  // Voices: Gen's premade voice list (GET /v1/editor/voices); the open models' described voices come back when they
+  // have a GPU provider again.
+  const loadVoices = async () => {
+    try {
+      const { voices } = await api('/v1/editor/voices');
+      $('#genVoice').replaceChildren(...voices.map((v) => h('option', { value: v.id, title: v.about }, `${v.name}${v.about ? ` · ${v.about.split(',').slice(0, 2).join(',')}` : ''}`)));
+    } catch { /* signed out: filled after sign-in */ }
+  };
+  loadVoices();
+  bus.on('ready', loadVoices);
+  bus.on('signedIn', loadVoices);
   const forms = {
     genImageForm: () => {
       const prompt = $('#genImagePrompt').value.trim();
@@ -248,19 +253,20 @@ function initGenerate() {
     genMusicForm: () => {
       const prompt = $('#genMusicPrompt').value.trim();
       if (!prompt) return null;
-      const seconds = Math.min(240, Math.max(10, Math.ceil(Number($('#genMusicSeconds').value) || 30)));
+      const seconds = Math.min(240, Math.max(10, Math.ceil(Number($('#genMusicSeconds').value || $('#genMusicSeconds').placeholder) || 30)));
       return { tool: 'audio.music', params: { prompt, seconds }, label: prompt, place: { track: 'A1', start: 0, seconds } };
     },
     genVoiceForm: () => {
       const text = $('#genVoiceText').value.trim();
       if (!text) return null;
-      return { tool: 'audio.voice', params: { text, description: $('#genVoice').value }, label: text.slice(0, 60), place: { track: 'A2', start: P.playhead, seconds: Math.max(1.5, text.split(/\s+/).length / 2.6) } };
+      if (!$('#genVoice').value) return null;
+      return { tool: 'audio.voice', params: { text, voice: $('#genVoice').value, provider: 'elevenlabs' }, label: text.slice(0, 60), place: { track: 'A2', start: P.playhead, seconds: Math.max(1.5, text.split(/\s+/).length / 2.6) } };
     },
     genSfxForm: () => {
       const text = $('#genSfxText').value.trim();
       if (!text) return null;
       const duration = Number($('#genSfxSeconds').value) || undefined;
-      return { tool: 'audio.sfx', params: { text, ...(duration ? { duration } : {}) }, label: text, place: { track: 'A3', start: P.playhead, seconds: duration ?? 3 } };
+      return { tool: 'audio.sfx', params: { text, provider: 'elevenlabs', ...(duration ? { duration } : {}) }, label: text, place: { track: 'A3', start: P.playhead, seconds: duration ?? 3 } };
     },
   };
   for (const [id, build] of Object.entries(forms)) {

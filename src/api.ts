@@ -549,6 +549,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const submitFor = (project: string, editorId: string): import('./editor.ts').Submit => (spec) =>
         submit(client, { project, tool: spec.tool, params: spec.params, inputs: spec.inputs, labels: { by: client.name, editor: editorId, ...(spec.label ? { title: spec.label } : {}) } } as JobSpec);
       if (route === '/v1/editor/tools' && method === 'GET') return send(res, 200, { tools: ed.availableEditorTools(), tracks: ed.TRACKS });
+      if (route === '/v1/editor/voices' && method === 'GET') return send(res, 200, { voices: await ed.editorVoices() });
       if (route === '/v1/editor/projects' && method === 'GET') return send(res, 200, { items: ed.listProjects(projectOf(q('project'))) });
       if (route === '/v1/editor/projects' && method === 'POST') {
         const b = await readJson(req);
@@ -591,7 +592,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const library = listAssets({ project: p.project, limit: 40, playtest: false, projects: client.projects }).items
             .filter((a: any) => ['image', 'video', 'audio'].includes(a.kind))
             .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? null, duration: a.meta?.duration ?? null }));
-          const turn = await ed.assistantTurn({ project: p.project, doc: p.doc, selection: b.selection ?? {}, messages, library });
+          const turn = await ed.assistantTurn({ project: p.project, doc: p.doc, selection: b.selection ?? {}, messages, library, voices: await ed.editorVoices() });
           const auto = Math.max(0, Number(b.autoCredits ?? 40));
           const now: typeof turn.ops = [];
           const proposed: typeof turn.ops = [];
