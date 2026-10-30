@@ -149,6 +149,23 @@ export function codecArgs(o: ProcessOptions): string[] {
   return [...base, ...(o.sampleRate ? ['-ar', String(o.sampleRate)] : []), ...(o.channels ? ['-ac', String(o.channels)] : [])];
 }
 
+/**
+ * The filters that bring a clip to a loudness target: one linear gain (the dynamics kept), held under the true-peak
+ * ceiling, and a limiter for what the ceiling leaves (a peaky effect would otherwise stay quiet). Measured with ebur128,
+ * not loudnorm: loudnorm misjudges short clips on ffmpeg 5.1 (Gen's image: a 2 s sound effect was made 4 dB quieter)
+ * and resamples to 192 kHz. Empty when the clip has no measurable loudness (silence, a blip).
+ */
+export function loudnessGain(a: Pick<Analysis, 'lufs' | 'truePeak'>, target: number, ceiling: number): string[] {
+  if (a.lufs == null || !Number.isFinite(a.lufs) || a.lufs < -70) return [];
+  const gain = target - a.lufs;
+  if (Math.abs(gain) < 0.1) return [];
+  const peak = Number.isFinite(a.truePeak as number) ? (a.truePeak as number) : a.lufs + 12;
+  const room = ceiling - peak;
+  if (gain <= room) return [`volume=${gain.toFixed(2)}dB`];
+  // Gain past the ceiling: the limiter takes the peaks back under it (alimiter's limit is linear).
+  return [`volume=${gain.toFixed(2)}dB`, `alimiter=limit=${Math.pow(10, ceiling / 20).toFixed(4)}:level=false:attack=1:release=50`];
+}
+
 export async function processAudio(input: string, output: string, o: ProcessOptions, signal?: AbortSignal): Promise<{ before: Analysis; after: Analysis; options: ProcessOptions }> {
   const before = await analyze(input, { silenceDb: o.silenceDb, signal });
   // Trim first, so the fade and the loudness are measured on what is kept.
@@ -158,20 +175,9 @@ export async function processAudio(input: string, output: string, o: ProcessOpti
   try {
     const len = await durationOf(trimmed, signal);
     const post = filterChain({ fadeIn: o.fadeIn, fadeOut: o.fadeOut }, len);
-    let norm = '';
-    if (o.targetLufs != null) {
-      // Two-pass loudnorm: measure, then apply linearly so dynamics are kept.
-      const m = await ff(['-i', trimmed, '-af', `loudnorm=I=${o.targetLufs}:TP=${o.truePeak ?? -1.5}:LRA=11:print_format=json`, '-f', 'null', '-'], { signal });
-      const j = /\{[\s\S]*"input_i"[\s\S]*?\}/.exec(m.stderr)?.[0];
-      if (j) {
-        const v = JSON.parse(j);
-        norm = `loudnorm=I=${o.targetLufs}:TP=${o.truePeak ?? -1.5}:LRA=11:measured_I=${v.input_i}:measured_LRA=${v.input_lra}:measured_TP=${v.input_tp}:measured_thresh=${v.input_thresh}:offset=${v.target_offset}:linear=true`;
-      }
-    }
-    const chain = [...post, ...(norm ? [norm] : [])];
-    // loudnorm resamples to 192 kHz unless told otherwise: keep the source's rate when the caller didn't ask for one.
-    const rate = o.sampleRate ?? (norm ? await rateOf(input, signal) : null) ?? undefined;
-    await ff(['-y', '-i', trimmed, ...(chain.length ? ['-af', chain.join(',')] : []), ...codecArgs({ ...o, sampleRate: rate }), output], { signal });
+    const norm = o.targetLufs != null ? loudnessGain(await analyze(trimmed, { silenceDb: o.silenceDb, signal }), o.targetLufs, o.truePeak ?? -1.5) : [];
+    const chain = [...post, ...norm];
+    await ff(['-y', '-i', trimmed, ...(chain.length ? ['-af', chain.join(',')] : []), ...codecArgs(o), output], { signal });
   } finally {
     fs.rmSync(trimmed, { force: true });
   }

@@ -238,6 +238,16 @@ test('verify: word error rate ignores case, punctuation and tags', () => {
   assert.equal(wordErrorRate('', ''), 0);
 });
 
+test('loudness: one linear gain under the true-peak ceiling, a limiter only past it, nothing for silence', () => {
+  assert.deepEqual(P.loudnessGain({ lufs: -30, truePeak: -20 }, -18, -1.5), ['volume=12.00dB']);
+  const peaky = P.loudnessGain({ lufs: -32.8, truePeak: -15.2 }, -18, -1.5);
+  assert.equal(peaky[0], 'volume=14.80dB');
+  assert.match(peaky[1], /^alimiter=limit=0\.84/);
+  assert.deepEqual(P.loudnessGain({ lufs: -10, truePeak: -1 }, -16, -1.5), ['volume=-6.00dB']);
+  assert.deepEqual(P.loudnessGain({ lufs: null, truePeak: null }, -16, -1.5), []);
+  assert.deepEqual(P.loudnessGain({ lufs: -16.05, truePeak: -3 }, -16, -1.5), []);
+});
+
 test('post: parsers read ffmpeg output', () => {
   const e = P.parseEbur128('Summary:\n  Integrated loudness:\n    I:         -23.4 LUFS\n  Loudness range:\n    LRA:         5.1 LU\n  True peak:\n    Peak:       -1.2 dBFS');
   assert.deepEqual(e, { lufs: -23.4, loudnessRange: 5.1, truePeak: -1.2 });
