@@ -289,6 +289,12 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 | Route | |
 |---|---|
 | `GET /v1/editor/tools` | The tools the AI editor and the app offer on this Gen, and the tracks |
+| `GET/POST /v1/director/shots`, `GET/PUT/DELETE /v1/director/shots/:id` | The director's shots (src/director.ts), per account; PUT with `version` (409 with the newer shot) |
+| `POST /v1/director/shots/:id/assistant` | The AI director: `{ messages, doc? }` in, `{ say, shot, aiCredits? }` out (the shot saved) |
+| `POST /v1/director/shots/:id/blender` | Films the shot with Gen's Blender film pipeline (one asset.make); `?quote=1` prices it. 400 while anyone is a stand-in |
+| `POST /v1/director/prompts` | The look and action prompts "Film it" sends (image.control, video.control) for a shot |
+| `GET/PUT /v1/admin/ai`, `PUT/DELETE /v1/admin/ai/key` | Owner: the house AI (src/houseai.ts): source, markup, minCredits, the stored Anthropic key (last 4 only) |
+| `GET /v1/admin/accounts?q=`, `GET /v1/admin/accounts/:id`, `POST .../gift \| credits \| disable \| enable` | Owner: Gen app accounts (src/accounts.ts) |
 | `GET /v1/editor/catalog` | Every tool the app's Create pane offers: Gen's own description of each (params, inputs) and `ready` (false for tools that need the SSH GPU fleet while it is unavailable). Machinery an account never runs (unity, playtests, comfy.graph, asset.lod, video.compose...) is left out |
 | `GET /v1/editor/projects[?project=]` | The caller's projects, newest first |
 | `POST /v1/editor/projects` `{ title?, doc?, project? }` | A new project |

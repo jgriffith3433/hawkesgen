@@ -1,11 +1,13 @@
 // The AI editor (right pane): a conversation about the open project. It sees the timeline, the selection (clips, a
 // time range, the playhead, a painted area) and recent media, and answers with edits Gen applies to the project
-// (src/editor.ts). Every AI edit is one undo step. Generation over the auto limit waits for a tap. It runs on the
-// account's own Claude (Your AI); without one, the pane says how to connect it.
+// (src/editor.ts). Every AI edit is one undo step. Generation over the auto limit waits for a tap. It runs on Gen's
+// house AI (a credit or so a message), or the account's own Claude when it connected one. While the director is open
+// (director.js) the same pane is the AI director: it talks about the shot and changes it.
 
 import { $, h, api, toast, fmt, bus, icon, plainError } from './lib.js';
 import { P, selectedClips, remember, take, save, docLength, clipLength } from './project.js';
 import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './account.js';
+import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions } from './director.js';
 
 const A = { messages: [], busy: false };
 const KEY = (id) => `hg.ai.${id}`;
@@ -21,13 +23,18 @@ export function initAi() {
   bus.on('ai', drawGate);
   bus.on('signedIn', drawGate);
   bus.on('ready', drawGate);
+  bus.on('director', () => { drawHead(); drawMessages(); drawContext(); });
+  bus.on('directorShot', () => { drawMessages(); drawContext(); });
   drawGate();
   drawContext();
   drawMessages();
 }
 
 function load(id) { try { return JSON.parse(localStorage.getItem(KEY(id)) || '[]'); } catch { return []; } }
-function keep() { if (!P.id) return; try { localStorage.setItem(KEY(P.id), JSON.stringify(A.messages.slice(-40))); } catch { /* */ } }
+/** The conversation on show: the project's, or the open shot's while directing. */
+const msgs = () => (directorOpen() ? directorMessages() : A.messages);
+function drawHead() { $('.ai-head b').textContent = directorOpen() ? 'AI director' : 'AI editor'; }
+function keep() { if (directorOpen()) return keepDirectorMessages(); if (!P.id) return; try { localStorage.setItem(KEY(P.id), JSON.stringify(A.messages.slice(-40))); } catch { /* */ } }
 
 /** The selection as the AI gets it, and as the chip shows it. */
 export function selectionForAi() {
@@ -40,6 +47,12 @@ export function selectionForAi() {
 }
 function drawContext() {
   const box = $('#aiContext');
+  if (directorOpen()) {
+    const sh = currentShot();
+    box.replaceChildren(h('span', { class: 'ctx-chip' }, icon('film'), `Shot: ${sh?.doc.title ?? ''}`.slice(0, 48)));
+    $('#aiSuggest').replaceChildren(...directorSuggestions().map((x) => h('button', { type: 'button', class: 'chip', onclick: () => { $('#aiInput').value = x; send(); } }, x)));
+    return;
+  }
   const clips = selectedClips();
   const parts = [];
   if (clips.length === 1) parts.push(`${clips[0].kind === 'text' ? 'Text' : clips[0].kind === 'audio' ? 'Sound' : clips[0].kind === 'image' ? 'Picture' : 'Clip'}: ${clips[0].label ?? clips[0].text ?? ''}`.slice(0, 48));
@@ -80,12 +93,17 @@ function drawGate() {
 
 function drawMessages() {
   const list = $('#aiMessages');
-  if (!A.messages.length) {
+  if (!msgs().length && directorOpen()) {
+    list.replaceChildren(h('div', { class: 'ai-hello' }, icon('film', 'ico big'), h('h3', {}, 'What\'s the shot?'),
+      h('p', { class: 'muted' }, 'Describe it like a director: who\'s in it, where they are, what happens, how the camera moves. "Two knights face off in the rain, low angle, slow push-in."')));
+    return;
+  }
+  if (!A.messages.length && !directorOpen()) {
     list.replaceChildren(h('div', { class: 'ai-hello' }, icon('sparkle', 'ico big'), h('h3', {}, 'What are we making?'),
       h('p', { class: 'muted' }, 'Select clips or drag across the timeline, then ask. "Make this slow motion", "replace the sky with a sunset", "add a punchy voice-over"…')));
     return;
   }
-  list.replaceChildren(...A.messages.map(msgEl));
+  list.replaceChildren(...msgs().map(msgEl));
   list.scrollTop = list.scrollHeight;
 }
 function msgEl(m) {
@@ -109,6 +127,7 @@ async function send() {
   if (!text || A.busy) return;
   if (!state.user) return needSignIn(send, 'login');
   if (!hasAi()) { await loadAi(); if (!hasAi()) return drawGate(); }
+  if (directorOpen()) return sendDirector(text);
   if (!P.id) return toast('Your project is still opening.');
   const ctx = $('#aiContext .ctx-chip')?.textContent ?? '';
   A.messages.push({ role: 'user', text, context: ctx });
@@ -129,7 +148,7 @@ async function send() {
     if (changedDoc) { remember(); take(r.project); }
     const results = (r.results ?? []).map((x, i) => ({ ...x, label: labelOf(r, i) }));
     A.messages.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), results, proposed: r.proposed ?? null, undoable: changedDoc });
-    if (results.some((x) => x.op === 'generate' && x.ok)) refreshCredits();
+    if (r.aiCredits || results.some((x) => x.op === 'generate' && x.ok)) refreshCredits();
   } catch (err) {
     A.messages.pop();
     if (err.status === 402) { await loadAi(); drawGate(); }
@@ -138,6 +157,30 @@ async function send() {
     A.busy = false;
     $('#aiSend').disabled = false;
     keep();
+    drawMessages();
+  }
+}
+/** A turn with the AI director: the conversation about the open shot; the answer is the changed shot. */
+async function sendDirector(text) {
+  const list = directorMessages();
+  list.push({ role: 'user', text });
+  $('#aiInput').value = '';
+  $('#aiInput').style.height = 'auto';
+  list.push({ role: 'assistant', text: 'Blocking the shot…', pending: true });
+  drawMessages();
+  A.busy = true;
+  $('#aiSend').disabled = true;
+  try {
+    const r = await askDirector(list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })));
+    list.pop();
+    list.push({ role: 'assistant', text: r.say || 'Done.' });
+  } catch (err) {
+    list.pop();
+    list.push({ role: 'assistant', text: `I couldn't do that: ${plainError(err.message)}`, error: true });
+  } finally {
+    A.busy = false;
+    $('#aiSend').disabled = false;
+    keepDirectorMessages();
     drawMessages();
   }
 }

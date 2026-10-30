@@ -13,7 +13,7 @@ import { GenError } from './util.ts';
 import { getJob } from './jobs.ts';
 import { getTool } from './tools/index.ts';
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject } from './orgsecrets.ts';
+import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS editor_projects (
@@ -498,10 +498,11 @@ export function assistantPrompt(a: TurnInput) {
 
 /**
  * One AI editor turn: the conversation, the project and selection in; the answer's words and edits out. Runs on the
- * account's own Claude (callScope with its org: their API key or subscription, never ours).
+ * account's own Claude when it has one (callScope with its org: its API key or subscription), else, for a Gen app
+ * account, on the house AI (src/houseai.ts): `house` says so, and `cost` is what the call cost, to charge in credits.
  */
-export async function assistantTurn(a: TurnInput): Promise<{ say: string; ops: Op[]; model: string }> {
+export async function assistantTurn(a: TurnInput): Promise<{ say: string; ops: Op[]; model: string; house: boolean; cost: number }> {
   const org = orgOfProject(a.project);
-  const r = await callScope.run({ customer: true, org }, () => ask(assistantPrompt(a)));
-  return { ...parseAnswer(r.text), model: r.model };
+  const r = await callScope.run({ customer: true, org, house: isGenAccountProject(a.project) }, () => ask(assistantPrompt(a)));
+  return { ...parseAnswer(r.text), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }

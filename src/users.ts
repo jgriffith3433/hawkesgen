@@ -144,6 +144,11 @@ export function signupUser(input: { email?: unknown; password?: unknown; name?: 
 // Continue with Google (J, 2026-10-29: one Google account signs in to every product, each keeping its own account): a
 // Gen account is found by Google's permanent id (`google_sub`), else by its email (an account made with a password
 // before, now linked), else made. Passwords are off on the cloud lanes (passwordsAllowed).
+// Accounts the owner disabled in /admin > Accounts (src/accounts.ts): their sessions and keys stop working.
+db.exec('CREATE TABLE IF NOT EXISTS user_flags (user_id TEXT PRIMARY KEY, disabled INTEGER NOT NULL DEFAULT 0, note TEXT, updated INTEGER NOT NULL, by TEXT)');
+export function isDisabled(userId: string): boolean {
+  return Boolean((db.prepare('SELECT disabled FROM user_flags WHERE user_id = ?').get(userId) as { disabled: number } | undefined)?.disabled);
+}
 db.exec('CREATE TABLE IF NOT EXISTS user_google (user_id TEXT PRIMARY KEY, sub TEXT UNIQUE NOT NULL, linked INTEGER NOT NULL)');
 
 /** Email-and-password sign-up and sign-in: only off the cloud (local runs and tests), or with HAWKESGEN_PASSWORD_LOGIN=1. */
@@ -289,7 +294,7 @@ export function authenticateRequest(req: IncomingMessage): AuthClient | null {
     if (row) {
       if (row.expires > Date.now()) {
         const user = getUserById(row.user_id);
-        if (user) {
+        if (user && !isDisabled(user.id)) {
           // The admins (settings.dashboard.googleEmails: J) signed in with Google are Gen's owner too, so one sign-in
           // opens the app and /admin (J, 2026-10-29). A password account with the same email never is.
           if (isGenAdmin(user)) return { id: user.id, name: user.email, role: 'owner', projects: ['*'], userId: user.id };
@@ -320,6 +325,7 @@ export function authenticateRequest(req: IncomingMessage): AuthClient | null {
   if (!client) return null;
 
   const user = getUserForClient(client);
+  if (user && isDisabled(user.id)) return null;
   if (user) {
     return {
       ...client,

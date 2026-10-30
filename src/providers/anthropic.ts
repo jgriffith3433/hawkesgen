@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import { env, loadSettings } from '../config.ts';
 import * as maxPlan from './claudecode.ts';
+import { houseRoute, houseCanFallBack } from '../houseai.ts';
 import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
 import * as bedrock from './bedrock.ts';
@@ -59,8 +60,9 @@ function anthropic(apiKey?: string) {
 export const backend = () => loadSettings().claude.backend;
 
 /** Who a job's Claude calls are for (src/jobs.ts sets it around every tool run): a customer's run on its org's own key or
- *  subscription only (ask() below), never Gen's key, J's Max plan, Cursor or Copilot. */
-export const callScope = new AsyncLocalStorage<{ customer: boolean; org?: string | null }>();
+ *  subscription only (ask() below), never Gen's key, J's Max plan, Cursor or Copilot. `house`: a Gen app account, whose
+ *  calls without its own access run on the house AI the owner set in /admin (src/houseai.ts). */
+export const callScope = new AsyncLocalStorage<{ customer: boolean; org?: string | null; house?: boolean }>();
 /** Whether the running job is a customer's (whatever the Claude setting). */
 export const customerJob = () => callScope.getStore()?.customer === true;
 
@@ -104,6 +106,21 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
   }
   const ownSub = org ? orgSecret(org, 'claude-subscription') : null;
   if (ownSub) return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal, { token: ownSub });
+  if (scope?.customer && scope.house) {
+    // A Gen app account: the house AI (J, 2026-10-29: "users don't have to deal with this and it just works").
+    const route = houseRoute();
+    if (route.via === 'api') {
+      try {
+        const r = await askApi(p, signal, route.key, 'house');
+        return p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r;
+      } catch (e: any) {
+        // "auto": a key that fails (rejected, out of credit) falls back to Gen's Claude login when there is one.
+        if (e?.kind !== 'auth' || !houseCanFallBack()) throw e;
+      }
+    }
+    if (route.via === 'api' || route.via === 'claude') return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal);
+    throw new GenError(route.why, { status: 503 });
+  }
   if (scope?.customer) {
     throw new GenError('Claude needs your own access: add your Anthropic API key, or sign in with your Claude subscription, in your hawkesgen.ai settings.', { status: 402, kind: 'auth' });
   }
@@ -129,7 +146,7 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
 }
 
 /** The API key path: billed per token. */
-async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema, onText }: AskParams, signal?: AbortSignal, apiKey?: string) {
+async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema, onText }: AskParams, signal?: AbortSignal, apiKey?: string, whose: 'org' | 'house' = 'org') {
   const content: any[] = images.map((file) => {
     const mime = mimeOf(file);
     if (!IMAGE_TYPES.has(mime)) throw new GenError(`Claude reads PNG, JPEG, WebP or GIF images, not ${file}`);
@@ -155,7 +172,13 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
     }
     response = await stream.finalMessage();
   } catch (e: any) {
-    if (e instanceof Anthropic.AuthenticationError) throw new GenError(apiKey ? "Your org's Anthropic API key was rejected: replace it in your hawkesgen.ai settings." : 'The ANTHROPIC_API_KEY in .env was rejected.', { status: 502, kind: 'auth' });
+    // The house key failing (rejected, out of credit) is the owner's to fix, not the person's: they get a plain line, the
+    // log gets the reason, and the house AI may fall back to a Claude login (ask()).
+    if (whose === 'house' && (e instanceof Anthropic.AuthenticationError || (e instanceof Anthropic.APIError && [400, 401, 402, 403].includes(Number(e.status))))) {
+      console.error(`[houseai] the house Anthropic API key failed (fix it in /admin > AI): ${e.message}`);
+      throw new GenError("The AI isn't available right now. Please try again later.", { status: 503, kind: 'auth' });
+    }
+    if (e instanceof Anthropic.AuthenticationError) throw new GenError(!apiKey ? 'The ANTHROPIC_API_KEY in .env was rejected.' : whose === 'house' ? "The AI isn't available right now. Please try again later." : "Your org's Anthropic API key was rejected: replace it in your hawkesgen.ai settings.", { status: 502, kind: 'auth' });
     if (e instanceof Anthropic.RateLimitError) throw new GenError('Claude is rate limited right now; try again in a minute.', { status: 429, kind: 'throttled' });
     if (e instanceof Anthropic.APIError) throw new GenError(`Claude API error ${e.status}: ${e.message}`, { status: 502 });
     throw e;

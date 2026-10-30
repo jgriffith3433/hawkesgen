@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/gen/gen.css">
+  <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }</script>
 </head>
 <body>
   <div class="app" id="app">
@@ -22,6 +23,7 @@
         <span id="saveState" class="save-state"></span>
       </div>
       <div class="bar-mid">
+        <button class="ghost small director-btn" id="directorBtn" title="Design a shot in 3D and film it"><span class="ico-wrap" data-icon="film"></span>Director</button>
         <button class="icon-btn" id="undoBtn" title="Undo (Ctrl+Z)" disabled><span class="ico-wrap" data-icon="undo"></span></button>
         <button class="icon-btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)" disabled><span class="ico-wrap" data-icon="redo"></span></button>
       </div>
@@ -39,6 +41,7 @@
       <div class="seg" id="paneTabs">
         <button data-pane="media" class="on">Media</button>
         <button data-pane="generate">Create</button>
+        <button data-pane="shot" id="shotTab" hidden>Shot</button>
       </div>
       <div class="pane-body" id="pane-media">
         <div class="media-top">
@@ -56,6 +59,7 @@
         <div id="mediaGrid" class="media-grid"></div>
         <p class="drop-hint muted small">Drop files anywhere to upload. Drag tiles onto the timeline.</p>
       </div>
+      <div class="pane-body" id="pane-shot" hidden><div id="shotPanel"></div></div>
       <div class="pane-body" id="pane-generate" hidden>
         <div id="createHome">
           <input id="createSearch" type="search" placeholder="Search every tool" aria-label="Search tools">
@@ -188,7 +192,7 @@
       <h3>Add credits</h3>
       <div id="packs" class="packs"></div>
       <button class="ghost small" id="billingPortalBtn" hidden>Cards and receipts</button>
-      <h3>Your AI</h3>
+      <h3 id="aiKeysTitle">Your AI</h3>
       <div id="aiKeys"></div>
       <p id="accountError" class="error" hidden></p>
       <div class="row end">

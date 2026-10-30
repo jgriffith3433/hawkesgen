@@ -64,6 +64,7 @@ import {
   rotateUserApiKey,
   googleSignin,
   passwordsAllowed,
+  getUserById,
 } from './users.ts';
 import {
   listCreditPacks,
@@ -74,7 +75,9 @@ import {
   isInternalOnlyTool,
   getStripeStatus,
   saveStripeConfig,
+  chargeCredits,
 } from './billing.ts';
+import * as house from './houseai.ts';
 import { getPortfolio } from './portfolio.ts';
 import { probe as probeMedia, normalizeCheck, type ProbeInfo } from './tools/media.ts';
 
@@ -195,7 +198,7 @@ export function isCustomer(c: Client) {
   const globs = loadSettings().queue.projects;
   return c.projects.length > 0 && c.projects.every((p) => p !== '*' && globs.some((g) => (g.endsWith('*') ? p.startsWith(g.slice(0, -1)) : p === g)));
 }
-const OPS_ROUTES = /^\/v1\/(fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune)(\/|$)/;
+const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune)(\/|$)/;
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
@@ -528,12 +531,99 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const org = os_.genAccountOrg(user.project);
       if (!ai_[1]) {
         if (method !== 'GET') throw new GenError('Name what to set: /v1/users/me/ai/anthropic or /claude-subscription', { status: 405 });
-        return send(res, 200, { anthropic: os_.orgSecretInfo(org, 'anthropic'), claudeSubscription: os_.orgSecretInfo(org, 'claude-subscription') });
+        // house: the AI Gen gives every account (src/houseai.ts); the app asks nothing of the person while it's ready.
+        return send(res, 200, { anthropic: os_.orgSecretInfo(org, 'anthropic'), claudeSubscription: os_.orgSecretInfo(org, 'claude-subscription'), house: { ready: house.houseReady(), minCredits: house.houseSettings().minCredits } });
       }
       const kind = ai_[1] as 'anthropic' | 'claude-subscription';
       if (method === 'GET') return send(res, 200, os_.orgSecretInfo(org, kind));
       if (method === 'PUT' || method === 'POST') return send(res, 200, os_.setOrgSecret(org, kind, String((await readJson(req)).key ?? ''), user.email));
       if (method === 'DELETE') return send(res, 200, os_.deleteOrgSecret(org, kind));
+    }
+
+    // --------------------------------------------------------------- /admin: the house AI and accounts (owner only)
+    if (route.startsWith('/v1/admin/')) {
+      requireRole(client, 'owner');
+      const by = client.name ?? 'owner';
+      if (route === '/v1/admin/ai' && method === 'GET') return send(res, 200, house.houseStatus());
+      if (route === '/v1/admin/ai' && (method === 'PUT' || method === 'POST')) {
+        const b = await readJson(req);
+        return send(res, 200, house.saveHouseSettings({ source: b.source, markup: b.markup, minCredits: b.minCredits }));
+      }
+      if (route === '/v1/admin/ai/key' && (method === 'PUT' || method === 'POST')) return send(res, 200, house.setHouseKey(String((await readJson(req)).key ?? ''), by));
+      if (route === '/v1/admin/ai/key' && method === 'DELETE') return send(res, 200, house.clearHouseKey());
+      const acc = await import('./accounts.ts');
+      if (route === '/v1/admin/accounts' && method === 'GET') return send(res, 200, { ...acc.listGenAccounts({ q: q('q') ?? '', limit: Number(q('limit') ?? 100), offset: Number(q('offset') ?? 0) }), overview: acc.accountsOverview() });
+      const am = /^\/v1\/admin\/accounts\/(u_[0-9a-f]+)(?:\/(gift|credits|disable|enable))?$/.exec(route);
+      if (am && !am[2] && method === 'GET') return send(res, 200, acc.genAccount(am[1]));
+      if (am && am[2] && method === 'POST') {
+        const b = await readJson(req);
+        if (am[2] === 'gift') return send(res, 200, acc.giftCredits(am[1], Number(b.credits), String(b.note ?? '')));
+        if (am[2] === 'credits') return send(res, 200, acc.adjustCredits(am[1], Number(b.delta), String(b.note ?? '')));
+        return send(res, 200, acc.setDisabled(am[1], am[2] === 'disable', String(b.note ?? ''), by));
+      }
+      throw new GenError(`No admin route ${method} ${route}`, { status: 404 });
+    }
+
+    // --------------------------------------------------------------- the director (src/director.ts)
+    if (route.startsWith('/v1/director/')) {
+      const dr = await import('./director.ts');
+      const user = getUserForClient(client);
+      const canSee = (p: string) => canProject(client, p);
+      const projectOf = (asked?: unknown) => {
+        const p = fixedProject(client) ?? (typeof asked === 'string' && asked ? asked : user?.project ?? '');
+        if (!p || !canProject(client, p)) throw new GenError('Name a project you can use', { status: 403 });
+        return p;
+      };
+      if (route === '/v1/director/shots' && method === 'GET') return send(res, 200, { items: dr.listShots(projectOf(q('project'))) });
+      if (route === '/v1/director/shots' && method === 'POST') {
+        const b = await readJson(req);
+        return send(res, 200, dr.createShot(projectOf(b.project), b.doc ?? (b.title ? { title: b.title } : undefined)));
+      }
+      const dm = /^\/v1\/director\/shots\/(sh_[0-9a-f]+)(?:\/(assistant|blender))?$/.exec(route);
+      if (dm) {
+        const id = dm[1];
+        if (!dm[2] && method === 'GET') return send(res, 200, dr.getShot(id, canSee));
+        if (!dm[2] && method === 'PUT') {
+          const b = await readJson(req);
+          try { return send(res, 200, dr.saveShot(dr.getShot(id, canSee), b.doc, b.version == null ? undefined : Number(b.version))); } catch (e: any) {
+            if (e.status === 409) return send(res, 409, { error: e.message, shot: e.shot });
+            throw e;
+          }
+        }
+        if (!dm[2] && method === 'DELETE') { dr.deleteShot(id, canSee); return send(res, 200, { ok: true }); }
+        if (dm[2] === 'assistant' && method === 'POST') {
+          // The AI director: the conversation and the shot in, the changed shot out (saved). Like the AI editor, a Gen
+          // account without its own Claude runs on the house AI and pays in credits.
+          const b = await readJson(req);
+          let sh = dr.getShot(id, canSee);
+          if (b.doc) sh = dr.saveShot(sh, b.doc);
+          const messages = (Array.isArray(b.messages) ? b.messages : []).filter((m: any) => m && typeof m.text === 'string').map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' as const : 'user' as const, text: m.text }));
+          if (!messages.length) throw new GenError('Say something to the director', { status: 400 });
+          const { isGenAccountProject, orgOfProject: orgOf, orgSecretInfo: secretInfo } = await import('./orgsecrets.ts');
+          const ownOrg = orgOf(sh.project);
+          const ownAi = Boolean(ownOrg && (secretInfo(ownOrg, 'anthropic').set || secretInfo(ownOrg, 'claude-subscription').set));
+          const payer = user && isGenAccountProject(sh.project) && !ownAi ? user : null;
+          if (payer) house.checkCanPay(getUserById(payer.id)?.credits ?? 0);
+          const library = listAssets({ project: sh.project, limit: 60, playtest: false, projects: client.projects }).items
+            .filter((a: any) => a.kind === 'mesh' || (a.kind === 'image' && a.tool === 'image.panorama'))
+            .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? null }));
+          const turn = await dr.directorTurn({ project: sh.project, shot: sh.doc, messages, library });
+          const aiCharge = payer && turn.house ? chargeCredits(payer.id, house.turnCredits(turn.cost), 'ai_turn', `Director: ${String(messages[messages.length - 1].text).slice(0, 80)}`) : null;
+          const saved = dr.saveShot(sh, turn.shot);
+          return send(res, 200, { say: turn.say, shot: saved, model: turn.model, ...(aiCharge ? { aiCredits: aiCharge.charged } : {}) });
+        }
+        if (dm[2] === 'blender' && method === 'POST') {
+          // Films the shot with Gen's Blender pipeline (cinemaPass) as one asset.make job. ?quote=1 prices it only.
+          const sh = dr.getShot(id, canSee);
+          const { recipe, files } = dr.blenderRecipe(sh.doc);
+          const params = { steps: recipe.steps, candidates: recipe.candidates, pickAt: recipe.pickAt, pick: recipe.pick };
+          if (q('quote') === '1') return send(res, 200, { quote: quoteJobCredits({ project: sh.project, tool: 'asset.make', params } as any), notes: recipe.notes });
+          const job = submit(client, { project: sh.project, tool: 'asset.make', params, inputs: { files }, labels: { by: client.name, director: sh.id, title: `Shot: ${sh.doc.title}` } } as JobSpec);
+          return send(res, 200, { job: summary(job), notes: recipe.notes });
+        }
+      }
+      if (route === '/v1/director/prompts' && method === 'POST') return send(res, 200, dr.filmPrompts(dr.normalizeShot((await readJson(req)).doc)));
+      throw new GenError(`No director route ${method} ${route}`, { status: 404 });
     }
 
     // --------------------------------------------------------------- the editor (src/editor.ts)
@@ -598,7 +688,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const library = listAssets({ project: p.project, limit: 40, playtest: false, projects: client.projects }).items
             .filter((a: any) => ['image', 'video', 'audio', 'mesh'].includes(a.kind))
             .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? null, duration: a.meta?.duration ?? null }));
+          // A Gen app account without its own Claude runs on the house AI and pays for it in credits (src/houseai.ts).
+          const { isGenAccountProject, orgOfProject: orgOf, orgSecretInfo: secretInfo } = await import('./orgsecrets.ts');
+          const ownOrg = orgOf(p.project);
+          const ownAi = Boolean(ownOrg && (secretInfo(ownOrg, 'anthropic').set || secretInfo(ownOrg, 'claude-subscription').set));
+          const payer = user && isGenAccountProject(p.project) && !ownAi ? user : null;
+          if (payer) house.checkCanPay(getUserById(payer.id)?.credits ?? 0);
           const turn = await ed.assistantTurn({ project: p.project, doc: p.doc, selection: b.selection ?? {}, messages, library, voices: await ed.editorVoices() });
+          const aiCharge = payer && turn.house ? chargeCredits(payer.id, house.turnCredits(turn.cost), 'ai_turn', `AI editor: ${String(messages[messages.length - 1].text).slice(0, 80)}`) : null;
           const auto = Math.max(0, Number(b.autoCredits ?? 40));
           const now: typeof turn.ops = [];
           const proposed: typeof turn.ops = [];
@@ -613,7 +710,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const r = ed.applyOps(p.doc, now, submitFor(p.project, id));
           const saved = ed.saveDoc(p, r.doc);
           return send(res, 200, {
-            say: turn.say, project: saved, results: r.results, model: turn.model,
+            say: turn.say, project: saved, results: r.results, model: turn.model, ...(aiCharge ? { aiCredits: aiCharge.charged } : {}),
             ...(proposed.length ? { proposed: { ops: proposed, credits: proposed.reduce((s, o) => s + (o.credits ?? 0), 0) } } : {}),
           });
         }

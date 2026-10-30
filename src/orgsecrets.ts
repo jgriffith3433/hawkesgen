@@ -35,6 +35,9 @@ export function orgOfProject(project: string): string | null {
   return g ? genAccountOrg(o) : null;
 }
 
+/** Whether a project is a Gen app account's (`u_<hex>`, src/users.ts): its Claude falls back to the house AI. */
+export const isGenAccountProject = (project: string) => /^u_[0-9a-f]{8,32}$/.test(String(project ?? '').split('.')[0]);
+
 /** A Gen app account's own org: hashed, so it can never be a hawkesgen.ai org (Gen and the portal are separate products). */
 export const genAccountOrg = (project: string) => `org_${crypto.createHash('sha256').update(`gen-account:${project}`).digest('hex').slice(0, 24)}`;
 

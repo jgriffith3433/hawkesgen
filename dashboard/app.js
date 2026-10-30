@@ -889,7 +889,7 @@ render.settings = async () => {
       <label><span>ElevenLabs $ per 1,000 characters (for usage reports)</span><input type="number" step="any" id="sre" value="${s.rates.elevenlabsPer1kChars}"></label>
     </div><div class="row" style="margin-top:10px"><button class="primary" id="ssave">Save</button></div></div>
     <div class="card" id="gpuProviders"><h3>GPU providers</h3><p class="muted small">Loading…</p></div>
-    ${me.role === 'owner' ? '<div class="card" id="claudeAccounts"><h3>🔑 Claude accounts</h3><p class="muted small">Loading…</p></div>' : ''}
+    ${me.role === 'owner' ? '<div class="card"><h3>🔑 Claude accounts</h3><p class="muted small">Gen’s Claude sign-ins and the AI every account uses are in the <a href="#ai">AI</a> tab.</p></div>' : ''}
     ${me.role === 'owner' ? `<div class="card"><h3>Google sign-in</h3><p class="muted small">"Continue with Google" on this dashboard lets these Google accounts in as the owner. The client is a Google OAuth web client whose Authorized JavaScript origins list this address (${esc(location.origin)}).</p>
       <div class="form"><label><span>Google client id</span><input id="dgc" value="${esc(s.dashboard?.googleClientId ?? '')}" placeholder="1234…apps.googleusercontent.com"></label>
       <label><span>Google accounts let in (comma separated)</span><input id="dge" value="${esc((s.dashboard?.googleEmails ?? []).join(', '))}"></label></div>
@@ -904,7 +904,6 @@ render.settings = async () => {
   $('#adgo').onclick = () => confirm('Copy that folder\'s server tokens and SSH keys into Hawkes Gen?') && post('/fleet/adopt', { confirm: true, from: $('#adf').value }).then((r) => toast(`Adopted ${r.servers.length} servers, ${r.keys.length} keys`)).catch(fail);
   $('#sout').onclick = () => post('/dashboard/signout').then(() => location.reload()).catch(fail);
   $('#dgsave')?.addEventListener('click', () => post('/settings', { dashboard: { googleClientId: $('#dgc').value.trim() || null, googleEmails: $('#dge').value.split(',').map((x) => x.trim()).filter(Boolean) } }).then(() => { toast('Saved'); render.settings(); }).catch(fail));
-  if (me.role === 'owner') claudeAccounts().catch(fail);
   gpuProviders(s).catch((e) => { $('#gpuProviders').innerHTML = `<h3>GPU providers</h3><p class="muted small">${esc(e.message)}</p>`; });
 };
 
@@ -963,6 +962,73 @@ async function claudeAccounts(list) {
   for (const b of box.querySelectorAll('[data-ca-check]')) b.onclick = () => { b.disabled = true; b.textContent = 'Checking…'; again(post(`/claude/accounts/${b.dataset.caCheck}/check`)); };
   for (const b of box.querySelectorAll('[data-ca-rename]')) b.onclick = () => { const n = prompt('A new name'); if (n) again(post(`/claude/accounts/${b.dataset.caRename}/rename`, { label: n })); };
   for (const b of box.querySelectorAll('[data-ca-del]')) b.onclick = () => confirm('Remove this Claude account from Gen?') && again(api(`/claude/accounts/${b.dataset.caDel}`, { method: 'DELETE' }));
+}
+
+// ---------------------------------------------------------------- AI: the house AI every Gen account uses
+// (src/houseai.ts): J's Anthropic API key and/or Gen's Claude sign-ins, which one serves accounts, and the price.
+render.ai = async () => {
+  const s = await api('/admin/ai');
+  const now = s.now === 'api' ? 'the Anthropic API key' : s.now === 'claude' ? 'Gen’s Claude sign-in' : 'nothing';
+  $('#ai').innerHTML = `<h2>AI</h2>
+    <div class="card"><h3>What accounts get</h3>
+      <p>Every Gen account's AI (the AI editor, the director, and tools that ask Claude) runs on <b>${esc(now)}</b>${s.why ? `: <span style="color:var(--bad)">${esc(s.why)}</span>` : ''}. Nobody connects anything. An account that connected its own key or subscription uses that instead, for free.</p>
+      <div class="form">
+        <label><span>Use</span><select id="hsrc">${[['auto', 'The API key, else a Claude sign-in'], ['api', 'The API key only'], ['claude', 'Claude sign-ins only'], ['off', 'Off (accounts need their own)']].map(([v, l]) => `<option value="${v}" ${s.source === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label><span>Price: the call's cost × this (1 credit = 1¢)</span><input id="hmk" type="number" min="1" max="10" step="0.1" value="${s.markup}"></label>
+        <label><span>At least (credits a message)</span><input id="hmin" type="number" min="0" max="100" step="1" value="${s.minCredits}"></label>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="hsave">Save</button></div>
+      <p class="muted small">Anthropic's Pro and Max plans are for one person's own use: serving your customers on a sign-in can break Anthropic's terms. "The API key, else a Claude sign-in" keeps the key first. A sign-in's calls cost you $0, so accounts pay the minimum.</p></div>
+    <div class="card"><h3>Anthropic API key</h3>
+      ${s.key.set ? `<p>Set: <code>…${esc(s.key.last4)}</code> <span class="muted small">by ${esc(s.key.by ?? '')} ${esc(ago(s.key.updated))}</span></p><div class="row"><button class="danger" id="hkdel">Remove</button></div>`
+        : `<p class="muted small">${s.envKey ? 'None stored: the service’s own ANTHROPIC_API_KEY is used.' : 'None yet.'} Make one at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a>. It's stored encrypted and never shown again.</p>`}
+      <div class="row" style="margin-top:8px"><input id="hkey" type="password" autocomplete="off" style="flex:1" placeholder="sk-ant-api03-…"><button id="hkset">${s.key.set ? 'Replace' : 'Save key'}</button></div></div>
+    <div class="card" id="claudeAccounts"><h3>🔑 Claude accounts</h3><p class="muted small">Loading…</p></div>`;
+  $('#hsave').onclick = () => api('/admin/ai', { method: 'PUT', body: JSON.stringify({ source: $('#hsrc').value, markup: Number($('#hmk').value), minCredits: Number($('#hmin').value) }) }).then(() => { toast('Saved'); render.ai(); }).catch(fail);
+  $('#hkset').onclick = () => api('/admin/ai/key', { method: 'PUT', body: JSON.stringify({ key: $('#hkey').value.trim() }) }).then(() => { toast('Key saved'); render.ai(); }).catch(fail);
+  $('#hkdel')?.addEventListener('click', () => confirm('Remove the stored API key?') && api('/admin/ai/key', { method: 'DELETE' }).then(() => render.ai()).catch(fail));
+  claudeAccounts().catch(fail);
+};
+
+// ---------------------------------------------------------------- accounts: Gen app accounts (src/accounts.ts)
+render.accounts = async () => {
+  const q = render.accounts.q ?? '';
+  const r = await api(`/admin/accounts?limit=200${q ? `&q=${encodeURIComponent(q)}` : ''}`);
+  const o = r.overview;
+  const n = (x) => Number(x ?? 0).toLocaleString();
+  $('#accounts').innerHTML = `<h2>Accounts</h2>
+    <div class="grid">${[['Accounts', o.accounts], ['New this week', o.new7d], ['Signed in this week', o.active7d], ['Credits held', o.creditsHeld], ['Credits spent (30 days)', o.spent30d], ['Credits bought (30 days)', o.bought30d]].map(([l, v]) => `<div class="card stat"><b>${n(v)}</b><span>${l}</span></div>`).join('')}</div>
+    <div class="card"><div class="row" style="margin-bottom:10px"><input id="acq" style="flex:1" placeholder="Search email, name or id" value="${esc(q)}"><span class="muted small">${n(r.total)} account${r.total === 1 ? '' : 's'}</span></div>
+      ${r.items.length ? `<table><thead><tr><th>Account</th><th class="num">Credits</th><th class="num">Spent</th><th>Joined</th><th>Last sign-in</th><th></th></tr></thead><tbody>${r.items.map((a) => `<tr data-acc="${a.id}" style="cursor:pointer">
+        <td><b>${esc(a.name || a.email)}</b>${a.admin ? ' <span class="pill">admin</span>' : ''}${a.disabled ? ' <span class="pill bad">disabled</span>' : ''}<div class="muted small">${esc(a.email)}</div></td>
+        <td class="num">${n(a.credits)}</td><td class="num">${n(a.spent)}</td><td>${esc(new Date(a.created).toLocaleDateString())}</td><td>${esc(ago(a.last_login))}</td><td><button data-acc="${a.id}">Open</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No accounts match.</div>'}</div>`;
+  let t = 0;
+  $('#acq').oninput = (e) => { clearTimeout(t); t = setTimeout(() => { render.accounts.q = e.target.value.trim(); render.accounts().then(() => { const i = $('#acq'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }).catch(fail); }, 300); };
+  for (const el of document.querySelectorAll('#accounts [data-acc]')) el.onclick = (e) => { e.stopPropagation(); showAccount(el.dataset.acc).catch(fail); };
+  labelCells();
+};
+
+/** A ledger or job note as one short line: no terminal colors, no traceback. */
+const oneLine = (t) => { const s = String(t ?? '').replace(/\u001b\[[0-9;]*m/g, '').replace(/\s+/g, ' ').trim(); const tb = /Traceback|File "/.test(s) ? (s.match(/(\w+Error: [^(]*)/)?.[1] ?? 'failed on Gen') : s; return tb.length > 140 ? `${tb.slice(0, 137)}…` : tb; };
+async function showAccount(id) {
+  const d = await api(`/admin/accounts/${id}`);
+  const a = d.account;
+  const kinds = { signup_bonus: 'Welcome credits', stripe_purchase: 'Bought', subscription_credits: 'Plan', job_reserve: 'Job', job_refund: 'Refund', admin_grant: 'Added', admin_gift: 'Gift', admin_remove: 'Removed', ai_turn: 'AI' };
+  const b = modal(`<h2>${esc(a.name || a.email)}</h2>
+    <p class="muted small">${esc(a.email)} · <code>${esc(a.id)}</code> · joined ${esc(new Date(a.created).toLocaleDateString())} · last sign-in ${esc(ago(a.last_login))}${a.disabled ? ' · <b style="color:var(--bad)">disabled</b>' : ''}</p>
+    <div class="grid"><div class="card stat"><b>${Number(a.credits).toLocaleString()}</b><span>credits</span></div><div class="card stat"><b>${Number(a.spent).toLocaleString()}</b><span>spent</span></div>
+      <div class="card stat"><b>${esc(d.subscription && d.subscription.status !== 'canceled' ? d.subscription.planId : 'None')}</b><span>plan</span></div></div>
+    <div class="card"><h3>🎁 Gift credits</h3><div class="row"><input id="gc" type="number" min="1" step="1" placeholder="Credits" style="width:110px"><input id="gn" style="flex:1" placeholder="A note they'll see (optional)"><button class="primary" id="ggo">Gift</button></div></div>
+    <div class="card"><h3>Add or remove credits</h3><div class="row"><input id="cd" type="number" step="1" placeholder="+100 or -50" style="width:110px"><input id="cnote" style="flex:1" placeholder="Why"><button id="cgo">Apply</button></div></div>
+    <div class="card"><h3>Ledger</h3>${d.ledger.length ? `<table><thead><tr><th>When</th><th>What</th><th class="num">Change</th><th class="num">Balance</th></tr></thead><tbody>${d.ledger.map((l) => `<tr><td>${esc(ago(l.created))}</td><td>${esc(kinds[l.kind] ?? l.kind)} <span class="muted small">${esc(oneLine(l.detail))}</span></td><td class="num" style="color:${l.delta < 0 ? 'var(--bad)' : 'var(--ok)'}">${l.delta > 0 ? '+' : ''}${l.delta}</td><td class="num">${l.balance_after}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing yet.</div>'}</div>
+    <div class="card"><h3>Recent jobs</h3>${d.jobs.length ? `<table><thead><tr><th>When</th><th>Tool</th><th>Status</th></tr></thead><tbody>${d.jobs.map((j) => `<tr><td>${esc(ago(j.created))}</td><td>${esc(j.tool)}</td><td>${statusCell(j)}${j.error ? `<div class="muted small">${esc(oneLine(j.error))}</div>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No jobs yet.</div>'}</div>
+    <div class="row spread">${a.admin ? '<span class="muted small">Admin account</span>' : `<button class="${a.disabled ? '' : 'danger'}" id="dis">${a.disabled ? 'Enable this account' : 'Disable this account'}</button>`}<button id="aclose">Close</button></div>`);
+  const after = () => { showAccount(id).catch(fail); if (current === 'accounts') render.accounts().catch(() => {}); };
+  $('#ggo', b).onclick = () => post(`/admin/accounts/${id}/gift`, { credits: Number($('#gc', b).value), note: $('#gn', b).value }).then(() => { toast('Gift sent'); after(); }).catch(fail);
+  $('#cgo', b).onclick = () => post(`/admin/accounts/${id}/credits`, { delta: Number($('#cd', b).value), note: $('#cnote', b).value }).then(() => { toast('Credits changed'); after(); }).catch(fail);
+  $('#dis', b)?.addEventListener('click', () => { const off = !a.disabled; if (off && !confirm(`Disable ${a.email}? They're signed out and can't sign in until you enable them.`)) return; post(`/admin/accounts/${id}/${off ? 'disable' : 'enable'}`, {}).then(after).catch(fail); });
+  $('#aclose', b).onclick = () => $('#modal').close();
+  labelCells();
 }
 
 // ---------------------------------------------------------------- start

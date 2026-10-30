@@ -116,7 +116,7 @@ export function saveStripeConfig(input: {
   return getStripeStatus();
 }
 
-export type CreditLedgerKind = 'signup_bonus' | 'stripe_purchase' | 'subscription_credits' | 'job_reserve' | 'job_refund' | 'admin_grant';
+export type CreditLedgerKind = 'signup_bonus' | 'stripe_purchase' | 'subscription_credits' | 'job_reserve' | 'job_refund' | 'admin_grant' | 'admin_gift' | 'admin_remove' | 'ai_turn';
 
 export type CreditLedgerEntry = {
   id: string;
@@ -466,6 +466,31 @@ export function grantCredits(
     db.exec('COMMIT');
     const entry = db.prepare('SELECT * FROM credit_ledger WHERE id = ?').get(txId) as CreditLedgerEntry;
     return { duplicate: false, entry, balance: nextBalance };
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+/**
+ * Takes credits that aren't a job's: an AI editor turn on the house AI (src/houseai.ts), or the owner removing credits
+ * in /admin. Never below zero: the balance is checked before the work, and what's left is taken if it ran over.
+ */
+export function chargeCredits(userId: string, credits: number, kind: CreditLedgerKind, detail: string): { charged: number; balance: number } {
+  const want = Math.max(0, Math.round(Number(credits) || 0));
+  db.exec('BEGIN');
+  try {
+    const user = getUserById(userId);
+    if (!user) throw new GenError(`User ${userId} not found`, { status: 404 });
+    const charged = Math.min(want, Math.max(0, user.credits));
+    const balance = user.credits - charged;
+    if (charged > 0) {
+      db.prepare('UPDATE users SET credits = ? WHERE id = ?').run(balance, user.id);
+      db.prepare(`INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, detail, job_id, stripe_session_id, created)
+                  VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?)`).run(id('tx', 6), user.id, -charged, balance, kind, detail, Date.now());
+    }
+    db.exec('COMMIT');
+    return { charged, balance };
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;

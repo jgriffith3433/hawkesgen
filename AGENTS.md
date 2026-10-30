@@ -209,7 +209,29 @@ portal and Studio use Gen in the back end with their own keys.
     undo step. It runs on the account's own Claude (Account > Your AI: `/v1/users/me/ai/anthropic` or
     `/claude-subscription`, stored like orgs' keys under `genAccountOrg`), never ours; without one the pane says how to
     connect it. MCP: `hawkesgen_editor`, `hawkesgen_editor_apply`, `hawkesgen_editor_ask`.
-  - `test/editor.test.ts` covers the document and routes; `test/saas-ui.test.ts` checks every id the modules look up
+  - **The director** (`director.js`, `stage-math.js`, `src/director.ts`; J, 2026-10-29: "allow the users to design scenes
+    for creating 'the perfect shot' ... they will make use of the AI to design 3d scenes. Then we render this out using
+    gen"). The Director button in the bar turns the viewer into a 3D stage (three.js 0.170 from jsdelivr through the
+    page's import map), the left pane gets a Shot tab and the AI pane becomes the AI director.
+    - A shot (`/v1/director/shots`, table `director_shots`, saved with a version like editor projects) is
+      blender.render's shot format plus the words: a cast (a library 3D model each, or a stand-in mannequin of the
+      right height), beats (walk to, look at, turn), props (models or shapes), the set (ground, sky color or a 360°
+      panorama, studio/sun/night light), the camera (the ten blender moves, angle, distance, height, lens, amount,
+      handheld), the look (the first frame) and what happens (the video), length and shape.
+    - The stage plays it the way blender.render would (`stage-math.js` `poseAt`, `cameraAt`: Blender's axes and
+      facing; tested in `test/director.test.ts`). People, props and walk markers drag on the ground (kept within
+      25 m); "Camera" looks through the shot camera, "Free look" flies around it.
+    - The AI director (`POST /v1/director/shots/:id/assistant`, `directorTurn`) answers with the whole shot, changed;
+      house AI rules and credits as the AI editor.
+    - **Film it** (works without Blender or the SSH fleet): the browser records the first frame and a depth video
+      (white near, black far, one range measured over the shot) at the film's size and 24 fps, 8n + 1 frames; both are
+      uploaded (webm converted by media.normalize); `image.control` paints the first frame in the look and
+      `video.control` (LTX-2.3 IC-LoRA) films the depth from it. Stand-ins become the described characters.
+    - **Blender** (`POST .../blender`, `?quote=1` prices it): the same shot through `film/recipes.ts cinemaPass` as one
+      `asset.make` (gate, blender.render, best-of-3 keyframe, video.control, upscale). Every cast member needs a model;
+      it queues until the fleet is back.
+  - `test/editor.test.ts` covers the document and routes; `test/director.test.ts` the house AI, admin accounts and the
+    director; `test/saas-ui.test.ts` checks every id the modules look up
     is on the page.
 
   Sign-in is **Continue with Google** (`POST /v1/users/google`, `users.ts googleSignin`), inline: the first Generate
@@ -242,6 +264,19 @@ portal and Studio use Gen in the back end with their own keys.
   never is.
 - **The admin dashboard** is `/admin` (its files are served beside it: `/admin/app.js` is `dashboard/app.js`). Owner
   and admin keys, or Google for `settings.dashboard.googleEmails`. The app links there for admins.
+  - **AI** (`/v1/admin/ai`, owner only; `src/houseai.ts`): the house AI every Gen account uses (J, 2026-10-29: "Don't make
+    users sign into claude ... we can use mine for the website ... it just works"). An Anthropic API key stored
+    encrypted (`HOUSE_ORG` in the org secret store; else the service's `ANTHROPIC_API_KEY`), Gen's Claude logins (the
+    Claude accounts card moved here from Settings), which serves accounts (`auto` key then login, `api`, `claude`,
+    `off`), and the price: each AI editor or director turn on the house AI costs the call's cost x `markup` in credits,
+    at least `minCredits` (`ai_turn` in the ledger). A key that fails (rejected, out of credit) gives the person a plain
+    "isn't available" (the log says why) and, on `auto`, falls back to a login. Consumer plans are for one person: the
+    tab says so, and `auto` prefers the key.
+  - **Accounts** (`/v1/admin/accounts...`, `src/accounts.ts`; J: "much like the portal has where you can gift credits"):
+    numbers (accounts, new and active this week, credits held, spent and bought), search, one account (credits, spent,
+    plan, ledger, recent jobs), gift credits with a note, add or remove credits with a reason (the account sees the
+    note in its ledger, never who), disable or enable (`user_flags`: sessions and keys stop working; admins can't be
+    disabled).
 - The old Hawkes Play pages stay at `/home`, `/app` and `/play`.
 
 ## Customers (tenancy)
@@ -271,7 +306,9 @@ case there whenever you add a route or an input kind.
     submit (402 otherwise)
 
   `settings.platform.issuer` names the portal (empty: hawkesgen.ai, or beta.hawkesgen.ai when `HAWKESGEN_LANE=beta`).
-- **Claude: the customer's own, never ours** (J, 2026-10-29). A customer's job runs inside `callScope`
+- **Claude: the customer's own, never ours** (J, 2026-10-29), **except Gen app accounts** (`u_<hex>`, J, later the
+  same day): they get the house AI when they have no key or subscription of their own (`callScope` `house`,
+  `isGenAccountProject`, `src/houseai.ts`; the admin's AI tab above). Portal orgs (`org_*`, `usr_*`) are unchanged. A customer's job runs inside `callScope`
   (`providers/anthropic.ts`, with the job's org from `orgOfProject`: `org_<hex>`, `org_<hex>.*`, and a portal
   account's `usr_<hex>` / `ustg_<hex>` as its personal org).
   - Its Claude calls run on the org's own Anthropic API key, else its own Claude subscription (a `claude setup-token`

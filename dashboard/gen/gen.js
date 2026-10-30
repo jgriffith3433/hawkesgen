@@ -11,6 +11,7 @@ import { initMedia, uploadFiles, showPane } from './media.js';
 import { initTools, closeSheet } from './tools.js';
 import { initAi } from './ai.js';
 import { initStudio } from './studio.js';
+import { initDirector } from './director.js';
 import { initAccount, loadMe, state } from './account.js';
 
 // Icons in the markup: <span class="ico-wrap" data-icon="name">.
@@ -22,6 +23,7 @@ initTimeline();
 initMedia();
 initTools();
 initStudio();
+initDirector();
 initAi();
 
 // ------------------------------------------------------------------ the bar

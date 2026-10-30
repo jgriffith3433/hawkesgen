@@ -371,7 +371,7 @@ function inputSlot(name, spec, prefill) {
 const thumbOf = (a) => (a.kind === 'image' ? h('img', { src: fileUrl(a.id), alt: '' }) : a.kind === 'video' ? h('video', { src: `${fileUrl(a.id)}#t=0.1`, muted: true, preload: 'metadata' }) : h('span', { class: 'slot-ico' }, icon(a.kind === 'audio' ? 'music' : a.kind === 'mesh' ? 'cube' : 'folder'), h('span', {}, (a.title ?? assetKindLabel(a.kind)).slice(0, 18))));
 
 /** A pop-over of the library's files of one kind, plus Upload. */
-function libraryPicker(kind, onPick) {
+export function libraryPicker(kind, onPick) {
   const grid = h('div', { class: 'pick-grid' }, h('p', { class: 'muted small' }, 'Loading…'));
   const up = h('input', { type: 'file', hidden: true, accept: kind === 'image' ? 'image/*' : kind === 'video' ? 'video/*' : kind === 'audio' ? 'audio/*' : '' });
   const pop = h('div', { class: 'picker' }, h('div', { class: 'sheet-head' }, h('b', {}, `Pick ${KIND_LABEL[kind]?.toLowerCase() ?? 'a file'}`), h('button', { type: 'button', class: 'icon-btn', onclick: () => pop.remove() }, icon('close'))), grid,
@@ -398,3 +398,7 @@ function libraryPicker(kind, onPick) {
     if (!items.length) grid.replaceChildren(h('p', { class: 'muted small' }, 'Nothing of that kind yet. Upload one or make one.'));
   }).catch(() => grid.replaceChildren(h('p', { class: 'muted small' }, 'Couldn\'t load your library.')));
 }
+
+/** Whether this Gen has a tool and can run it now (false while its GPU servers are offline). */
+export const toolReady = (id) => Boolean(S.tools.get(id)?.ready);
+export const hasTool = (id) => S.tools.has(id);

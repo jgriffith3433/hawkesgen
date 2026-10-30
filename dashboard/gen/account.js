@@ -1,5 +1,5 @@
-// Who's signed in (Gen's own accounts: Continue with Google), credits, plans and packs, and the account's own AI (an
-// Anthropic API key or a Claude subscription token) that the AI editor runs on. Never ours.
+// Who's signed in (Gen's own accounts: Continue with Google), credits, plans and packs, and the AI: Gen's own (the
+// house AI, charged in credits) unless the account connected its own Anthropic API key or Claude subscription.
 
 import { $, $$, h, api, toast, bus } from './lib.js';
 
@@ -15,7 +15,9 @@ export async function loadAi() {
   try { state.ai = await api('/v1/users/me/ai'); } catch { state.ai = null; }
   bus.emit('ai', state.ai);
 }
-export const hasAi = () => Boolean(state.ai?.anthropic?.set || state.ai?.claudeSubscription?.set);
+// Gen gives every account the house AI (src/houseai.ts): the person connects nothing while it's ready. Their own key
+// or subscription still works, and comes first.
+export const hasAi = () => Boolean(state.ai?.house?.ready || state.ai?.anthropic?.set || state.ai?.claudeSubscription?.set);
 
 function showMe() {
   const u = state.user;
@@ -149,6 +151,10 @@ export async function openAccount(section) {
     for (const pack of packs) box.append(h('button', { class: 'pack', onclick: () => go('/v1/billing/checkout', { packId: pack.id }) }, h('b', {}, `${pack.credits.toLocaleString()} credits`), h('span', {}, pack.label ?? `$${(pack.priceCents ?? pack.amountCents ?? 0) / 100}`)));
   } catch (err) { box.append(h('p', { class: 'muted' }, err.message)); }
   await loadAi();
+  // "Your AI" only matters when Gen's own isn't there for them.
+  const own = !state.ai?.house?.ready || state.ai?.anthropic?.set || state.ai?.claudeSubscription?.set;
+  $('#aiKeysTitle').hidden = !own;
+  $('#aiKeys').hidden = !own;
   drawAiKeys($('#aiKeys'));
   $('#accountDialog').showModal();
   if (section === 'ai') $('#aiKeys').scrollIntoView({ block: 'center' });
