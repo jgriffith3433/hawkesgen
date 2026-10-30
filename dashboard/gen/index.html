@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Hawkes Gen</title>
-  <meta name="description" content="Make anything. Hawkes Gen is a studio with generative AI built in: images and textures, video, 3D models and rigs, voices, sound and music, a library of everything you make, and a video editor with an AI beside you.">
+  <meta name="description" content="Make anything. Hawkes Gen is a studio with generative AI built in: scenes of every kind (video, 3D stages, images, audio, characters) that plug into each other, every tool for images, video, 3D, voices and music, and an AI beside you in each.">
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,20 +17,19 @@
     <!-- The bar -->
     <header class="bar">
       <a class="brand" href="/" title="Hawkes Gen"><img src="/favicon.svg" alt=""><b>Hawkes Gen</b></a>
-      <div class="project">
-        <button class="project-menu" id="projectMenuBtn" title="Projects"><span class="ico-wrap" data-icon="folder"></span></button>
-        <input id="projectTitle" class="project-title" value="Untitled" maxlength="120" aria-label="Project name" spellcheck="false">
-        <span id="saveState" class="save-state"></span>
+      <div class="scene-tabs-wrap">
+        <div class="scene-tabs" id="sceneTabs" role="tablist" aria-label="Open scenes"></div>
+        <button class="icon-btn" id="newSceneBtn" title="New scene"><span class="ico-wrap" data-icon="plus"></span></button>
       </div>
+      <span id="saveState" class="save-state"></span>
       <div class="bar-mid">
-        <button class="ghost small director-btn" id="directorBtn" title="Design a shot in 3D and film it"><span class="ico-wrap" data-icon="film"></span>Director</button>
         <button class="icon-btn" id="undoBtn" title="Undo (Ctrl+Z)" disabled><span class="ico-wrap" data-icon="undo"></span></button>
         <button class="icon-btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)" disabled><span class="ico-wrap" data-icon="redo"></span></button>
       </div>
       <div class="me">
         <a id="adminLink" class="ghost small" href="/admin" hidden>Admin</a>
         <button id="creditsPill" class="pill" hidden title="Credits (1 credit = 1 cent)"><span id="creditsCount">0</span> credits</button>
-        <button id="exportBtn" class="primary small"><span class="ico-wrap" data-icon="download"></span>Export</button>
+        <button id="sceneAction" class="primary small" hidden></button>
         <button id="signInBtn" class="ghost small">Sign in</button>
         <button id="accountBtn" class="avatar" hidden></button>
       </div>
@@ -41,7 +40,8 @@
       <div class="seg" id="paneTabs">
         <button data-pane="media" class="on">Media</button>
         <button data-pane="generate">Create</button>
-        <button data-pane="shot" id="shotTab" hidden>Shot</button>
+        <button data-pane="scenes">Scenes</button>
+        <button data-pane="kind" id="kindTab" hidden></button>
       </div>
       <div class="pane-body" id="pane-media">
         <div class="media-top">
@@ -59,7 +59,22 @@
         <div id="mediaGrid" class="media-grid"></div>
         <p class="drop-hint muted small">Drop files anywhere to upload. Drag tiles onto the timeline.</p>
       </div>
-      <div class="pane-body" id="pane-shot" hidden><div id="shotPanel"></div></div>
+      <div class="pane-body" id="pane-kind" hidden><div id="kindPanel"></div></div>
+      <div class="pane-body" id="pane-scenes" hidden>
+        <div class="media-top">
+          <input id="scenesSearch" type="search" placeholder="Search your scenes" aria-label="Search scenes">
+        </div>
+        <div class="chips" id="scenesFilter">
+          <button class="chip on" data-kind="">All</button>
+          <button class="chip" data-kind="video">Video</button>
+          <button class="chip" data-kind="stage">Stage</button>
+          <button class="chip" data-kind="image">Image</button>
+          <button class="chip" data-kind="audio">Audio</button>
+          <button class="chip" data-kind="character">Character</button>
+        </div>
+        <div id="scenesList" class="scenes-list"></div>
+        <p class="drop-hint muted small">Drag a scene into the one you're editing: a character onto a stage, a stage or image into a video, audio into a track.</p>
+      </div>
       <div class="pane-body" id="pane-generate" hidden>
         <div id="createHome">
           <input id="createSearch" type="search" placeholder="Search every tool" aria-label="Search tools">

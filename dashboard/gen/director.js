@@ -1,18 +1,22 @@
-// The director (src/director.ts): design one shot as a small 3D scene and film it. The stage (three.js, loaded the
+// The stage editor (scenes.js; src/director.ts): a stage scene is one shot, designed as a small 3D set and filmed. The stage (three.js, loaded the
 // first time) plays the shot in the viewer: the cast (3D models from the library, or stand-ins of the right height),
 // props, the set, and the camera with its move. Drag people and props on the ground; look through the shot's camera or
-// fly around it. The Shot tab on the left edits everything; the AI on the right (in director mode) writes and changes
-// the shot. "Film it" records the shot's depth video and first frame here, then Gen paints the first frame in the look
+// fly around it. The Shot tab on the left edits everything; the AI on the right (the AI director, while a stage is in
+// front) writes and changes the shot. A cast member can be a character scene (dropped on the stage, or Add a character):
+// they play that character, with its look, voice and model. Photo makes a still of the stage in the look (an image to
+// open as an image scene, or to animate). "Film it" records the shot's depth video and first frame here, then Gen paints the first frame in the look
 // (image.control) and films the depth video from it (video.control). "Blender" sends the same shot to Gen's Blender
 // film pipeline when its servers are up.
 
-import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, plainError, ApiError } from './lib.js';
-import { runJob, waitJob, quote, credits, showPane, placeAsset } from './media.js';
+import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, plainError, ApiError, mediaInfo } from './lib.js';
+import { runJob, waitJob, quote, credits } from './media.js';
+import { registerEditor, openScene, newScene, setRender, sceneList, kindInfo } from './scenes.js';
+import { popMenu, closeMenus } from './timeline.js';
 import { libraryPicker, toolReady, hasTool, craftDrawer } from './studio.js';
 import { state, needSignIn, refreshCredits } from './account.js';
 import { poseAt, cameraAt, keyedAt, rad, DEFAULT_AMOUNT } from './stage-math.js';
 
-const D = { open: false, shot: null, version: 0, list: [], t: 0, playing: false, view: 'camera', pass: 'look', range: null, key: null, sel: null, messages: [], three: null, saving: 0, filming: false, secs: {} };
+const D = { open: false, shot: null, version: 0, t: 0, playing: false, view: 'camera', pass: 'look', range: null, key: null, sel: null, messages: [], three: null, saving: 0, filming: false, secs: {}, seq: null, voices: [] };
 /** The video model's frame rate and frame count: LTX takes 8n + 1 frames at 24 fps, Wan 4n + 1 at 16. */
 const filmClock = (doc) => { const fps = doc.film?.engine === 'wan' ? 16 : 24; const n = fps === 24 ? 8 : 4; return { fps, frames: Math.ceil((doc.seconds * fps) / n) * n + 1 }; };
 const ASPECTS = { '16:9': [1280, 704], '9:16': [704, 1280], '1:1': [960, 960] };
@@ -23,73 +27,77 @@ export const directorOpen = () => D.open;
 export const currentShot = () => D.shot;
 
 export function initDirector() {
-  $('#directorBtn').addEventListener('click', () => (D.open ? closeDirector() : openDirector()));
-  bus.on('signedIn', () => { if (D.open) loadShots(); });
+  registerEditor({
+    kind: 'stage', label: 'Stage', icon: 'cube', panel: 'Shot',
+    mount, unmount,
+    undo: () => undoShot(), redo: () => redoShot(), canUndo: () => U.back.length > 0, canRedo: () => U.fwd.length > 0,
+    action: { label: 'Film it', icon: 'film', run: () => openFilm() },
+    save: () => flushSave(),
+    rename(title) { if (!D.shot) return; remember(); D.shot.doc.title = title; changed({ panel: true }); },
+    accepts: (it) => it.kind === 'character',
+    drop: (it) => addCharacter(it.scene),
+    uses: (sc) => [{ label: 'Film it into a new video', run: () => openScene(sc.id) }],
+  });
 }
 
-// ------------------------------------------------------------------ open and close
-export async function openDirector(id) {
-  if (!state.user) return needSignIn(() => openDirector(id), 'login');
+/** A new stage (Create's "Direct a shot or a scene"), open in a tab. */
+export const openDirector = () => newScene('stage', { title: 'Untitled shot' });
+
+async function mount(scene) {
   D.open = true;
   $('#app').classList.add('directing');
-  $('#directorBtn').classList.add('on');
-  $('#shotTab').hidden = false;
-  showPane('shot');
-  if (getComputedStyle($('#mobileTabs')).display !== 'none') $('#mobileTabs button[data-m=edit]')?.click();
+  loadVoices();
+  take(scene);
+  U.back.length = 0; U.fwd.length = 0;
+  try { D.messages = JSON.parse(localStorage.getItem(`hg.director.ai.${scene.id}`) || '[]'); } catch { D.messages = []; }
   bus.emit('director', true);
-  try {
-    await loadShots();
-    const want = id ?? (() => { try { return localStorage.getItem('hg.director.last'); } catch { return null; } })();
-    const pick = D.list.find((s) => s.id === want) ?? D.list[0];
-    if (pick) await openShot(pick.id); else await newShot();
-    await stage();
-  } catch (err) { toast(plainError(err.message)); }
+  bus.emit('directorShot', D.shot);
+  if (getComputedStyle($('#mobileTabs')).display !== 'none') $('#mobileTabs button[data-m=edit]')?.click();
+  await stage();
 }
 
-export function closeDirector() {
-  if (!D.open) return;
-  flushSave();
+async function unmount() {
+  await flushSave();
   D.open = false;
   D.playing = false;
   $('#app').classList.remove('directing');
-  $('#directorBtn').classList.remove('on');
-  $('#shotTab').hidden = true;
-  showPane('media');
   $('#dirStage')?.remove();
   $('#dirBar')?.remove();
+  $('#dirSheet')?.remove();
   if (D.three) { D.three.stop(); D.three = null; }
+  D.shot = null;
   bus.emit('director', false);
 }
 
-async function loadShots() { D.list = (await api(`/v1/director/shots?project=${encodeURIComponent(state.user.project)}`)).items ?? []; }
-async function openShot(id) {
-  const s = await api(`/v1/director/shots/${id}`);
-  take(s);
-  try { D.messages = JSON.parse(localStorage.getItem(`hg.director.ai.${id}`) || '[]'); } catch { D.messages = []; }
-  bus.emit('directorShot', D.shot);
+// Undo and redo: the shot document before each change.
+const U = { back: [], fwd: [] };
+function remember() { if (!D.shot) return; U.back.push(JSON.stringify(D.shot.doc)); if (U.back.length > 80) U.back.shift(); U.fwd.length = 0; bus.emit('history'); }
+function undoShot() { if (!U.back.length) return; U.fwd.push(JSON.stringify(D.shot.doc)); D.shot.doc = JSON.parse(U.back.pop()); changed({ panel: true, history: false }); bus.emit('history'); }
+function redoShot() { if (!U.fwd.length) return; U.back.push(JSON.stringify(D.shot.doc)); D.shot.doc = JSON.parse(U.fwd.pop()); changed({ panel: true, history: false }); bus.emit('history'); }
+
+async function loadVoices() {
+  if (D.voices.length) return;
+  try { D.voices = (await api('/v1/editor/voices')).voices ?? []; } catch { /* none set up */ }
 }
-async function newShot() {
-  const s = await api('/v1/director/shots', { body: { project: state.user.project, title: 'Untitled shot' } });
-  D.list.unshift(s);
-  take(s);
-  D.messages = [];
-  bus.emit('directorShot', D.shot);
-}
+/** Another shot (of the sequence): it opens in its own tab. */
+const openShot = (id) => openScene(id);
 function take(s) {
+  D.seq = s.sequenceInfo ?? null;
   D.shot = s;
   D.version = s.version;
   D.t = 0;
   D.sel = null;
-  try { localStorage.setItem('hg.director.last', s.id); } catch { /* */ }
   drawPanel();
+  bus.emit('sceneTitle', { id: s.id, title: s.doc.title });
   D.three?.rebuild();
 }
 
 // ------------------------------------------------------------------ saving
 let saveTimer = 0;
 /** The shot changed here: redraw the stage now, save in a moment. */
-function changed({ panel = false } = {}) {
+function changed({ panel = false, history = true } = {}) {
   if (panel) drawPanel();
+  if (D.shot) bus.emit('sceneTitle', { id: D.shot.id, title: D.shot.doc.title });
   D.three?.rebuild();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flushSave, 700);
@@ -97,15 +105,15 @@ function changed({ panel = false } = {}) {
 }
 async function flushSave() {
   clearTimeout(saveTimer);
-  if (!D.shot) return;
+  // While another shot's document is borrowed for recording (withShot), nothing saves.
+  if (!D.shot || D.borrowed) return;
   try {
     const s = await api(`/v1/director/shots/${D.shot.id}`, { method: 'PUT', body: { doc: D.shot.doc, version: D.version } });
     D.version = s.version;
     D.shot.version = s.version;
+    if (s.sequenceInfo) { D.seq = s.sequenceInfo; drawSeqStrip(); }
     // People and props added here get their ids from Gen: keep them, so the next save doesn't make new ones.
     for (const k of ['cast', 'props']) D.shot.doc[k].forEach((x, i) => { if (!x.id && s.doc[k][i]) x.id = s.doc[k][i].id; });
-    const i = D.list.findIndex((x) => x.id === s.id);
-    if (i >= 0) D.list[i] = { ...D.list[i], title: s.title, updated: s.updated };
     if ($('#dirSave')) $('#dirSave').textContent = 'Saved';
   } catch (err) {
     if (err.status === 409 && err.data?.shot) { take(err.data.shot); toast('This shot changed somewhere else: here is the newest.'); return; }
@@ -158,29 +166,22 @@ const select = (label, value, options, on) => {
 };
 
 function drawPanel() {
-  const box = $('#shotPanel');
+  const box = $('#kindPanel');
   if (!box || !D.shot) return;
   const s = D.shot.doc;
-  const set = (fn, opts) => { fn(s); changed(opts); };
-  const shots = h('div', { class: 'row dir-shots' },
-    h('select', { class: 'dir-shot-sel', onchange: (e) => { flushSave(); openShot(e.target.value).catch((err) => toast(err.message)); } },
-      ...D.list.map((x) => h('option', { value: x.id, selected: x.id === D.shot.id }, x.title))),
-    h('button', { type: 'button', class: 'icon-btn', title: 'New shot', onclick: () => { flushSave(); newShot().catch((err) => toast(err.message)); } }, icon('plus')),
-    h('button', { type: 'button', class: 'icon-btn', title: 'Delete this shot', onclick: async () => {
-      if (!confirm(`Delete "${s.title}"? Films made from it stay in your library.`)) return;
-      await api(`/v1/director/shots/${D.shot.id}`, { method: 'DELETE' });
-      D.list = D.list.filter((x) => x.id !== D.shot.id);
-      if (D.list[0]) await openShot(D.list[0].id); else await newShot();
-    } }, icon('trash')));
+  const set = (fn, opts) => { remember(); fn(s); changed(opts); };
+  const seqBox = seqStrip();
   const head = [
     textField('Title', s.title, (v) => set((d) => { d.title = v || 'Untitled shot'; })),
     h('div', { class: 'field' }, 'Shape', h('div', { class: 'chips' }, ...Object.keys(ASPECTS).map((a) => h('button', { type: 'button', class: `chip${s.aspect === a ? ' on' : ''}`, onclick: () => set((d) => { d.aspect = a; }, { panel: true }) }, a)))),
     sliderRow('Length', s.seconds, { min: 1, max: 10, step: 0.5, unit: ' s' }, (v) => set((d) => { d.seconds = v; })),
     textField('The look', s.look, (v) => set((d) => { d.look = v; }), { rows: 3, ph: 'A rain-soaked neon alley at night, gritty live-action film still' }),
+    select('Kind of shot', s.kind, [['action', 'Action: filmed from the stage'], ['talk', 'Talk: a dialogue close-up of the first line\'s speaker']], (v) => set((d) => { d.kind = v; }, { panel: true })),
     textField('What happens', s.action, (v) => set((d) => { d.action = v; }), { rows: 3, ph: 'He walks up to her through the rain; footsteps splash; distant traffic' }),
   ];
   const cast = h('div', { class: 'dir-list' }, ...s.cast.map((c, i) => memberCard(c, i)),
-    h('button', { type: 'button', class: 'ghost small', onclick: () => addMember() }, icon('person'), 'Add someone'));
+    h('div', { class: 'row' }, h('button', { type: 'button', class: 'ghost small', onclick: () => addMember() }, icon('person'), 'Add a stand-in'),
+      h('button', { type: 'button', class: 'ghost small', title: 'Cast one of your character scenes (or drag one onto the stage)', onclick: (e) => characterMenu(e.currentTarget) }, icon('person'), 'Add a character')));
   const props = h('div', { class: 'dir-list' }, ...s.props.map((p, i) => propCard(p, i)),
     h('button', { type: 'button', class: 'ghost small', onclick: () => addProp() }, icon('cube'), 'Add a prop'));
   const setBox = [
@@ -225,15 +226,64 @@ function drawPanel() {
     el.addEventListener('toggle', () => { D.secs[id] = el.open; });
     return el;
   };
-  box.replaceChildren(shots, section('Shot', head), section(`Cast (${s.cast.length})`, [cast]), section(`Props (${s.props.length})`, [props]), section('Set', setBox), section('Camera', camBox), section('Filming', filmBox, false));
+  const dialogue = dialogueBox(s);
+  box.replaceChildren(seqBox, section('Shot', head), section(`Dialogue (${s.lines.length})`, [dialogue]), section(`Cast (${s.cast.length})`, [cast]), section(`Props (${s.props.length})`, [props]), section('Set', setBox), section('Camera', camBox), section('Filming', filmBox, false));
   drawMarks();
+}
+
+/** The sequence this shot is in: its shots in order (open one, add the next), and filming the whole sequence. */
+function seqStrip() {
+  const box = h('div', { class: 'dir-scene', id: 'dirSeq' });
+  drawSeqStrip(box);
+  return box;
+}
+function drawSeqStrip(box = $('#dirSeq')) {
+  if (!box || !D.shot) return;
+  const next = h('button', { type: 'button', class: 'ghost small', title: 'A new shot after this one, same cast and set', onclick: async () => { await flushSave(); const n = await api(`/v1/director/shots/${D.shot.id}/next`, { method: 'POST' }); await openShot(n.id); } }, icon('plus'), D.seq ? 'Next shot' : 'Add a shot after (makes a sequence)');
+  if (!D.seq) { box.replaceChildren(h('div', { class: 'row' }, next)); return; }
+  const title = h('input', { type: 'text', class: 'dir-scene-title', value: D.seq.title, title: 'The sequence\'s name' });
+  title.addEventListener('change', () => api(`/v1/director/sequences/${D.seq.id}?project=${encodeURIComponent(state.user.project)}`, { method: 'PUT', body: { title: title.value } }).then((sq) => { D.seq = sq; }).catch((e) => toast(e.message)));
+  const move = async (i, d) => {
+    const ids = D.seq.shots.map((x) => x.id);
+    const j = i + d;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    await flushSave();
+    D.seq = await api(`/v1/director/sequences/${D.seq.id}?project=${encodeURIComponent(state.user.project)}`, { method: 'PUT', body: { order: ids } });
+    drawSeqStrip();
+  };
+  box.replaceChildren(
+    h('div', { class: 'row dir-scene-head' }, icon('film'), title),
+    h('div', { class: 'dir-scene-shots' }, ...D.seq.shots.map((x, i) => h('div', { class: `dir-scene-shot${x.id === D.shot.id ? ' on' : ''}` },
+      h('button', { type: 'button', class: 'dir-scene-pick', title: x.title, onclick: async () => { if (x.id === D.shot.id) return; await flushSave(); await openShot(x.id); } },
+        h('span', { class: 'dir-scene-n' }, String(i + 1)), h('span', { class: 'dir-scene-t' }, x.title), h('span', { class: 'muted small' }, x.kind === 'talk' ? 'talk' : `${x.seconds} s`)),
+      x.id === D.shot.id ? h('span', { class: 'dir-scene-move' },
+        h('button', { type: 'button', class: 'icon-btn small', title: 'Earlier', onclick: () => move(i, -1) }, icon('back')),
+        h('button', { type: 'button', class: 'icon-btn small', title: 'Later', onclick: () => move(i, 1) }, icon('fwd'))) : ''))),
+    h('div', { class: 'row' }, next, h('button', { type: 'button', class: 'primary small', onclick: () => openFilmSequence() }, icon('film'), `Film the sequence (${D.seq.shots.length})`)));
+}
+
+/** Who says what, and when, in this shot. A talk shot is filmed on its first line. */
+function dialogueBox(s) {
+  const set = (fn, opts) => { remember(); fn(s); changed(opts); };
+  if (!s.cast.length) return h('p', { class: 'muted small' }, 'Add someone to the shot to give them lines.');
+  const rows = s.lines.map((l, j) => h('div', { class: 'dir-line' },
+    h('div', { class: 'row' },
+      h('select', { onchange: (e) => set((d) => { d.lines[j].who = Number(e.target.value); }) }, ...s.cast.map((c, i) => h('option', { value: String(i), selected: i === l.who }, c.name))),
+      h('label', { class: 'small muted' }, 'at ', (() => { const at = h('input', { type: 'number', class: 'num', min: '0', max: String(s.seconds), step: '0.1', value: String(l.at) }); at.addEventListener('change', () => set((d) => { d.lines[j].at = Number(at.value) || 0; })); return at; })(), ' s'),
+      h('button', { type: 'button', class: 'icon-btn small', title: 'Remove', onclick: () => set((d) => { d.lines.splice(j, 1); }, { panel: true }) }, icon('close'))),
+    (() => { const t = h('textarea', { rows: '2', placeholder: 'What they say' }, l.text); t.addEventListener('input', () => set((d) => { d.lines[j].text = t.value; })); return t; })(),
+    s.cast[l.who] && !s.cast[l.who].voice ? h('p', { class: 'muted small' }, `${s.cast[l.who].name} has no voice yet: pick one in Cast.`) : ''));
+  return h('div', { class: 'dir-list' }, ...rows,
+    h('button', { type: 'button', class: 'ghost small', onclick: () => set((d) => { d.lines.push({ who: 0, text: '', at: Math.round(D.t * 10) / 10 }); }, { panel: true }) }, icon('mic'), `Add a line at ${fmt(D.t, 1)}`),
+    s.kind === 'talk' ? h('p', { class: 'muted small' }, 'A talk shot is filmed on its first line: frame the speaker close (Camera).') : '');
 }
 
 /** Camera keys: the camera at given times, eased between (they replace the move). One open key shows its sliders. */
 function keysBox(s) {
   const cam = s.camera;
   const keys = cam.keys ?? [];
-  const set = (fn, opts) => { fn(s); changed(opts); };
+  const set = (fn, opts) => { remember(); fn(s); changed(opts); };
   const addKey = () => set((d) => {
     const now = keyedAt(d.camera.keys, D.t) ?? d.camera;
     const k = { t: Math.round(D.t * 10) / 10, angle: now.angle, distance: now.distance, height: now.height, lens: now.lens };
@@ -259,22 +309,50 @@ function keysBox(s) {
     keys.length ? '' : h('p', { class: 'muted small' }, 'Scrub to a moment and key the camera there; key another moment and the camera moves between them. Or select a stretch and ask the AI.'));
 }
 
+/** Casts a character scene: they join the shot where there's room, playing that character. */
+function addCharacter(id) {
+  const ch = sceneList().find((x) => x.id === id);
+  if (!D.shot) return;
+  const s = D.shot.doc;
+  if (s.cast.some((c) => c.character === id)) { toast(`${ch?.title ?? 'They'} are already in this shot.`); return; }
+  remember();
+  const n = s.cast.length;
+  s.cast.push({ character: id, name: ch?.title ?? 'Character', description: '', asset: null, animation: null, height: 1.75, position: [n % 2 ? 1.2 : -1.2, Math.floor(n / 2) * 1.5], facing: n % 2 ? -60 : 60, color: '#c8a27a', beats: [] });
+  if (typeof s.camera.target !== 'number') s.camera.target = 0;
+  D.sel = { type: 'cast', i: n };
+  changed({ panel: true });
+  flushSave().then(() => api(`/v1/director/shots/${D.shot.id}`)).then((x) => take(x)).catch(() => {});
+}
+function characterMenu(btn) {
+  const r = btn.getBoundingClientRect();
+  const list = sceneList().filter((x) => x.kind === 'character');
+  popMenu(r.left, r.bottom + 6, [h('div', { class: 'menu-title' }, 'Your characters'),
+    ...(list.length ? list.map((x) => h('button', { class: 'menu-item', onclick: () => { closeMenus(); addCharacter(x.id); } }, x.title)) : [h('div', { class: 'muted small menu-title' }, 'None yet.')]),
+    h('div', { class: 'menu-sep' }),
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); newScene('character').catch((e) => toast(e.message)); } }, '＋ Make a character')]);
+}
+
 function memberCard(c, i) {
   const s = D.shot.doc;
-  const set = (fn, opts) => { fn(s.cast[i]); changed(opts); };
+  const set = (fn, opts) => { remember(); fn(s.cast[i]); changed(opts); };
   const open = D.sel?.type === 'cast' && D.sel.i === i;
   const clips = D.three?.clipsOf(c.asset) ?? [];
+  // A character scene's cast member: who they are comes from it (edit them there); where they are and what they do is the shot's.
+  const who = c.character ? [h('div', { class: 'field' }, h('span', { class: 'muted small' }, `Plays the character "${c.name}": their look, voice, height and model come from it.`), h('button', { type: 'button', class: 'ghost small', onclick: () => openScene(c.character) }, icon('person'), 'Open the character'))]
+    : null;
   return h('div', { class: `dir-card${open ? ' on' : ''}` },
     h('button', { type: 'button', class: 'dir-card-head', onclick: () => { D.sel = open ? null : { type: 'cast', i }; drawPanel(); D.three?.select(); } },
-      h('span', { class: 'dir-dot', style: { background: c.color } }), h('b', {}, c.name), h('span', { class: 'muted small' }, c.asset ? '3D model' : 'Stand-in')),
-    open ? h('div', { class: 'dir-card-body' },
+      h('span', { class: 'dir-dot', style: { background: c.color } }), h('b', {}, c.name), h('span', { class: 'muted small' }, c.character ? 'Character' : c.asset ? '3D model' : 'Stand-in')),
+    open ? h('div', { class: 'dir-card-body' }, ...(who ?? [
       textField('Name', c.name, (v) => set((m) => { m.name = v; })),
       textField('How they look', c.description, (v) => set((m) => { m.description = v; }), { rows: 2, ph: 'A tall knight in battered silver armor, red cloak' }),
       h('div', { class: 'field' }, '3D model', h('div', { class: 'row' }, h('span', { class: 'muted small' }, c.asset ? 'From your library' : 'A stand-in for now'),
         h('button', { type: 'button', class: 'ghost small', onclick: () => libraryPicker('mesh', (a) => set((m) => { m.asset = a.id; }, { panel: true })) }, c.asset ? 'Change' : 'Pick a model'),
         c.asset ? h('button', { type: 'button', class: 'link small', onclick: () => set((m) => { m.asset = null; m.animation = null; }, { panel: true }) }, 'Use a stand-in') : '')),
+    ]),
+      c.character ? '' : D.voices.length ? select('Voice', c.voice ?? '', [['', 'Pick a voice'], ...D.voices.map((v) => [v.id, `${v.name}${v.about ? ` · ${v.about.split(',').slice(0, 2).join(',')}` : ''}`])], (v) => set((m) => { m.voice = v || null; })) : '',
       clips.length ? select('Animation', c.animation ?? '', [['', 'None'], ...clips.map((n) => [n, n])], (v) => set((m) => { m.animation = v || null; })) : '',
-      sliderRow('Height', c.height, { min: 0.3, max: 6, step: 0.05, unit: ' m' }, (v) => set((m) => { m.height = v; })),
+      c.character ? '' : sliderRow('Height', c.height, { min: 0.3, max: 6, step: 0.05, unit: ' m' }, (v) => set((m) => { m.height = v; })),
       sliderRow('Facing', c.facing, { min: -180, max: 180, step: 1, unit: '°' }, (v) => set((m) => { m.facing = v; })),
       numPair('Stands at', c.position, (v) => set((m) => { m.position = v; })),
       h('div', { class: 'field' }, `Moves (${c.beats.length})`, ...c.beats.map((b, j) => h('div', { class: 'row dir-beat' },
@@ -285,7 +363,7 @@ function memberCard(c, i) {
 }
 function propCard(p, i) {
   const s = D.shot.doc;
-  const set = (fn, opts) => { fn(s.props[i]); changed(opts); };
+  const set = (fn, opts) => { remember(); fn(s.props[i]); changed(opts); };
   const open = D.sel?.type === 'prop' && D.sel.i === i;
   return h('div', { class: `dir-card${open ? ' on' : ''}` },
     h('button', { type: 'button', class: 'dir-card-head', onclick: () => { D.sel = open ? null : { type: 'prop', i }; drawPanel(); D.three?.select(); } },
@@ -333,7 +411,8 @@ async function stage() {
     h('span', { class: 'muted small', id: 'dirSave' }, ''),
     h('span', { class: 'tl-spacer' }),
     h('button', { class: 'ghost small', id: 'dirBlender', title: 'Film it with Gen\'s Blender pipeline (every character needs a 3D model)' }, icon('layers'), 'Blender'),
-    h('button', { class: 'primary small', id: 'dirFilm' }, icon('film'), 'Film it'));
+
+    h('button', { class: 'ghost small', id: 'dirPhoto', title: 'A still of the stage at the playhead, in the look' }, icon('image'), 'Photo'));
   $('#viewerWrap').insertBefore(bar, $('#toolbar'));
   try {
     D.three = await makeStage(wrap);
@@ -347,7 +426,7 @@ async function stage() {
   $$('#dirBar .dir-pass button').forEach((b) => b.addEventListener('click', () => { D.pass = b.dataset.p; $$('#dirBar .dir-pass button').forEach((x) => x.classList.toggle('on', x === b)); }));
   $('#dirIn').addEventListener('click', () => markRange('in'));
   $('#dirOut').addEventListener('click', () => markRange('out'));
-  $('#dirFilm').addEventListener('click', () => openFilm());
+  $('#dirPhoto').addEventListener('click', () => openPhoto());
   $('#dirBlender').addEventListener('click', () => openBlender());
   drawPlay();
 }
@@ -595,6 +674,7 @@ async function makeStage(wrap) {
     while (o && !o.userData?.type) o = o.parent;
     if (!o) return;
     drag = o.userData;
+    remember();
     orbit.enabled = false;
     canvas.setPointerCapture(e.pointerId);
     if (drag.type !== 'beat') { D.sel = { type: drag.type, i: drag.i }; drawPanel(); }
@@ -764,6 +844,25 @@ async function makeStage(wrap) {
   return {
     rebuild: () => rebuild().catch((err) => console.error('stage', err)),
     select, layout, record,
+    /** One frame of the stage at time t, through the shot camera, at the film's size: a PNG. */
+    async still(t) {
+      const [w, hh] = ASPECTS[D.shot.doc.aspect];
+      const out = h('canvas', { width: String(w), height: String(hh) });
+      const r2 = new THREE.WebGLRenderer({ canvas: out, antialias: true, preserveDrawingBuffer: true });
+      r2.setPixelRatio(1); r2.setSize(w, hh, false); r2.shadowMap.enabled = true; r2.outputColorSpace = THREE.SRGBColorSpace;
+      const cam = new THREE.PerspectiveCamera(40, w / hh, 0.05, 400);
+      helpers.visible = false;
+      if (selBox) selBox.visible = false;
+      try {
+        pose(t); placeCamera(cam, t, w / hh);
+        r2.render(scene, cam);
+        return { blob: await new Promise((ok) => out.toBlob(ok, 'image/png')), width: w, height: hh };
+      } finally {
+        helpers.visible = D.view === 'free';
+        if (selBox) selBox.visible = true;
+        r2.dispose();
+      }
+    },
     clipsOf: (asset) => (asset ? clipsKnown.get(asset) ?? [] : []),
     stop: () => { cancelAnimationFrame(raf); renderer.dispose(); },
   };
@@ -807,78 +906,247 @@ function videoJob(s, { prompt, width, height, fps, frames }) {
   return { tool: 'video.control', params: { prompt, width, height, fps, seconds: s.seconds, strength: f.strength, imageStrength: f.imageStrength, ...nodes } };
 }
 
+/** InfiniteTalk's size for each shape, and its frames for a line: two passes of 4n + 1 frames at 25 fps, joined less 9. */
+const TALK_SIZE = { '16:9': [832, 480], '9:16': [480, 832], '1:1': [640, 640] };
+const talkFrames = (seconds) => Math.max(33, Math.ceil(((seconds * 25 + 9) / 2 - 1) / 4) * 4 + 1);
+const voiceOf = (s, who) => s.cast[who]?.voice || D.voices[0]?.id || null;
+
+/** What a shot needs filmed: talk shots need a line and a voice; action shots the stage's tools. Null when ready. */
+function filmProblem(s) {
+  if (s.kind === 'talk') {
+    if (!hasTool('video.talk')) return 'Talk shots need video.talk, which this Gen doesn\'t have.';
+    if (!s.lines[0]) return `"${s.title}" is a talk shot: give it a line in Dialogue.`;
+  }
+  if (s.lines.length && !voiceOf(s, s.lines[0].who)) return 'Lines need a voice: none are set up on this Gen.';
+  const vt = s.film?.engine === 'wan' ? 'video.control-wan' : 'video.control';
+  if (s.kind !== 'talk' && !hasTool(vt)) return `Filming needs ${vt}, which this Gen doesn't have.`;
+  if (!hasTool(s.film?.keyframe ?? 'image.control')) return `Filming needs ${s.film.keyframe}, which this Gen doesn't have.`;
+  return null;
+}
+
+/** The price of filming a shot as it stands (the first frame, the video or the talk, and its lines). */
+async function priceShot(s, look, action) {
+  const [w, hh] = ASPECTS[s.aspect];
+  const parts = [quote(s.film.keyframe, { prompt: look })];
+  if (s.kind === 'talk') parts.push(quote('video.talk', { prompt: action, width: TALK_SIZE[s.aspect][0], height: TALK_SIZE[s.aspect][1], frames: talkFrames(4), fps: 25 }));
+  else { const v = videoJob(s, { prompt: action, width: w, height: hh, ...filmClock(s) }); parts.push(quote(v.tool, v.params)); }
+  for (const l of s.lines) parts.push(quote('audio.voice', { text: l.text, voice: voiceOf(s, l.who), provider: 'elevenlabs' }));
+  const qs = await Promise.all(parts);
+  return qs.every(Boolean) ? qs.reduce((n, x) => n + x.credits, 0) : null;
+}
+
+/**
+ * Films one shot from its recording: the lines first (audio.voice, in the cast's voices), the first frame in the look,
+ * then the shot: video.talk on the first line for a talk shot, else the depth through the video model. Returns the
+ * take: the video and each line's sound with when it's said.
+ */
+async function filmShot(s, rec, { look, action, talk }, say) {
+  const lines = await Promise.all(s.lines.map(async (l) => {
+    const r = await runJob({ tool: 'audio.voice', params: { text: l.text, voice: voiceOf(s, l.who), provider: 'elevenlabs' }, label: `${s.cast[l.who]?.name ?? 'Line'}: ${l.text.slice(0, 50)}` });
+    const a = (r.outputs.find((o) => o.kind === 'audio') ?? r.outputs[0]).asset;
+    return { asset: a, at: l.at, seconds: (await mediaInfo(a, 'audio')).duration ?? 3 };
+  }));
+  say(`${s.title}: uploading the stage`);
+  const [first, depth] = await Promise.all([
+    uploadBlob(rec.first, `${s.title}: first frame (stage).png`, 'image/png'),
+    s.kind === 'talk' ? null : uploadBlob(rec.depth, `${s.title}: depth.webm`, 'video/webm'),
+  ]);
+  say(`${s.title}: painting the first frame`);
+  const f = s.film;
+  const kn = Object.keys(f.keyframeNodes ?? {}).length ? { nodes: f.keyframeNodes } : {};
+  const key = await runJob(f.keyframe === 'image.edit'
+    ? { tool: 'image.edit', params: { prompt: `${look} Keep the composition, camera and every figure's position exactly.`, width: rec.width, height: rec.height, ...kn }, inputs: { images: [`asset:${first}`] }, label: `${s.title}: first frame` }
+    : { tool: 'image.control', params: { prompt: look, ...kn }, inputs: { image: `asset:${first}` }, label: `${s.title}: first frame` });
+  const keyAsset = (key.outputs.find((o) => o.kind === 'image') ?? key.outputs[0]).asset;
+  say(`${s.title}: filming (a few minutes)`);
+  let shot;
+  if (s.kind === 'talk') {
+    const [tw, th] = TALK_SIZE[s.aspect];
+    shot = await runJob({ tool: 'video.talk', params: { prompt: talk, width: tw, height: th, frames: talkFrames(lines[0].seconds), fps: 25 }, inputs: { image: `asset:${keyAsset}`, audio: `asset:${lines[0].asset}` }, label: `Shot: ${s.title}` });
+  } else {
+    const vj = videoJob(s, { prompt: action, width: rec.width, height: rec.height, fps: rec.fps, frames: rec.frames });
+    shot = await runJob({ ...vj, inputs: { control: `asset:${depth}`, image: `asset:${keyAsset}` }, label: `Shot: ${s.title}` });
+  }
+  const out = shot.outputs.find((o) => o.kind === 'video') ?? shot.outputs[0];
+  // A talk shot runs as long as its line; an action shot as long as the shot.
+  return { video: out.asset, kind: s.kind, title: s.title, seconds: s.kind === 'talk' ? lines[0].seconds + 0.3 : s.seconds, lines: s.kind === 'talk' ? [{ ...lines[0], at: 0 }] : lines };
+}
+
+/**
+ * A video scene cut from takes (plug and play): each take on the Video track, playing its shot (so a new take of that
+ * shot can update it), each line on Voice at its moment; a talk shot's own sound muted, an action shot's under the lines.
+ */
+function cutOf(takes, title) {
+  const clips = [];
+  let at = 0;
+  for (const t of takes) {
+    clips.push({ track: 'V1', kind: 'video', asset: t.video, scene: t.shot, sceneVersion: t.version, start: at, in: 0, out: t.seconds, duration: t.seconds, label: t.title, ...(t.lines.length ? (t.kind === 'talk' ? { muted: true } : { volume: 0.5 }) : {}) });
+    for (const l of t.lines) clips.push({ track: 'A2', kind: 'audio', asset: l.asset, start: at + l.at, in: 0, out: l.seconds, duration: l.seconds, label: 'Line' });
+    at += t.seconds;
+  }
+  return { title, clips };
+}
+
 async function openFilm() {
   if (!D.shot) return;
   await flushSave();
   const s = D.shot.doc;
-  const vt = s.film?.engine === 'wan' ? 'video.control-wan' : 'video.control';
-  if (!hasTool(vt) || !hasTool(s.film?.keyframe ?? 'image.control')) return toast(`Filming needs ${vt} and ${s.film?.keyframe ?? 'image.control'}, which this Gen doesn't have.`);
+  const problem = filmProblem(s);
+  if (problem) return toast(problem);
   const p = await api('/v1/director/prompts', { body: { doc: s } });
   const look = h('textarea', { rows: '3' }, p.look);
-  const action = h('textarea', { rows: '3' }, p.action);
-  const toTl = h('input', { type: 'checkbox', checked: true });
+  const action = h('textarea', { rows: '3' }, s.kind === 'talk' ? p.talk : p.action);
   const q = h('span', { class: 'quote' });
   const status = h('div', { class: 'muted small dir-status' });
   const go = h('button', { class: 'primary' }, icon('film'), 'Film it');
   const [w, hh] = ASPECTS[s.aspect];
-  const price = async () => {
-    const v = videoJob(s, { prompt: action.value, width: w, height: hh, fps: filmClock(s).fps, frames: filmClock(s).frames });
-    const [a, b] = await Promise.all([quote(s.film.keyframe, { prompt: look.value }), quote(v.tool, v.params)]);
-    q.textContent = a && b ? credits({ credits: a.credits + b.credits }) : '';
-  };
+  const price = async () => { const n = await priceShot(s, look.value, action.value); q.textContent = n != null ? credits({ credits: n }) : ''; };
   price();
+  const vt = s.kind === 'talk' ? 'video.talk' : s.film.engine === 'wan' ? 'video.control-wan' : 'video.control';
   const offline = !toolReady(vt) || !toolReady(s.film.keyframe);
+  const size = s.kind === 'talk' ? TALK_SIZE[s.aspect] : [videoJob(s, { width: w, height: hh }).params.width, videoJob(s, { width: w, height: hh }).params.height];
   const el = sheetIn('Film the shot', [
-    h('p', { class: 'muted small' }, `Gen records this shot's depth and first frame here, paints the first frame in your look (${s.film.keyframe}), then films the shot from it (${vt}): ${s.seconds} s at ${videoJob(s, { width: w, height: hh }).params.width}×${videoJob(s, { width: w, height: hh }).params.height}. ${s.cast.some((c) => !c.asset) ? 'Stand-ins become the characters you describe.' : ''} Change how it's filmed in the Shot tab's Filming section, or tell the AI director what was wrong with a take.`),
+    h('p', { class: 'muted small' }, s.kind === 'talk'
+      ? `A dialogue close-up: Gen says the line in ${s.cast[s.lines[0].who]?.name ?? 'the speaker'}'s voice, paints the stage's first frame in your look (${s.film.keyframe}), then makes them say it (video.talk) at ${size[0]}×${size[1]}.`
+      : `Gen records this shot's depth and first frame here, paints the first frame in your look (${s.film.keyframe}), then films the shot from it (${vt}): ${s.seconds} s at ${size[0]}×${size[1]}.${s.lines.length ? ` The ${s.lines.length} line${s.lines.length === 1 ? '' : 's'} are spoken in the cast's voices.` : ''} ${s.cast.some((c) => !c.asset) ? 'Stand-ins become the characters you describe.' : ''}`),
+    h('p', { class: 'muted small' }, 'The take becomes this stage\'s render: videos that play this stage can update to it.'),
     offline ? h('p', { class: 'warn small' }, 'The filming GPUs are offline right now. It will queue and start when they\'re back.') : '',
     h('label', { class: 'field' }, 'The first frame', look),
-    h('label', { class: 'field' }, 'What happens (and sounds like)', action),
-    h('label', { class: 'check' }, toTl, 'Add it to the timeline'),
+    h('label', { class: 'field' }, s.kind === 'talk' ? 'How they move while they talk' : 'What happens (and sounds like)', action),
     status,
   ], h('div', { class: 'sheet-foot' }, q, go));
   el.addEventListener('input', () => { clearTimeout(el._t); el._t = setTimeout(price, 400); });
-  go.addEventListener('click', () => film({ look: look.value.trim(), action: action.value.trim(), toTl: toTl.checked, status, go }).catch(() => {}));
+  go.addEventListener('click', () => film({ look: look.value.trim(), action: action.value.trim(), status, go }).catch(() => {}));
 }
 
-async function film({ look, action, toTl, status, go }) {
-  const s = D.shot.doc;
+async function film({ look, action, status, go }) {
+  const shot = D.shot;
+  const s = shot.doc;
   const say = (t) => { status.textContent = t; };
   go.disabled = true;
-  D.filming = true;
-  D.playing = false;
   try {
     const rec = await recordShot(say);
-    D.filming = false;
-    say('Uploading the depth and first frame');
-    const [first, depth] = await Promise.all([
-      uploadBlob(rec.first, `${s.title}: first frame (stage).png`, 'image/png'),
-      uploadBlob(rec.depth, `${s.title}: depth.webm`, 'video/webm'),
-    ]);
-    say('Painting the first frame in your look');
-    const f = s.film;
-    const kn = Object.keys(f.keyframeNodes ?? {}).length ? { nodes: f.keyframeNodes } : {};
-    const key = await runJob(f.keyframe === 'image.edit'
-      ? { tool: 'image.edit', params: { prompt: `${look} Keep the composition, camera and every figure's position exactly.`, width: rec.width, height: rec.height, ...kn }, inputs: { images: [`asset:${first}`] }, label: `${s.title}: first frame` }
-      : { tool: 'image.control', params: { prompt: look, ...kn }, inputs: { image: `asset:${first}` }, label: `${s.title}: first frame` });
-    const keyAsset = (key.outputs.find((o) => o.kind === 'image') ?? key.outputs[0]).asset;
-    say('Filming the shot (a few minutes)');
-    const vj = videoJob(s, { prompt: action, width: rec.width, height: rec.height, fps: rec.fps, frames: rec.frames });
-    const shot = await runJob({ ...vj, inputs: { control: `asset:${depth}`, image: `asset:${keyAsset}` }, label: `Shot: ${s.title}` });
-    const out = shot.outputs.find((o) => o.kind === 'video') ?? shot.outputs[0];
+    const take = await filmShot(s, rec, { look, action, talk: action }, say);
+    await setRender(shot.id, take.video, 'video');
     say('');
     $('#dirSheet')?.remove();
-    const v = h('video', { src: fileUrl(out.asset), controls: true, autoplay: true, playsinline: true, class: 'dir-result' });
-    sheetIn(`Your shot: ${s.title}`, [v], h('div', { class: 'sheet-foot' },
-      h('span', { class: 'muted small' }, toTl ? 'Added to the timeline. Also in Media.' : 'Saved to Media.'),
+    const v = h('video', { src: fileUrl(take.video), controls: true, autoplay: true, playsinline: true, class: 'dir-result' });
+    sheetIn(`Your shot: ${s.title}`, [v, h('p', { class: 'muted small' }, 'Saved to Media, and it\'s this stage\'s render now: drag the stage into any video to cut it in.')], h('div', { class: 'sheet-foot' },
       h('button', { class: 'ghost', onclick: () => { $('#dirSheet')?.remove(); openFilm(); } }, 'Film another take'),
-      h('button', { class: 'primary', onclick: () => { closeDirector(); } }, 'Back to the editor')));
-    if (toTl) await placeAsset({ id: out.asset, kind: 'video', title: s.title });
+      h('button', { class: 'primary', onclick: async () => { $('#dirSheet')?.remove(); await newScene('video', { title: `${s.title} (cut)`, doc: cutOf([{ ...take, shot: shot.id, version: shot.version + 1 }], `${s.title} (cut)`) }); } }, icon('film'), 'Put it in a new video')));
   } catch (err) {
     say(`Stopped: ${plainError(err.message)}`);
   } finally {
     D.filming = false;
     go.disabled = false;
   }
+}
+
+/** Shows another shot's document on this stage for a moment (to record it), then puts this one back. */
+async function withShot(doc, fn) {
+  const was = D.shot;
+  D.borrowed = true;
+  D.shot = { ...was, doc };
+  try {
+    await D.three.rebuild();
+    return await fn();
+  } finally {
+    D.shot = was;
+    D.borrowed = false;
+    await D.three.rebuild();
+  }
+}
+
+/**
+ * Films every shot of the sequence: each recorded on this stage in turn, all filmed at once on the GPUs, each take
+ * becoming its shot's render, then cut into a new video scene (opened in a tab). The cut needs this page open; the
+ * takes land in Media either way.
+ */
+async function openFilmSequence() {
+  if (!D.seq) return;
+  await flushSave();
+  const shots = await Promise.all(D.seq.shots.map((x) => api(`/v1/director/shots/${x.id}`)));
+  const problems = shots.map((x) => filmProblem(x.doc)).filter(Boolean);
+  const q = h('span', { class: 'quote' }, 'Pricing…');
+  const status = h('div', { class: 'muted small dir-status' });
+  const go = h('button', { class: 'primary' }, icon('film'), `Film ${shots.length} shots`);
+  const list = h('ol', { class: 'dir-scene-list small' }, ...shots.map((x) => h('li', {}, h('b', {}, x.doc.title), ` · ${x.doc.kind === 'talk' ? 'talk close-up' : `${x.doc.seconds} s`}${x.doc.lines.length ? ` · ${x.doc.lines.length} line${x.doc.lines.length === 1 ? '' : 's'}` : ''}`)));
+  sheetIn(`Film the sequence: ${D.seq.title}`, [
+    h('p', { class: 'muted small' }, 'Gen records each shot here, films them all at once, then cuts them into a new video (dialogue on the Voice track) and opens it. Keep this page open until it\'s cut; the takes land in Media either way.'),
+    list,
+    problems.length ? h('p', { class: 'error small' }, problems[0]) : '',
+    status,
+  ], h('div', { class: 'sheet-foot' }, q, go));
+  if (problems.length) { go.disabled = true; q.textContent = ''; return; }
+  Promise.all(shots.map(async (x) => { const p = await api('/v1/director/prompts', { body: { doc: x.doc } }); return priceShot(x.doc, p.look, x.doc.kind === 'talk' ? p.talk : p.action); }))
+    .then((ns) => { q.textContent = ns.every((n) => n != null) ? credits({ credits: ns.reduce((a, b) => a + b, 0) }) : ''; }).catch(() => { q.textContent = ''; });
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    const say = (t) => { status.textContent = t; };
+    const title = D.seq.title;
+    try {
+      const jobs = [];
+      for (const [i, x] of shots.entries()) {
+        const rec = await withShot(x.doc, () => recordShot((t) => say(`Shot ${i + 1} of ${shots.length}: ${t}`)));
+        const p = await api('/v1/director/prompts', { body: { doc: x.doc } });
+        jobs.push(filmShot(x.doc, rec, { look: p.look, action: p.action, talk: p.talk }, (t) => say(t)).then(async (t) => {
+          const sc = await setRender(x.id, t.video, 'video');
+          return { ...t, shot: x.id, version: sc.doc.render.version };
+        }));
+      }
+      say(`Filming ${shots.length} shots…`);
+      const takes = await Promise.allSettled(jobs);
+      const ok = takes.filter((t) => t.status === 'fulfilled').map((t) => t.value);
+      const failed = takes.length - ok.length;
+      if (!ok.length) throw new Error(takes.find((t) => t.status === 'rejected').reason?.message ?? 'Nothing was filmed');
+      const cut = await newScene('video', { title: `${title} (cut)`, doc: cutOf(ok, `${title} (cut)`), open: false });
+      say(failed ? `Cut ${ok.length} of ${takes.length}: ${plainError(takes.find((t) => t.status === 'rejected').reason?.message)}` : `Done: ${ok.length} shots cut into "${cut.title}".`);
+      toast(`Sequence filmed: "${cut.title}" is ready.`, { action: 'Open it', onAction: () => openScene(cut.id) });
+    } catch (err) {
+      say(`Stopped: ${plainError(err.message)}`);
+    } finally {
+      go.disabled = false;
+    }
+  });
+}
+
+/**
+ * A photo of the stage: the frame at the playhead, painted in the look (the first-frame tool). It lands in Media, and
+ * can open as an image scene (a layer to build on) or become a clip (image to video).
+ */
+async function openPhoto() {
+  if (!D.shot || !D.three) return;
+  await flushSave();
+  const s = D.shot.doc;
+  const p = await api('/v1/director/prompts', { body: { doc: s } });
+  const look = h('textarea', { rows: '3' }, p.look);
+  const q = h('span', { class: 'quote' });
+  const status = h('div', { class: 'muted small dir-status' });
+  const go = h('button', { class: 'primary' }, icon('image'), 'Take the photo');
+  quote(s.film.keyframe, { prompt: look.value }).then((r) => { q.textContent = r ? credits(r) : ''; });
+  const at = D.t;
+  sheetIn('Photo of the stage', [h('p', { class: 'muted small' }, `The stage at ${fmt(at, 1)} through the shot's camera, painted in the look (${s.film.keyframe}). The layout and poses stay.`), h('label', { class: 'field' }, 'The look', look), status], h('div', { class: 'sheet-foot' }, q, go));
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    try {
+      status.textContent = 'Framing the stage';
+      const still = await D.three.still(at);
+      const first = await uploadBlob(still.blob, `${s.title}: stage at ${fmt(at, 1)}.png`, 'image/png');
+      status.textContent = 'Painting it';
+      const kn = Object.keys(s.film.keyframeNodes ?? {}).length ? { nodes: s.film.keyframeNodes } : {};
+      const r = await runJob(s.film.keyframe === 'image.edit'
+        ? { tool: 'image.edit', params: { prompt: `${look.value} Keep the composition, camera and every figure's position exactly.`, width: still.width, height: still.height, ...kn }, inputs: { images: [`asset:${first}`] }, label: `${s.title}: photo` }
+        : { tool: 'image.control', params: { prompt: look.value, ...kn }, inputs: { image: `asset:${first}` }, label: `${s.title}: photo` });
+      const out = (r.outputs.find((o) => o.kind === 'image') ?? r.outputs[0]).asset;
+      $('#dirSheet')?.remove();
+      sheetIn(`Photo: ${s.title}`, [h('img', { src: fileUrl(out), alt: '', class: 'dir-result' }), h('p', { class: 'muted small' }, 'Saved to Media.')], h('div', { class: 'sheet-foot' },
+        h('button', { class: 'ghost', onclick: () => { $('#dirSheet')?.remove(); bus.emit('useIn', { tool: 'video.i2v', asset: { id: out, kind: 'image', title: s.title } }); } }, icon('film'), 'Animate it'),
+        h('button', { class: 'primary', onclick: async () => { $('#dirSheet')?.remove(); await newScene('image', { title: `${s.title}: photo`, doc: { title: `${s.title}: photo`, width: still.width, height: still.height, layers: [{ name: 'Photo', asset: out, x: still.width / 2, y: still.height / 2 }] } }); } }, icon('image'), 'Open as an image')));
+    } catch (err) {
+      status.textContent = `Stopped: ${plainError(err.message)}`;
+      go.disabled = false;
+    }
+  });
 }
 
 async function openBlender() {

@@ -178,6 +178,42 @@ portal and Studio use Gen in the back end with their own keys.
   everything Gen makes, a video editor with generative AI built in (J, 2026-10-29: "a proper video editor" with "a bad
   ass AI editor on the right pane"), and the whole studio the portal's Asset Studio was heading for (J, 2026-10-29:
   "keep this sleek interface and do much much more", "all in one place", the assistant on the side, one page).
+  - **Scenes** (`src/scenes.ts`, `scenes.js`; J, 2026-10-29: "put in the idea of scenes and make them plug and play with
+    each other ... the edit tab shouldn't just be about videos ... Make tabs too"). Everything a person makes is a scene
+    of a kind, in one table (`scenes`: id, project, kind, title, doc, version), each kind registering how its document is
+    checked (`registerKind`: normalize, blank, resolve finished jobs, the scenes it uses):
+    - `video` (src/editor.ts): the timeline. `stage` (src/director.ts): a 3D shot. `image`, `audio`, `character`
+      (src/scenekinds.ts): layers; a multitrack; a person or creature to cast.
+    - The editor's projects (`editor_projects`, live) and the director's shots came in once with their ids
+      (`scene_migrations`); `/v1/editor/projects` and `/v1/director/shots` are views onto the store (MCP keeps working).
+    - **Plug and play:** a document names other scenes (a video clip's `scene`, an image layer's `scene`, an audio clip's
+      `scene`, a stage cast member's `character`); `uses` lists them with their render. A scene's `render` is its latest
+      output (`PUT /v1/scenes/:id/render`: the export, the film, the flattened picture, the mixdown, a character's face).
+      A clip or layer that plays a scene keeps `sceneVersion`; when the scene renders again, the editor offers to update
+      (`staleBar`). A character's name, look, voice, height and model reach every shot that casts them
+      (`castFromCharacters`, on every read and save).
+    - Elements of image, audio and character scenes can wait on jobs (`pending`, filled in on read: `resolveElements`).
+    - **The app:** open scenes are tabs in the bar (open, close, reorder by drag, rename by double-click, remembered per
+      browser; "+" makes any kind). Each kind has an editor with one shape (`registerEditor`: mount, unmount, panel,
+      undo/redo, the bar's action, accepts/drop, rename): `video.js` (the timeline editor below), `director.js` (stage:
+      the Shot panel, Film it, Photo), `image.js` (Layers panel; canvas with move, size and turn handles; Gen's image
+      tools on a layer keep its size; Render flattens in the browser), `audio.js` (tracks with volume, pan, mute, solo;
+      clips with trim, gain, fades, split; WebAudio playback; Mixdown renders the same graph offline to a WAV),
+      `character.js` (the sheet: look, voice with preview, pictures by role, the 3D model and its clips; Make their
+      pictures; Make the 3D model through cutout, view sheet and mesh.views3d, optionally rigged; Stage them).
+      `scenedoc.js` is the image, audio and character editors' document (versioned saves, undo, following jobs).
+    - The left pane's **Scenes** tab lists every scene (search, kind); drag one into the scene in front (onto the center,
+      the timeline, an audio lane): a character onto a stage, a stage's film, an image or a video onto a timeline, an
+      audio scene's mixdown onto a track, an image scene or a stage photo into an image. Each row's menu has Open, Use in
+      the scene in front, Duplicate and Delete.
+    - **The AI for image, audio and character scenes** (`src/sceneai.ts`, `POST /v1/scenes/:id/assistant`): it answers
+      with the whole scene and the jobs to run; an element to make is marked `gen: n`, a job's input `el:<id>` is an
+      element's file; over the auto limit it comes back as a proposal (`POST .../apply`). House AI and credits as the
+      others. The AI pane follows the tab in front (AI editor, AI director, Image AI, Audio AI, Character AI).
+    - Sequences (a stage's shot list) were called scenes before: `stage_sequences`, `doc.sequence`,
+      `/v1/director/sequences/:id`. Filming a sequence makes a new video scene whose clips play each shot.
+  - Buttons: primary actions are solid (`--text` on dark), never gradients (J, 2026-10-29: "Get rid of these blue gradient
+    buttons, they scream made with AI"). The accent color marks selection and focus only.
   - **Create** (`studio.js`, the left pane's second tab): every tool from `GET /v1/editor/catalog`, in groups (images
     and textures, video, 3D and rigging, animation, voice and sound, chains). `GROUPS` names and orders them with a
     plain one-line description each; a tool Gen adds that no group names shows under "More" by itself. Each form is
@@ -192,7 +228,7 @@ portal and Studio use Gen in the back end with their own keys.
     first use). A file open in the viewer has **Use in…** (every tool whose first or required input takes it),
     Download, and Details (its recipe, and Make another with a new seed). Results open the cutout, not the mask, when a
     tool returns both.
-  - Layout: Media and Create on the left (`media.js`, `studio.js`), the viewer with the tools for what's selected in the middle
+  - Layout (a video scene in front): Media, Create and Scenes on the left (`media.js`, `studio.js`, `scenes.js`), the viewer with the tools for what's selected in the middle
     (`player.js`, `tools.js`), the AI editor on the right (`ai.js`), the timeline below (`timeline.js`). Panes resize
     (sizes kept per browser); on a phone one pane at a time behind bottom tabs.
   - **The project** (`project.js`, `src/editor.ts`): one timeline document per project, saved to Gen
@@ -257,11 +293,36 @@ portal and Studio use Gen in the back end with their own keys.
       (white near, black far, one range measured over the shot) at the film's size and 24 fps, 8n + 1 frames; both are
       uploaded (webm converted by media.normalize); `image.control` paints the first frame in the look and
       `video.control` (LTX-2.3 IC-LoRA) films the depth from it. Stand-ins become the described characters.
+    - **Scenes** (J, 2026-10-29: the shot list): a scene (`director_scenes`; each shot's doc has `scene` and `order`) is shots
+      in order that share the shape, the look, the set and the film settings, and each cast member's identity (name,
+      look, model, clip, height, color, voice) by id: a save carries those to the other shots (`shareAcross`); blocking,
+      camera, action and lines stay per shot. The Shot tab's strip lists the shots (open, move earlier or later, Next
+      shot adds one after with the same cast where they stand; on a lone shot it makes the scene). `GET/PUT
+      /v1/director/scenes/:id` (title, order), `POST /v1/director/shots/:id/next`; a shot's GET and PUT carry
+      `sceneInfo`.
+    - **The AI director plans scenes**: it sees every shot of the scene and the voices, and answers with every shot in
+      order (`shots`, `current`, `sceneTitle`; `applyDirector`): kept shots by `shotId`, new ones made, ones it leaves out
+      leave the scene (never deleted); two or more shots make a scene. Coverage like an editor cuts it (establishing,
+      over-the-shoulder, reverse, close-ups), continuity, the 180° rule, a voice for every speaker.
+    - **Dialogue**: `lines` per shot (`who` a cast index, `text`, `at` seconds) and a `voice` per cast member (ElevenLabs
+      premade, `/v1/editor/voices`). A shot is `kind` `action` (filmed from the stage) or `talk` (a dialogue close-up:
+      the first line in the speaker's voice drives video.talk on the painted first frame, InfiniteTalk's size per shape,
+      frames from the line's length). Lines are made with audio.voice and laid on the Voice track at their moment; an
+      action shot's own sound plays at half under them (its prompt asks for room tone, not words), a talk shot's is
+      muted.
+    - **Film the sequence** (the strip's button): every shot recorded on this stage in turn (`withShot` borrows its
+      document; nothing saves meanwhile), all filmed at once, each take becoming its shot's render, then cut into a new
+      video scene (`cutOf`: clips that play each shot, lines on Voice, a talk shot's sound muted). A failed shot is
+      reported and the rest are cut. Filming one shot makes its take the stage's render ("Put it in a new video").
+    - **Photo**: the stage at the playhead through the shot camera, painted in the look; it opens as an image scene, or
+      animates (video.i2v).
+    - The Create list starts with **Direct a shot or a scene**, which opens a new stage tab.
     - **Blender** (`POST .../blender`, `?quote=1` prices it): the same shot through `film/recipes.ts cinemaPass` as one
       `asset.make` (gate, blender.render, best-of-3 keyframe, video.control, upscale). Every cast member needs a model;
       it queues until the fleet is back.
-  - `test/editor.test.ts` covers the document and routes; `test/director.test.ts` the house AI, admin accounts and the
-    director; `test/saas-ui.test.ts` checks every id the modules look up
+  - `test/editor.test.ts` covers the document and routes; `test/scenes.test.ts` the store, the migration, the kinds,
+    characters in shots, the scene AI's answers and the routes; `test/director.test.ts` the house AI, admin accounts and
+    the director; `test/saas-ui.test.ts` checks every id the modules look up
     is on the page.
 
   Sign-in is **Continue with Google** (`POST /v1/users/google`, `users.ts googleSignin`), inline: the first Generate

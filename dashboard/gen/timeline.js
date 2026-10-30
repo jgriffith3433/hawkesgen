@@ -53,7 +53,8 @@ export function initTimeline() {
   });
   // Drops from the media pane (and files from the desktop: gen.js handles those).
   $('#tlTracks').addEventListener('dragover', (e) => {
-    if (![...e.dataTransfer.types].includes('application/x-hg-asset')) return;
+    const types = [...e.dataTransfer.types];
+    if (!types.includes('application/x-hg-asset') && !types.includes('application/x-hg-scene')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     const row = trackAt(e.clientY);
@@ -62,7 +63,21 @@ export function initTimeline() {
   $('#tlTracks').addEventListener('dragleave', () => $$('.tl-track').forEach((x) => x.classList.remove('drop')));
   $('#tlTracks').addEventListener('drop', (e) => {
     const raw = e.dataTransfer.getData('application/x-hg-asset');
+    const scene = e.dataTransfer.getData('application/x-hg-scene');
     $$('.tl-track').forEach((x) => x.classList.remove('drop'));
+    if (scene) {
+      // Another scene: its render plays here (video.js placeScene), on the track it was dropped on when that fits.
+      e.preventDefault();
+      e.stopPropagation();
+      const it = JSON.parse(scene);
+      const r = T.canvas.getBoundingClientRect();
+      const t = Math.max(0, tOf(e.clientX - r.left));
+      const row = trackAt(e.clientY)?.dataset.track;
+      const audio = it.render?.kind === 'audio' || it.kind === 'audio';
+      const track = audio ? (row?.startsWith('A') ? row : 'A1') : 'V1';
+      import('./video.js').then((v) => v.placeScene(it, { track, start: track === 'V1' ? undefined : t }));
+      return;
+    }
     if (!raw) return;
     e.preventDefault();
     const a = JSON.parse(raw);

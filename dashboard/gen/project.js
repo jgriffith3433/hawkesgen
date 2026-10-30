@@ -14,6 +14,8 @@ export const TRACKS = [
 const LOCAL_KEY = 'hg.editor.local.v2';
 
 export const P = {
+  /** active: a video tab is in front (video.js), so this project syncs and saves. */
+  active: false,
   id: null, version: 0, doc: newDoc(), dirty: false, saving: false,
   selection: { clips: new Set(), range: null, mask: null },
   playhead: 0,
@@ -255,7 +257,7 @@ async function followJob(jobId) {
 
 export function startSync() {
   setInterval(async () => {
-    if (!P.id || document.hidden || P.dirty || P.saving) return;
+    if (!P.id || !P.active || document.hidden || P.dirty || P.saving) return;
     try {
       const p = await api(`/v1/editor/projects/${P.id}`);
       if (p.version > P.version && !P.dirty) { take(p); toast('Updated with changes made elsewhere.'); }

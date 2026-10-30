@@ -564,6 +564,103 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       throw new GenError(`No admin route ${method} ${route}`, { status: 404 });
     }
 
+    // --------------------------------------------------------------- scenes (src/scenes.ts): every kind, plug and play
+    if (route === '/v1/scenes' || route.startsWith('/v1/scenes/')) {
+      const sc = await import('./scenes.ts');
+      await import('./editor.ts');
+      const dr = await import('./director.ts');
+      await import('./scenekinds.ts');
+      const user = getUserForClient(client);
+      const canSee = (p: string) => canProject(client, p);
+      const projectOf = (asked?: unknown) => {
+        const p = fixedProject(client) ?? (typeof asked === 'string' && asked ? asked : user?.project ?? '');
+        if (!p || !canProject(client, p)) throw new GenError('Name a project you can use', { status: 403 });
+        return p;
+      };
+      // A scene as the app gets it: with the scenes it uses (what plugs in, and whether they changed since), and a stage's sequence.
+      const full = (x: import('./scenes.ts').Scene) => ({ ...x, uses: sc.usedBy(x, canSee), ...(x.kind === 'stage' ? { sequenceInfo: dr.sequenceSummary(x.doc.sequence, x.project) } : {}) });
+      const open = (id: string) => (sc.getScene(id, canSee).kind === 'stage' ? dr.getShot(id, canSee) : sc.getScene(id, canSee));
+      if (route === '/v1/scenes' && method === 'GET') {
+        const kind = q('kind');
+        if (kind && !sc.KIND_IDS.includes(kind as any)) throw new GenError(`No kind of scene "${kind}"`, { status: 400 });
+        return send(res, 200, { items: sc.listScenes(projectOf(q('project')), kind ?? null, Math.min(500, Number(q('limit') ?? 200) || 200)) });
+      }
+      if (route === '/v1/scenes' && method === 'POST') {
+        const b = await readJson(req);
+        const kind = String(b.kind ?? '');
+        if (!sc.KIND_IDS.includes(kind as any)) throw new GenError('kind: video, stage, image, audio or character', { status: 400 });
+        const project = projectOf(b.project);
+        const k = sc.kindOf(kind);
+        const doc = b.doc ?? k.blank(typeof b.title === 'string' && b.title.trim() ? b.title.trim() : 'Untitled');
+        const made = kind === 'stage' ? dr.createShot(project, doc) : sc.createScene(project, kind as any, doc, kind === 'video' ? 'ep' : 'sn');
+        return send(res, 200, full(made));
+      }
+      const xm = /^\/v1\/scenes\/((?:sn|ep|sh)_[0-9a-f]{6,24})(?:\/(render|assistant|apply|duplicate))?$/.exec(route);
+      if (!xm) throw new GenError(`No scene route ${method} ${route}`, { status: 404 });
+      const id = xm[1];
+      if (!xm[2] && method === 'GET') return send(res, 200, full(open(id)));
+      if (!xm[2] && method === 'PUT') {
+        const b = await readJson(req);
+        const cur = sc.getScene(id, canSee);
+        try {
+          if (cur.kind === 'stage') {
+            const saved = dr.saveShot(cur as any, b.doc, b.version == null ? undefined : Number(b.version));
+            dr.shareAcross(saved);
+            return send(res, 200, full(saved));
+          }
+          return send(res, 200, full(sc.saveScene(cur, b.doc, b.version == null ? undefined : Number(b.version))));
+        } catch (e: any) {
+          if (e.status === 409) return send(res, 409, { error: e.message, scene: e.scene ? full(e.scene) : null });
+          throw e;
+        }
+      }
+      if (!xm[2] && method === 'DELETE') { sc.deleteScene(id, canSee); return send(res, 200, { ok: true }); }
+      if (xm[2] === 'duplicate' && method === 'POST') {
+        const cur = open(id);
+        const doc = { ...cur.doc, title: `${cur.title} copy`, render: null, ...(cur.kind === 'stage' ? { sequence: null, order: 0 } : {}) };
+        return send(res, 200, full(cur.kind === 'stage' ? dr.createShot(cur.project, doc) : sc.createScene(cur.project, cur.kind, doc, cur.kind === 'video' ? 'ep' : 'sn')));
+      }
+      if (xm[2] === 'render' && method === 'PUT') {
+        // A scene's output (the film, the picture, the mixdown): it must be a file the caller can see.
+        const b = await readJson(req);
+        const a = getAsset(String(b.asset ?? ''));
+        if (!a || !canSee(a.project)) throw new GenError('No such file', { status: 404 });
+        return send(res, 200, full(sc.setRender(sc.getScene(id, canSee), { asset: a.id, kind: (b.kind ?? a.kind) as any })));
+      }
+      if ((xm[2] === 'assistant' || xm[2] === 'apply') && method === 'POST') {
+        // The AI for image, audio and character scenes (src/sceneai.ts); video and stage have their own (editor, director).
+        const ai = await import('./sceneai.ts');
+        const b = await readJson(req);
+        let cur = sc.getScene(id, canSee);
+        if (b.doc && xm[2] === 'assistant') cur = sc.saveScene(cur, b.doc);
+        const submitHere = (spec: { tool: string; params: Record<string, any>; inputs: Record<string, any>; label?: string }) =>
+          submit(client, { project: cur.project, tool: spec.tool, params: spec.params, inputs: spec.inputs, labels: { by: client.name, scene: cur.id, ...(spec.label ? { title: spec.label } : {}) } } as JobSpec);
+        const quote = (tool: string, params: Record<string, any>) => { try { return Number((quoteJobCredits({ project: cur.project, tool, params }) as any)?.credits ?? 0); } catch { return 0; } };
+        if (xm[2] === 'apply') {
+          const r = ai.applyScene(cur, { doc: b.doc ?? cur.doc, jobs: Array.isArray(b.jobs) ? b.jobs : [] }, { submit: submitHere, quote, autoCredits: 0, confirm: true });
+          return send(res, 200, { scene: full(sc.saveScene(cur, r.doc)), started: r.started, errors: r.errors });
+        }
+        const messages = (Array.isArray(b.messages) ? b.messages : []).filter((m: any) => m && typeof m.text === 'string').map((m: any) => ({ role: m.role === 'assistant' ? 'assistant' as const : 'user' as const, text: m.text }));
+        if (!messages.length) throw new GenError('Say something to the AI', { status: 400 });
+        const { isGenAccountProject, orgOfProject: orgOf, orgSecretInfo: secretInfo } = await import('./orgsecrets.ts');
+        const ownOrg = orgOf(cur.project);
+        const ownAi = Boolean(ownOrg && (secretInfo(ownOrg, 'anthropic').set || secretInfo(ownOrg, 'claude-subscription').set));
+        const payer = user && isGenAccountProject(cur.project) && !ownAi ? user : null;
+        if (payer) house.checkCanPay(getUserById(payer.id)?.credits ?? 0);
+        const ed = await import('./editor.ts');
+        const library = listAssets({ project: cur.project, limit: 40, playtest: false, projects: client.projects }).items
+          .filter((a: any) => ['image', 'video', 'audio', 'mesh'].includes(a.kind))
+          .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? null }));
+        const scenes = sc.listScenes(cur.project, null, 60).filter((x) => x.id !== cur.id).map((x) => ({ id: x.id, kind: x.kind, title: x.title }));
+        const turn = await ai.sceneTurn({ scene: cur, messages, selection: b.selection, library, scenes, voices: await ed.editorVoices() });
+        const aiCharge = payer && turn.house ? chargeCredits(payer.id, house.turnCredits(turn.cost), 'ai_turn', `AI (${cur.kind}): ${String(messages[messages.length - 1].text).slice(0, 80)}`) : null;
+        const r = ai.applyScene(cur, turn.answer, { submit: submitHere, quote, autoCredits: Math.max(0, Number(b.autoCredits ?? 40)) });
+        const saved = r.proposed ? cur : sc.saveScene(cur, r.doc);
+        return send(res, 200, { say: turn.answer.say, scene: full(saved), started: r.started, errors: r.errors, ...(r.proposed ? { proposed: r.proposed } : {}), model: turn.model, ...(aiCharge ? { aiCredits: aiCharge.charged } : {}) });
+      }
+      throw new GenError(`No scene route ${method} ${route}`, { status: 404 });
+    }
+
     // --------------------------------------------------------------- the director (src/director.ts)
     if (route.startsWith('/v1/director/')) {
       const dr = await import('./director.ts');
@@ -579,13 +676,33 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const b = await readJson(req);
         return send(res, 200, dr.createShot(projectOf(b.project), b.doc ?? (b.title ? { title: b.title } : undefined)));
       }
-      const dm = /^\/v1\/director\/shots\/(sh_[0-9a-f]+)(?:\/(assistant|blender))?$/.exec(route);
+      // A shot comes with its sequence's summary (the strip of shots), and a save carries what the sequence shares.
+      const withScene = (x: import('./director.ts').ShotRow) => ({ ...x, sequenceInfo: dr.sequenceSummary(x.doc.sequence, x.project) });
+      const sm = /^\/v1\/director\/sequences\/((?:sq|sc)_[0-9a-f]{8})$/.exec(route);
+      if (sm) {
+        const p = projectOf(q('project'));
+        const info = dr.sequenceSummary(sm[1], p);
+        if (!info) throw new GenError('No such sequence', { status: 404 });
+        if (method === 'GET') return send(res, 200, info);
+        if (method === 'PUT') {
+          const b = await readJson(req);
+          if (typeof b.title === 'string') dr.renameSequence(sm[1], p, b.title);
+          if (Array.isArray(b.order)) dr.reorderSequence(sm[1], p, b.order.map(String));
+          return send(res, 200, dr.sequenceSummary(sm[1], p));
+        }
+      }
+      const dm = /^\/v1\/director\/shots\/((?:sh|sn)_[0-9a-f]+)(?:\/(assistant|blender|next))?$/.exec(route);
       if (dm) {
         const id = dm[1];
-        if (!dm[2] && method === 'GET') return send(res, 200, dr.getShot(id, canSee));
+        if (!dm[2] && method === 'GET') return send(res, 200, withScene(dr.getShot(id, canSee)));
+        if (dm[2] === 'next' && method === 'POST') return send(res, 200, withScene(dr.addShotAfter(dr.getShot(id, canSee))));
         if (!dm[2] && method === 'PUT') {
           const b = await readJson(req);
-          try { return send(res, 200, dr.saveShot(dr.getShot(id, canSee), b.doc, b.version == null ? undefined : Number(b.version))); } catch (e: any) {
+          try {
+            const saved = dr.saveShot(dr.getShot(id, canSee), b.doc, b.version == null ? undefined : Number(b.version));
+            dr.shareAcross(saved);
+            return send(res, 200, withScene(saved));
+          } catch (e: any) {
             if (e.status === 409) return send(res, 409, { error: e.message, shot: e.shot });
             throw e;
           }
@@ -607,10 +724,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const library = listAssets({ project: sh.project, limit: 60, playtest: false, projects: client.projects }).items
             .filter((a: any) => a.kind === 'mesh' || (a.kind === 'image' && a.tool === 'image.panorama'))
             .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? null }));
-          const turn = await dr.directorTurn({ project: sh.project, shot: sh.doc, messages, library, selection: b.selection && typeof b.selection === 'object' ? b.selection : undefined });
+          const seqInfo = dr.sequenceSummary(sh.doc.sequence, sh.project);
+          const sequence = seqInfo ? { title: seqInfo.title, shots: dr.sequenceShots(sh.doc.sequence!, sh.project).map((x) => ({ ...x.doc, shotId: x.id })) } : null;
+          const ed = await import('./editor.ts');
+          const sc = await import('./scenes.ts');
+          const characters = sc.listScenes(sh.project, 'character', 40).map((x) => ({ id: x.id, name: x.title, description: '' }));
+          const turn = await dr.directorTurn({ project: sh.project, shot: sh.doc, shotId: sh.id, sequence, characters, voices: await ed.editorVoices(), messages, library, selection: b.selection && typeof b.selection === 'object' ? b.selection : undefined });
           const aiCharge = payer && turn.house ? chargeCredits(payer.id, house.turnCredits(turn.cost), 'ai_turn', `Director: ${String(messages[messages.length - 1].text).slice(0, 80)}`) : null;
-          const saved = dr.saveShot(sh, turn.shot);
-          return send(res, 200, { say: turn.say, shot: saved, model: turn.model, ...(aiCharge ? { aiCredits: aiCharge.charged } : {}) });
+          const shown = dr.applyDirector(sh.project, sh, turn.answer);
+          return send(res, 200, { say: turn.answer.say, shot: withScene(dr.getShot(shown.id, canSee)), model: turn.model, ...(aiCharge ? { aiCredits: aiCharge.charged } : {}) });
         }
         if (dm[2] === 'blender' && method === 'POST') {
           // Films the shot with Gen's Blender pipeline (cinemaPass) as one asset.make job. ?quote=1 prices it only.
@@ -651,7 +773,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const b = await readJson(req);
         return send(res, 200, ed.createProject(projectOf(b.project), b.doc ?? (b.title ? { title: b.title } : undefined)));
       }
-      const pm = /^\/v1\/editor\/projects\/(ep_[0-9a-f]{12})(?:\/(apply|assistant))?$/.exec(route);
+      const pm = /^\/v1\/editor\/projects\/((?:ep|sn)_[0-9a-f]{12})(?:\/(apply|assistant))?$/.exec(route);
       if (pm) {
         const [, id, action] = pm;
         if (!action && method === 'GET') return send(res, 200, ed.getProject(id, canSee));

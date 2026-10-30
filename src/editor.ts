@@ -8,7 +8,7 @@
 // that the person didn't ask for: no fades or transitions unless set on a clip.
 
 import crypto from 'node:crypto';
-import { db } from './db.ts';
+import { registerKind, listScenes, createScene, getScene, saveScene, deleteScene, sceneRef, type Scene, type Render } from './scenes.ts';
 import { GenError } from './util.ts';
 import { getJob } from './jobs.ts';
 import { getTool, TOOLS } from './tools/index.ts';
@@ -19,18 +19,6 @@ const TOOL_IDS = () => TOOLS.map((t) => t.id);
 import { ask, callScope } from './providers/anthropic.ts';
 import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS editor_projects (
-  id TEXT PRIMARY KEY,
-  project TEXT NOT NULL,
-  title TEXT NOT NULL,
-  doc TEXT NOT NULL,
-  version INTEGER NOT NULL DEFAULT 1,
-  created INTEGER NOT NULL,
-  updated INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS editor_projects_project ON editor_projects (project, updated DESC);
-`);
 
 export type TrackId = 'V1' | 'T1' | 'A1' | 'A2' | 'A3';
 export const TRACKS: { id: TrackId; kind: 'video' | 'text' | 'audio'; name: string }[] = [
@@ -48,8 +36,10 @@ export type Clip = {
   label?: string; start: number; in: number; out: number; duration?: number | null;
   speed?: number; volume?: number; muted?: boolean; text?: string;
   transition?: string; transitionSeconds?: number; zoom?: { from?: number; to?: number; x?: number; y?: number };
+  /** The scene this clip plays (a filmed stage, a rendered image, an audio scene's mixdown); `asset` is its render. */
+  scene?: string | null; sceneVersion?: number | null;
 };
-export type Doc = { v: 1; title: string; width: number; height: number; fps: number; fit?: 'pad' | 'crop'; tracks: typeof TRACKS; clips: Clip[] };
+export type Doc = { v: 1; title: string; width: number; height: number; fps: number; fit?: 'pad' | 'crop'; tracks: typeof TRACKS; clips: Clip[]; render?: Render | null };
 
 export const newDoc = (title = 'Untitled'): Doc => ({ v: 1, title, width: 1280, height: 720, fps: 30, tracks: TRACKS, clips: [] });
 
@@ -69,6 +59,7 @@ export function normalize(input: any): Doc {
     v: 1, title: String(d.title ?? 'Untitled').slice(0, 120) || 'Untitled',
     width: clamp(Math.round(num(d.width, 1280) / 2) * 2, 64, 3840), height: clamp(Math.round(num(d.height, 720) / 2) * 2, 64, 3840),
     fps: clamp(num(d.fps, 30), 8, 60), ...(d.fit === 'crop' ? { fit: 'crop' as const } : {}), tracks: TRACKS, clips: [],
+    ...(keptRender(d.render) ? { render: keptRender(d.render) } : {}),
   };
   const seen = new Set<string>();
   for (const c0 of Array.isArray(d.clips) ? d.clips.slice(0, 600) : []) {
@@ -92,9 +83,10 @@ export function normalize(input: any): Doc {
       ...(c0.muted ? { muted: true } : {}),
       ...(kind === 'text' ? { text: String(c0.text ?? '').slice(0, 500) } : {}),
       ...(c0.transition && c0.transition !== 'cut' ? { transition: String(c0.transition).slice(0, 30), transitionSeconds: clamp(num(c0.transitionSeconds, 0.5), 0.1, 3) } : {}),
+      ...(sceneRef(c0.scene) ? { scene: sceneRef(c0.scene), ...(Number.isFinite(Number(c0.sceneVersion)) ? { sceneVersion: Number(c0.sceneVersion) } : {}) } : {}),
       ...(c0.zoom && typeof c0.zoom === 'object' ? { zoom: { from: clamp(num(c0.zoom.from, 1), 1, 4), to: clamp(num(c0.zoom.to, 1), 1, 4), x: clamp(num(c0.zoom.x, 0.5), 0, 1), y: clamp(num(c0.zoom.y, 0.5), 0, 1) } } : {}),
     };
-    if (!c.asset && !c.job && kind !== 'text') continue;
+    if (!c.asset && !c.job && !c.scene && kind !== 'text') continue;
     doc.clips.push(c);
   }
   return layout(doc);
@@ -296,6 +288,12 @@ export function applyOps(doc0: Doc, ops: Op[], submit?: Submit): { doc: Doc; res
 }
 
 /** Fills in clips whose jobs ended: the output (of the clip's kind) when done, the error when failed. */
+/** A render as documents keep it: an asset, its kind, the scene's version then. */
+export function keptRender(v: any): Render | null {
+  if (!v || typeof v !== 'object' || !/^a_[0-9a-f]{6,40}$/.test(String(v.asset))) return null;
+  return { asset: String(v.asset), kind: ['video', 'image', 'audio', 'mesh'].includes(v.kind) ? v.kind : 'video', version: Math.max(0, Math.round(Number(v.version) || 0)), at: Number(v.at) || 0 };
+}
+
 export function resolvePending(doc: Doc, jobOf: (id: string) => ReturnType<typeof getJob> = getJob): boolean {
   let changed = false;
   for (const c of doc.clips) {
@@ -319,47 +317,30 @@ export function resolvePending(doc: Doc, jobOf: (id: string) => ReturnType<typeo
   return changed;
 }
 
-// ------------------------------------------------------------------ projects
-type Row = { id: string; project: string; title: string; doc: string; version: number; created: number; updated: number };
-export type Project = { id: string; project: string; title: string; doc: Doc; version: number; created: number; updated: number };
-const fromRow = (r: Row): Project => ({ ...r, doc: normalize(JSON.parse(r.doc)) });
+// ------------------------------------------------------------------ projects: video scenes (src/scenes.ts)
+export type Project = Scene<Doc>;
 
-export function listProjects(project: string, limit = 50) {
-  return (db.prepare('SELECT id, project, title, version, created, updated FROM editor_projects WHERE project = ? ORDER BY updated DESC LIMIT ?').all(project, limit) as Omit<Row, 'doc'>[]);
-}
-export function createProject(project: string, doc?: unknown): Project {
-  const d = doc ? normalize(doc) : newDoc();
-  const now = Date.now();
-  const id = `ep_${crypto.randomBytes(6).toString('hex')}`;
-  db.prepare('INSERT INTO editor_projects (id, project, title, doc, version, created, updated) VALUES (?, ?, ?, ?, 1, ?, ?)').run(id, project, d.title, JSON.stringify(d), now, now);
-  return { id, project, title: d.title, doc: d, version: 1, created: now, updated: now };
-}
+registerKind('video', {
+  normalize,
+  blank: (title) => newDoc(title),
+  resolve: (doc, jobOf) => resolvePending(doc, jobOf),
+  uses: (doc: Doc) => doc.clips.map((c) => c.scene).filter(Boolean) as string[],
+});
+
+export const listProjects = (project: string, limit = 50) => listScenes(project, 'video', limit);
+export const createProject = (project: string, doc?: unknown): Project => createScene(project, 'video', doc ?? newDoc(), 'ep');
 /** One project, with any finished jobs filled in (saved, so every reader sees the same). `canSee` checks the caller. */
-export function getProject(id: string, canSee: (project: string) => boolean): Project {
-  const r = db.prepare('SELECT * FROM editor_projects WHERE id = ?').get(id) as Row | undefined;
-  if (!r || !canSee(r.project)) throw new GenError('No such project', { status: 404 });
-  const p = fromRow(r);
-  if (resolvePending(p.doc)) return saveDoc(p, p.doc);
-  return p;
-}
+export const getProject = (id: string, canSee: (project: string) => boolean): Project => getScene(id, canSee, 'video');
 /** Saves a document. With `version`, refuses when someone else saved in between (409 with the newer project). */
 export function saveDoc(p: Project, doc: unknown, version?: number): Project {
-  const d = normalize(doc);
-  const now = Date.now();
-  const r = version != null
-    ? db.prepare('UPDATE editor_projects SET doc = ?, title = ?, version = version + 1, updated = ? WHERE id = ? AND version = ?').run(JSON.stringify(d), d.title, now, p.id, version)
-    : db.prepare('UPDATE editor_projects SET doc = ?, title = ?, version = version + 1, updated = ? WHERE id = ?').run(JSON.stringify(d), d.title, now, p.id);
-  if (!r.changes) {
-    const cur = fromRow(db.prepare('SELECT * FROM editor_projects WHERE id = ?').get(p.id) as Row);
-    throw Object.assign(new GenError('Someone else changed this project: reload it', { status: 409 }), { project: cur });
+  try {
+    return saveScene(p, doc, version);
+  } catch (e: any) {
+    if (e.status === 409) e.project = e.scene;
+    throw e;
   }
-  return fromRow(db.prepare('SELECT * FROM editor_projects WHERE id = ?').get(p.id) as Row);
 }
-export function deleteProject(id: string, canSee: (project: string) => boolean) {
-  const r = db.prepare('SELECT project FROM editor_projects WHERE id = ?').get(id) as { project: string } | undefined;
-  if (!r || !canSee(r.project)) throw new GenError('No such project', { status: 404 });
-  db.prepare('DELETE FROM editor_projects WHERE id = ?').run(id);
-}
+export const deleteProject = (id: string, canSee: (project: string) => boolean) => deleteScene(id, canSee, 'video');
 
 // ------------------------------------------------------------------ the AI editor
 /** What the AI editor may run, with what it's for. Only tools this Gen has are offered. */

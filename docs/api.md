@@ -289,8 +289,16 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 | Route | |
 |---|---|
 | `GET /v1/editor/tools` | The tools the AI editor and the app offer on this Gen, and the tracks |
+| `GET /v1/scenes?kind=&project=` | Every scene of the account (src/scenes.ts), newest first: id, kind, title, version, render |
+| `POST /v1/scenes` | A new scene: `{ kind: video \| stage \| image \| audio \| character, title?, doc? }` |
+| `GET/PUT/DELETE /v1/scenes/:id` | One scene (with `uses`: the scenes it plays and their renders; a stage's `sequenceInfo`); PUT `{ doc, version }` (409 with the newer scene) |
+| `PUT /v1/scenes/:id/render` | `{ asset, kind? }`: the scene's latest output, for the scenes that use it (the caller must see the file) |
+| `POST /v1/scenes/:id/duplicate` | A copy, without its render |
+| `POST /v1/scenes/:id/assistant`, `.../apply` | The image, audio and character AI (src/sceneai.ts): `{ messages, selection? }` in, `{ say, scene, started, errors, proposed? }` out; apply runs a confirmed proposal `{ doc, jobs }` |
 | `GET/POST /v1/director/shots`, `GET/PUT/DELETE /v1/director/shots/:id` | The director's shots (src/director.ts), per account; PUT with `version` (409 with the newer shot) |
-| `POST /v1/director/shots/:id/assistant` | The AI director: `{ messages, doc? }` in, `{ say, shot, aiCredits? }` out (the shot saved) |
+| `POST /v1/director/shots/:id/next` | A new shot after this one in its sequence (makes the sequence first) |
+| `GET/PUT /v1/director/sequences/:id` | A sequence (a stage's shot list): its title and shots in order; PUT `{ title?, order?: [shotId...] }` |
+| `POST /v1/director/shots/:id/assistant` | The AI director: `{ messages, doc?, selection? }` in, `{ say, shot (with sceneInfo), aiCredits? }` out; it may plan the whole scene (shots saved, made or moved out) |
 | `POST /v1/director/shots/:id/blender` | Films the shot with Gen's Blender film pipeline (one asset.make); `?quote=1` prices it. 400 while anyone is a stand-in |
 | `POST /v1/director/prompts` | The look and action prompts "Film it" sends (image.control, video.control) for a shot |
 | `GET/PUT /v1/admin/ai`, `PUT/DELETE /v1/admin/ai/key` | Owner: the house AI (src/houseai.ts): source, markup, minCredits, the stored Anthropic key (last 4 only) |

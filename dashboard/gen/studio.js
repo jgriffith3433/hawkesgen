@@ -149,6 +149,9 @@ function drawList() {
   if (!S.loaded) { list.replaceChildren(h('div', { class: 'working' }, 'Loading tools')); return; }
   const match = (label, t) => !S.q || `${label} ${t?.id ?? ''} ${t?.description ?? ''}`.toLowerCase().includes(S.q);
   const sections = [];
+  // The director first: the way in on a phone (the bar's button is hidden there), and the most powerful thing here.
+  if (!S.group && (!S.q || 'director direct shot scene 3d camera film dialogue'.includes(S.q))) sections.push(h('button', { type: 'button', class: 'cat-row director-row', onclick: () => import('./director.js').then((d) => d.openDirector()) },
+    icon('film'), h('span', { class: 'cat-txt' }, h('b', {}, 'Direct a shot or a scene'), h('span', { class: 'muted' }, 'Stage it in 3D with the AI director: cast, camera, dialogue. Then film it.'))));
   for (const g of GROUPS) {
     if (S.group && S.group !== g.id) continue;
     const rows = g.chains

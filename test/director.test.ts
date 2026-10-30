@@ -82,6 +82,50 @@ test('camera keys replace the move and ease between; film settings are kept in r
   assert.ok(!(recipe.steps[0].params!.shot as any).camera.keys);
 });
 
+test('sequences: the AI plans shots in order, a sequence shares its set, look and cast, shots are added and reordered', () => {
+  const P = 'u_5ce4e0000001';
+  const first = dr.createShot(P, { title: 'Argument', cast: [{ name: 'Ana', voice: 'voice_ana1' }, { name: 'Ben' }], lines: [{ who: 1, text: 'You knew.', at: 9 }, { who: 4, text: 'x' }, { who: 0, text: '' }] });
+  assert.equal(first.doc.lines.length, 2, 'empty lines go');
+  assert.equal(first.doc.lines[1].who, 1, 'who stays in the cast');
+  assert.equal(first.doc.cast[0].voice, 'voice_ana1');
+  // The AI answers with three shots: the first kept (by shotId), two new; it becomes a scene.
+  const ids = first.doc.cast.map((c) => c.id);
+  const ans = dr.parseDirector(JSON.stringify({ say: 'Covered.', sequenceTitle: 'The kitchen', current: 2, shots: [
+    { ...first.doc, shotId: first.id, title: 'Wide' },
+    { ...first.doc, title: 'Over her shoulder', kind: 'talk', lines: [{ who: 1, text: 'You knew.', at: 0 }] },
+    { ...first.doc, title: 'Her close-up', kind: 'talk', lines: [{ who: 0, text: 'I did.', at: 0 }] },
+  ] }), first.doc, first.id);
+  const shown = dr.applyDirector(P, first, ans);
+  assert.equal(shown.doc.title, 'Her close-up');
+  const sc = dr.sequenceSummary(shown.doc.sequence, P)!;
+  assert.equal(sc.title, 'The kitchen');
+  assert.deepEqual(sc.shots.map((x) => x.title), ['Wide', 'Over her shoulder', 'Her close-up']);
+  assert.equal(sc.shots[0].id, first.id);
+  // A save shares the set, the look and who people are, not the blocking.
+  const wide = dr.getShot(first.id, () => true);
+  const moved = dr.saveShot(wide, { ...wide.doc, look: 'A cramped kitchen at 2 am', set: { ...wide.doc.set, lights: 'night' }, cast: wide.doc.cast.map((c, i) => ({ ...c, description: i === 0 ? 'red coat' : c.description, position: [i * 5, 1] })) });
+  dr.shareAcross(moved);
+  const other = dr.sequenceShots(moved.doc.sequence!, P)[2];
+  assert.equal(other.doc.look, 'A cramped kitchen at 2 am');
+  assert.equal(other.doc.set.lights, 'night');
+  assert.equal(other.doc.cast.find((c) => c.id === ids[0])!.description, 'red coat');
+  assert.notDeepEqual(other.doc.cast.find((c) => c.id === ids[1])!.position, [5, 1], 'blocking stays per shot');
+  // Next shot goes right after, the rest move down; reorder puts them in the given order.
+  const added = dr.addShotAfter(dr.getShot(first.id, () => true));
+  assert.deepEqual(dr.sequenceSummary(added.doc.sequence, P)!.shots.map((x) => x.id)[1], added.id);
+  const all = dr.sequenceSummary(added.doc.sequence, P)!.shots.map((x) => x.id);
+  dr.reorderSequence(added.doc.sequence!, P, [...all].reverse());
+  assert.deepEqual(dr.sequenceSummary(added.doc.sequence, P)!.shots.map((x) => x.id), [...all].reverse());
+  // A shot the AI leaves out leaves the scene (never deleted).
+  const keep = dr.sequenceShots(added.doc.sequence!, P);
+  dr.applyDirector(P, keep[0], { say: '', sequenceTitle: null, current: 0, shots: keep.slice(0, 2).map((x) => ({ ...x.doc, shotId: x.id })) });
+  assert.equal(dr.sequenceShots(added.doc.sequence!, P).length, 2);
+  assert.equal(dr.getShot(keep[3].id, () => true).doc.sequence, null);
+  // The talk prompt is about the speaker; spoken lines keep words out of the video's own sound.
+  const pr = dr.filmPrompts(dr.getShot(keep[0].id, () => true).doc);
+  assert.ok(typeof pr.talk === 'string' && pr.talk.length > 10);
+});
+
 test('the house AI: what accounts get, the price, and the key never comes back', () => {
   house.saveHouseSettings({ source: 'off' });
   assert.equal(house.houseRoute().via, null);

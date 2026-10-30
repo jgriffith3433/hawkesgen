@@ -387,6 +387,8 @@ export async function runExport() {
     out.replaceChildren(h('video', { src: `/v1/assets/${v.asset}/file`, controls: true, playsinline: true }),
       h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/v1/assets/${v.asset}/file`, download: `${P.doc.title || 'hawkes-gen'}.mp4` }, icon('download'), 'Download'), h('span', { class: 'muted small' }, 'Also saved to Media.')));
     bus.emit('jobDone', done);
+    // The export is this video scene's render: scenes that play it can update to it.
+    if (P.id) import('./scenes.js').then((sc) => sc.setRender(P.id, v.asset, 'video')).catch(() => {});
   } catch (err) {
     out.replaceChildren();
     $('#exportError').textContent = plainError(err.message);
@@ -402,7 +404,6 @@ export function initTools() {
   bus.on('source', () => { closeSheet(); drawToolbar(); });
   bus.on('editText', editText);
   bus.on('openClip', (c) => { if (c.asset) showSource({ id: c.asset, kind: c.kind, title: c.label }); });
-  $('#exportBtn').addEventListener('click', openExport);
   $('#exportGo').addEventListener('click', runExport);
   $('#exportClose').addEventListener('click', () => $('#exportDialog').close());
   $('#viewerBack').addEventListener('click', closeSource);

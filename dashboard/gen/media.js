@@ -106,11 +106,12 @@ export async function placeAsset(a, { track, start } = {}) {
  * Runs one tool for the person. `place`: { replace: clipId } swaps that clip's file when done; { track, start } puts a
  * waiting clip on the timeline now; nothing: the result goes to Media. Returns the finished job (or throws).
  */
-export function runJob({ tool, params = {}, inputs = {}, label, place } = {}) {
+export function runJob({ tool, params = {}, inputs = {}, label, place, onStart } = {}) {
   return new Promise((resolve, reject) => needSignIn(async () => {
     try {
       const r = await api('/v1/jobs', { body: { project: state.user.project, tool, params, inputs, labels: { title: label ?? tool, ...(P.id ? { editor: P.id } : {}) } } });
       const job = r.jobs[0];
+      onStart?.(job.id);
       if (place?.replace) {
         const c = P.doc.clips.find((x) => x.id === place.replace);
         if (c) { remember(); Object.assign(c, { job: job.id, pending: true, label: label ?? c.label }); delete c.failed; changed(); }
