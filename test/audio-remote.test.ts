@@ -87,3 +87,14 @@ test('a worker image without the voice models (ComfyUI refuses hawkes_audio) mak
     (e: any) => e.unavailable === true && /without the voice models/.test(e.message),
   );
 });
+
+test('a transcriber that fails leaves the take unchecked (verifySkipped says why), not wrong', async () => {
+  const f = fake((g) => [
+    { filename: 'result.json', data: Buffer.from(JSON.stringify({ items: [{ id: 'take0', seconds: 1 }] })) },
+    { filename: 'take0.wav', data: Buffer.from('wav') },
+    { filename: 'take0.asr.json', data: Buffer.from(JSON.stringify({ text: '', error: 'exit 1: ImportError: libcudnn' })) },
+  ]);
+  const s = await synthesize(f.ctx, { model: modelById('qwen3-tts')!, task: 'speak', items: [{ id: 'take0', text: 'Hi.', seed: 1, language: 'en' }], asr: true });
+  assert.equal(s.items[0].transcript, undefined);
+  assert.match(s.verifySkipped!, /transcriber failed.*libcudnn/);
+});

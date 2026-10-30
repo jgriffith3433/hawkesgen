@@ -647,9 +647,12 @@ class Run:
                     try:
                         r = subprocess.run([asr_py, os.path.join(AUDIO_ROOT, "asr.py"), os.path.join(outdir, name), str(spec.get("language") or "en")],
                                            cwd=work, env={**env, "ASR_DEVICE": "cpu"}, capture_output=True, text=True, timeout=300)
-                        line = r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else '{"text":""}'
-                    except Exception:  # noqa: BLE001 - an unchecked take is still a take
-                        line = '{"text":""}'
+                        if r.returncode == 0 and r.stdout.strip():
+                            line = r.stdout.strip().splitlines()[-1]
+                        else:
+                            line = json.dumps({"text": "", "error": f"exit {r.returncode}: " + " / ".join((r.stderr or "").strip().splitlines()[-6:])})
+                    except Exception as e:  # noqa: BLE001 - an unchecked take is still a take (Gen says it wasn't checked)
+                        line = json.dumps({"text": "", "error": str(e)})
                     with open(dest, "w") as fh:
                         fh.write(line)
             out = []

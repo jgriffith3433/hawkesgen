@@ -129,13 +129,14 @@ async function synthesizeRemote(ctx: RunContext, c: ComfyRun, o: { model: AudioM
 /** run.py's out/ folder: the takes, and each one's transcript when verify asked for it. */
 function readOut(out: string, model: AudioModel, verifySkipped?: string): Synth {
   const meta = JSON.parse(fs.readFileSync(path.join(out, 'result.json'), 'utf8'));
-  return {
-    dir: out, model, verifySkipped,
-    items: meta.items.map((r: any) => {
-      const asrFile = path.join(out, `${r.id}.asr.json`);
-      return { id: r.id, file: path.join(out, `${r.id}.wav`), seconds: r.seconds, transcript: fs.existsSync(asrFile) ? JSON.parse(fs.readFileSync(asrFile, 'utf8')).text : undefined };
-    }),
-  };
+  const items = meta.items.map((r: any) => {
+    const asrFile = path.join(out, `${r.id}.asr.json`);
+    const asr = fs.existsSync(asrFile) ? JSON.parse(fs.readFileSync(asrFile, 'utf8')) : null;
+    // The transcriber failing is not the take failing: it goes unchecked, and the result says why.
+    if (asr?.error) verifySkipped ??= `verify was skipped: the transcriber failed (${String(asr.error).slice(-300)}); the takes were not checked against the text`;
+    return { id: r.id, file: path.join(out, `${r.id}.wav`), seconds: r.seconds, transcript: asr && !asr.error ? asr.text : undefined };
+  });
+  return { dir: out, model, verifySkipped, items };
 }
 
 /** Post-processes one take and returns the bytes, its analysis and verdict. */
