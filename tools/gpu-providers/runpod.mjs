@@ -4,7 +4,9 @@
 //   node tools/gpu-providers/runpod.mjs --image ghcr.io/<owner>/hawkes-gen-gpu:<tag>            print the plan
 //   node tools/gpu-providers/runpod.mjs --image ... --apply                                      create the template
 //   node tools/gpu-providers/runpod.mjs --image ... --update <endpoint id> [--apply]           a new image on a running endpoint:
-//     its own template keeps everything (env, worker token, disk, ports) and takes the image; new workers start on it
+//     its own template keeps everything (env, worker token, disk, ports) and takes the image; new workers start on it.
+//     Add --recycle to end the workers still on an older image (RunPod keeps reusing them on warm starts otherwise;
+//     a job running on one is cut off and retried by Gen)
 //   options: --name gen-gpu  --gpu "NVIDIA L40S"  --max 2  --disk 120  --registry-auth <id>  --endpoint <id>
 //
 // What it makes (--apply, with RUNPOD_API_KEY in hawkesgen/.env; costs nothing until a worker runs):
@@ -47,8 +49,18 @@ if (update) {
   header(`Endpoint ${ep.name} (${ep.id}), template ${t.id}`);
   say(`image: ${t.imageName}
    ->  ${image}`);
-  if (t.imageName === image) { say('Already on this image.'); process.exit(0); }
-  if (!APPLY) { say('(dry run: --apply saves it)'); process.exit(0); }
+  const recycle = async () => {
+    if (!process.argv.includes('--recycle')) return;
+    const e = await fetch(`${API}/endpoints/${update}?includeWorkers=true`, { headers: { Authorization: `Bearer ${key}` } }).then((r) => r.json());
+    const old = (e.workers ?? []).filter((w) => w.desiredStatus !== 'EXITED' && w.imageName && w.imageName !== image);
+    if (!old.length) { say('No workers on an older image.'); return; }
+    for (const w of old) {
+      say(`${APPLY ? 'ending' : 'would end'} worker ${w.id} (${w.imageName})`);
+      if (APPLY) await gql('mutation($input: PodTerminateInput!) { podTerminate(input: $input) }', { input: { podId: w.id } });
+    }
+  };
+  if (t.imageName === image) { say('Already on this image.'); await recycle(); process.exit(0); }
+  if (!APPLY) { say('(dry run: --apply saves it)'); await recycle(); process.exit(0); }
   const input = {
     id: t.id, name: t.name, imageName: image, isServerless: true, containerDiskInGb: t.containerDiskInGb, volumeInGb: t.volumeInGb ?? 0,
     volumeMountPath: t.volumeMountPath ?? '/workspace', dockerArgs: t.dockerArgs ?? '', ports: t.ports ?? '8080/http', readme: t.readme ?? '',
@@ -56,6 +68,7 @@ if (update) {
   };
   const saved = await gql('mutation($input: SaveTemplateInput) { saveTemplate(input: $input) { id imageName } }', { input });
   say(`saved: template ${saved.saveTemplate.id} now runs ${saved.saveTemplate.imageName}`);
+  await recycle();
   process.exit(0);
 }
 

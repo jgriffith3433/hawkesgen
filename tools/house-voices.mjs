@@ -5,8 +5,11 @@
 //   node tools/house-voices.mjs                 lists what each voice has (free)
 //   node tools/house-voices.mjs --make          designs the ones without a sample (GPU: about a cent each; ask J first)
 //   node tools/house-voices.mjs --make --redo hv_villain,hv_kid   designs these again (the old sample stays until deleted)
+//   --beta                                       beta Gen (client.json's genBetaUrl and genBetaKey)
 //   --url <gen>                                  another Gen (default: ~/.hawkes/client.json)
 
+import fs from 'node:fs';
+import os from 'node:os';
 import { HawkesGen } from '../clients/js/hawkesgen.mjs';
 import { HOUSE_VOICES } from '../src/audio/house.ts';
 
@@ -14,7 +17,8 @@ const args = process.argv.slice(2);
 const opt = (name, d) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : d; };
 const make = args.includes('--make');
 const redo = new Set(String(opt('redo', '')).split(',').filter(Boolean));
-const gen = new HawkesGen({ url: opt('url'), project: 'shared' });
+const beta = args.includes('--beta') ? JSON.parse(fs.readFileSync(`${os.homedir()}/.hawkes/client.json`, 'utf8')) : null;
+const gen = new HawkesGen({ url: beta ? beta.genBetaUrl : opt('url'), key: beta?.genBetaKey, project: 'shared' });
 
 const list = await gen.run('audio.voice-list', { params: { project: 'shared', provider: 'open' } });
 const saved = new Map((list.result?.voices ?? []).filter((v) => v.hasReference).map((v) => [v.name, v]));

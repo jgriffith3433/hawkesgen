@@ -185,6 +185,16 @@ datacenter: pick one with L40S to spare.
 
 ## The image
 
+**A new image on RunPod** (2026-10-30): `node tools/gpu-providers/runpod.mjs --image ghcr.io/jgriffith3433/hawkes-gen-gpu:<tag>
+--update <endpoint id> --apply` swaps the image in the endpoint's own template (env, worker token and disk kept). New workers
+start on it, but **RunPod keeps reusing a warm worker on the old image** (FlashBoot): add `--recycle` to end those (a job
+running on one is cut off and retried). The tag is `<comfy tag>-<context hash>` (`image-context.mjs` prints it; line endings
+don't count, so a Windows checkout names the tag GitHub's build pushes). Check it exists before pointing an endpoint at it
+(`docker manifest inspect`): a missing tag leaves every new worker unhealthy and RunPod holds requests until they time out.
+The first start on a host pulls about 6 GB, minutes: Gen waits up to 12 minutes past its usual wait for headers
+(`run.ts COLD_START_MS`), and RunPod's 400 "failed to assign worker" (no GPU of its types free) waits like a busy service.
+Modal's app file (`.data/modal/modal_app.py`) is rewritten by `modal.mjs --image ...`; deploying it needs the modal CLI.
+
 It is the Cloud Run GPU image (`server/cloudrun/`, built by `tools/cloudrun/build.mjs` in Cloud Build). It holds ComfyUI
 and its custom nodes, no models and no secrets. Models come per request through the broker, or from a network volume
 mounted at `MODELS_MOUNT`.

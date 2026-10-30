@@ -26,6 +26,16 @@ through the same queue, broker, billing and resume:
   `shared` project under its id; from then on every line clones that sample (the same voice in every line) and the app plays
   it as the preview (`GET /v1/audio/house/:id/preview`). Before that, each line is designed from the description and seed.
 - On the fleet (if it comes back) nothing changed: the same tools install the venv over SSH.
+- **Measured on beta** (2026-10-30, RunPod L40S class): a voice line about 31-56 GPU seconds and $0.015-0.03 once a worker is
+  warm (75 s end to end; a host's first start pulls the image and the Qwen weights, about 5 minutes); a Stable Audio 3 effect
+  about 50 GPU seconds and $0.02-0.03. The villain line came back word for word through the transcriber. All twelve house
+  voices have samples on beta (`tools/house-voices.mjs --beta --make`); live gets them after its deploy.
+- Loudness is one measured gain (ebur128) under the true-peak ceiling, a limiter past it (`post.ts loudnessGain`): ffmpeg 5.1's
+  loudnorm (Gen's image) made a 2 s effect quieter, and resampled every take to 192 kHz.
+- The transcriber decodes with ffmpeg: PyAV 15 dropped an argument faster-whisper still passes. When it fails anyway, the
+  takes come back unchecked (`verifySkipped` says why), not wrong.
+- **Until Modal runs the current image**, beta's `settings.gpu.familyOrder` sends `audio:qwen3-tts` to RunPod only (a job that
+  lands on an old image moves on by itself, but Modal's cold start costs minutes first). Remove the entry once Modal is redeployed.
 
 Every name that callers use today keeps working: `audio.voice`, `audio.sfx`, `audio.dialogue`, `audio.voice-design`,
 `audio.voice-save`, `audio.voice-list`, `audio.voice-delete`, `audio.voice-change`, `audio.music`. Their ElevenLabs params,
