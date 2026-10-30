@@ -194,12 +194,20 @@ export function normalize(input: any, kind: Kind = 'video'): Doc {
   return layout(doc);
 }
 
-/** Magnetic tracks: their clips sit back to back from 0 in their order. Others keep their own starts. */
+/**
+ * Magnetic tracks: their clips sit back to back from 0 in their order. Others keep their own starts, but clips on one
+ * track never overlap (J, 2026-10-30): one that would start inside the clip before it slides to just after it (so an
+ * AI's plan made before other clips arrived, or a paste, pushes later clips along instead of stacking them).
+ */
 export function layout(doc: Doc): Doc {
   for (const t of doc.tracks) {
-    if (!t.magnetic) continue;
+    const cs = doc.clips.filter((x) => x.track === t.id).sort((a, b) => a.start - b.start);
     let at = 0;
-    for (const c of doc.clips.filter((x) => x.track === t.id).sort((a, b) => a.start - b.start)) { c.start = r3(at); at += clipLength(c); }
+    for (const c of cs) {
+      if (t.magnetic) c.start = r3(at);
+      else if (c.start < at - 0.001) c.start = r3(at);
+      at = c.start + clipLength(c);
+    }
   }
   const order = new Map(doc.tracks.map((t, i) => [t.id, i]));
   doc.clips.sort((a, b) => (a.track === b.track ? a.start - b.start : (order.get(a.track) ?? 0) - (order.get(b.track) ?? 0)));

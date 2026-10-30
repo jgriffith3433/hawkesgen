@@ -8,7 +8,8 @@ export const h = (tag, attrs = {}, ...kids) => {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
     else if (k === 'html') el.innerHTML = v;
-    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    // CSS variables (--tc, --fill) need setProperty: assigning them to el.style drops them silently.
+    else if (k === 'style' && typeof v === 'object') for (const [p, x] of Object.entries(v)) { if (x == null) continue; if (p.startsWith('--')) el.style.setProperty(p, String(x)); else el.style[p] = x; }
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else el.setAttribute(k, v === true ? '' : v);
   }
@@ -58,11 +59,26 @@ export function friendly(err) {
   const status = err?.status ?? 0;
   if (status === 402 || /not enough credits|insufficient credits|out of credits|top up/i.test(raw)) return { text: 'You\'re out of credits for that. Add some and it goes straight on.', fix: 'credits' };
   if (/failed to fetch|networkerror|load failed|network/i.test(raw) && !status) return { text: 'Can\'t reach Gen right now. Your work is kept here; it saves as soon as you\'re back online.', fix: 'connection' };
+  if (/AI isn.t available|no AI|connect your AI/i.test(raw)) return { text: 'The AI is not available right now. Try again in a little while.', fix: 'ai' };
   if (status === 413 || /too large|payload/i.test(raw)) return { text: 'That file is too big (1.5 GB at most).' };
   if (status === 429 || /rate limit|too many/i.test(raw)) return { text: 'That\'s a lot at once: give it a few seconds, then try again.', fix: 'retry' };
   if (status === 503 || /offline|unavailable|no gpu|no server|busy/i.test(raw)) return { text: 'Those servers are busy or resting right now. It waits in line on its own, or try another tool.', fix: 'retry' };
   if (status === 401) return { text: 'You\'ve been signed out. Sign in again and carry on.' };
   return { text: plainError(raw) };
+}
+
+/**
+ * How a job is going, in a few words: in line (and how many are ahead), waiting because no server can take it yet (the
+ * queue's own reason, said plainly), or what it's doing now.
+ */
+export function jobStatusText(j) {
+  if (!j) return 'Working';
+  if (j.status === 'queued') {
+    const why = String(j.detail ?? '');
+    if (/no (stopped |free )?server|launching new ones is off|offline|no gpu|unavailable/i.test(why)) return 'Waiting for a free server';
+    return j.queue?.ahead ?? j.ahead ? `In line (${j.queue?.ahead ?? j.ahead} ahead)` : 'In line';
+  }
+  return j.detail || 'Working';
 }
 
 /** 0:03.4, 1:02.0 */
@@ -193,6 +209,7 @@ export const ICON = {
   move: svg('<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>'),
   turn: svg('<path d="M20 12a8 8 0 11-2.3-5.6"/><path d="M20 4v5h-5"/>'),
   size: svg('<path d="M4 20l7-7M4 20v-5M4 20h5M20 4l-7 7M20 4v5M20 4h-5"/>'),
+  logout: svg('<path d="M10 5H6a1 1 0 00-1 1v12a1 1 0 001 1h4"/><path d="M15 8l4 4-4 4M19 12H9"/>'),
   phone: svg('<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>'),
   help: svg('<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 015 0c0 1.7-2.5 2-2.5 4"/><path d="M12 17h.01"/>'),
   keyboard: svg('<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),

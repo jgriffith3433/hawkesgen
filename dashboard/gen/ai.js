@@ -13,7 +13,7 @@ import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './
 import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions } from './director.js';
 import { activeKind, activeScene, activeEditor } from './scenes.js';
 
-const A = { messages: [], busy: false };
+const A = { id: null, messages: [], busy: false, queue: [] };
 const KEY = (id) => `hg.ai.${id}`;
 
 export function initAi() {
@@ -23,7 +23,9 @@ export function initAi() {
   bus.on('selection', drawContext);
   bus.on('doc', drawContext);
   bus.on('time', () => { if (!P.selection.clips.size && !P.selection.range) drawContext(); });
-  bus.on('project', (p) => { A.messages = load(p.id); drawMessages(); });
+  // A new scene in front brings its own conversation; the same scene taken again (a save, a sync, the AI's own edit)
+  // keeps the one on screen, a message in flight included.
+  bus.on('project', (p) => { if (A.id === p.id) return; A.id = p.id; A.messages = load(p.id); drawMessages(); });
   bus.on('ai', drawGate);
   bus.on('signedIn', drawGate);
   bus.on('ready', drawGate);
@@ -150,12 +152,13 @@ function drawMessages() {
     list.replaceChildren(h('div', { class: 'ai-hello' }, icon(P.kind === 'audio' ? 'music' : P.kind === 'image' ? 'image' : 'sparkle', 'ico big'), h('h3', {}, words[0]), h('p', { class: 'muted' }, words[1])));
     return;
   }
-  list.replaceChildren(...msgs().map(msgEl));
+  list.replaceChildren(...msgs().map(msgEl), ...A.queue.map((t, i) => h('div', { class: 'msg user queued' }, t,
+    h('div', { class: 'msg-ctx' }, 'Next, when the AI is free · ', h('button', { class: 'link small', onclick: () => { A.queue.splice(i, 1); drawMessages(); } }, 'Remove')))));
   list.scrollTop = list.scrollHeight;
 }
 function msgEl(m) {
   if (m.role === 'user') return h('div', { class: 'msg user' }, m.text, m.context ? h('div', { class: 'msg-ctx' }, m.context) : '');
-  const el = h('div', { class: `msg ai${m.error ? ' err' : ''}` }, m.text);
+  const el = h('div', { class: `msg ai${m.error ? ' err' : ''}${m.pending ? ' pending' : ''}` }, m.text);
   if (m.results?.length) el.append(h('ul', { class: 'msg-ops' }, ...m.results.map((r) => h('li', { class: r.ok ? 'ok' : 'bad' }, r.ok ? '✓ ' : '✗ ', describe(r), r.error ? ` (${r.error})` : ''))));
   if (m.proposed && !m.proposedDone) {
     const list = m.proposed.ops ?? m.proposed.jobs ?? [];
@@ -184,9 +187,33 @@ export function askAi(text) {
   if (text) send();
 }
 
+/**
+ * While the AI is still answering, what the person sends waits its turn (shown in the conversation, the box cleared) and
+ * goes as soon as the AI is free: Enter never silently does nothing.
+ */
+function queueUp(text) {
+  A.queue.push(text);
+  $('#aiInput').value = '';
+  $('#aiInput').style.height = 'auto';
+  drawMessages();
+}
+function next() {
+  drawBusy();
+  if (A.busy || !A.queue.length) return;
+  $('#aiInput').value = A.queue.shift();
+  setTimeout(send, 30);
+}
+/** The send button shows the AI is working (it still takes messages: they queue). */
+function drawBusy() {
+  const b = $('#aiSend');
+  b.classList.toggle('busy', A.busy);
+  b.title = A.busy ? 'The AI is answering: what you send now goes next' : 'Send (Enter)';
+}
+
 async function send() {
   const text = $('#aiInput').value.trim();
-  if (!text || A.busy) return;
+  if (!text) return;
+  if (A.busy) return queueUp(text);
   if (!state.user) return needSignIn(send, 'login');
   if (!hasAi()) { await loadAi(); if (!hasAi()) return drawGate(); }
   if (directorOpen()) return sendDirector(text);
@@ -196,11 +223,11 @@ async function send() {
   A.messages.push({ role: 'user', text, context: ctx });
   $('#aiInput').value = '';
   $('#aiInput').style.height = 'auto';
-  const thinking = { role: 'assistant', text: 'Thinking…', pending: true };
+  const thinking = { role: 'assistant', text: 'Working on it…', pending: true };
   A.messages.push(thinking);
   drawMessages();
   A.busy = true;
-  $('#aiSend').disabled = true;
+  drawBusy();
   try {
     await save();
     const r = await api(`/v1/editor/projects/${P.id}/assistant`, {
@@ -218,9 +245,11 @@ async function send() {
     const f = friendly(err);
     A.messages.push({ role: 'assistant', text: f.fix ? f.text : `I couldn't do that: ${f.text}`, error: true });
     if (f.fix === 'credits') import('./media.js').then((m) => m.showError(err));
+    // An admin can fix an unavailable AI: Admin > AI takes a key or a Claude login.
+    if (f.fix === 'ai' && state.admin) toast('The house AI has no working key or login.', { action: 'Open Admin > AI', onAction: () => open('/admin#ai', '_blank'), ms: 9000 });
   } finally {
     A.busy = false;
-    $('#aiSend').disabled = false;
+    setTimeout(next, 0);
     keep();
     drawMessages();
   }
@@ -234,7 +263,7 @@ async function sendDirector(text) {
   list.push({ role: 'assistant', text: 'Blocking the shot…', pending: true });
   drawMessages();
   A.busy = true;
-  $('#aiSend').disabled = true;
+  drawBusy();
   try {
     const r = await askDirector(list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })));
     list.pop();
@@ -244,7 +273,7 @@ async function sendDirector(text) {
     list.push({ role: 'assistant', text: `I couldn't do that: ${plainError(err.message)}`, error: true });
   } finally {
     A.busy = false;
-    $('#aiSend').disabled = false;
+    setTimeout(next, 0);
     keepDirectorMessages();
     drawMessages();
   }
@@ -261,7 +290,7 @@ async function sendScene(text) {
   list.push({ role: 'assistant', text: 'Thinking…', pending: true });
   drawMessages();
   A.busy = true;
-  $('#aiSend').disabled = true;
+  drawBusy();
   try {
     await ed.save?.();
     const r = await api(`/v1/scenes/${t.id}/assistant`, { body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: ed.ai?.selection?.() ?? {} } });
@@ -275,7 +304,7 @@ async function sendScene(text) {
     list.push({ role: 'assistant', text: `I couldn't do that: ${plainError(err.message)}`, error: true });
   } finally {
     A.busy = false;
-    $('#aiSend').disabled = false;
+    setTimeout(next, 0);
     keep();
     drawMessages();
   }

@@ -1,7 +1,7 @@
 // Who's signed in (Gen's own accounts: Continue with Google), credits, plans and packs, and the AI: Gen's own (the
 // house AI, charged in credits) unless the account connected its own Anthropic API key or Claude subscription.
 
-import { $, $$, h, api, toast, bus } from './lib.js';
+import { $, $$, h, api, toast, bus, icon } from './lib.js';
 
 export const state = { user: null, admin: false, ai: null };
 
@@ -106,18 +106,40 @@ export function initAccount() {
     try { await api(authMode === 'signup' ? '/v1/users/signup' : '/v1/users/login', { body }); await signedIn(authMode === 'signup'); } catch (err) { showAuthError(err.message); }
   });
   $('#signInBtn').addEventListener('click', () => needSignIn(() => {}, 'login'));
-  $('#accountBtn').addEventListener('click', openAccount);
-  $('#creditsPill').addEventListener('click', openAccount);
+  $('#accountBtn').addEventListener('click', (e) => accountMenu(e.currentTarget));
+  $('#creditsPill').addEventListener('click', () => openAccount('credits'));
   $('#accountClose').addEventListener('click', () => $('#accountDialog').close());
-  $('#signOutBtn').addEventListener('click', async () => {
-    await api('/v1/users/logout', { method: 'POST' }).catch(() => {});
-    $('#accountDialog').close();
-    location.reload();
-  });
+  // A click on the dimmed outside closes the sheet too.
+  $('#accountDialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
   $('#billingPortalBtn').addEventListener('click', () => go('/v1/billing/portal', null, 'POST'));
   const back = new URLSearchParams(location.search).get('checkout');
   if (back === 'success') { toast('Thanks: your credits are on their way.'); setTimeout(refreshCredits, 2500); }
 }
+
+export async function signOut() {
+  await api('/v1/users/logout', { method: 'POST' }).catch(() => {});
+  location.reload();
+}
+
+/** The avatar's menu: who's signed in and their credits, the account, help, the admin dashboard for admins, and Sign out last. */
+async function accountMenu(btn) {
+  const u = state.user;
+  if (!u) return needSignIn(() => {}, 'login');
+  const { popMenu, closeMenus } = await import('./timeline.js');
+  const r = btn.getBoundingClientRect();
+  const item = (ic, label, fn, cls = '') => h('button', { class: `menu-item ${cls}`, onclick: () => { closeMenus(); fn(); } }, h('span', { class: 'row' }, icon(ic), label));
+  popMenu(r.right - 260, r.bottom + 6, [
+    h('div', { class: 'acct-menu-head' }, h('span', { class: 'avatar' }, initial(u)), h('div', {}, h('b', {}, u.name || u.email), h('div', { class: 'muted small' }, `${Number(u.credits ?? 0).toLocaleString()} credits`))),
+    h('div', { class: 'menu-sep' }),
+    item('person', 'Account and credits', () => openAccount()),
+    item('plus', 'Add credits', () => openAccount('credits')),
+    state.admin ? item('sliders', 'Admin dashboard', () => open('/admin', '_blank')) : '',
+    item('help', 'Help and shortcuts', () => document.querySelector('#helpBtn')?.click()),
+    h('div', { class: 'menu-sep' }),
+    item('logout', 'Sign out', () => signOut(), 'danger'),
+  ]);
+}
+const initial = (u) => (u.name || u.email || '?').trim().slice(0, 1).toUpperCase();
 
 async function go(path, body, method) {
   try { const r = await api(path, { method: method ?? 'POST', body }); if (r.url) location.href = r.url; } catch (err) { $('#accountError').textContent = err.message; $('#accountError').hidden = false; }
@@ -125,7 +147,9 @@ async function go(path, body, method) {
 
 export async function openAccount(section) {
   if (!state.user) return needSignIn(() => openAccount(section), 'login');
-  $('#accountEmail').textContent = state.user.email ?? '';
+  $('#accountAvatar').textContent = initial(state.user);
+  $('#accountName').textContent = state.user.name || state.user.email || '';
+  $('#accountEmail').textContent = state.user.name ? state.user.email ?? '' : '';
   $('#accountCredits').textContent = Number(state.user.credits ?? 0).toLocaleString();
   $('#accountError').hidden = true;
   const plansBox = $('#plans');
@@ -140,28 +164,35 @@ export async function openAccount(section) {
         h('div', { class: 'muted' }, sub.status === 'past_due' ? h('span', { class: 'error' }, 'Payment failed: update your card. ') : '', sub.cancelAtPeriodEnd ? `Ends ${ends}` : `Renews ${ends}`),
         h('button', { class: 'ghost small', onclick: () => go(`/v1/subscriptions/${sub.cancelAtPeriodEnd ? 'resume' : 'cancel'}`).then(() => openAccount()) }, sub.cancelAtPeriodEnd ? 'Keep my plan' : 'Cancel at the end of the month')));
     } else if (!stripe.configured) {
-      plansBox.append(h('p', { class: 'muted' }, 'Plans open soon.'));
+      plansBox.append(h('p', { class: 'muted small acct-note' }, 'Plans open soon.'));
     } else {
-      for (const p of plans) plansBox.append(h('button', { class: 'pack', onclick: () => go('/v1/subscriptions/checkout', { planId: p.id }) }, h('b', {}, p.name), h('span', {}, `$${(p.priceCents / 100).toFixed(0)}/month`), h('small', {}, `${p.creditsPerMonth.toLocaleString()} credits every month`)));
+      for (const p of plans) plansBox.append(h('button', { class: 'acct-pack', onclick: () => go('/v1/subscriptions/checkout', { planId: p.id }) },
+        h('span', { class: 'acct-pack-name' }, p.name), h('b', { class: 'acct-pack-credits' }, p.creditsPerMonth.toLocaleString()), h('span', { class: 'muted small' }, 'credits every month'),
+        h('span', { class: 'acct-pack-price' }, `$${(p.priceCents / 100).toFixed(0)} a month`)));
     }
-  } catch (err) { plansBox.append(h('p', { class: 'muted' }, err.message)); }
+  } catch { plansBox.append(h('p', { class: 'muted small acct-note' }, 'Plans aren\'t available for this account.')); }
   $('#billingPortalBtn').hidden = !state.user.hasBilling;
   const box = $('#packs');
   box.replaceChildren();
   try {
     const p = await api('/v1/billing/packs');
     const packs = p.packs ?? [];
-    if (!packs.length || p.stripe?.configured === false) box.append(h('p', { class: 'muted' }, 'Buying credits isn\'t open yet.'));
-    for (const pack of packs) box.append(h('button', { class: 'pack', onclick: () => go('/v1/billing/checkout', { packId: pack.id }) }, h('b', {}, `${pack.credits.toLocaleString()} credits`), h('span', {}, pack.label ?? `$${(pack.priceCents ?? pack.amountCents ?? 0) / 100}`)));
+    if (!packs.length || p.stripe?.configured === false) box.append(h('p', { class: 'muted small acct-note' }, 'Buying credits isn\'t open here yet.'));
+    const best = packs.length > 2 ? packs[1].id : null;
+    for (const pack of packs) box.append(h('button', { class: `acct-pack${pack.id === best ? ' best' : ''}`, onclick: () => go('/v1/billing/checkout', { packId: pack.id }) },
+      pack.id === best ? h('span', { class: 'acct-badge' }, 'Most popular') : pack.bonusPercent ? h('span', { class: 'acct-badge' }, `+${pack.bonusPercent}% bonus`) : '',
+      h('span', { class: 'acct-pack-name' }, pack.name ?? 'Credits'), h('b', { class: 'acct-pack-credits' }, pack.credits.toLocaleString()), h('span', { class: 'muted small' }, 'credits'),
+      h('span', { class: 'acct-pack-price' }, `$${pack.priceUsd ?? (pack.priceCents ?? 0) / 100}`)));
   } catch (err) { box.append(h('p', { class: 'muted' }, err.message)); }
   await loadAi();
   // "Your AI" only matters when Gen's own isn't there for them.
   const own = !state.ai?.house?.ready || state.ai?.anthropic?.set || state.ai?.claudeSubscription?.set;
-  $('#aiKeysTitle').hidden = !own;
-  $('#aiKeys').hidden = !own;
+  $('#aiKeysTitle').hidden = !own && !state.ai?.anthropic?.set && !state.ai?.claudeSubscription?.set && section !== 'ai';
+  $('#aiKeysTitle').open = section === 'ai' || !state.ai?.house?.ready;
   drawAiKeys($('#aiKeys'));
   $('#accountDialog').showModal();
   if (section === 'ai') $('#aiKeys').scrollIntoView({ block: 'center' });
+  if (section === 'credits') $('#acctPacksTitle').scrollIntoView({ block: 'start' });
 }
 
 /** The "Your AI" box: connect an Anthropic API key or a Claude subscription token (shown again from the AI pane). */

@@ -102,3 +102,15 @@ test('switching back, renaming, and removing (never the one in use)', () => {
 });
 
 after(() => ca.cancelSignin());
+
+test('a pasted token (claude setup-token run elsewhere, e.g. on Windows) is saved and used at once; anything else is refused', () => {
+  const pasted = `sk-ant-oat01-${'p'.repeat(40)}`;
+  assert.throws(() => ca.addToken('not a token', 'x'), /setup-token/);
+  assert.throws(() => ca.addToken(`${pasted} trailing words`, 'x'), /setup-token/);
+  const r = ca.addToken(`  ${pasted}\n`, 'My PC');
+  assert.equal(r.account.label, 'My PC');
+  assert.equal(r.account.active, true);
+  assert.equal(r.account.source, 'pasted');
+  assert.equal(ca.activeToken(), pasted);
+  assert.equal(JSON.stringify(r).includes(pasted), false, 'the token never comes back');
+});

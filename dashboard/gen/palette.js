@@ -77,7 +77,7 @@ export async function openPalette() {
       const head = c.group !== last ? [h('div', { class: 'pal-group' }, c.group)] : [];
       last = c.group;
       return [...head, h('button', { class: `pal-item${i === at ? ' on' : ''}`, role: 'option', onmousemove: () => { if (at !== i) { at = i; draw(); } }, onclick: () => run(i) },
-        icon(c.icon), h('span', { class: 'pal-label' }, c.label, c.hint ? h('span', { class: 'muted small' }, ` · ${c.hint}`) : ''), c.keys ? h('kbd', {}, c.keys) : '')];
+        icon(c.icon), h('span', { class: 'pal-label' }, c.label, c.hint ? h('span', { class: 'muted small' }, ` · ${c.hint.length > 70 ? `${c.hint.slice(0, 68)}…` : c.hint}`) : ''), c.keys ? h('kbd', {}, c.keys) : '')];
     }));
     list.querySelector('.pal-item.on')?.scrollIntoView({ block: 'nearest' });
   };

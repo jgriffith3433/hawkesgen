@@ -20,6 +20,7 @@ import crypto from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { DATA_DIR } from './config.ts';
 import { GenError } from './util.ts';
+import { claudeProgram } from './providers/claudecode.ts';
 
 const DIR = () => path.join(DATA_DIR, 'claude');
 const FILE = () => path.join(DIR(), 'accounts.json');
@@ -28,7 +29,7 @@ const YEAR = 365 * 86_400_000;
 const TOKEN = /sk-ant-oat01-[A-Za-z0-9_-]{20,}/;
 
 export type Check = { at: number; ok: boolean; note: string };
-type Account = { id: string; label: string; token: string; added: number; by: string; source: 'signin' | 'environment'; check?: Check };
+type Account = { id: string; label: string; token: string; added: number; by: string; source: 'signin' | 'environment' | 'pasted'; check?: Check };
 type Store = { active: string | null; accounts: Account[] };
 
 // ------------------------------------------------------------------ store
@@ -120,21 +121,33 @@ export function removeAccount(id: string) {
   return listAccounts();
 }
 
-function saveAccount(token: string, label: string, by: string, use: boolean) {
+function saveAccount(token: string, label: string, by: string, use: boolean, source: Account['source'] = 'signin') {
   const s = adoptEnvironment(read());
   const same = s.accounts.find((a) => a.token === token);
-  const a: Account = same ?? { id: `ca_${crypto.randomBytes(6).toString('hex')}`, label: '', token, added: Date.now(), by, source: 'signin' };
+  const a: Account = same ?? { id: `ca_${crypto.randomBytes(6).toString('hex')}`, label: '', token, added: Date.now(), by, source };
   a.label = label.trim().slice(0, 60) || a.label || `Claude account ${s.accounts.length + 1}`;
   const accounts = same ? s.accounts : [...s.accounts, a];
   write({ active: use ? a.id : s.active, accounts });
   return a;
 }
 
+/**
+ * A token J made himself (`claude setup-token` in his own terminal) and pasted: for machines where Gen can't run the
+ * sign-in in a pseudo-terminal (Windows: J's PC). Saved like a signed-in one, and used at once.
+ */
+export function addToken(token: string, label: string, by = 'J') {
+  const t = String(token ?? '').trim();
+  const m = TOKEN.exec(t);
+  if (!m || m[0] !== t) throw new GenError('That isn\'t a Claude sign-in token: run `claude setup-token` in a terminal and paste the line it prints (sk-ant-oat01-...).', { status: 400 });
+  const a = saveAccount(t, label, by, true, 'pasted');
+  return { account: view(a, read().active), ...listAccounts() };
+}
+
 // ------------------------------------------------------------------ check
 /** One tiny `claude -p` with this account: does it sign in, and is its usage left? */
 export function checkAccount(id: string, timeoutMs = 90_000): Promise<Check> {
   const a = find(read(), id);
-  const exe = process.env.HAWKESGEN_CLAUDE || 'claude';
+  const exe = claudeProgram();
   const pre: string[] = process.env.HAWKESGEN_CLAUDE_ARGS ? JSON.parse(process.env.HAWKESGEN_CLAUDE_ARGS) : [];
   const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: a.token };
   delete env.ANTHROPIC_API_KEY;

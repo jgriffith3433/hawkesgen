@@ -8,7 +8,7 @@
 // a frame (an image scene's export), the mix (an audio scene's), or the whole timeline in real time (a video export).
 
 import { $, h, fileUrl, fmt, bus, icon, peaks } from './lib.js';
-import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack } from './project.js';
+import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack, PROGRESS } from './project.js';
 
 const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true };
 const M = new Map(); // clip id -> { el, asset, src (MediaElementSource), gain }
@@ -30,6 +30,7 @@ export function initPlayer() {
   $('#loopBtn').addEventListener('click', () => { S.loop = !S.loop; $('#loopBtn').classList.toggle('on', S.loop); });
   bus.on('doc', () => { fitStage(); refresh(); });
   bus.on('selection', () => drawHandles());
+  bus.on('progressText', () => { S.dirty = true; });
   new ResizeObserver(fitStage).observe($('#viewer'));
   canvas.addEventListener('pointerdown', onCanvasDown);
   handles.addEventListener('pointerdown', onCanvasDown);
@@ -219,13 +220,7 @@ export function boxOf(c, ctx = g) {
   const W = P.doc.width, H = P.doc.height;
   const cx = (c.x ?? 0.5) * W, cy = (c.y ?? 0.5) * H;
   if (c.kind === 'fill') return c.w == null ? { x: W / 2, y: H / 2, w: W, h: H } : { x: cx, y: cy, w: c.w * W, h: c.w * W * (H / W) };
-  if (c.kind === 'text') {
-    const st = textStyle(c);
-    ctx.font = st.font;
-    const lines = String(c.text ?? '').split('\n');
-    const w = Math.max(st.px, ...lines.map((x) => ctx.measureText(x).width)) + st.pad * 2;
-    return { x: st.x * W, y: st.y * H, w, h: lines.length * st.px * 1.18 + st.pad * 2 };
-  }
+  if (c.kind === 'text') { const t = textFit(c, ctx); return { x: t.x, y: t.y, w: t.w, h: t.h }; }
   const src = sourceOf(c) ?? (c.kind === 'image' && c.asset && IMGS.get(c.asset)?.naturalWidth ? { w: IMGS.get(c.asset).naturalWidth, h: IMGS.get(c.asset).naturalHeight } : null);
   const nw = src?.w ?? W, nh = src?.h ?? H;
   if (c.w == null) {
@@ -235,6 +230,26 @@ export function boxOf(c, ctx = g) {
   }
   return { x: cx, y: cy, w: c.w * W, h: (c.w * W * nh) / nw };
 }
+/**
+ * Where words go and how big: left-aligned words hang from their x (their left edge), right-aligned ones end at it,
+ * centered ones center on it. Words never fall out of the frame: too wide, they shrink to fit; near an edge, they slide
+ * in (unturned words only: a turned title may lean out on purpose).
+ */
+function textFit(c, ctx) {
+  const W = P.doc.width, H = P.doc.height, margin = W * 0.03;
+  const st = textStyle(c);
+  const lines = String(c.text ?? '').split('\n');
+  ctx.font = st.font;
+  const widest = Math.max(1, ...lines.map((x) => ctx.measureText(x).width));
+  const k = c.rotation ? 1 : Math.min(1, (W - margin * 2 - st.pad * 2) / widest);
+  const px = st.px * k, pad = st.pad * k;
+  const font = st.font.replace(`${st.px}px`, `${px}px`);
+  const w = Math.max(px, widest * k) + pad * 2, h = lines.length * px * 1.18 + pad * 2;
+  let x = st.align === 'left' ? st.x * W + w / 2 : st.align === 'right' ? st.x * W - w / 2 : st.x * W;
+  if (!c.rotation) x = Math.min(W - margin - w / 2, Math.max(margin + w / 2, x));
+  return { ...st, px, pad, font, lines, x, y: st.y * H, w, h };
+}
+
 /** Text without a size or a place is a caption: bottom center, on a soft box. */
 function textStyle(c) {
   const H = P.doc.height;
@@ -318,15 +333,13 @@ function drawClip(ctx, c, t, live, alpha) {
     return;
   }
   if (c.kind === 'text') {
-    const st = textStyle(c);
-    const b = boxOf(c, ctx);
-    ctx.translate(b.x, b.y); ctx.rotate(((c.rotation ?? 0) * Math.PI) / 180);
-    if (st.box) { ctx.fillStyle = st.box; roundRect(ctx, -b.w / 2, -b.h / 2, b.w, b.h, st.px * 0.25); ctx.fill(); }
-    ctx.font = st.font; ctx.fillStyle = st.color; ctx.textBaseline = 'middle'; ctx.textAlign = st.align;
-    if (st.shadow) { ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = st.px * 0.3; ctx.shadowOffsetY = st.px * 0.05; }
-    const lines = String(c.text ?? '').split('\n');
-    const ax = st.align === 'left' ? -b.w / 2 + st.pad : st.align === 'right' ? b.w / 2 - st.pad : 0;
-    lines.forEach((x, i) => ctx.fillText(x, ax, (i - (lines.length - 1) / 2) * st.px * 1.18));
+    const t = textFit(c, ctx);
+    ctx.translate(t.x, t.y); ctx.rotate(((c.rotation ?? 0) * Math.PI) / 180);
+    if (t.box) { ctx.fillStyle = t.box; roundRect(ctx, -t.w / 2, -t.h / 2, t.w, t.h, t.px * 0.25); ctx.fill(); }
+    ctx.font = t.font; ctx.fillStyle = t.color; ctx.textBaseline = 'middle'; ctx.textAlign = t.align;
+    if (t.shadow) { ctx.shadowColor = 'rgba(0,0,0,.8)'; ctx.shadowBlur = t.px * 0.3; ctx.shadowOffsetY = t.px * 0.05; }
+    const ax = t.align === 'left' ? -t.w / 2 + t.pad : t.align === 'right' ? t.w / 2 - t.pad : 0;
+    t.lines.forEach((x, i) => ctx.fillText(x, ax, (i - (t.lines.length - 1) / 2) * t.px * 1.18));
     ctx.restore();
     return;
   }
@@ -347,7 +360,7 @@ function drawClip(ctx, c, t, live, alpha) {
     ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h);
     ctx.fillStyle = c.failed ? '#ff9aa9' : '#c9c3ff';
     ctx.font = `600 ${Math.max(14, Math.min(W, H) / 22)}px Inter, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(c.pending ? `Making… ${c.label ?? ''}`.slice(0, 48) : c.failed ? 'Couldn\'t make this' : c.scene && !c.asset ? 'Not rendered yet' : 'Loading…', 0, 0);
+    ctx.fillText(c.pending ? `${PROGRESS.get(c.job) ?? 'Making'}: ${c.label ?? ''}`.slice(0, 60) : c.failed ? 'Couldn\'t make this' : c.scene && !c.asset ? 'Not rendered yet' : 'Loading…', 0, 0);
   }
   ctx.restore();
 }

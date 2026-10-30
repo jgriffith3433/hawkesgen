@@ -8,7 +8,7 @@
 // timeline with a finger (dragdrop.js). Gen's own accounts (account.js). The admin dashboard is /admin.
 
 import { $, $$, h, toast, bus, ICON, icon } from './lib.js';
-import { P, doUndo, doRedo, splitAt, deleteSelected, duplicateSelected, startSignedOut, startSync, remember, changed, save, takeLocal, copySelected, cutSelected, paste } from './project.js';
+import { P, doUndo, doRedo, splitAt, deleteSelected, duplicateSelected, startSignedOut, startSync, remember, changed, save, takeLocal, copySelected, cutSelected, paste, stopClip } from './project.js';
 import { initPlayer, toggle, seek, closeSource, currentSource } from './player.js';
 import { initTimeline, popMenu, closeMenus, addText, fit, hoverAt, dropAt, checkAt } from './timeline.js';
 import { initMedia, uploadFiles, showPane, busyCount } from './media.js';
@@ -93,7 +93,7 @@ $('#paletteBtn').addEventListener('click', () => openPalette());
 addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); } }, true);
 /** The bar's "Making 2" pill: anything being made or uploaded (Media's list) and clips still waiting on a job. */
 function drawBusy() {
-  const n = busyCount() + P.doc.clips.filter((c) => c.pending).length;
+  const n = busyCount();
   $('#busyPill').hidden = !n;
   $('#busyText').textContent = `Making ${n}`;
 }
@@ -114,6 +114,7 @@ $('#deleteBtn').addEventListener('click', () => deleteSelected());
 $('#textBtn').addEventListener('click', addText);
 bus.on('clipMenu', ({ clip, x, y }) => popMenu(x, y, [
   ...clipToolsItems(clip),
+  clip.pending ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); stopClip(clip.id); } }, 'Stop making it') : '',
   h('button', { class: 'menu-item', onclick: () => { closeMenus(); splitAt(); } }, 'Split at playhead'),
   h('button', { class: 'menu-item', onclick: () => { closeMenus(); duplicateSelected(); } }, 'Duplicate'),
   h('button', { class: 'menu-item', onclick: () => { closeMenus(); copySelected(); toast('Copied.', { ms: 1200 }); } }, h('span', {}, 'Copy'), h('span', { class: 'muted small' }, 'Ctrl+C')),
@@ -265,6 +266,7 @@ for (const a of AREAS) {
     const folded = a.fold && app.classList.contains(a.fold);
     const v0 = folded ? (a.foldTo ?? 0) : parseFloat(getComputedStyle(app).getPropertyValue(a.prop)) || a.min;
     app.classList.add('sizing');
+    app.style.setProperty('--sizing-cursor', a.axis === 'y' ? 'row-resize' : 'col-resize');
     const move = (ev) => {
       const d = (a.axis === 'y' ? ev.clientY : ev.clientX) - start;
       const raw = v0 + (a.invert ? -d : d);
@@ -287,6 +289,8 @@ $$('#mobileTabs button').forEach((b) => b.addEventListener('click', () => {
   $$('#mobileTabs button').forEach((x) => x.classList.toggle('on', again ? x.dataset.m === 'edit' : x === b));
   $('#app').dataset.m = again ? 'edit' : m;
   if (!again && ['media', 'generate', 'scenes', 'kind'].includes(m)) showPane(m);
+  // The conversation opens at its newest message (it can't scroll while hidden).
+  if (!again && m === 'ai') requestAnimationFrame(() => { const l = $('#aiMessages'); l.scrollTop = l.scrollHeight; });
   setTimeout(fit, 60);
 }));
 $('#app').dataset.m = 'edit';

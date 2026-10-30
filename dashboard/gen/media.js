@@ -2,8 +2,8 @@
 // at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Create (every tool) is studio.js.
 // Also the one way every tool runs (runJob).
 
-import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly } from './lib.js';
-import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor } from './project.js';
+import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
+import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor, PROGRESS, stopClip } from './project.js';
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
 import { touchDrag } from './dragdrop.js';
@@ -25,6 +25,7 @@ export function initMedia() {
   bus.on('ready', loadMedia);
   bus.on('jobDone', () => loadMedia());
   // Tiles say which files the scene in front uses (redrawn when it changes, at most every second).
+  bus.on('progressText', () => { clearTimeout(M.pt); M.pt = setTimeout(drawMedia, 300); });
   let usedT = 0;
   bus.on('doc', () => { clearTimeout(usedT); usedT = setTimeout(drawMedia, 1000); });
   bus.on('placeAsset', ({ asset, track, start }) => placeAsset(asset, { track, start }));
@@ -55,11 +56,17 @@ export async function loadMedia() {
 }
 
 /** How many things are being made or uploaded now (the bar's "Making" pill shows it). */
-export const busyCount = () => M.inflight.size;
+export const busyCount = () => M.inflight.size + (P.active ? P.doc.clips.filter((c) => c.pending && c.job && !M.inflight.has(c.job)).length : 0);
 function drawMedia() {
   bus.emit('busy', M.inflight.size);
   const grid = $('#mediaGrid');
-  const busy = [...M.inflight.values()].map((j) => h('div', { class: 'tile busy' }, h('div', { class: 'working' }, j.step || 'Starting'), h('div', { class: 'tile-cap' }, j.label)));
+  const stop = (fn) => h('button', { class: 'tile-stop', title: 'Stop making it', onclick: (e) => { e.stopPropagation(); fn(); } }, icon('close'));
+  const busy = [...M.inflight.entries()].map(([k, j]) => h('div', { class: 'tile busy' }, h('div', { class: 'working' }, j.step || 'Starting'), h('div', { class: 'tile-cap' }, j.label),
+    k.startsWith('j_') ? stop(() => api(`/v1/jobs/${k}/cancel`, { method: 'POST' }).catch(() => {})) : ''));
+  // The scene's clips still being made (by the AI, or before a reload) show here too, with the same status.
+  for (const c of P.active ? P.doc.clips.filter((x) => x.pending && x.job && !M.inflight.has(x.job)) : []) {
+    busy.push(h('div', { class: 'tile busy', title: 'On the timeline; it fills in when it\'s made' }, h('div', { class: 'working' }, PROGRESS.get(c.job) ?? 'Making'), h('div', { class: 'tile-cap' }, c.label ?? 'Being made'), stop(() => stopClip(c.id))));
+  }
   const tiles = M.items.map(tileFor);
   grid.replaceChildren(...busy, ...tiles);
   if (!busy.length && !tiles.length) grid.append(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'),
@@ -190,7 +197,7 @@ export async function waitJob(id, onStep) {
     const j = await api(`/v1/jobs/${id}`);
     if (j.status === 'done') return j;
     if (j.status === 'failed' || j.status === 'cancelled') throw new ApiError(j.error || `The job was ${j.status}`, 0);
-    onStep?.(j.status === 'queued' ? (j.queue?.ahead ? `In line (${j.queue.ahead} ahead)` : 'In line') : j.detail || 'Working');
+    onStep?.(jobStatusText(j));
     await new Promise((r) => setTimeout(r, 1500));
   }
 }

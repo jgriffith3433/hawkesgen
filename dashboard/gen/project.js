@@ -3,7 +3,7 @@
 // back), undo and redo, saving to Gen (with a version, so edits from the AI or MCP elsewhere aren't lost), waiting clips
 // filled in when their jobs end, and changes made elsewhere picked up.
 
-import { api, bus, toast, plainError } from './lib.js';
+import { api, bus, toast, plainError, jobStatusText } from './lib.js';
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -90,12 +90,18 @@ export function neighbours(c) {
   return { before: others.filter((x) => clipEnd(x) <= c.start + 0.001).reduce((m, x) => Math.max(m, clipEnd(x)), 0), after: others.filter((x) => x.start >= clipEnd(c) - 0.001).reduce((m, x) => Math.min(m, x.start), Infinity) };
 }
 
-/** Magnetic tracks sit back to back from 0 in their order; the rest keep their starts. */
+/**
+ * Magnetic tracks sit back to back from 0 in their order; the rest keep their starts, but never overlap: a clip that
+ * would start inside the one before slides to just after it (the same rule as the server's layout).
+ */
 export function layout(d = P.doc) {
   for (const t of d.tracks ?? []) {
-    if (!t.magnetic) continue;
     let at = 0;
-    for (const c of d.clips.filter((x) => x.track === t.id).sort((a, b) => a.start - b.start)) { c.start = r3(at); at += clipLength(c); }
+    for (const c of d.clips.filter((x) => x.track === t.id).sort((a, b) => a.start - b.start)) {
+      if (t.magnetic) c.start = r3(at);
+      else if (c.start < at - 0.001) c.start = r3(at);
+      at = c.start + clipLength(c);
+    }
   }
 }
 
@@ -394,6 +400,19 @@ export function takeLocal() {
   } catch { return null; }
 }
 
+/** What each job being made is doing now (by job id): "In line (2 ahead)", "Waiting for a free server", a step. */
+export const PROGRESS = new Map();
+/** Stops making a waiting clip: the job is cancelled and the clip leaves the timeline (Undo puts it back, still stopped). */
+export async function stopClip(id) {
+  const c = byId(id);
+  if (!c?.job) return;
+  try { await api(`/v1/jobs/${c.job}/cancel`, { method: 'POST' }); } catch { /* already ended */ }
+  remember();
+  P.doc.clips = P.doc.clips.filter((x) => x.id !== id);
+  changed();
+  undoable(`Stopped making "${c.label ?? 'it'}".`);
+}
+
 // Waiting clips: follow their jobs and fill them in. Edits made elsewhere: picked up while the page is visible.
 const watching = new Map();
 export function watchJobs() {
@@ -422,7 +441,8 @@ async function followJob(jobId) {
       bus.emit('jobDone', j);
       return;
     }
-    bus.emit('jobProgress', { job: jobId, status: j.status, detail: j.detail, ahead: j.queue?.ahead });
+    PROGRESS.set(jobId, jobStatusText(j));
+    bus.emit('jobProgress', { job: jobId, status: j.status, detail: j.detail, ahead: j.queue?.ahead, step: PROGRESS.get(jobId) });
     await new Promise((r) => setTimeout(r, 2500));
   }
 }
@@ -436,4 +456,6 @@ export function startSync() {
     } catch { /* offline: try later */ }
   }, 8000);
   bus.on('doc', watchJobs);
+  // Clips that were already waiting when the page opened are followed now, not at the next change.
+  watchJobs();
 }

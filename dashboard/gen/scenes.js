@@ -105,8 +105,18 @@ export async function openScene(id) {
   await activate(id);
 }
 
+export function uniqueTitle(title) {
+  const taken = new Set(W.list.map((x) => x.title));
+  if (!taken.has(title)) return title;
+  let n = 2;
+  while (taken.has(`${title} ${n}`)) n++;
+  return `${title} ${n}`;
+}
 export async function newScene(kind, { title, doc, open = true } = {}) {
   if (!state.user) return needSignIn(() => newScene(kind, { title, doc, open }), 'login');
+  // A name that's taken gets a number ("Poster 2"), so the tabs and the Scenes list tell them apart.
+  if (title) title = uniqueTitle(title);
+  if (doc?.title) doc = { ...doc, title: uniqueTitle(doc.title) };
   const s = await api('/v1/scenes', { body: { kind, project: state.user.project, ...(title ? { title } : {}), ...(doc ? { doc } : {}) } });
   W.list.unshift(s);
   drawList();
@@ -274,7 +284,7 @@ function drawAction() {
   const a = W.editor?.action;
   const b = $('#sceneAction');
   b.hidden = !a;
-  if (a) b.replaceChildren(icon(a.icon ?? 'download'), a.label);
+  if (a) { b.replaceChildren(icon(a.icon ?? 'download'), h('span', { class: 'btn-label' }, a.label)); b.title = a.label; }
 }
 function drawUndo() {
   $('#undoBtn').disabled = !W.editor?.canUndo?.();

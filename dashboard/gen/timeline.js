@@ -6,13 +6,11 @@
 // a new track below the others). Other kinds lend it lanes (`timeline` on their editor: a stage's people, camera keys
 // and lines), drawn and dragged the same way.
 
-import { $, $$, h, fmt, bus, icon, thumb, peaks, toast } from './lib.js';
-import { P, tracks, trackOf, isMagnetic, onTrack, clipLength, clipEnd, docLength, byId, remember, changed, addClip, setClip, isStill, mainTrack, addTrack, setTrack, removeTrack, moveTrack, hasSound, fitStart, neighbours } from './project.js';
+import { $, $$, h, fmt, bus, icon, thumb, peaks, toast, jobStatusText } from './lib.js';
+import { P, tracks, trackOf, isMagnetic, onTrack, clipLength, clipEnd, docLength, byId, remember, changed, addClip, setClip, isStill, mainTrack, addTrack, setTrack, removeTrack, moveTrack, hasSound, fitStart, neighbours, PROGRESS } from './project.js';
 import { seek, isPlaying, pause } from './player.js';
 
 const T = { z: 60, snap: true, scroll: null, canvas: null, lanes: null, raf: 0 };
-/** What each job being made is doing now (by job id), for its waiting clip's label. */
-const PROGRESS = new Map();
 /** The timeline's zoom and scroll, to put back when a scene opens again (editor.js). */
 export const viewState = () => ({ z: T.z, left: T.scroll?.scrollLeft ?? 0 });
 export function setView({ z, left } = {}) { if (z) { T.z = Math.min(MAX_Z, Math.max(MIN_Z, z)); render(); } if (left != null && T.scroll) T.scroll.scrollLeft = left; }
@@ -80,8 +78,9 @@ export function initTimeline() {
   bus.on('lanes', () => { if (lender) render(); });
   // A clip being made says how it's going (in line, working, which step) right where it sits.
   bus.on('jobProgress', (p) => {
-    const text = p.step ?? (p.status === 'queued' ? (p.ahead ? `In line (${p.ahead} ahead)` : 'In line') : p.detail || 'Working');
+    const text = p.step ?? jobStatusText(p);
     PROGRESS.set(p.job, text);
+    bus.emit('progressText');
     for (const c of P.doc.clips) if (c.job === p.job && c.pending) { const l = $(`#tlTracks .clip[data-id="${c.id}"] .clip-label`); if (l) l.textContent = `${text} · ${c.label ?? ''}`; }
   });
   // Two fingers pinch the timeline in and out (phones and trackpads that send touches).

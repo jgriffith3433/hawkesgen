@@ -871,3 +871,80 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
   .stage-empty-ideas { margin-top: 6px; }
   .tl-empty { white-space: normal; text-align: center; width: min(78vw, 320px); line-height: 1.35; }
 }
+/* Every edge that sizes an area shows the resize cursor across its whole grab area (J, 2026-10-30). */
+.sheet-grip { cursor: row-resize; }
+.grip-tl, .grip-tlm, .sheet-grip { cursor: row-resize !important; }
+.grip-left, .grip-right { cursor: col-resize !important; }
+.grip-tl { top: -6px; height: 12px; }
+.grip-left { right: -6px; width: 12px; } .grip-right { left: -6px; width: 12px; }
+.grip-left::after { left: 5px; } .grip-right::after { left: 5px; }
+.grip-tl::after { top: 5px; }
+.sheet-grip:hover::after, .grip-tlm:hover::after { background: var(--accent); }
+.app.sizing, .app.sizing * { cursor: var(--sizing-cursor) !important; }
+
+/* ---------------------------------------------------------------- The account sheet and the avatar menu (account.js) */
+.account-sheet { width: min(560px, calc(100vw - 24px)); padding: 0; overflow: hidden auto; }
+.account-sheet > div { padding: 20px 22px 22px; }
+.acct-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.acct-head .icon-btn { margin-left: auto; align-self: flex-start; }
+.avatar.big { width: 46px; height: 46px; font-size: 19px; display: inline-grid; place-items: center; }
+.acct-who { display: flex; flex-direction: column; min-width: 0; }
+.acct-who b { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-credits { border: 1px solid var(--line-2); border-radius: 14px; padding: 14px 16px; background: var(--panel-2); }
+.acct-balance { display: flex; align-items: baseline; gap: 8px; }
+.acct-num { font-size: 34px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+.acct-credits p { margin: 6px 0 0; }
+.account-sheet h3 { margin: 22px 0 10px; }
+.acct-packs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.acct-pack { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 14px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-2); text-align: left; transition: border-color .15s, transform .15s; }
+.acct-pack:hover { border-color: var(--accent); transform: translateY(-1px); }
+.acct-pack.best { border-color: color-mix(in srgb, var(--accent) 70%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
+.acct-pack-name { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.acct-pack-credits { font-size: 24px; letter-spacing: -.01em; margin-top: 4px; }
+.acct-pack-price { margin-top: 10px; padding: 5px 10px; border-radius: 999px; background: var(--text); color: #0b0c10; font-weight: 600; font-size: 13px; }
+.acct-badge { position: absolute; top: 10px; right: 10px; font-size: 10.5px; font-weight: 700; color: var(--accent); background: var(--accent-soft); padding: 2px 7px; border-radius: 999px; }
+#billingPortalBtn { margin-top: 10px; }
+.acct-ai { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; }
+.acct-ai > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.acct-ai[open] > summary { margin-bottom: 10px; }
+.acct-menu-head { display: flex; gap: 10px; align-items: center; padding: 8px 9px 6px; }
+.acct-menu-head .avatar { flex: none; display: inline-grid; place-items: center; }
+.acct-menu-head b { font-size: 13.5px; }
+.menu-item .row { gap: 9px; }
+.menu-item .ico { width: 16px; height: 16px; color: var(--muted); }
+.menu-item.danger .ico { color: var(--danger); }
+
+/* A clip being made: its status, and Stop (editor.js, media.js) */
+.ins-wait { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px; border-radius: 10px; background: var(--accent-soft); font-size: 13px; }
+.ins-wait .muted { flex-basis: 100%; order: 3; }
+.ins-wait button { margin-left: auto; }
+.tile-stop { position: absolute; top: 5px; right: 5px; width: 22px; height: 22px; padding: 0; justify-content: center; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; z-index: 2; }
+.tile-stop .ico { width: 12px; height: 12px; }
+
+/* The AI working, and what waits its turn (ai.js) */
+.msg.ai.pending::after { content: ""; display: inline-block; width: 18px; margin-left: 2px; animation: dots 1.2s steps(4, end) infinite; overflow: hidden; vertical-align: bottom; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.msg.user.queued { opacity: .65; border-style: dashed; }
+.send.busy { position: relative; }
+.send.busy::after { content: ""; position: absolute; inset: -3px; border-radius: 14px; border: 2px solid transparent; border-top-color: var(--accent); animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.acct-note { grid-column: 1 / -1; margin: 0; }
+.acct-pack .muted { display: block; margin: 0; padding: 0; }
+.acct-badge { top: -9px; right: 12px; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); background: var(--panel); }
+/* Track heads: the name first; their buttons show on hover (and stay when they're on: hidden, muted, soloed, locked). */
+@media (hover: hover) {
+  .tl-head .tl-hb:not(.on) { display: none; }
+  .tl-head:hover .tl-hb, .tl-head.on .tl-hb { display: inline-flex; }
+}
+.tl-hbs { opacity: 1; }
+@media (max-width: 900px) {
+  /* With a sheet open the picture keeps at least a third of the screen; the timeline gives way to it. */
+  .app:not([data-m="edit"]) { grid-template-rows: 50px minmax(32vh, 1fr) min(var(--tlm), 22vh) min(var(--sheet), calc(100dvh - 50px - 58px - min(var(--tlm), 22vh) - 32vh)) 58px; }
+  /* The bar keeps room for the scene tabs: Admin lives in the avatar menu, the main action shows its icon. */
+  #adminLink { display: none !important; }
+  #sceneAction { padding: 7px 9px; }
+  #sceneAction .btn-label { display: none; }
+  .scene-tabs-wrap { min-width: 0; flex: 1; }
+  .scene-tab { max-width: 130px; }
+}

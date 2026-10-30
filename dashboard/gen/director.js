@@ -71,7 +71,9 @@ const LANES = {
       return { id: `cast${i}`, name: c.name, icon: 'person', color: c.color, items };
     });
     out.push({ id: 'camera', name: 'Camera', icon: 'film', color: '#8b7bff', items: (s.camera.keys ?? []).map((k, j) => ({ id: `k${j}`, start: k.t, label: `Camera key at ${k.t} s`, kind: 'key' })) });
-    out.push({ id: 'lines', name: 'Lines', icon: 'mic', color: '#e0a83a', items: s.lines.map((l, j) => ({ id: `l${j}`, start: l.at, end: Math.min(s.seconds, l.at + Math.max(1, words(l.text) / 2.6)), label: `${s.cast[l.who]?.name ?? '?'}: ${l.text || '(no words yet)'}`, kind: 'line' })) });
+    // A line lasts about as long as it takes to say (words / 2.6 a second), and ends where the next one starts.
+    const next = (j) => s.lines.filter((x, k) => k !== j && x.at > s.lines[j].at).reduce((m, x) => Math.min(m, x.at), s.seconds);
+    out.push({ id: 'lines', name: 'Lines', icon: 'mic', color: '#e0a83a', items: s.lines.map((l, j) => ({ id: `l${j}`, start: l.at, end: Math.max(l.at + 0.3, Math.min(next(j), l.at + Math.max(1, words(l.text) / 2.6))), label: `${s.cast[l.who]?.name ?? '?'}: ${l.text || '(no words yet)'}`, kind: 'line' })) });
     return out;
   },
   move(lane, item, { start, end }) {
@@ -136,6 +138,8 @@ function take(s) {
   drawPanel();
   bus.emit('sceneTitle', { id: s.id, title: s.doc.title });
   D.three?.rebuild();
+  // The timeline's lanes (people, camera, lines) follow the shot, whoever changed it (the AI, a reload).
+  bus.emit('lanes');
 }
 
 // ------------------------------------------------------------------ saving

@@ -936,9 +936,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, await S.billingPortal(user, origin || 'https://hawkesgen.ai'));
     }
     if (route === '/v1/subscriptions/me' && method === 'GET') {
-      if (client.role !== 'user') throw new GenError('Subscriptions are for user accounts only', { status: 403 });
       const user = getUserForClient(client);
-      if (!user) throw new GenError('User session required', { status: 401 });
+      if (!user) throw new GenError('Subscriptions are for user accounts only', { status: 403 });
       const sub = billing.getUserSubscription(user.id);
       return send(res, 200, sub ? { subscription: sub } : { subscription: null });
     }
@@ -1940,6 +1939,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (route === '/v1/claude/signin' && method === 'POST') return send(res, 200, await ca.startSignin(String((await readJson(req)).label ?? ''), client.name));
       if (route === '/v1/claude/signin/code' && method === 'POST') return send(res, 200, await ca.finishSignin(String((await readJson(req)).code ?? '')));
       if (route === '/v1/claude/signin/cancel' && method === 'POST') return send(res, 200, ca.cancelSignin());
+      if (route === '/v1/claude/token' && method === 'POST') { const b = await readJson(req); return send(res, 200, ca.addToken(String(b.token ?? ''), String(b.label ?? ''), client.name)); }
       const am = /^\/v1\/claude\/accounts\/(ca_[0-9a-f]+)(?:\/(use|check|rename))?$/.exec(route);
       if (am && method === 'POST' && am[2] === 'use') return send(res, 200, ca.useAccount(am[1]));
       if (am && method === 'POST' && am[2] === 'check') return send(res, 200, { check: await ca.checkAccount(am[1]), ...ca.listAccounts() });

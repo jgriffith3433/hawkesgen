@@ -82,3 +82,15 @@ test('moving a clip between tracks and splitting a picture', () => {
   assert.equal(parts.length, 2);
   assert.deepEqual(parts.map((c) => [c.start, clipLength(c)]), [[1, 1], [2, 3]]);
 });
+
+test('clips on one track never overlap: a clip placed inside another slides to just after it', () => {
+  let d = newDoc('x', 'video');
+  ({ doc: d } = applyOps(d, [
+    { op: 'add', asset: 'a_1', kind: 'video', track: 'V1', start: 0, duration: 4 },
+    { op: 'add', asset: 'a_2', kind: 'video', track: 'V1', start: 4, duration: 4 },
+    { op: 'add', asset: 'a_3', kind: 'video', track: 'V1', start: 4, duration: 4 },
+    { op: 'add', asset: 'a_4', kind: 'video', track: 'V1', start: 8, duration: 3 },
+  ]));
+  const v = d.clips.filter((c) => c.track === 'V1').map((c) => [c.asset, c.start]);
+  assert.deepEqual(v, [['a_1', 0], ['a_2', 4], ['a_3', 8], ['a_4', 12]]);
+});

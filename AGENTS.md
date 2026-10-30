@@ -94,7 +94,7 @@ each job).
 | `src/netbridge.ts` | **Hawkes Net's bridge.** Hawkes Net (multiplayer, `https://net.hawkesgen.ai`) is its own repo, `jgriffith3433/hawkesnet`. Gen's whole part: `GET /v1/net/whoami` (the box checks API keys with it), `POST /v1/net/usage` (the box's usage into Gen's usage table) and a 308 to the box for the rest of `/v1/net/` and the SDK files (`/sdk/hawkes-net*.mjs`). Test `test/netbridge.test.ts` |
 | `src/estimate.ts` | Cost estimates for a planned batch (`POST /v1/estimate`) |
 | `src/machines.ts` | The Machines monitor (`GET /v1/machines`, the dashboard tab): the GPU servers, build server and playtester measured over SSH (CPU, memory, GPU, disk, network, idle clock) every minute while running, 7 days of history in `machine_samples`, and the alerts |
-| `src/providers/elevenlabs.ts`, `anthropic.ts`, `cursor.ts` | API clients. Every writing call goes through `anthropic.ts` `ask()`. `settings.brain` `cursor` runs Cursor's `agent` on the Cursor plan (`cursor.ts`, `CURSOR_API_KEY`, model Grok 4.7). `copilot` runs the GitHub Copilot CLI (`copilot.ts`, `copilot -p --output-format json`, `COPILOT_GITHUB_TOKEN` or a server login, $0, usage as `copilot`). `claude` runs Claude Code on J's Max plan by default (`claudecode.ts`: `claude -p`, stream-json, $0, usage as `max-plan`, capped by `settings.claude`); `settings.claude.backend: "api"` brings back the API key |
+| `src/providers/elevenlabs.ts`, `anthropic.ts`, `cursor.ts` | API clients. Every writing call goes through `anthropic.ts` `ask()`. `settings.brain` `cursor` runs Cursor's `agent` on the Cursor plan (`cursor.ts`, `CURSOR_API_KEY`, model Grok 4.7). `copilot` runs the GitHub Copilot CLI (`copilot.ts`, `copilot -p --output-format json`, `COPILOT_GITHUB_TOKEN` or a server login, $0, usage as `copilot`). `claude` runs Claude Code on J's Max plan by default (`claudecode.ts`: `claude -p`, stream-json, $0, usage as `max-plan`, capped by `settings.claude`); `settings.claude.backend: "api"` brings back the API key  Claude logins: signed in from /admin > AI (`claude setup-token` in a pseudo-terminal, Linux only) or **pasted** (`POST /v1/claude/token`, `claude-accounts.ts addToken`: run `claude setup-token` anywhere, Windows too, and paste the `sk-ant-oat01-` line). On Windows Gen runs the `claude.exe` behind npm's `claude.cmd` (`claudecode.ts claudeProgram`) |
 | `src/audio/`, `src/providers/audio/`, `src/tools/audio-open.ts`, `post/audio/`, `tools/audition.mjs` | **The sound suite** (docs/audio.md): `registry.ts` (open models, licenses, refused ones), `direction.ts` (direction mapped per model), `plan.ts` (model pick, `routeAudio`: audio.voice/sfx/dialogue/... hand a call to the open twin via `Tool.route` at submit), `voicelib.ts` (Gen voices `gv_`, table `audio_voices`), `post.ts` (ffmpeg: LUFS, clipping, silence, loops), `verify.ts` (word error rate). GPU side: one venv per model under `/opt/hawkes-audio` installed by a detached, verified, resumable unit, run by `post/audio/run.py`. `HAWKESGEN_AUDIO_MOCK=1` swaps the GPU for ffmpeg tones |
 | `src/lod.ts`, `src/lod-mesh.ts`, `post/lod.py` | **The LOD system**: every kept image's and GLB's levels of detail belong to the asset (`asset_lods`, `asset_lod_state`, `asset_lod_links` in db.ts; one id, never separate assets). `afterJob` (the queue, when a top-level job finishes) and uploads queue them; `asset.lod` makes them in batches on the CPU (its own `lod` lane, one at a time, yielding to customers' local jobs, lowest priority, child processes at the lowest OS priority; client `gen`, project `hawkesgen.lod`, never charged): images with Pillow (`post/lod.py`), models with gltf-transform + meshoptimizer + Draco in their own process (`src/lod-mesh.ts`; never a GPU server). A job's own low copy (`model.lod1`) is linked to its model, hidden from lists, and used as the low level's geometry. `GET /v1/assets/:id` and list rows carry `lods`; `GET /v1/lods?ids=`; `GET /v1/assets/:id/file?lod=n&v=hash` (ETag, immutable when versioned); `hawkesgen lod status|backfill`. Bump `LOD_VERSION` when the levels made change. docs/api.md "Levels of detail" |
 | `src/providers/cloudrun/`, `src/providers/gcp/gcs.ts` | The Cloud Run GPU backend (docs/cloudrun.md): `services.ts` (the map, prices, `cloudRoute`), `run.ts` (`ctx.comfy` as one request per graph, run keys, manifest/heartbeat resume, cancel marker), the queue's `fillCloud` lane in `jobs.ts`; `gcs.ts` is Google credentials (ADC, `HAWKESGEN_GCP_IMPERSONATE`) and a small Cloud Storage client. Tools that work over SSH carry `server: 'ssh'` and never go there |
@@ -237,7 +237,8 @@ portal and Studio use Gen in the back end with their own keys.
       track draws over the ones below), each with a role (main, video, text, audio, any), `magnetic` (clips back to back;
       off unless the person turns it on: J, 2026-10-30, "you should be able to place them where ever in time"), hidden,
       locked, mute, solo, volume, pan. Clips on one track never overlap (`fitStart`: a dragged clip stops against its
-      neighbours or jumps to the nearest gap; trims stop at them). Any clip on any track: video, image, audio, text or
+      neighbours or jumps to the nearest gap; trims stop at them; and `layout`, on the server and in the app, slides any
+      clip that would start inside the one before to just after it, so an AI plan or a paste pushes later clips along). Any clip on any track: video, image, audio, text or
       a color `fill`, placed on the frame by `x`, `y` (its center, shares of the frame) and `w` (a share of the width;
       none: fit the frame), turned, faded, blended; sound with volume and fades. Version 1 video documents and the first
       image (layers) and audio (tracks of clips) documents convert on read, keeping their clip ids. Edits (`applyOps`)
@@ -286,12 +287,21 @@ portal and Studio use Gen in the back end with their own keys.
         again); the credits pill turns amber under 25.
       - **Undo toasts** after deleting clips, cutting a stretch or removing a track.
       - **Back where you left off**: each timeline scene keeps its playhead, zoom and scroll in the browser.
-      - **Names from content**: an "Untitled" scene takes the name of the first thing put in it.
+      - **Names from content**: an "Untitled" scene takes the name of the first thing put in it; a name that's taken
+        gets a number (`scenes.js uniqueTitle`: "Poster 2").
       - **File drops**: on the timeline or the center they go into the scene in front (a stage takes them where
         dropped); elsewhere to Media, with "Add to the timeline" on the toast.
       - **Share** (`POST /v1/assets/:id?share=1`, `links.ts shareLink`): a signed link anyone can open for a week, shown
         in the browser (`/dl/...`, inline); from the export and the viewer, the phone's share sheet on phones.
       - Media marks files the scene in front uses ("In use"); phones pinch-zoom the timeline and get bigger handles.
+      - **Waiting clips** (J, 2026-10-30): one status per job (`project.js PROGRESS`, `lib.js jobStatusText`: "In line (2
+        ahead)", or "Waiting for a free server" when the queue says none can take it) on the clip, the picture and its
+        Media tile; Media lists the scene's waiting clips beside its own jobs, each with Stop (`stopClip`: cancels the
+        job, undoable); clips waiting when the page opens are followed at once.
+      - **The AI pane queues**: a message sent while the AI is answering waits its turn (shown, the box cleared, Remove)
+        and goes next; the send button spins while it works but always takes input.
+      - **Account**: the avatar opens a menu (who, credits, Account and credits, Add credits, Admin for admins, Help,
+        Sign out last); the account sheet is credits first, packs and plans as cards, your own AI tucked away.
     - **Usability rules** (J, 2026-10-30: "The point of the AI is that it's supposed to help with these finer tuning and we
       want to hide away most advanced knobs and stay away from input fields if possible. It needs to feel more drag and
       drop, and if I am dragging something that's not supported then it should tell me why"):

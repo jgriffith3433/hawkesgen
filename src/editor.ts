@@ -163,13 +163,13 @@ const OPS_DOC = `Edits (each an object in "ops"). Tracks are named by id (see "t
 - {"op":"move","id":"c_...","track":"<id>","index":n|"after":"c_..."|"start":s}
 - {"op":"delete","id":"c_..."}   {"op":"deleteRange","start":s,"end":s,"tracks":["<id>",...]}
 - {"op":"set","id":"c_...","volume":0-4,"speed":0.25-4,"muted":bool,"fadeIn":s,"fadeOut":s,"transition":"cut"|"crossfade"|"fadeblack"|"dissolve"|"wipeleft","transitionSeconds":s,"zoom":{"from":1,"to":1.3,"x":0.5,"y":0.4},"text":"...","x":..,"y":..,"w":..,"rotation":deg,"opacity":0-1,"blend":"normal"|"multiply"|"screen"|"overlay"|"lighten"|"darken"|"soft-light"|"difference","color":"#rrggbb","size":share of frame height,"weight":100-900,"font":"..."}
-- {"op":"text","text":"...","start":s,"end":s,"track":"<id>","x":..,"y":..,"size":..,"color":".."}  words on screen
+- {"op":"text","text":"...","start":s,"end":s,"track":"<id>","x":..,"y":..,"size":..,"color":"..","align":"left"|"center"|"right"}  words on screen. Their x is their center, or their left edge when align is "left" (right edge when "right"); keep them inside the frame (a size of about 0.06 to 0.14 of its height for titles)
 - {"op":"track","add":{"name":"...","role":"any"|"video"|"audio"|"text","at":index}} | {"op":"track","id":"<id>","set":{"name":..,"hidden":bool,"locked":bool,"mute":bool,"solo":bool,"volume":0-2,"pan":-1..1}} | {"op":"track","remove":"<id>"}
 - {"op":"settings","width":w,"height":h,"fps":n,"title":"...","fit":"crop"|"pad","background":"#rrggbb","length":s,"bpm":n}  (fit: clips of another shape fill the frame, cropped, or fit inside it with bars)`;
 
 const KIND_DOC: Record<Kind, string> = {
   video: 'This is a video scene: what plays is the timeline; export makes a video.',
-  image: 'This is an image scene: a picture made of layers. Each track is a layer (the top track draws over the rest); clips usually span the whole length. Export takes the frame at the playhead as the picture, so "the picture" means the frame at the playhead. Place and size things with x, y, w, rotation, opacity and blend.',
+  image: 'This is an image scene: a picture made of layers. Each track is a layer (the top track draws over the rest); clips usually span the whole length. Export takes the frame at the playhead as the picture, so "the picture" means the frame at the playhead. Place and size things with x, y, w, rotation, opacity and blend. Everything starts at 0 and lasts the whole length of the scene (its "length") unless the person asks for movement over time.',
   audio: 'This is an audio scene: a multitrack of sound. Export is the mixdown. Track volume, pan, mute and solo are the mix; clips have volume and fades.',
 };
 

@@ -14,6 +14,7 @@
 // and HAWKESGEN_CLAUDE_ARGS (a JSON array before the CLI's own arguments).
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ROOT, DATA_DIR, env, loadSettings, paths } from '../config.ts';
@@ -105,9 +106,30 @@ function cliEnv(own?: string): NodeJS.ProcessEnv {
  *  (MAX_ARG_STRLEN), and the portal's assistant sends its whole engine guide as the system prompt ("spawn E2BIG"). */
 export const SYSTEM_INLINE_MAX = 16_000;
 
+/**
+ * The Claude Code program. On Windows `claude` on the PATH is npm's claude.cmd, which Node won't spawn without a shell;
+ * it only runs the real claude.exe beside it (node_modules/@anthropic-ai/claude-code/bin), so Gen runs that directly.
+ */
+let winClaude: string | null | undefined;
+export function claudeProgram(): string {
+  if (env('HAWKESGEN_CLAUDE')) return env('HAWKESGEN_CLAUDE')!;
+  if (process.platform !== 'win32') return 'claude';
+  if (winClaude === undefined) {
+    winClaude = null;
+    const dirs = [...String(process.env.PATH ?? '').split(path.delimiter), path.join(os.homedir(), '.local', 'bin')].filter(Boolean);
+    for (const d of dirs) {
+      const exe = path.join(d, 'claude.exe');
+      if (fs.existsSync(exe)) { winClaude = exe; break; }
+      const inner = path.join(d, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+      if (fs.existsSync(path.join(d, 'claude.cmd')) && fs.existsSync(inner)) { winClaude = inner; break; }
+    }
+  }
+  return winClaude ?? 'claude';
+}
+
 /** Program and arguments for one call. A long system prompt is written into `dir` (the call's own folder). */
 export function cliArgs({ model, effort, system, schema, onText }: AskInput, dir?: string) {
-  const file = env('HAWKESGEN_CLAUDE') ?? 'claude';
+  const file = claudeProgram();
   const pre: string[] = env('HAWKESGEN_CLAUDE_ARGS') ? JSON.parse(env('HAWKESGEN_CLAUDE_ARGS')!) : [];
   const args = [
     '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',

@@ -952,12 +952,16 @@ async function claudeAccounts(list) {
         <p><b>2.</b> Claude shows a code (it has a # in the middle). Paste it here:</p>
         <div class="row"><input id="cacode" autocomplete="off" style="flex:1" placeholder="code#…"><button class="primary" id="cafinish">Finish</button><button id="cacancel">Cancel</button></div></div>`
       : `<div class="row" style="margin-top:12px"><input id="calabel" style="flex:1" placeholder="A name for it (e.g. jgriffith personal)"><button class="primary" id="castart">Sign in to a Claude account</button></div>
+         <details style="margin-top:10px"><summary class="small">Or paste a token (any computer, Windows too)</summary>
+           <p class="muted small">In a terminal where Claude Code is installed, run <code>claude setup-token</code>, sign in, and paste the line it prints (sk-ant-oat01-…). It lasts a year.</p>
+           <div class="row"><input id="catoken" type="password" autocomplete="off" style="flex:1" placeholder="sk-ant-oat01-…"><button class="primary" id="casave">Save token</button></div></details>
          ${si?.state === 'failed' && si.error ? `<p class="small" style="color:var(--bad, #c33)">${esc(si.error)}</p>` : ''}`}`;
   // A failure redraws the card too: its buttons come back and a failed sign-in shows why in place.
   const again = (p) => p.then((r) => claudeAccounts(r)).catch((e) => { fail(e); claudeAccounts().catch(() => {}); });
   $('#castart', box)?.addEventListener('click', (e) => { e.target.disabled = true; e.target.textContent = 'Starting Claude Code…'; again(post('/claude/signin', { label: $('#calabel', box).value })); });
   $('#cafinish', box)?.addEventListener('click', (e) => { e.target.disabled = true; e.target.textContent = 'Signing in…'; again(post('/claude/signin/code', { code: $('#cacode', box).value }).then((r) => { toast(`Signed in: ${r.account.label}`); return r; })); });
   $('#cacancel', box)?.addEventListener('click', () => again(post('/claude/signin/cancel')));
+  $('#casave', box)?.addEventListener('click', (e) => { e.target.disabled = true; again(post('/claude/token', { token: $('#catoken', box).value.trim(), label: $('#calabel', box).value }).then((r) => { toast(`Saved: ${r.account.label}`); return r; })); });
   for (const b of box.querySelectorAll('[data-ca-use]')) b.onclick = () => again(post(`/claude/accounts/${b.dataset.caUse}/use`));
   for (const b of box.querySelectorAll('[data-ca-check]')) b.onclick = () => { b.disabled = true; b.textContent = 'Checking…'; again(post(`/claude/accounts/${b.dataset.caCheck}/check`)); };
   for (const b of box.querySelectorAll('[data-ca-rename]')) b.onclick = () => { const n = prompt('A new name'); if (n) again(post(`/claude/accounts/${b.dataset.caRename}/rename`, { label: n })); };

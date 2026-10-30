@@ -8,13 +8,13 @@
 // size, turn, opacity, blend, text, color, sound, fades, speed), a track, or the scene itself.
 
 import { $, $$, h, api, toast, bus, icon, mediaInfo, fmt, fileUrl, plainError, ApiError } from './lib.js';
-import { P, take, save, canUndo, canRedo, doUndo, doRedo, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
+import { P, take, save, canUndo, canRedo, doUndo, doRedo, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
 import { seek, pause, frameAt, mixdown, recordTimeline, refresh } from './player.js';
 import { fit, timelineRefusal, viewState, setView } from './timeline.js';
 import { openExport, clipTools } from './tools.js';
 import { libraryPicker } from './studio.js';
 import { state } from './account.js';
-import { registerEditor, openScene, kindInfo, refreshBar, setRender } from './scenes.js';
+import { registerEditor, openScene, kindInfo, refreshBar, setRender, uniqueTitle } from './scenes.js';
 
 const ACTION = {
   video: { label: 'Export', icon: 'download', run: () => openExport() },
@@ -79,7 +79,7 @@ bus.on('doc', () => {
   if (!first) return;
   const name = String(first.label || first.text).replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[_-]+/g, ' ').trim().slice(0, 48);
   if (!name) return;
-  P.doc.title = name.charAt(0).toUpperCase() + name.slice(1);
+  P.doc.title = uniqueTitle(name.charAt(0).toUpperCase() + name.slice(1));
   bus.emit('sceneTitle', { id: P.id, title: P.doc.title });
 });
 
@@ -394,7 +394,8 @@ function clipPanel(c) {
   const name = c.kind === 'text' ? 'Words' : c.label || { video: 'Clip', image: 'Picture', audio: 'Sound', fill: 'Color' }[c.kind];
   const parts = [h('div', { class: 'ins-head' }, icon({ video: 'film', image: 'image', audio: 'music', text: 'text', fill: 'fill' }[c.kind]),
     h('b', { class: 'ins-name', title: name }, name), h('span', { class: 'muted small' }, `${tr?.name ?? ''} · ${fmt(clipLength(c), 1)}`))];
-  if (c.pending) parts.push(h('p', { class: 'muted small' }, 'Being made… it fills in when it\'s ready.'));
+  if (c.pending) parts.push(h('div', { class: 'ins-wait' }, h('span', { class: 'busy-dot' }), h('span', {}, PROGRESS.get(c.job) ?? 'Being made'), h('span', { class: 'muted small' }, 'It fills in when it\'s ready.'),
+    h('button', { class: 'ghost small', onclick: () => stopClip(c.id) }, 'Stop')));
   if (c.failed) parts.push(h('p', { class: 'error small' }, plainError(c.failed)));
   if (c.scene) parts.push(h('button', { class: 'ghost small', onclick: () => openScene(c.scene) }, icon('layers'), 'Open the scene it plays'));
   if (tr?.locked) parts.push(h('p', { class: 'muted small' }, `"${tr.name}" is locked: unlock it to change this.`));
