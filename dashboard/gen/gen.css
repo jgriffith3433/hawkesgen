@@ -423,3 +423,28 @@ dl.recipe dd { margin: 0; word-break: break-word; white-space: pre-wrap; max-hei
 .link.danger { color: var(--danger); }
 .dir-status { min-height: 18px; }
 .dir-result { width: 100%; max-height: 50vh; border-radius: 8px; background: #000; }
+.dir-timewrap { position: relative; flex: 1; min-width: 120px; display: flex; align-items: center; }
+.dir-timewrap .dir-time { width: 100%; position: relative; z-index: 1; }
+.dir-marks { position: absolute; left: 8px; right: 8px; top: 50%; height: 14px; transform: translateY(-50%); pointer-events: none; }
+.dir-sel { position: absolute; top: 0; bottom: 0; background: color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 4px; }
+.dir-key { position: absolute; top: -3px; width: 8px; height: 8px; margin-left: -4px; background: var(--accent-2); transform: rotate(45deg); border-radius: 1px; }
+.dir-range { gap: 4px; flex-wrap: nowrap; }
+.dir-range .ghost { padding: 4px 9px; }
+.badge-on { margin-left: 8px; font-size: 10.5px; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 0 7px; }
+.craft { display: flex; flex-direction: column; gap: 8px; padding: 6px 0; }
+.craft-sec b { display: block; font-size: 12px; margin-bottom: 3px; }
+.craft ul { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+.craft li { margin: 3px 0; }
+.craft code { font-size: 11px; }
+.craft-node { border: 1px solid var(--line); border-radius: 8px; margin: 4px 0; padding: 0 8px; background: var(--panel); }
+.craft-node > summary { cursor: pointer; display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; font-size: 12.5px; }
+.craft-set { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; padding: 3px 0; color: var(--text); }
+.craft-set.off { color: var(--muted); }
+.craft-set input.num, .craft-set input[type=text] { width: 110px; padding: 3px 6px; font-size: 12px; }
+.craft-set input.changed { border-color: var(--accent); background: var(--accent-soft); }
+.pane-body { overflow-x: hidden; }
+.craft, .craft-node, .tool-form { min-width: 0; }
+.craft li, .craft p { overflow-wrap: anywhere; }
+.craft-node > summary span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.craft-node > summary .muted { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.craft-set > span:first-child { min-width: 0; overflow-wrap: anywhere; }

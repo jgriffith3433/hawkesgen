@@ -8,12 +8,13 @@
 
 import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, plainError, ApiError } from './lib.js';
 import { runJob, waitJob, quote, credits, showPane, placeAsset } from './media.js';
-import { libraryPicker, toolReady, hasTool } from './studio.js';
+import { libraryPicker, toolReady, hasTool, craftDrawer } from './studio.js';
 import { state, needSignIn, refreshCredits } from './account.js';
-import { poseAt, cameraAt, rad, DEFAULT_AMOUNT } from './stage-math.js';
+import { poseAt, cameraAt, keyedAt, rad, DEFAULT_AMOUNT } from './stage-math.js';
 
-const D = { open: false, shot: null, version: 0, list: [], t: 0, playing: false, view: 'camera', sel: null, messages: [], three: null, saving: 0, filming: false };
-const FPS = 24;
+const D = { open: false, shot: null, version: 0, list: [], t: 0, playing: false, view: 'camera', pass: 'look', range: null, key: null, sel: null, messages: [], three: null, saving: 0, filming: false, secs: {} };
+/** The video model's frame rate and frame count: LTX takes 8n + 1 frames at 24 fps, Wan 4n + 1 at 16. */
+const filmClock = (doc) => { const fps = doc.film?.engine === 'wan' ? 16 : 24; const n = fps === 24 ? 8 : 4; return { fps, frames: Math.ceil((doc.seconds * fps) / n) * n + 1 }; };
 const ASPECTS = { '16:9': [1280, 704], '9:16': [704, 1280], '1:1': [960, 960] };
 const MOVES = ['static', 'push-in', 'pull-out', 'orbit', 'turntable', 'pan', 'truck', 'crane-up', 'crane-down', 'follow'];
 const MOVE_WORDS = { static: 'Still', 'push-in': 'Push in', 'pull-out': 'Pull out', orbit: 'Orbit', turntable: 'Turntable', pan: 'Pan', truck: 'Truck (slide sideways)', 'crane-up': 'Crane up', 'crane-down': 'Crane down', follow: 'Follow' };
@@ -115,7 +116,8 @@ async function flushSave() {
 // ------------------------------------------------------------------ the AI director (ai.js sends here while open)
 export async function askDirector(messages) {
   await flushSave();
-  const r = await api(`/v1/director/shots/${D.shot.id}/assistant`, { body: { messages, doc: D.shot.doc } });
+  const selection = { t: Math.round(D.t * 100) / 100, range: D.range, selected: D.sel };
+  const r = await api(`/v1/director/shots/${D.shot.id}/assistant`, { body: { messages, doc: D.shot.doc, selection } });
   take(r.shot);
   if (r.aiCredits) refreshCredits();
   return r;
@@ -125,6 +127,7 @@ export function keepDirectorMessages() { try { localStorage.setItem(`hg.director
 export function directorSuggestions() {
   const s = D.shot?.doc;
   if (!s?.cast.length) return ['Two knights face off in the rain, low angle, slow push-in', 'A lone astronaut walks toward a crashed ship at dusk', 'A chef plates a dish, close and warm, the camera orbits'];
+  if (D.range) return [`Pull the camera back from ${D.range[0]} to ${D.range[1]} s`, 'Push in slowly on this part', 'Have them turn to each other here'];
   return ['Make it more dramatic', 'Move the camera behind the first one\'s shoulder', 'Have them walk toward each other', 'Make it night, lit by neon'];
 }
 
@@ -198,9 +201,62 @@ function drawPanel() {
     sliderRow('Lens', cam.lens, { min: 12, max: 135, step: 1, unit: ' mm' }, (v) => set((d) => { d.camera.lens = v; })),
     DEFAULT_AMOUNT[cam.move] != null ? sliderRow('How far it moves', cam.amount ?? DEFAULT_AMOUNT[cam.move], cam.move === 'orbit' ? { min: -180, max: 180, step: 1, unit: '°' } : cam.move.endsWith('-in') || cam.move.endsWith('-out') ? { min: 0, max: 0.9, step: 0.05 } : { min: -10, max: 10, step: 0.1, unit: ' m' }, (v) => set((d) => { d.camera.amount = v; })) : '',
     sliderRow('Handheld', cam.handheld, { min: 0, max: 2, step: 0.1 }, (v) => set((d) => { d.camera.handheld = v; })),
+    keysBox(s),
   ];
-  const section = (title, ...kids) => h('details', { class: 'dir-sec', open: true }, h('summary', {}, title), ...kids);
-  box.replaceChildren(shots, section('Shot', ...head), section(`Cast (${s.cast.length})`, cast), section(`Props (${s.props.length})`, props), section('Set', ...setBox), section('Camera', ...camBox));
+  const film = s.film ?? (s.film = { engine: 'ltx', keyframe: 'image.control', strength: 1, imageStrength: 1, nodes: {}, keyframeNodes: {} });
+  const videoTool = film.engine === 'wan' ? 'video.control-wan' : 'video.control';
+  const videoNodes = craftDrawer(videoTool, film.nodes);
+  videoNodes.el.addEventListener('input', () => { film.nodes = videoNodes.nodes() ?? {}; changed(); });
+  const keyNodes = craftDrawer(film.keyframe, film.keyframeNodes);
+  keyNodes.el.addEventListener('input', () => { film.keyframeNodes = keyNodes.nodes() ?? {}; changed(); });
+  const filmBox = [
+    h('p', { class: 'muted small' }, 'How Gen films the stage. The defaults suit most shots; the AI director changes these when you say what was wrong with a take.'),
+    select('Video model', film.engine, [['ltx', 'LTX-2.3: 24 fps, with sound'], ['wan', 'Wan 2.2 Fun Control: 16 fps, no sound']], (v) => set((d) => { d.film.engine = v; d.film.nodes = {}; }, { panel: true })),
+    select('First frame', film.keyframe, [['image.control', 'Paint over the stage (keeps the layout)'], ['image.edit', 'Edit the stage frame (Qwen)']], (v) => set((d) => { d.film.keyframe = v; d.film.keyframeNodes = {}; }, { panel: true })),
+    film.engine === 'ltx' ? sliderRow('Follows the stage', film.strength, { min: 0, max: 1, step: 0.05 }, (v) => set((d) => { d.film.strength = v; })) : '',
+    film.engine === 'ltx' ? sliderRow('Keeps the first frame', film.imageStrength, { min: 0, max: 1, step: 0.05 }, (v) => set((d) => { d.film.imageStrength = v; })) : '',
+    h('div', { class: 'field' }, h('span', { class: 'muted small' }, 'The video workflow'), videoNodes.el),
+    h('div', { class: 'field' }, h('span', { class: 'muted small' }, 'The first-frame workflow'), keyNodes.el),
+  ];
+  // Sections remember being opened or closed across redraws (Filming starts closed: it's the advanced one).
+  const section = (title, kids, open = true) => {
+    const id = title.replace(/ \(\d+\)$/, '');
+    const el = h('details', { class: 'dir-sec', open: D.secs[id] ?? open }, h('summary', {}, title), ...kids);
+    el.addEventListener('toggle', () => { D.secs[id] = el.open; });
+    return el;
+  };
+  box.replaceChildren(shots, section('Shot', head), section(`Cast (${s.cast.length})`, [cast]), section(`Props (${s.props.length})`, [props]), section('Set', setBox), section('Camera', camBox), section('Filming', filmBox, false));
+  drawMarks();
+}
+
+/** Camera keys: the camera at given times, eased between (they replace the move). One open key shows its sliders. */
+function keysBox(s) {
+  const cam = s.camera;
+  const keys = cam.keys ?? [];
+  const set = (fn, opts) => { fn(s); changed(opts); };
+  const addKey = () => set((d) => {
+    const now = keyedAt(d.camera.keys, D.t) ?? d.camera;
+    const k = { t: Math.round(D.t * 10) / 10, angle: now.angle, distance: now.distance, height: now.height, lens: now.lens };
+    d.camera.keys = [...(d.camera.keys ?? []).filter((x) => Math.abs(x.t - k.t) > 0.05), k].sort((a, b) => a.t - b.t);
+    D.key = d.camera.keys.indexOf(k);
+  }, { panel: true });
+  const rows = keys.map((k, j) => {
+    const open = D.key === j;
+    const ks = (fn) => set((d) => { fn(d.camera.keys[j]); });
+    return h('div', { class: `dir-card${open ? ' on' : ''}` },
+      h('button', { type: 'button', class: 'dir-card-head', onclick: () => { D.key = open ? null : j; D.t = k.t; D.playing = false; drawPlay(); drawPanel(); } },
+        icon('frame'), h('b', {}, `${k.t} s`), h('span', { class: 'muted small' }, `${Math.round(k.distance * 10) / 10} m · ${Math.round(k.lens)} mm`)),
+      open ? h('div', { class: 'dir-card-body' },
+        sliderRow('At', k.t, { min: 0, max: s.seconds, step: 0.1, unit: ' s' }, (v) => ks((x) => { x.t = v; })),
+        sliderRow('Angle around', k.angle, { min: -180, max: 180, step: 1, unit: '°' }, (v) => ks((x) => { x.angle = v; })),
+        sliderRow('Distance', k.distance, { min: 0.5, max: 30, step: 0.1, unit: ' m' }, (v) => ks((x) => { x.distance = v; })),
+        sliderRow('Height', k.height, { min: 0.1, max: 15, step: 0.05, unit: ' m' }, (v) => ks((x) => { x.height = v; })),
+        sliderRow('Lens', k.lens, { min: 12, max: 135, step: 1, unit: ' mm' }, (v) => ks((x) => { x.lens = v; })),
+        h('button', { type: 'button', class: 'link small danger', onclick: () => set((d) => { d.camera.keys.splice(j, 1); if (!d.camera.keys.length) delete d.camera.keys; D.key = null; }, { panel: true }) }, 'Remove this key')) : '');
+  });
+  return h('div', { class: 'field' }, h('span', {}, `Camera keys${keys.length ? ' (they replace the move)' : ''}`),
+    h('div', { class: 'dir-list' }, ...rows, h('button', { type: 'button', class: 'ghost small', onclick: addKey }, icon('plus'), `Key the camera at ${fmt(D.t, 1)}`)),
+    keys.length ? '' : h('p', { class: 'muted small' }, 'Scrub to a moment and key the camera there; key another moment and the camera moves between them. Or select a stretch and ask the AI.'));
 }
 
 function memberCard(c, i) {
@@ -269,9 +325,11 @@ async function stage() {
   $('#viewer').append(wrap);
   const bar = h('div', { id: 'dirBar', class: 'dir-bar' },
     h('button', { class: 'play', id: 'dirPlay', title: 'Play the shot (Space)' }, icon('play')),
-    h('input', { type: 'range', id: 'dirTime', min: '0', max: '1', step: '0.001', value: '0', class: 'dir-time' }),
+    h('div', { class: 'dir-timewrap' }, h('div', { class: 'dir-marks', id: 'dirMarks' }), h('input', { type: 'range', id: 'dirTime', min: '0', max: '1', step: '0.001', value: '0', class: 'dir-time' })),
     h('span', { class: 'timecode', id: 'dirTc' }, '0:00.0'),
+    h('div', { class: 'row dir-range' }, h('button', { class: 'ghost small', id: 'dirIn', title: 'Start a selection here (I)' }, 'In'), h('button', { class: 'ghost small', id: 'dirOut', title: 'End the selection here (O)' }, 'Out'), h('span', { class: 'muted small', id: 'dirRangeTxt' }, '')),
     h('div', { class: 'seg dir-view' }, h('button', { 'data-v': 'camera', class: 'on' }, 'Camera'), h('button', { 'data-v': 'free' }, 'Free look')),
+    h('div', { class: 'seg dir-view dir-pass', title: 'What the video model is given' }, h('button', { 'data-p': 'look', class: 'on' }, 'Look'), h('button', { 'data-p': 'depth' }, 'Depth')),
     h('span', { class: 'muted small', id: 'dirSave' }, ''),
     h('span', { class: 'tl-spacer' }),
     h('button', { class: 'ghost small', id: 'dirBlender', title: 'Film it with Gen\'s Blender pipeline (every character needs a 3D model)' }, icon('layers'), 'Blender'),
@@ -286,10 +344,41 @@ async function stage() {
   $('#dirPlay').addEventListener('click', () => { D.playing = !D.playing; if (D.playing && D.t >= D.shot.doc.seconds - 0.01) D.t = 0; drawPlay(); });
   $('#dirTime').addEventListener('input', (e) => { D.playing = false; D.t = Number(e.target.value) * D.shot.doc.seconds; drawPlay(); });
   $$('#dirBar .dir-view button').forEach((b) => b.addEventListener('click', () => { D.view = b.dataset.v; $$('#dirBar .dir-view button').forEach((x) => x.classList.toggle('on', x === b)); D.three.layout(); }));
+  $$('#dirBar .dir-pass button').forEach((b) => b.addEventListener('click', () => { D.pass = b.dataset.p; $$('#dirBar .dir-pass button').forEach((x) => x.classList.toggle('on', x === b)); }));
+  $('#dirIn').addEventListener('click', () => markRange('in'));
+  $('#dirOut').addEventListener('click', () => markRange('out'));
   $('#dirFilm').addEventListener('click', () => openFilm());
   $('#dirBlender').addEventListener('click', () => openBlender());
   drawPlay();
 }
+/** Selecting a stretch of the shot: In and Out (or I and O), for the AI ("pull back here"). Twice on the same spot clears it. */
+function markRange(which) {
+  const t = Math.round(D.t * 10) / 10;
+  const [a, b] = D.range ?? [0, D.shot.doc.seconds];
+  if (D.range && (which === 'in' ? a : b) === t) D.range = null;
+  else D.range = which === 'in' ? [t, Math.max(t + 0.1, b)] : [Math.min(a, t - 0.1), t];
+  if (D.range) D.range = [Math.max(0, Math.round(D.range[0] * 10) / 10), Math.min(D.shot.doc.seconds, Math.round(D.range[1] * 10) / 10)];
+  drawMarks();
+  bus.emit('directorShot', D.shot);
+}
+/** The selected stretch and the camera keys, drawn on the time bar. */
+function drawMarks() {
+  const box = $('#dirMarks');
+  if (!box || !D.shot) return;
+  const len = D.shot.doc.seconds || 1;
+  const pct = (t) => `${(t / len) * 100}%`;
+  box.replaceChildren(
+    ...(D.range ? [h('div', { class: 'dir-sel', style: { left: pct(D.range[0]), width: pct(D.range[1] - D.range[0]) } })] : []),
+    ...(D.shot.doc.camera.keys ?? []).map((k) => h('div', { class: 'dir-key', style: { left: pct(k.t) }, title: `Camera key at ${k.t} s` })));
+  const txt = $('#dirRangeTxt');
+  if (txt) txt.textContent = D.range ? `${fmt(D.range[0], 1)}–${fmt(D.range[1], 1)}` : '';
+}
+addEventListener('keydown', (e) => {
+  if (!D.open || e.ctrlKey || e.metaKey || e.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  if (e.key === 'i' || e.key === 'I') { e.preventDefault(); e.stopImmediatePropagation(); markRange('in'); }
+  if (e.key === 'o' || e.key === 'O') { e.preventDefault(); e.stopImmediatePropagation(); markRange('out'); }
+}, true);
+
 function drawPlay() {
   const p = $('#dirPlay');
   if (!p) return;
@@ -445,6 +534,7 @@ async function makeStage(wrap) {
     world.clear();
     world.add(next);
     actors = nextActors; propsObj = nextProps; markers = nextMarkers;
+    live = null;
     select();
     if (D.sel?.type === 'cast' && clipsKnown.size) drawPanel();
   }
@@ -527,7 +617,7 @@ async function makeStage(wrap) {
     if (drag.type === 'beat') markers.find((m) => m.userData.i === drag.i && m.userData.j === drag.j)?.position.copy(V(THREE, xy[0], xy[1], 0.01));
     else if (drag.type === 'prop') propsObj[drag.i]?.position.copy(V(THREE, xy[0], xy[1]));
   });
-  canvas.addEventListener('pointerup', () => { if (!drag) return; drag = null; orbit.enabled = D.view === 'free'; changed({ panel: true }); });
+  canvas.addEventListener('pointerup', () => { if (!drag) return; drag = null; live = null; orbit.enabled = D.view === 'free'; changed({ panel: true }); });
 
   let selBox = null;
   function select() {
@@ -535,6 +625,49 @@ async function makeStage(wrap) {
     const o = D.sel?.type === 'cast' ? actors[D.sel.i]?.group : D.sel?.type === 'prop' ? propsObj[D.sel.i] : null;
     if (o) { selBox = new THREE.BoxHelper(o, 0x8b7bff); scene.add(selBox); }
   }
+
+  /** Depth as the video model gets it: white near, black far, between near and far meters from the camera. */
+  function depthMaterial(near, far) {
+    return new THREE.ShaderMaterial({
+      uniforms: { uNear: { value: near }, uFar: { value: far } },
+      vertexShader: `#include <common>
+        #include <skinning_pars_vertex>
+        varying float vDepth;
+        void main() {
+          #include <skinbase_vertex>
+          #include <begin_vertex>
+          #include <skinning_vertex>
+          #include <project_vertex>
+          vDepth = -mvPosition.z;
+        }`,
+      fragmentShader: `uniform float uNear; uniform float uFar; varying float vDepth;
+        void main() { float d = clamp((vDepth - uNear) / (uFar - uNear), 0.0, 1.0); gl_FragColor = vec4(vec3(1.0 - d), 1.0); }`,
+    });
+  }
+  /** One depth range for the whole shot, measured over it, so depth doesn't flicker. Restores the pose at D.t after. */
+  function depthRange(cam, aspect, fps) {
+    const s = D.shot.doc;
+    let near = Infinity, far = 0;
+    const sphere = new THREE.Sphere();
+    const frames = Math.round(s.seconds * fps);
+    for (let f = 0; f <= frames; f += 6) {
+      const t = f / fps;
+      pose(t); placeCamera(cam, t, aspect);
+      for (const o of [...actors.map((a) => a.group), ...propsObj]) {
+        new THREE.Box3().setFromObject(o).getBoundingSphere(sphere);
+        const d = sphere.center.distanceTo(cam.position);
+        near = Math.min(near, d - sphere.radius); far = Math.max(far, d + sphere.radius);
+      }
+    }
+    if (!Number.isFinite(near)) { near = 0.5; far = 20; }
+    near = Math.max(0.05, near * 0.8);
+    return { near, far: Math.max(near + 2, far * 1.6 + 2) };
+  }
+  let live = null;
+  const liveDepth = () => {
+    if (!live) { const probe = new THREE.PerspectiveCamera(); const r = depthRange(probe, shotAspect(), 24); live = depthMaterial(r.near, r.far); }
+    return live;
+  };
 
   let raf = 0, last = performance.now();
   function frameLoop(now) {
@@ -552,15 +685,29 @@ async function makeStage(wrap) {
     camHelper.update();
     selBox?.update();
     orbit.update();
+    if (D.pass === 'depth') {
+      const bg = scene.background;
+      helpers.visible = false;
+      if (selBox) selBox.visible = false;
+      scene.overrideMaterial = liveDepth();
+      scene.background = new THREE.Color(0x000000);
+      pose(D.t);
+      renderer.render(scene, D.view === 'camera' ? shotCam : freeCam);
+      scene.overrideMaterial = null;
+      scene.background = bg;
+      helpers.visible = D.view === 'free';
+      if (selBox) selBox.visible = true;
+      return;
+    }
     renderer.render(scene, D.view === 'camera' ? shotCam : freeCam);
   }
   raf = requestAnimationFrame(frameLoop);
 
-  /** Records the shot: its first frame as a picture and its depth as a video, at the film's size and 24 fps. */
+  /** Records the shot: its first frame as a picture and its depth as a video, at the film's size and the video model's clock. */
   async function record(onStep) {
     const s = D.shot.doc;
     const [w, hh] = ASPECTS[s.aspect];
-    const frames = Math.ceil((s.seconds * FPS) / 8) * 8 + 1;
+    const { fps: FPS, frames } = filmClock(s);
     const out = h('canvas', { width: String(w), height: String(hh) });
     const r2 = new THREE.WebGLRenderer({ canvas: out, antialias: true, preserveDrawingBuffer: true });
     r2.setPixelRatio(1);
@@ -576,36 +723,8 @@ async function makeStage(wrap) {
       placeCamera(cam, 0, w / hh);
       r2.render(scene, cam);
       const first = await new Promise((ok) => out.toBlob(ok, 'image/png'));
-      // One depth range for the whole shot (white near, black far), measured over it, so depth doesn't flicker.
-      let near = Infinity, far = 0;
-      const sphere = new THREE.Sphere();
-      for (let f = 0; f < frames; f += 6) {
-        const t = f / FPS;
-        pose(t); placeCamera(cam, t, w / hh);
-        for (const o of [...actors.map((a) => a.group), ...propsObj]) {
-          new THREE.Box3().setFromObject(o).getBoundingSphere(sphere);
-          const d = sphere.center.distanceTo(cam.position);
-          near = Math.min(near, d - sphere.radius); far = Math.max(far, d + sphere.radius);
-        }
-      }
-      if (!Number.isFinite(near)) { near = 0.5; far = 20; }
-      near = Math.max(0.05, near * 0.8);
-      far = Math.max(near + 2, far * 1.6 + 2);
-      const depth = new THREE.ShaderMaterial({
-        uniforms: { uNear: { value: near }, uFar: { value: far } },
-        vertexShader: `#include <common>
-          #include <skinning_pars_vertex>
-          varying float vDepth;
-          void main() {
-            #include <skinbase_vertex>
-            #include <begin_vertex>
-            #include <skinning_vertex>
-            #include <project_vertex>
-            vDepth = -mvPosition.z;
-          }`,
-        fragmentShader: `uniform float uNear; uniform float uFar; varying float vDepth;
-          void main() { float d = clamp((vDepth - uNear) / (uFar - uNear), 0.0, 1.0); gl_FragColor = vec4(vec3(1.0 - d), 1.0); }`,
-      });
+      const { near, far } = depthRange(cam, w / hh, FPS);
+      const depth = depthMaterial(near, far);
       const bg = scene.background;
       scene.overrideMaterial = depth;
       scene.background = new THREE.Color(0x000000);
@@ -632,7 +751,7 @@ async function makeStage(wrap) {
       await stopped;
       scene.overrideMaterial = null;
       scene.background = bg;
-      return { first, depth: new Blob(chunks, { type: 'video/webm' }), frames, width: w, height: hh };
+      return { first, depth: new Blob(chunks, { type: 'video/webm' }), frames, fps: FPS, width: w, height: hh };
     } finally {
       scene.overrideMaterial = null;
       helpers.visible = D.view === 'free';
@@ -678,11 +797,22 @@ function sheetIn(title, body, foot) {
   return el;
 }
 
+/** The video job for a shot's film settings: LTX (video.control) or Wan (video.control-wan), with its node settings. */
+function videoJob(s, { prompt, width, height, fps, frames }) {
+  const f = s.film;
+  const nodes = Object.keys(f.nodes ?? {}).length ? { nodes: f.nodes } : {};
+  // Wan's own sizes for each shape (multiples of 16); the control video is scaled to them.
+  const wan = { '16:9': [832, 480], '9:16': [480, 832], '1:1': [640, 640] }[s.aspect] ?? [width, height];
+  if (f.engine === 'wan') return { tool: 'video.control-wan', params: { prompt, width: wan[0], height: wan[1], frames, fps, ...nodes } };
+  return { tool: 'video.control', params: { prompt, width, height, fps, seconds: s.seconds, strength: f.strength, imageStrength: f.imageStrength, ...nodes } };
+}
+
 async function openFilm() {
   if (!D.shot) return;
   await flushSave();
   const s = D.shot.doc;
-  if (!hasTool('video.control') || !hasTool('image.control')) return toast('Filming needs video.control and image.control, which this Gen doesn\'t have.');
+  const vt = s.film?.engine === 'wan' ? 'video.control-wan' : 'video.control';
+  if (!hasTool(vt) || !hasTool(s.film?.keyframe ?? 'image.control')) return toast(`Filming needs ${vt} and ${s.film?.keyframe ?? 'image.control'}, which this Gen doesn't have.`);
   const p = await api('/v1/director/prompts', { body: { doc: s } });
   const look = h('textarea', { rows: '3' }, p.look);
   const action = h('textarea', { rows: '3' }, p.action);
@@ -692,13 +822,14 @@ async function openFilm() {
   const go = h('button', { class: 'primary' }, icon('film'), 'Film it');
   const [w, hh] = ASPECTS[s.aspect];
   const price = async () => {
-    const [a, b] = await Promise.all([quote('image.control', { prompt: look.value }), quote('video.control', { prompt: action.value, width: w, height: hh, fps: FPS, seconds: s.seconds })]);
+    const v = videoJob(s, { prompt: action.value, width: w, height: hh, fps: filmClock(s).fps, frames: filmClock(s).frames });
+    const [a, b] = await Promise.all([quote(s.film.keyframe, { prompt: look.value }), quote(v.tool, v.params)]);
     q.textContent = a && b ? credits({ credits: a.credits + b.credits }) : '';
   };
   price();
-  const offline = !toolReady('video.control') || !toolReady('image.control');
+  const offline = !toolReady(vt) || !toolReady(s.film.keyframe);
   const el = sheetIn('Film the shot', [
-    h('p', { class: 'muted small' }, `Gen records this shot's depth and first frame here, paints the first frame in your look, then films the shot from it: ${s.seconds} s at ${w}×${hh}. ${s.cast.some((c) => !c.asset) ? 'Stand-ins become the characters you describe.' : ''}`),
+    h('p', { class: 'muted small' }, `Gen records this shot's depth and first frame here, paints the first frame in your look (${s.film.keyframe}), then films the shot from it (${vt}): ${s.seconds} s at ${videoJob(s, { width: w, height: hh }).params.width}×${videoJob(s, { width: w, height: hh }).params.height}. ${s.cast.some((c) => !c.asset) ? 'Stand-ins become the characters you describe.' : ''} Change how it's filmed in the Shot tab's Filming section, or tell the AI director what was wrong with a take.`),
     offline ? h('p', { class: 'warn small' }, 'The filming GPUs are offline right now. It will queue and start when they\'re back.') : '',
     h('label', { class: 'field' }, 'The first frame', look),
     h('label', { class: 'field' }, 'What happens (and sounds like)', action),
@@ -724,10 +855,15 @@ async function film({ look, action, toTl, status, go }) {
       uploadBlob(rec.depth, `${s.title}: depth.webm`, 'video/webm'),
     ]);
     say('Painting the first frame in your look');
-    const key = await runJob({ tool: 'image.control', params: { prompt: look }, inputs: { image: `asset:${first}` }, label: `${s.title}: first frame` });
+    const f = s.film;
+    const kn = Object.keys(f.keyframeNodes ?? {}).length ? { nodes: f.keyframeNodes } : {};
+    const key = await runJob(f.keyframe === 'image.edit'
+      ? { tool: 'image.edit', params: { prompt: `${look} Keep the composition, camera and every figure's position exactly.`, width: rec.width, height: rec.height, ...kn }, inputs: { images: [`asset:${first}`] }, label: `${s.title}: first frame` }
+      : { tool: 'image.control', params: { prompt: look, ...kn }, inputs: { image: `asset:${first}` }, label: `${s.title}: first frame` });
     const keyAsset = (key.outputs.find((o) => o.kind === 'image') ?? key.outputs[0]).asset;
     say('Filming the shot (a few minutes)');
-    const shot = await runJob({ tool: 'video.control', params: { prompt: action, width: rec.width, height: rec.height, fps: FPS, seconds: s.seconds }, inputs: { control: `asset:${depth}`, image: `asset:${keyAsset}` }, label: `Shot: ${s.title}` });
+    const vj = videoJob(s, { prompt: action, width: rec.width, height: rec.height, fps: rec.fps, frames: rec.frames });
+    const shot = await runJob({ ...vj, inputs: { control: `asset:${depth}`, image: `asset:${keyAsset}` }, label: `Shot: ${s.title}` });
     const out = shot.outputs.find((o) => o.kind === 'video') ?? shot.outputs[0];
     say('');
     $('#dirSheet')?.remove();

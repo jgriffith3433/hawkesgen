@@ -10,6 +10,20 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `README.md` is the overview and the tool list.
 - `docs/art-playbook.md` is the art playbook: which tool for which job, recipes, performance budgets. Read it before making game art.
 - `docs/workflows.md` covers ComfyUI workflows as tools.
+- **What Gen knows about its tools** (`src/knowledge.ts`, `knowledge/tools.json`; J, 2026-10-29: "having knowledge of how
+  models, workflows, and helper nodes and all parameters in the nodes all work together and what people have done to keep
+  iterating on them ... expose all that in a way that's useful and not overwhelming to both the user and the AI"). A tool's
+  card (`GET /v1/knowledge/tools/:id`) joins its own description, its workflow folder (models, every graph node, every
+  literal setting, which param or input drives which node, which settings can change) and the craft notes in
+  `knowledge/tools.json` (role, what each input is in the picture, how the settings pull on each other, what to change
+  when a result is wrong, what it pairs with, whether it was measured). **Add notes when you learn something about a
+  tool** (a setting that fixed a result, a pairing that works): that file is where the craft lives, and the app and the AI
+  read it as it changes (`test/knowledge.test.ts` checks every key is a real param, input or editable node setting).
+  `toolMap` is one line per tool for the AI; `toolCraft` the full notes and node settings of a few tools.
+- **Every node setting** (`src/workflows/tool.ts` `nodeSettings`, `applyNodeOverrides`): a workflow tool takes
+  `params.nodes` `{ "<node>.<input>": value }` for any literal setting on its graph's nodes (sampler, scheduler, a LoRA's
+  `strength_model`, a guide's frame, a decode's tile size...). Files, models, prompts and paths stay locked; a setting a
+  param drives is changed through the param; the type must match. They are part of the recipe, so a take is reproducible.
 - `docs/api.md` lists every route.
 - `docs/comfyui.md` records what works on the GPU servers.
 - `docs/playtest-runpod.md` covers **playtests on a real GPU on RunPod** (`backend: "runpod"`): the same browser image on a RunPod serverless load-balancer endpoint (WebSockets held 12+ minutes there), the driver's graphics libraries fetched when a host lacks them, the CPU service as fallback, what was measured (DoD 52 fps, Yooba Land 54 fps, about $0.01 a smoke run), `tools/playtest-runpod/setup.mjs` and J's steps.
@@ -169,12 +183,15 @@ portal and Studio use Gen in the back end with their own keys.
     plain one-line description each; a tool Gen adds that no group names shows under "More" by itself. Each form is
     drawn from the tool's own params and inputs (advanced ones under "More settings"), with friendlier controls where
     they help: a shape instead of width and height, seconds instead of frames, the voice list, styles for images.
-    Inputs come from the library (a picker, a dragged Media tile, the file open in the viewer) or an upload. Results
+    Inputs come from the library (a picker, a dragged Media tile, the file open in the viewer) or an upload. Under each
+    form, closed: **How it works · every setting** (the tool's card: craft notes, models, pairings, and every node of its
+    ComfyUI graph with its settings; changed ones go with that job as `nodes`). Results
     go to Media and open in the viewer; pictures, clips and sounds can go straight onto the timeline. Chains are
     `asset.make` steps (`$prev`). Tools that need the SSH fleet show "Offline" while it is down.
   - **The library** is Media: pictures, clips, sounds and 3D models (GLB in `<model-viewer>`, loaded from jsdelivr on
     first use). A file open in the viewer has **Use in…** (every tool whose first or required input takes it),
-    Download, and Details (its recipe, and Make another with a new seed).
+    Download, and Details (its recipe, and Make another with a new seed). Results open the cutout, not the mask, when a
+    tool returns both.
   - Layout: Media and Create on the left (`media.js`, `studio.js`), the viewer with the tools for what's selected in the middle
     (`player.js`, `tools.js`), the AI editor on the right (`ai.js`), the timeline below (`timeline.js`). Panes resize
     (sizes kept per browser); on a phone one pane at a time behind bottom tabs.
@@ -202,7 +219,9 @@ portal and Studio use Gen in the back end with their own keys.
     designed character voices), because the open audio models run only on the SSH GPU fleet (AWS, suspended); for the
     same reason `audio.revoice` is left out of the editor's tools until they have a GPU provider. **Uploads** by button or drop anywhere (on the timeline: placed too).
   - **Export** maps the timeline onto `video.compose` (pictures first become clips with `video.still`); captions burned in.
-  - **The AI editor** (`ai.js`, `src/editor.ts` `assistantTurn`): it sees the timeline, the selection (clips, a range,
+  - **The AI editor** (`ai.js`, `src/editor.ts` `assistantTurn`): it knows every tool (`toolMap`, the usual ones with
+    how the editor uses them, chains through `asset.make` and node settings: `CRAFT_DOC`) and gets the full craft of the
+    tools a request likely needs (`relevantTools`); it sees the timeline, the selection (clips, a range,
     the playhead, a painted mask) and recent media (3D models too), makes library things with the studio tools in
     `EDITOR_TOOLS` (skyboxes, material maps, 4-view sheets, 3D models; placed `{"library":true}`), and answers with edits (`applyOps`, the same code the API and MCP
     use) that Gen applies. Generation over `autoCredits` (40) comes back as `proposed` for one tap. Every AI edit is one
@@ -222,7 +241,18 @@ portal and Studio use Gen in the back end with their own keys.
       facing; tested in `test/director.test.ts`). People, props and walk markers drag on the ground (kept within
       25 m); "Camera" looks through the shot camera, "Free look" flies around it.
     - The AI director (`POST /v1/director/shots/:id/assistant`, `directorTurn`) answers with the whole shot, changed;
-      house AI rules and credits as the AI editor.
+      house AI rules and credits as the AI editor. It sees the selection (the playhead, a selected stretch, the selected
+      person or prop) and the filming tools' craft (`toolCraft`), so "pull back here" writes camera keys for that stretch
+      and "the faces melt" changes the film settings.
+    - **Camera keys** (`camera.keys`: t, angle, distance, height, lens, aimHeight): the camera at those times, eased between;
+      they replace the move (follow and handheld still apply). Key the camera at the playhead in the Camera section;
+      diamonds on the time bar. Blender films the move, not the keys (its recipe says so).
+    - **A stretch of the shot**: In and Out on the bar (or I and O) select it for the AI.
+    - **Look / Depth** on the bar shows the stage as the video model gets it.
+    - **Filming** (the Shot tab's last section, closed by default; `film` in the shot): the video model (`ltx`:
+      video.control, 24 fps, 8n + 1 frames, sound; `wan`: video.control-wan, 16 fps, 4n + 1, Wan's sizes), the first-frame
+      tool (`image.control` paints over the stage, `image.edit` edits it), how strictly it follows the stage and the
+      first frame, and every node setting of both workflows (the Create drawer, saved as `film.nodes`, `film.keyframeNodes`).
     - **Film it** (works without Blender or the SSH fleet): the browser records the first frame and a depth video
       (white near, black far, one range measured over the shot) at the film's size and 24 fps, 8n + 1 frames; both are
       uploaded (webm converted by media.normalize); `image.control` paints the first frame in the look and

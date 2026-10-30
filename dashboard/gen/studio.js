@@ -51,7 +51,7 @@ const GROUPS = [
       steps: (p) => [
         { tool: 'image.generate', params: { prompt: `${p}, full body, front view, A-pose, plain light background` } },
         { tool: 'image.remove-background', inputs: { image: '$prev' } },
-        { tool: 'image.viewsheet', params: { form: p }, inputs: { image: '$prev' } },
+        { tool: 'image.viewsheet', params: { form: p }, inputs: { image: '$prev:cutout' } },
         { tool: 'mesh.views3d', inputs: { image: '$prev:sheet' } },
         { tool: 'mesh.rig', params: { kind: 'auto' }, inputs: { mesh: '$prev' } },
       ] },
@@ -68,7 +68,7 @@ const HIDDEN = /(-open$|^image\.remove-background$|^image\.repaint$|^asset\.make
 
 // Params every form keeps under "More settings", and ones it never shows (the app sets them).
 const ADVANCED = new Set(['seed', 'count', 'denoise', 'fps', 'frames', 'width', 'height', 'openModel', 'direction', 'verify', 'normalize', 'trim', 'variants', 'feather', 'threshold', 'influence', 'strength', 'texture_resolution', 'enable_lightning_lora', 'lightning_lora', 'enable_distill_lora', 'full', 'replacement_mode', 'longer_size', 'cell', 'retries', 'straighten', 'method', 'detail', 'faces', 'texture', 'size', 'names', 'facing', 'keepTextures', 'isolate']);
-const NEVER = new Set(['provider']);
+const NEVER = new Set(['provider', 'nodes']);
 // Tools whose voices and sounds are made on ElevenLabs while the open models wait for a GPU provider (see AGENTS.md).
 const FIXED = { 'audio.voice': { provider: 'elevenlabs' }, 'audio.sfx': { provider: 'elevenlabs' }, 'audio.voice-design': { provider: 'elevenlabs' }, 'audio.voice-change': { provider: 'elevenlabs' } };
 const WORDS = { prompt: 'Prompt', text: 'Text', lyrics: 'Lyrics (blank for instrumental)', seconds: 'Seconds', duration: 'Seconds', description: 'Description', form: 'What it is', look: 'What it looks like', aspect: 'Shape', at: 'At (seconds, "first" or "last")', kind: 'Kind', multiplier: 'Frames between frames', loop: 'Loop', allowSingleView: 'Allow one view (props and blockouts)', voice: 'Voice', bpm: 'Beats per minute', resize: 'Scale', mode: 'Mode', format: 'Format', name: 'Name', brief: 'What to check', focus: 'Focus', language: 'Language' };
@@ -177,7 +177,7 @@ function closeTool() {
 }
 
 /** Opens a tool's form. `prefill`: a library file to put in the first input that takes it. */
-export function openTool(id, { prefill } = {}) {
+export function openTool(id, { prefill, nodes } = {}) {
   if (!state.user) return needSignIn(() => openTool(id, { prefill }), 'login');
   const chain = GROUPS.flatMap((g) => g.chains ?? []).find((c) => c.id === id);
   const t = chain ? null : S.tools.get(id);
@@ -185,7 +185,7 @@ export function openTool(id, { prefill } = {}) {
   S.open = id;
   $('#createHome').hidden = true;
   $('#createTool').hidden = false;
-  const form = chain ? chainForm(chain) : toolForm(t, prefill ?? sourceAsset());
+  const form = chain ? chainForm(chain) : toolForm(t, prefill ?? sourceAsset(), nodes);
   $('#createBody').replaceChildren(form);
   form.querySelector('textarea, input[type=text]')?.focus();
 }
@@ -213,7 +213,7 @@ function chainForm(c) {
   return form;
 }
 
-function toolForm(t, prefill) {
+function toolForm(t, prefill, prefillNodes) {
   const params = Object.entries(t.params ?? {}).filter(([k]) => !NEVER.has(k) && !(FIXED[t.id] && k in FIXED[t.id]));
   const hasShape = params.some(([k]) => k === 'width') && params.some(([k]) => k === 'height') && !Object.keys(t.inputs ?? {}).length;
   const hasFrames = params.some(([k]) => k === 'frames');
@@ -251,6 +251,7 @@ function toolForm(t, prefill) {
     secondsSel = h('select', {}, ...[2, 3, 5, 8].map((s) => h('option', { value: String(s), selected: s === 3 }, `${s} seconds`)));
     main.push(h('label', { class: 'field' }, 'Length', secondsSel));
   }
+  const craft = craftDrawer(t.id, prefillNodes);
   const tl = TIMELINE[t.id];
   const toTl = tl ? h('input', { type: 'checkbox', checked: Boolean(tl.on) }) : null;
   const q = h('span', { class: 'quote' });
@@ -259,11 +260,14 @@ function toolForm(t, prefill) {
   const form = h('form', { class: 'gen-card tool-form' }, ...head(CURATED.get(t.id)?.label ?? t.title ?? t.id, CURATED.get(t.id)?.about ?? t.description, t.ready),
     ...slots.map((s) => s.el), ...main, ...extras,
     adv.length ? h('details', { class: 'more' }, h('summary', {}, 'More settings'), ...adv) : '',
+    craft.el,
     h('div', { class: 'gen-foot' }, toTl ? h('label', { class: 'check' }, toTl, 'Add to timeline') : '', q, run), result);
 
   const build = (forQuote = false) => {
+    const nodes = craft.nodes();
     const p = { ...(FIXED[t.id] ?? {}) };
     for (const [k, fn] of Object.entries(get)) { const v = fn(); if (v !== undefined && v !== '') p[k] = v; }
+    if (nodes) p.nodes = nodes;
     if (style && p.prompt) p.prompt = `${p.prompt}, ${style}`;
     if (t.id === 'image.generate' && p.seed == null) p.seed = Math.floor(Math.random() * 2 ** 31);
     if (hasFrames) {
@@ -304,7 +308,9 @@ function go(spec, form, result) {
   setTimeout(() => { btn.disabled = false; }, 1200);
   toast('Started. It shows in Media while it works.');
   runJob(spec).then((done) => {
-    const out = done.outputs?.[0];
+    // The file to show: a cutout over its mask, anything over a mask (image.remove-background returns [mask, cutout]).
+    const outs = done.outputs ?? [];
+    const out = outs.find((o) => o.title === 'cutout') ?? outs.find((o) => !/mask/i.test(o.title ?? '')) ?? outs[0];
     if (result && done.result != null && !out) {
       const text = typeof done.result === 'string' ? done.result : JSON.stringify(done.result, null, 2);
       result.replaceChildren(h('pre', {}, text.slice(0, 6000)));
@@ -316,6 +322,57 @@ function go(spec, form, result) {
     }
     toast(`Done: ${spec.label}`);
   }).catch(() => {});
+}
+
+// ------------------------------------------------------------------ how it works (src/knowledge.ts)
+/**
+ * The drawer under a tool's form, closed until asked: what the tool is for, what to change when a result is wrong, the
+ * models it loads, what it pairs with, and every setting on its ComfyUI nodes (changed ones go to the job as `nodes`).
+ * `prefill`: node settings to start from (Make another with tweaks).
+ */
+export function craftDrawer(id, prefill = null) {
+  const changed = { ...(prefill ?? {}) };
+  const body = h('div', { class: 'craft' }, h('div', { class: 'working' }, 'Loading'));
+  const el = h('details', { class: 'more craft-drawer' }, h('summary', {}, 'How it works · every setting', Object.keys(changed).length ? h('span', { class: 'badge-on' }, `${Object.keys(changed).length} changed`) : ''), body);
+  let loaded = false;
+  el.addEventListener('toggle', async () => {
+    if (!el.open || loaded) return;
+    loaded = true;
+    try { drawCraft(body, await api(`/v1/knowledge/tools/${id}`), changed, el); } catch (err) { body.replaceChildren(h('p', { class: 'muted small' }, plainError(err.message))); }
+  });
+  if (Object.keys(changed).length) el.open = true, el.dispatchEvent(new Event('toggle'));
+  return { el, nodes: () => (Object.keys(changed).length ? { ...changed } : null) };
+}
+
+function drawCraft(body, c, changed, drawer) {
+  const sec = (title, ...kids) => h('div', { class: 'craft-sec' }, h('b', {}, title), ...kids);
+  const notes = Object.entries(c.params ?? {}).filter(([, p]) => p.note).map(([k, p]) => h('li', {}, h('code', {}, k), ' ', p.note));
+  const inNotes = Object.entries(c.inputs ?? {}).filter(([, i]) => i.note).map(([k, i]) => h('li', {}, h('code', {}, k), ' ', i.note));
+  const mark = () => { const n = Object.keys(changed).length; const sum = drawer.querySelector('summary'); sum.querySelector('.badge-on')?.remove(); if (n) sum.append(h('span', { class: 'badge-on' }, `${n} changed`)); drawer.dispatchEvent(new Event('input', { bubbles: true })); };
+  const nodeRows = (c.nodes ?? []).filter((nd) => nd.settings.some((x) => x.editable || x.drivenBy)).map((nd) => {
+    const rows = nd.settings.map((st) => {
+      if (!st.editable) return h('div', { class: 'craft-set off', title: st.drivenBy ? `Set by ${st.drivenBy.replace(/^input:/, 'the input ')} above` : 'Locked' }, h('span', {}, st.input), h('span', { class: 'muted small' }, st.drivenBy ? `↳ ${st.drivenBy.replace(/^input:/, '')}` : String(st.value)));
+      const cur = changed[st.key] ?? st.value;
+      const set = (v) => { if (v === st.value || v === '' || v == null || (typeof v === 'number' && !Number.isFinite(v))) delete changed[st.key]; else changed[st.key] = v; ctl.classList.toggle('changed', st.key in changed); mark(); };
+      const ctl = st.type === 'boolean' ? h('input', { type: 'checkbox', checked: Boolean(cur) }) : h('input', { type: st.type === 'number' ? 'number' : 'text', step: 'any', value: String(cur), class: st.type === 'number' ? 'num' : '' });
+      ctl.classList.toggle('changed', st.key in changed);
+      ctl.addEventListener('change', () => set(st.type === 'boolean' ? ctl.checked : st.type === 'number' ? Number(ctl.value) : ctl.value.trim()));
+      return h('label', { class: 'craft-set', title: st.note ?? '' }, h('span', {}, st.input, st.note ? h('span', { class: 'req' }, ' •') : ''), ctl);
+    });
+    return h('details', { class: 'craft-node' }, h('summary', {}, h('span', {}, nd.title), h('span', { class: 'muted small' }, nd.class)), ...rows);
+  });
+  body.replaceChildren(
+    c.role ? h('p', { class: 'small' }, c.role) : '',
+    c.measured === false ? h('p', { class: 'muted small' }, 'These notes are starting points: not measured on the GPU yet.') : '',
+    inNotes.length ? sec('What goes in', h('ul', {}, ...inNotes)) : '',
+    notes.length ? sec('The settings that matter', h('ul', {}, ...notes)) : '',
+    c.iterate?.length ? sec('When it\'s not right', h('ul', {}, ...c.iterate.map((x) => h('li', {}, x)))) : '',
+    c.pairsWith?.length ? sec('Goes well with', h('div', { class: 'chips' }, ...c.pairsWith.map((x) => h('button', { type: 'button', class: 'chip small', onclick: () => openTool(x) }, CURATED.get(x)?.label ?? x)))) : '',
+    c.models?.length ? sec('Models', h('ul', { class: 'mono small' }, ...c.models.map((m) => h('li', {}, `${m.dir}/${m.file}`)))) : '',
+    nodeRows.length ? sec(`Every node (${c.editable} settings you can change)`, h('p', { class: 'muted small' }, 'The ComfyUI graph this tool runs. Changed settings go with this job only.'), ...nodeRows,
+      h('button', { type: 'button', class: 'link small', onclick: () => { for (const k of Object.keys(changed)) delete changed[k]; drawCraft(body, c, changed, drawer); mark(); } }, 'Reset every node setting')) : '',
+    c.source ? h('p', { class: 'muted small' }, `From: ${typeof c.source === 'string' ? c.source : c.source.template ?? c.source.name ?? 'an imported workflow'}`) : '',
+  );
 }
 
 // ------------------------------------------------------------------ controls

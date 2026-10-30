@@ -33,16 +33,34 @@ export function poseAt(cast, i, t) {
   return { pos, face, walking };
 }
 
-/** The shot camera at time t: where it is, where it looks, its vertical field of view. */
+/**
+ * The camera's own values at time t from its keys (angle, distance, height, lens, aim), eased between neighbours; held
+ * before the first and after the last. Null without keys.
+ */
+export function keyedAt(keys, t) {
+  if (!keys?.length) return null;
+  const ks = [...keys].sort((a, b) => a.t - b.t);
+  if (t <= ks[0].t) return ks[0];
+  const last = ks[ks.length - 1];
+  if (t >= last.t) return last;
+  const i = ks.findIndex((k) => k.t > t);
+  const a = ks[i - 1], b = ks[i];
+  const u = ease((t - a.t) / Math.max(1e-6, b.t - a.t));
+  const mix = (x, y) => x + (y - x) * u;
+  return { t, angle: mix(a.angle, b.angle), distance: mix(a.distance, b.distance), height: mix(a.height, b.height), lens: mix(a.lens, b.lens), aimHeight: mix(a.aimHeight ?? 0.55, b.aimHeight ?? 0.55) };
+}
+
+/** The shot camera at time t: where it is, where it looks, its vertical field of view. Keys, when there are any, replace the move. */
 export function cameraAt(s, t, aspect) {
-  const c = s.camera;
+  const key = keyedAt(s.camera.keys, t);
+  const c = key ? { ...s.camera, angle: key.angle, distance: key.distance, height: key.height, lens: key.lens, aimHeight: key.aimHeight ?? s.camera.aimHeight, move: s.camera.move === 'follow' ? 'follow' : 'static' } : s.camera;
   const u = ease(Math.min(1, Math.max(0, s.seconds ? t / s.seconds : 0)));
   const tgt = (time) => {
     if (typeof c.target === 'number' && s.cast[c.target]) { const p = poseAt(s.cast, c.target, time); return { x: p.pos[0], y: p.pos[1], z: s.cast[c.target].height * (c.aimHeight ?? 0.55), face: s.cast[c.target].facing }; }
     const p = Array.isArray(c.target) ? c.target : [0, 0, 1];
     return { x: p[0], y: p[1], z: p[2], face: 0 };
   };
-  const base = tgt(0), aim = c.move === 'follow' ? tgt(t) : tgt(t);
+  const base = tgt(0), aim = tgt(t);
   const amount = c.amount ?? DEFAULT_AMOUNT[c.move] ?? 0;
   let dist = c.distance, ang = c.angle, height = c.height, side = 0, look = { ...aim };
   if (c.move === 'push-in') dist = c.distance * (1 - amount * u);

@@ -295,6 +295,8 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 | `POST /v1/director/prompts` | The look and action prompts "Film it" sends (image.control, video.control) for a shot |
 | `GET/PUT /v1/admin/ai`, `PUT/DELETE /v1/admin/ai/key` | Owner: the house AI (src/houseai.ts): source, markup, minCredits, the stored Anthropic key (last 4 only) |
 | `GET /v1/admin/accounts?q=`, `GET /v1/admin/accounts/:id`, `POST .../gift \| credits \| disable \| enable` | Owner: Gen app accounts (src/accounts.ts) |
+| `GET /v1/knowledge/tools/:id` | A tool's card (src/knowledge.ts): craft notes, models, every graph node and setting (which param drives it, which `nodes` may change) |
+| `GET /v1/knowledge/map` | One line per tool, the map the AI plans with |
 | `GET /v1/editor/catalog` | Every tool the app's Create pane offers: Gen's own description of each (params, inputs) and `ready` (false for tools that need the SSH GPU fleet while it is unavailable). Machinery an account never runs (unity, playtests, comfy.graph, asset.lod, video.compose...) is left out |
 | `GET /v1/editor/projects[?project=]` | The caller's projects, newest first |
 | `POST /v1/editor/projects` `{ title?, doc?, project? }` | A new project |

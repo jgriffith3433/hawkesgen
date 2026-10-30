@@ -21,6 +21,7 @@ import { GenError } from './util.ts';
 import { ask, callScope } from './providers/anthropic.ts';
 import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
 import { cinemaPass } from './film/recipes.ts';
+import { toolCraft } from './knowledge.ts';
 
 db.exec(`CREATE TABLE IF NOT EXISTS director_shots (id TEXT PRIMARY KEY, project TEXT NOT NULL, title TEXT NOT NULL, doc TEXT NOT NULL, version INTEGER NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS director_shots_project ON director_shots (project, updated DESC);`);
@@ -33,12 +34,16 @@ type XY = [number, number];
 export type Beat = { to?: XY; seconds?: number; animation?: string; lookAt?: number | XY; facing?: number };
 export type Member = { id: string; name: string; description: string; asset?: string | null; animation?: string | null; height: number; position: XY; facing: number; color: string; beats: Beat[] };
 export type Prop = { id: string; name: string; description: string; asset?: string | null; shape: 'box' | 'cylinder' | 'sphere'; position: XY; facing: number; size: number; color: string };
-export type Camera = { move: typeof MOVES[number]; target: number | [number, number, number]; angle: number; distance: number; height: number; lens: number; amount?: number; aimHeight: number; handheld: number };
+export type CameraKey = { t: number; angle: number; distance: number; height: number; lens: number; aimHeight?: number };
+export type Camera = { move: typeof MOVES[number]; target: number | [number, number, number]; angle: number; distance: number; height: number; lens: number; amount?: number; aimHeight: number; handheld: number; keys?: CameraKey[] };
+/** How the shot is filmed (the Shot tab's Filming section; the AI sets it too). nodes: the video workflow's node settings. */
+export type Film = { engine: 'ltx' | 'wan'; keyframe: 'image.control' | 'image.edit'; strength: number; imageStrength: number; nodes: Record<string, string | number | boolean>; keyframeNodes: Record<string, string | number | boolean> };
 export type ShotDoc = {
   v: 1; title: string; seconds: number; aspect: keyof typeof ASPECTS; look: string; action: string;
   cast: Member[]; props: Prop[];
   set: { ground: string; sky: string | null; skyColor: string; lights: typeof LIGHTS[number] };
   camera: Camera;
+  film: Film;
 };
 
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
@@ -55,7 +60,21 @@ export const newShot = (title = 'Untitled shot'): ShotDoc => ({
   v: 1, title, seconds: 5, aspect: '16:9', look: '', action: '', cast: [], props: [],
   set: { ground: '#3a3d44', sky: null, skyColor: '#1b1e26', lights: 'studio' },
   camera: { move: 'static', target: [0, 0, 1], angle: 0, distance: 6, height: 1.6, lens: 35, aimHeight: 0.55, handheld: 0 },
+  film: { engine: 'ltx', keyframe: 'image.control', strength: 1, imageStrength: 1, nodes: {}, keyframeNodes: {} },
 });
+
+/** Node settings as stored: at most 40 short scalar values (the workflow checks them again when it runs). */
+const nodeMap = (v: unknown): Record<string, string | number | boolean> => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, string | number | boolean> = {};
+  for (const [k, x] of Object.entries(v as Record<string, unknown>).slice(0, 40)) {
+    if (!/^[\w:.-]{1,60}$/.test(k)) continue;
+    if (typeof x === 'number' && Number.isFinite(x)) out[k] = x;
+    else if (typeof x === 'boolean') out[k] = x;
+    else if (typeof x === 'string' && x.length <= 80) out[k] = x;
+  }
+  return out;
+};
 
 /** A shot as stored: every field checked and kept in range, ids kept or made. */
 export function normalizeShot(input: any): ShotDoc {
@@ -109,7 +128,22 @@ export function normalizeShot(input: any): ShotDoc {
       angle: r2(num(c.angle, 0)), distance: r2(clamp(num(c.distance, 6), 0.3, 80)), height: r2(clamp(num(c.height, 1.6), -5, 60)),
       lens: r2(clamp(num(c.lens, 35), 10, 200)), ...(c.amount != null ? { amount: r2(num(c.amount, 0)) } : {}),
       aimHeight: r2(clamp(num(c.aimHeight, 0.55), 0, 1.2)), handheld: r2(clamp(num(c.handheld, 0), 0, 2)),
+      ...(Array.isArray(c.keys) && c.keys.length ? {
+        keys: c.keys.slice(0, 16).map((k: any) => ({
+          t: r2(clamp(num(k?.t, 0), 0, 10)), angle: r2(num(k?.angle, num(c.angle, 0))), distance: r2(clamp(num(k?.distance, num(c.distance, 6)), 0.3, 80)),
+          height: r2(clamp(num(k?.height, num(c.height, 1.6)), -5, 60)), lens: r2(clamp(num(k?.lens, num(c.lens, 35)), 10, 200)),
+          ...(k?.aimHeight != null ? { aimHeight: r2(clamp(num(k.aimHeight, 0.55), 0, 1.2)) } : {}),
+        })).sort((a: CameraKey, b: CameraKey) => a.t - b.t),
+      } : {}),
     },
+    film: (() => {
+      const f = s.film ?? {};
+      return {
+        engine: f.engine === 'wan' ? 'wan' : 'ltx', keyframe: f.keyframe === 'image.edit' ? 'image.edit' : 'image.control',
+        strength: r2(clamp(num(f.strength, 1), 0, 1)), imageStrength: r2(clamp(num(f.imageStrength, 1), 0, 1)),
+        nodes: nodeMap(f.nodes), keyframeNodes: nodeMap(f.keyframeNodes),
+      } as Film;
+    })(),
   };
 }
 
@@ -158,11 +192,16 @@ const SHOT_DOC = `The shot (JSON). Coordinates in meters on the ground: x to the
  "cast": [{"id": keep it, "name": "...", "description": "how they look", "asset": "a_... a 3D model (kind mesh) from the library, or null for a stand-in", "animation": "a clip name in the model, or null", "height": meters, "position": [x, y], "facing": degrees, "beats": [{"to": [x, y], "seconds": s} | {"lookAt": cast index, "seconds": s} | {"facing": degrees, "seconds": s}]}],
  "props": [{"id": keep it, "name": "...", "description": "...", "asset": "a_... or null", "shape": "box"|"cylinder"|"sphere", "position": [x, y], "facing": degrees, "size": meters (its largest side), "color": "#rrggbb"}],
  "set": {"ground": "#rrggbb", "sky": "a_... a 360° panorama image from the library, or null", "skyColor": "#rrggbb", "lights": "studio"|"sun"|"night"},
- "camera": {"move": "${MOVES.join('"|"')}", "target": cast index or [x, y, z], "angle": degrees around the target (0 in front of it, 90 from its right side), "distance": meters, "height": meters (camera height above the ground), "lens": mm (18 wide, 35 normal, 85 close), "amount": how far the move goes (a share of the distance for push/pull, degrees for orbit, meters for pan/truck/crane), "aimHeight": share of the target's height to aim at (0.55), "handheld": 0-2}
+ "film": {"engine": "ltx" (LTX-2.3 video.control: 24 fps, sound) | "wan" (video.control-wan: 16 fps, no sound, steadier faces), "keyframe": "image.control" (paints the stage frame, keeps the layout) | "image.edit" (Qwen edit: closer to references), "strength": 0-1 how strictly the video follows the stage (lower for life, 1 for exact camera moves), "imageStrength": 0-1 how strictly frame 1 matches the keyframe, "nodes": {"<node>.<input>": value} the video workflow's node settings, "keyframeNodes": the same for the keyframe tool},
+ "camera": {"keys": [{"t": seconds, "angle", "distance", "height", "lens", "aimHeight"?}] optional: the camera at those times, eased between them (when there are keys they replace the move; target, follow and handheld still apply), "${MOVES.join('"|"')}", "target": cast index or [x, y, z], "angle": degrees around the target (0 in front of it, 90 from its right side), "distance": meters, "height": meters (camera height above the ground), "lens": mm (18 wide, 35 normal, 85 close), "amount": how far the move goes (a share of the distance for push/pull, degrees for orbit, meters for pan/truck/crane), "aimHeight": share of the target's height to aim at (0.55), "handheld": 0-2}
 }`;
 
 function directorSystem() {
   return `You are the director inside Hawkes Gen. The person designs one shot with you: a small 3D scene (cast, props, set, camera) that Gen films into a short video clip. You turn what they say into the shot: block the action (where everyone stands, where they move, who faces whom), pick the lens and the camera move for the feeling they want, and write the look and the action so the result is cinematic. Think like a cinematographer: clear staging, the subject framed well, the camera moving with purpose, nobody hiding the face that matters. Characters are about 1.7 m tall unless they're not; keep them 1 to 4 m apart, in front of the camera.
+
+When the person selected a stretch of the shot (selection.range, seconds), "here" and "this part" mean that stretch: change the camera there with keys at its start and end (and keep the camera as it was outside it: add keys just before and after when needed), or the beats that happen in it.
+
+You also choose how it's filmed (film): the notes below say how the filming tools' settings pull on each other and what to change when a take is wrong. When the person says what was wrong with a take ("too stiff", "the faces melt", "it ignores the camera"), change film, not just the staging.
 
 Answer with the WHOLE shot, changed as asked (keep everything they didn't ask to change, and keep ids). Without a 3D model a character is a stand-in of its height: that's fine, the look describes them and the video paints them. Use library models (kind mesh) when one fits what they ask for. When they ask for something that needs a model the library doesn't have, use a stand-in and say they can make one in Create (3D).
 
@@ -171,19 +210,22 @@ ${SHOT_DOC}
 Answer with JSON only: {"say": "one or two short sentences: what you did, and a tip if it helps", "shot": { the whole shot }}.`;
 }
 
+/** The filming tools' craft (src/knowledge.ts), for the AI director. */
+const FILM_CRAFT = () => toolCraft(['video.control', 'image.control', 'video.control-wan', 'image.edit']);
+
 const DIRECTOR_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['say', 'shot'],
   properties: { say: { type: 'string' }, shot: { type: 'object' } },
 };
 
-export type DirectorTurn = { project: string; shot: ShotDoc; messages: { role: 'user' | 'assistant'; text: string }[]; library: { id: string; kind: string; title?: string | null; prompt?: string | null }[] };
+export type DirectorTurn = { project: string; shot: ShotDoc; messages: { role: 'user' | 'assistant'; text: string }[]; library: { id: string; kind: string; title?: string | null; prompt?: string | null }[]; selection?: { range?: [number, number] | null; t?: number; selected?: { type: string; i: number } | null } };
 
 export function directorPrompt(a: DirectorTurn) {
   const convo = a.messages.slice(-14).map((m) => `${m.role === 'user' ? 'Person' : 'You'}: ${String(m.text).slice(0, 4000)}`).join('\n\n');
   const lib = a.library.slice(0, 40).map((x) => ({ id: x.id, kind: x.kind, title: x.title ?? x.prompt ?? null }));
   return {
     system: directorSystem(),
-    prompt: `The shot now:\n${JSON.stringify(a.shot)}\n\nThe library (3D models are kind "mesh"; 360° skies are images made by image.panorama):\n${JSON.stringify(lib)}\n\nThe conversation (the last line is what to do now):\n${convo}`,
+    prompt: `The shot now:\n${JSON.stringify(a.shot)}\n\nThe person's selection: ${JSON.stringify(a.selection ?? {})}\n\nHow the filming tools work:\n${FILM_CRAFT()}\n\nThe library (3D models are kind "mesh"; 360° skies are images made by image.panorama):\n${JSON.stringify(lib)}\n\nThe conversation (the last line is what to do now):\n${convo}`,
     schema: DIRECTOR_SCHEMA, maxTokens: 6000, effort: 'medium',
   };
 }
@@ -243,6 +285,8 @@ export function blenderRecipe(s: ShotDoc) {
   };
   const [width, height] = ASPECTS[s.aspect];
   const p = filmPrompts(s);
-  const recipe = cinemaPass({ shot, look: p.look, motion: p.action, seconds: s.seconds, width, height });
+  delete shot.camera.keys;
+  const recipe = cinemaPass({ shot, look: p.look, motion: p.action, seconds: s.seconds, width, height, engine: s.film.engine });
+  if (s.camera.keys?.length) recipe.notes.unshift('Blender films the camera move, not the camera keys: the keys are for "Film it".');
   return { recipe, files };
 }

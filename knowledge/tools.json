@@ -1,0 +1,88 @@
+{
+  "_about": "Craft notes per tool: what it's for, what each input is in the picture, which settings matter and how they pull on each other, what people change when a result is wrong, and what it pairs with. src/knowledge.ts merges these with each workflow's own manifest and graph (models, nodes, every setting) into the cards the app shows (Create > How it works) and the AI editor and director read. Notes are starting points unless a doc says they were measured (docs/art-playbook.md rule 6). Keys of `settings` are param names or \"<node>.<input>\" node settings.",
+
+  "video.control": {
+    "role": "Films a shot that follows a control video exactly (layout, motion, camera), in the look of a styled first frame. The heart of directed video: the director's stage, blender.render or real footage drive it.",
+    "inputs": { "control": "The motion and layout: a depth video (white near, black far), OpenPose skeletons, edges, or a mix (video.control-mix). Or plain footage with estimateDepth.", "image": "The first frame in the finished look. It sets the style, the characters and the light; the control sets where things are." },
+    "settings": {
+      "prompt": "Describe what happens and what it sounds like, not the picture (the image carries the look). Dialogue in quotes.",
+      "strength": "How strictly the video follows the control (0-1). Lower it (0.6-0.8) when stand-ins or rough depth make things stiff or blobby; keep 1 for exact camera moves.",
+      "imageStrength": "How strictly frame 1 matches the image. Lower it a little if the first frames freeze or the style fights the control.",
+      "estimateDepth": "On for plain footage: MoGe reads its depth first. Off for depth or pose videos you made.",
+      "129:195.strength_model": "The IC-LoRA's strength (how much the control conditioning counts at all). With strength, the second knob for 'follows the control too literally'.",
+      "steps": "8 is the distilled default. More steps rarely help this model; change the sampler or scheduler before steps.",
+      "129:704.sampler_name": "euler_ancestral by default. euler gives calmer, less noisy motion.",
+      "129:115.frame_idx": "Which frame the control guide starts on (0)."
+    },
+    "iterate": ["Characters melt into the background: raise imageStrength, describe them more clearly in the first frame, or add pose to the control (video.control-mix).", "Stiff or puppet-like motion: lower strength to 0.7-0.85 so the model can add life.", "Wrong length: the control video sets it (8n + 1 frames at 24 fps); seconds only trims.", "Sound missing or off: describe the sounds in the prompt; LTX makes audio with the video."],
+    "pairsWith": ["image.control", "image.edit", "video.control-mix", "video.upscale", "video.interpolate", "blender.render"],
+    "measured": false
+  },
+  "video.control-wan": {
+    "role": "The same idea as video.control on Wan 2.2 Fun Control: 16 fps, no sound, slower (about 7 minutes a shot), sometimes steadier faces.",
+    "inputs": { "control": "Depth, pose or edges video.", "image": "The styled first frame." },
+    "settings": { "frames": "4n + 1 at 16 fps: 49 = 3 s, 81 = 5 s.", "prompt": "Describe the motion fully." },
+    "iterate": ["Use it when LTX keeps changing a face; interpolate x2 afterwards for 32 fps."],
+    "pairsWith": ["video.interpolate", "image.control"]
+  },
+  "image.control": {
+    "role": "Paints a finished picture over the structure of another (Z-Image Turbo + Fun Union ControlNet: canny, HED, depth, pose, MLSD). Turns a grey-box render, the director's stage frame, a sketch or a depth map into the look, keeping the layout.",
+    "inputs": { "image": "The control: a render, sketch, depth or pose map. Its shapes and placement are kept." },
+    "settings": { "prompt": "The whole look: place, era, style, light, and each character's appearance. Say 'keep the layout'.", "steps": "8 (turbo). Rarely needs more.", "cfg": "1 (turbo). Raising it burns colors." },
+    "iterate": ["Characters don't match the cast: describe each one by position ('on the left, a knight in silver armor').", "Too close to the grey render: describe materials and light more; the control keeps only structure."],
+    "pairsWith": ["video.control", "image.edit", "image.relight", "image.restore"]
+  },
+  "image.edit": {
+    "role": "Changes a picture with words while keeping its design (Qwen-Image-Edit 2511). Also: other angles, A-pose, recolors, and painting a render in a look with reference sheets (the film pipeline's keyframe).",
+    "inputs": { "images": "Up to three: the picture to change first, then references (character sheets) it should match." },
+    "settings": { "prompt": "What to change, and what to keep ('keep the composition and poses exactly').", "width": "With height: the output size. Non-square inputs are padded on grey, never stretched.", "denoise": "How much it may change (lower keeps more)." },
+    "iterate": ["Drifts off-model: add the character sheet as image 2 and say 'match image 2'.", "Changes too much: lower denoise or say exactly what must stay."],
+    "pairsWith": ["image.relight", "image.restore", "video.i2v", "video.control"]
+  },
+  "image.generate": {
+    "role": "A new picture from words (Z-Image Turbo): concept art, props, textures (seamless), first frames.",
+    "settings": { "prompt": "Subject, setting, style, light, camera. Specific beats long.", "seamless": "Tileable textures.", "width": "Shape: 1344x768 wide, 768x1344 tall, 1024 square." },
+    "iterate": ["Characters for 3D: full body, front view, A-pose, plain light background."],
+    "pairsWith": ["image.remove-background", "image.viewsheet", "texture.maps", "video.i2v"]
+  },
+  "video.i2v": {
+    "role": "Brings a picture to life (Wan 2.2): the picture is frame 1, the prompt is the motion.",
+    "inputs": { "start": "Frame 1.", "end": "Optional last frame: the clip travels from start to end." },
+    "settings": { "prompt": "A description of motion, not an instruction: who moves, how, where to, and the camera. 'Make it fly' on a bird gave a still bird; 'the bird spreads its wings and takes off, big clear continuous motion' flew (A/B, 2026-10-29).", "frames": "4n + 1 at 16 fps: 49 = 3 s, 81 = 5 s.", "width": "Multiples of 16: 832x480 wide, 480x832 tall, 640 square." },
+    "iterate": ["Nothing moves: describe the motion bigger and earlier ('right away').", "Camera drifts: say 'locked-off camera' or the move you want."],
+    "pairsWith": ["video.extend", "video.upscale", "video.interpolate", "video.frame"],
+    "measured": true
+  },
+  "video.t2v": {
+    "role": "A clip from words alone. Least control: use the director (video.control) when placement or camera matter.",
+    "settings": { "prompt": "Shot type, subject, action, camera move, light, sound.", "seconds": "Up to the model's limit." },
+    "pairsWith": ["video.frame", "video.extend"]
+  },
+  "video.extend": { "role": "Carries a shot on from a frame (MiniMax H3). Grab the last frame with video.frame ('last') first.", "pairsWith": ["video.frame"] },
+  "video.keyframes": { "role": "A scene that passes through two or three keyframes you give, with a reference for the character. The bridge between storyboard stills and motion.", "pairsWith": ["image.generate", "image.edit"] },
+  "video.motion": { "role": "A still character performs the motion of a driving clip (Wan Animate 2).", "inputs": { "image": "The character.", "video": "The performance to copy." }, "pairsWith": ["video.pose"] },
+  "video.animate": { "role": "Character motion transfer: a reference picture moves like a driving video.", "inputs": { "reference": "Who.", "motion": "How they move." } },
+  "video.replace": { "role": "Your character takes over a real performance (SCAIL-2): keeps the actor's motion, face and timing.", "inputs": { "image": "The character (clear, full body).", "video": "The performance." } },
+  "video.talk": { "role": "A portrait talks along to a voice line (InfiniteTalk). Close-ups and dialogue.", "inputs": { "image": "The face, framed as the shot.", "audio": "The line (audio.voice)." }, "pairsWith": ["audio.voice", "image.edit"] },
+  "video.lipsync": { "role": "A character says a line with head and body motion (LTX-2.3).", "pairsWith": ["audio.voice"] },
+  "video.perform": { "role": "A character performs a line in their own voice (LTX-2.3 ID-LoRA).", "pairsWith": ["audio.voice"] },
+  "video.control-mix": { "role": "Mixes depth, pose and edges control videos into one (the brightest wins, pose and edges dimmed). The layout from depth plus the lines from pose and edges.", "settings": { "weights": "One per video: [1, 0.8, 0.5] for depth, pose, edges." }, "pairsWith": ["video.control"] },
+  "video.upscale": { "role": "A sharper 4x clip. Slow on long clips: upscale the keeper, not every take." },
+  "video.interpolate": { "role": "In-between frames for smoother motion (x2 makes 16 fps Wan into 32)." },
+  "video.frame": { "role": "One frame as a picture: 'first', 'last' or seconds. The bridge from a clip back to image tools." },
+  "image.viewsheet": { "role": "Back, left and right views of a front cutout, checked by Claude to be the same character, laid as a 4-view sheet. Always before 3D (one view makes the model guess the back).", "inputs": { "image": "The FRONT view, cut out (image.remove-background's cutout, never its mask)." }, "settings": { "form": "What it is; 'robot' keeps every limb apart in each view." }, "pairsWith": ["image.remove-background", "mesh.views3d"] },
+  "mesh.views3d": { "role": "A textured 3D model (GLB, PBR) from a 4-view sheet (Pixal3D multi-view + TRELLIS.2). The way Gen turns pictures into 3D.", "inputs": { "image": "The sheet (image.viewsheet's 'sheet' output)." }, "iterate": ["Smeared back: the views didn't match; remake the sheet.", "Dense mesh: blender.character retopo, then mesh.rig."], "pairsWith": ["image.viewsheet", "mesh.rig", "blender.character"] },
+  "mesh.textured": { "role": "A textured model from ONE picture: props and blockouts only (allowSingleView). Characters use the 4-view path." },
+  "mesh.rig": { "role": "A skeleton and skinning for a GLB so it can move (humanoid: Mixamo bones; creatures: SkinTokens). Needs the SSH GPU fleet.", "pairsWith": ["motion.from-text", "blender.character"] },
+  "motion.from-text": { "role": "A humanoid animation from words, on your rigged character (Kimodo SOMA, HY-Motion). Needs the SSH GPU fleet.", "settings": { "prompt": "One clear action with its manner ('walks cautiously, looks over both shoulders, crouches').", "inPlace": "For game loops.", "loop": "Seamless loop." } },
+  "image.panorama": { "role": "A seamless 360° equirect environment: a skybox, or the director's set backdrop." },
+  "texture.maps": { "role": "Material maps from a seamless texture: albedo, normal, roughness and more. Make it seamless first (image.generate seamless, or image.tile)." },
+  "image.remove-background": { "role": "Cuts the subject out on the GPU. Returns [mask, cutout]: chains must take '$stepN:cutout'." },
+  "image.cutout": { "role": "Cuts the subject out (rembg/BiRefNet on CPU)." },
+  "image.relight": { "role": "New lighting on a picture, keeping it otherwise. Matches a keyframe to the scene's light." },
+  "image.restore": { "role": "SeedVR2 restore and 4x upscale. Heavy: a 1280x704 frame becomes 5120x2816." },
+  "image.segment": { "role": "Masks of what you name (SAM 3): 'the car', 'every person'. Feeds repaint, change and composite." },
+  "audio.music": { "role": "Music from a description (ACE-Step 1.5), with lyrics or instrumental.", "settings": { "prompt": "Genre, mood, instruments, tempo.", "lyrics": "Sections like [verse], [chorus]; blank for instrumental." } },
+  "audio.voice": { "role": "A spoken line (ElevenLabs premade voices in the app). Feeds video.talk, lipsync and the timeline." },
+  "audio.sfx": { "role": "A sound effect from words, with a length; loop for ambiences." }
+}

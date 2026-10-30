@@ -11,7 +11,11 @@ import crypto from 'node:crypto';
 import { db } from './db.ts';
 import { GenError } from './util.ts';
 import { getJob } from './jobs.ts';
-import { getTool } from './tools/index.ts';
+import { getTool, TOOLS } from './tools/index.ts';
+import { toolMap, toolCraft, notes } from './knowledge.ts';
+import { isInternalOnlyTool } from './billing.ts';
+
+const TOOL_IDS = () => TOOLS.map((t) => t.id);
 import { ask, callScope } from './providers/anthropic.ts';
 import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
 
@@ -395,6 +399,28 @@ export const EDITOR_TOOLS: { tool: string; use: string }[] = [
   { tool: 'video.animate', use: 'a character image moves like a driving video. inputs reference (image), motion (video); params prompt' },
 ];
 
+/** Tools the AI may plan with: what Create lists, plus asset.make (chains). */
+export const aiCanUse = (id: string) => !NOT_IN_CATALOG.test(id) && !isInternalOnlyTool(id) && !/-open$/.test(id);
+
+/** How to chain tools and reach every node setting, for the AI editor and the director. */
+export const CRAFT_DOC = `Chains: one generate op with tool "asset.make" runs several tools in order in one job: params {"steps": [{"tool": "...", "params": {...}, "inputs": {"image": "$prev"}}, ...], "candidates": n (best-of-n at "pickAt": step number, judged by "pick": what makes a good one)}. In steps, "$prev" is the previous step's first output, "$prev:<title>" or "$stepN:<title>" a named one (image.remove-background returns [mask, cutout]: always "$prev:cutout"; blender.render: "depth", "pose", "first frame"...), "$stepN.result.<path>" a step's returned value, "$input:N" the job's files[N]. Use a chain whenever a step needs another's output.
+Node settings: a ComfyUI workflow tool takes params.nodes {"<node>.<input>": value} for any of its node settings (sampler, scheduler, steps on a sampler that has no param, a LoRA's strength_model, a guide's frame, a decode's tile size...). Prefer the tool's own params; reach for node settings when the notes say they fix what's wrong. Files, models and prompts can't be set there.`;
+
+/** The tools a request most likely needs: those it names, else the best matches of its words against what each tool is for. */
+export function relevantTools(text: string, max = 4): string[] {
+  const t = text.toLowerCase();
+  const named = TOOL_IDS().filter((id) => t.includes(id));
+  const words = new Set(t.split(/[^a-z0-9]+/).filter((w) => w.length > 3));
+  const all = notes();
+  const scored = TOOL_IDS().filter(aiCanUse).map((id) => {
+    const hay = `${id} ${all[id]?.role ?? ''} ${getTool(id)?.title ?? ''}`.toLowerCase();
+    let n = 0;
+    for (const w of words) if (hay.includes(w)) n++;
+    return { id, n };
+  }).filter((x) => x.n > 0).sort((a, b) => b.n - a.n).slice(0, max).map((x) => x.id);
+  return [...new Set([...named, ...scored])].slice(0, max + 2);
+}
+
 /** Tools the app never lists in Create: the studio's machinery, plumbing the editor runs itself, and admin work. */
 const NOT_IN_CATALOG = /^(comfy\.graph|unity\.|playtest\.|asset\.lod|media\.|file\.import|library\.|lora\.train|audio\.voice-(list|delete|save)|film\.|video\.compose|video\.still|image\.frame|video\.fit|llm\.)/;
 
@@ -447,8 +473,13 @@ The timeline: V1 is the main video track (clips play back to back in order; imag
 
 Generating costs the person credits (1 credit = 1 cent); prefer one good take over many, and don't regenerate what exists. Never add fades, transitions or music they didn't ask for. To change what's IN a clip use tools (a generate op with place.replace keeps its spot); to change timing use trim/split/move/delete. To work on one frame of a video (edit it, continue from it) grab it first with video.frame, in the same answer: a later op can't use an earlier op's output, so when a step needs another's result, do the first step now and say you'll continue once it's ready.
 
-Tools you can run:
+The usual tools, and how the editor uses them:
 ${availableEditorTools().map((t) => `- ${t.tool}: ${t.use}`).join('\n')}
+
+Every tool on this Gen (in: its inputs, ? optional; params: * required; "+N node settings" means its ComfyUI graph has N more settings you can set with params.nodes):
+${toolMap(aiCanUse)}
+
+${CRAFT_DOC}
 
 ${OPS_DOC}
 
@@ -492,7 +523,9 @@ type TurnInput = { project: string; doc: Doc; selection: Selection; messages: As
 /** The AI editor's request: its instructions, and the project, selection and conversation. */
 export function assistantPrompt(a: TurnInput) {
   const convo = a.messages.slice(-16).map((m) => `${m.role === 'user' ? 'Person' : 'You'}: ${String(m.text).slice(0, 4000)}`).join('\n\n');
-  const prompt = `The project now:\n${JSON.stringify(contextFor(a.doc, a.selection, a.library, a.voices ?? []))}\n\nThe conversation (the last line is what to do now):\n${convo}`;
+  const last = String(a.messages[a.messages.length - 1]?.text ?? '');
+  const craft = toolCraft(relevantTools(last));
+  const prompt = `The project now:\n${JSON.stringify(contextFor(a.doc, a.selection, a.library, a.voices ?? []))}\n\n${craft ? `How the tools this likely needs work (their settings, node settings and what to change when a result is wrong):\n${craft}\n\n` : ''}The conversation (the last line is what to do now):\n${convo}`;
   return { system: systemPrompt(), prompt, schema: ANSWER_SCHEMA, maxTokens: 4000, effort: 'medium' };
 }
 

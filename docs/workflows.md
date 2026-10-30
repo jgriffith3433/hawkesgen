@@ -110,3 +110,12 @@ the copy cached in `.data/comfy-cache/`. "Refresh catalog from a server" updates
 3. Run it once on a running server, from the Tools tab or `hawkesgen.cmd run <id> ...`.
 4. Look at the output: the library shows images, video, audio and 3D.
 5. Check the job's log and its ComfyUI graph (job → ComfyUI graphs; drag it into ComfyUI to debug).
+
+## Every node setting, and the craft notes
+
+Every workflow tool also takes `params.nodes`: `{ "<node>.<input>": value }` for any literal setting on its graph's nodes
+that no param or input already drives (a sampler's scheduler, a LoRA's `strength_model`, a decode's tile size...). Files,
+models, prompts and paths are locked; values must keep their type (`src/workflows/tool.ts` `nodeSettings`,
+`applyNodeOverrides`). `GET /v1/knowledge/tools/<id>` lists them with the craft notes from `knowledge/tools.json`. When a
+new workflow lands, add its notes there: what each input is in the picture, which settings matter and how they interact,
+what to change when a result is wrong, what it pairs with.

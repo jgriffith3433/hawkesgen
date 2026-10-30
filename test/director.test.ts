@@ -14,7 +14,7 @@ delete process.env.ANTHROPIC_API_KEY;
 
 const dr = await import('../src/director.ts');
 const house = await import('../src/houseai.ts');
-const { poseAt, cameraAt } = await import('../dashboard/gen/stage-math.js') as any;
+const { poseAt, cameraAt, keyedAt } = await import('../dashboard/gen/stage-math.js') as any;
 
 test('a shot is kept in range, ids are kept, and junk is dropped', () => {
   const s = dr.normalizeShot({ title: 'Duel', seconds: 99, aspect: '4:3', cast: [{ name: 'A', height: 50, position: [500, 'x'], beats: [{ to: [1, 2], seconds: 2 }, { lookAt: 1 }] }, { id: 'm_abcd1234', name: 'B' }], camera: { move: 'zoom', lens: 1, target: 7 } });
@@ -58,6 +58,28 @@ test('the stage puts a walker and the camera where the shot says', () => {
   assert.ok(Math.abs(a.pos.y + 5) < 1e-6 && Math.abs(a.pos.x) < 1e-6);
   assert.ok(Math.abs(b.pos.y + 3) < 1e-6, 'pushed in by 40%');
   assert.ok(Math.abs(a.look.z - 0.9) < 1e-6);
+});
+
+test('camera keys replace the move and ease between; film settings are kept in range', () => {
+  const s = dr.normalizeShot({ seconds: 6, cast: [{ name: 'A' }], camera: { move: 'orbit', distance: 4, keys: [{ t: 4, distance: 10 }, { t: 2, distance: 4, lens: 999 }] }, film: { engine: 'wan', strength: 3, nodes: { 'a.b': 1, 'bad key!': 2, 'c.d': { x: 1 } } } });
+  assert.deepEqual(s.camera.keys!.map((k) => k.t), [2, 4]);
+  assert.equal(s.camera.keys![0].lens, 200);
+  assert.equal(s.film.engine, 'wan');
+  assert.equal(s.film.strength, 1);
+  assert.deepEqual(s.film.nodes, { 'a.b': 1 });
+  assert.equal(keyedAt(s.camera.keys, 0).distance, 4);
+  assert.equal(keyedAt(s.camera.keys, 3).distance, 7);
+  assert.equal(keyedAt(s.camera.keys, 9).distance, 10);
+  const shot = { ...s, cast: [{ position: [0, 0], facing: 0, height: 1.8, beats: [] }] };
+  const a = cameraAt(shot, 0, 16 / 9), b = cameraAt(shot, 6, 16 / 9);
+  assert.ok(Math.abs(Math.hypot(a.pos.x, a.pos.y) - 4) < 1e-6, 'the orbit is replaced: in front, 4 m');
+  assert.ok(Math.abs(Math.hypot(b.pos.x, b.pos.y) - 10) < 1e-6);
+  assert.ok(Math.abs(a.pos.x) < 1e-6, 'no orbit');
+  // Blender films the move, not the keys, and says so.
+  const withModel = dr.normalizeShot({ ...s, cast: [{ name: 'A', asset: 'a_1111aaaa' }] });
+  const { recipe } = dr.blenderRecipe(withModel);
+  assert.match(recipe.notes[0], /not the camera keys/);
+  assert.ok(!(recipe.steps[0].params!.shot as any).camera.keys);
 });
 
 test('the house AI: what accounts get, the price, and the key never comes back', () => {

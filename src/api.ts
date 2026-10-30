@@ -607,7 +607,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const library = listAssets({ project: sh.project, limit: 60, playtest: false, projects: client.projects }).items
             .filter((a: any) => a.kind === 'mesh' || (a.kind === 'image' && a.tool === 'image.panorama'))
             .map((a: any) => ({ id: a.id, kind: a.kind, title: a.title ?? null, prompt: a.recipe?.params?.prompt ?? null }));
-          const turn = await dr.directorTurn({ project: sh.project, shot: sh.doc, messages, library });
+          const turn = await dr.directorTurn({ project: sh.project, shot: sh.doc, messages, library, selection: b.selection && typeof b.selection === 'object' ? b.selection : undefined });
           const aiCharge = payer && turn.house ? chargeCredits(payer.id, house.turnCredits(turn.cost), 'ai_turn', `Director: ${String(messages[messages.length - 1].text).slice(0, 80)}`) : null;
           const saved = dr.saveShot(sh, turn.shot);
           return send(res, 200, { say: turn.say, shot: saved, model: turn.model, ...(aiCharge ? { aiCredits: aiCharge.charged } : {}) });
@@ -1028,6 +1028,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/tools' && method === 'GET') {
       const list = client.role === 'user' ? TOOLS.filter((t) => !isInternalOnlyTool(t.id)) : TOOLS;
       return send(res, 200, { tools: list.map(describeTool) });
+    }
+    // What Gen knows about a tool (src/knowledge.ts): its craft notes, models, every node and setting.
+    m = /^\/v1\/knowledge\/tools\/([\w.-]+)$/.exec(route);
+    if (m && method === 'GET') {
+      if (client.role === 'user' && isInternalOnlyTool(m[1])) throw new GenError(`No tool ${m[1]}`, { status: 404 });
+      const { toolCard } = await import('./knowledge.ts');
+      const card = toolCard(m[1]);
+      if (!card) throw new GenError(`No tool ${m[1]}`, { status: 404 });
+      return send(res, 200, card);
+    }
+    if (route === '/v1/knowledge/map' && method === 'GET') {
+      const { toolMap } = await import('./knowledge.ts');
+      const { aiCanUse } = await import('./editor.ts');
+      return send(res, 200, { map: toolMap(client.role === 'user' ? aiCanUse : undefined) });
     }
     m = /^\/v1\/tools\/([\w.-]+)$/.exec(route);
     if (m && method === 'GET') {
