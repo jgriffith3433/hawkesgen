@@ -289,6 +289,7 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 | Route | |
 |---|---|
 | `GET /v1/editor/tools` | The tools the AI editor and the app offer on this Gen, and the tracks |
+| `POST /v1/assets/:id?share=1&name=` | A share link for the caller's own file: `{ url: "/dl/...", expires }`, opens in a browser (inline) for 7 days with no credential |
 | `GET /v1/scenes?kind=&project=` | Every scene of the account (src/scenes.ts), newest first: id, kind, title, version, render |
 | `POST /v1/scenes` | A new scene: `{ kind: video \| stage \| image \| audio \| character, title?, doc? }` |
 | `GET/PUT/DELETE /v1/scenes/:id` | One scene (with `uses`: the scenes it plays and their renders; a stage's `sequenceInfo`); PUT `{ doc, version }` (409 with the newer scene) |

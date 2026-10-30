@@ -2,8 +2,8 @@
 // at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Create (every tool) is studio.js.
 // Also the one way every tool runs (runJob).
 
-import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, mediaInfo, plainError, ApiError } from './lib.js';
-import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack } from './project.js';
+import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly } from './lib.js';
+import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor } from './project.js';
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
 import { touchDrag } from './dragdrop.js';
@@ -24,6 +24,9 @@ export function initMedia() {
   bus.on('signedIn', loadMedia);
   bus.on('ready', loadMedia);
   bus.on('jobDone', () => loadMedia());
+  // Tiles say which files the scene in front uses (redrawn when it changes, at most every second).
+  let usedT = 0;
+  bus.on('doc', () => { clearTimeout(usedT); usedT = setTimeout(drawMedia, 1000); });
   bus.on('placeAsset', ({ asset, track, start }) => placeAsset(asset, { track, start }));
   loadMedia();
 }
@@ -31,6 +34,7 @@ export function initMedia() {
 export function showPane(name) {
   $$('#paneTabs button').forEach((b) => b.classList.toggle('on', b.dataset.pane === name));
   $$('.pane-body').forEach((p) => { p.hidden = p.id !== `pane-${name}`; });
+  $('#app').dataset.pane = name;
   if (name === 'scenes') import('./scenes.js').then((s) => s.loadList()).catch(() => {});
 }
 
@@ -50,12 +54,16 @@ export async function loadMedia() {
   drawMedia();
 }
 
+/** How many things are being made or uploaded now (the bar's "Making" pill shows it). */
+export const busyCount = () => M.inflight.size;
 function drawMedia() {
+  bus.emit('busy', M.inflight.size);
   const grid = $('#mediaGrid');
   const busy = [...M.inflight.values()].map((j) => h('div', { class: 'tile busy' }, h('div', { class: 'working' }, j.step || 'Starting'), h('div', { class: 'tile-cap' }, j.label)));
   const tiles = M.items.map(tileFor);
   grid.replaceChildren(...busy, ...tiles);
-  if (!busy.length && !tiles.length) grid.append(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'), h('p', { class: 'muted' }, 'Upload files, or make something in Create.')));
+  if (!busy.length && !tiles.length) grid.append(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'),
+    M.q || M.kind ? '' : h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: () => $('#uploadInput').click() }, icon('upload'), 'Upload'), h('button', { class: 'primary small', onclick: () => showPane('generate') }, icon('sparkle'), 'Make something'))));
 }
 
 const durationOf = (a) => a.meta?.duration ?? null;
@@ -66,10 +74,12 @@ function tileFor(a) {
     : a.kind === 'audio' ? h('div', { class: 'tile-audio' }, icon(a.tool === 'audio.music' ? 'music' : a.tool?.startsWith('audio.voice') ? 'mic' : 'volume', 'ico big'))
     : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
   const d = durationOf(a);
-  const el = h('div', { class: `tile kind-${a.kind}`, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
+  const used = P.active && P.doc.clips.some((c) => c.asset === a.id);
+  const el = h('div', { class: `tile kind-${a.kind}${used ? ' used' : ''}`, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
 ` : ''}Double-click to look at it; drag it onto a track` },
     media,
     d ? h('span', { class: 'badge' }, fmt(d, 0)) : '',
+    used ? h('span', { class: 'badge used', title: 'It\'s in the scene in front' }, 'In use') : '',
     h('div', { class: 'tile-cap' }, a.title || prompt || a.kind),
     onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(a)); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
   // One click picks a tile (the "+" adds it); a double-click looks at it in the center (J, 2026-10-30).
@@ -80,8 +90,8 @@ function tileFor(a) {
     e.dataTransfer.setData('application/x-hg-asset', JSON.stringify(assetLite(a)));
     e.dataTransfer.effectAllowed = 'copy';
   });
-  // Phones: hold a tile, then drag it onto a track (dragdrop.js).
-  if (onTimeline(a.kind)) touchDrag(el, () => { const x = assetLite(a); return { asset: x.id, assetKind: x.kind, title: x.title, duration: x.duration }; });
+  // Any tile drags (mouse or finger); where it's dropped says whether it fits there and why not.
+  touchDrag(el, () => { const x = assetLite(a); return { asset: x.id, assetKind: x.kind, title: x.title, duration: x.duration }; });
   return el;
 }
 const onTimeline = (kind) => ['image', 'video', 'audio'].includes(kind);
@@ -108,13 +118,14 @@ export async function placeAsset(a, { track, start, place } = {}) {
   const kind = a.kind;
   const picked = track ?? (trackOf(P.selection.track) && !trackOf(P.selection.track).locked ? P.selection.track : null);
   const t = picked ?? (kind === 'audio' ? soundTrack(a) : null) ?? defaultTrack(kind);
-  const c = addClip({ track: t, asset: a.id, kind, duration: info.duration ?? a.duration ?? null, start: start ?? (P.kind === 'image' && kind === 'image' ? 0 : P.playhead), label: a.title || a.prompt || undefined, place });
+  const c = addClip({ track: t, asset: a.id, kind, duration: info.duration ?? a.duration ?? null, start: start ?? startFor(t, kind), label: a.title || a.prompt || undefined, place });
   P.selection.clips.clear();
   P.selection.clips.add(c.id);
   P.selection.track = c.track;
   bus.emit('selection');
   // Like any editor: the playhead moves past what was just put on a magnetic track, so the next one follows it.
-  if ((isMagnetic(c.track) || c.track === mainTrack()?.id) && start == null) seek(clipEnd(c));
+  // The playhead goes to what was just added, so the center shows it.
+  if (start == null && kind !== 'audio') seek(c.start + 0.001);
   return c;
 }
 
@@ -148,6 +159,7 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart }
       M.inflight.delete(job.id);
       refreshCredits();
       loadMedia();
+      if (!place) toast(`${label ?? 'It'} is ready: it's in Media.`, { action: 'Look', onAction: () => { const a = done.outputs.find((o) => !/mask/i.test(o.title ?? '')) ?? done.outputs[0]; if (a) openAsset({ id: a.asset, kind: a.kind, title: label }); } });
       // A replaced clip keeps its spot; when the new file is longer or shorter, its length follows.
       if (place?.replace || place?.track) {
         const out = done.outputs[0];
@@ -168,8 +180,7 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart }
       drawMedia();
       for (const c of P.doc.clips.filter((x) => x.pending && !x.asset && x.label === (label ?? tool))) { c.failed = plainError(err.message); delete c.pending; }
       changed();
-      toast(plainError(err.message));
-      if (err.status === 402) openAccount();
+      showError(err);
       reject(err);
     }
   }, 'login'));
@@ -191,10 +202,10 @@ export const credits = (q) => (q ? `${q.credits} credit${q.credits === 1 ? '' : 
 
 // ------------------------------------------------------------------ uploads
 const OK_VIDEO = /^video\/(mp4|webm)$/;
-export async function uploadFiles(files, { toTimeline = false } = {}) {
+export async function uploadFiles(files, { toTimeline = false, then = null } = {}) {
   if (!files.length) return;
   needSignIn(async () => {
-    showPane('media');
+    if (!toTimeline && !then) showPane('media');
     for (const file of files) {
       if (file.size > 1.5 * 1024 * 1024 * 1024) { toast(`${file.name} is over 1.5 GB.`); continue; }
       const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') || /\.(mov|mkv|avi|m4v|webm|mp4)$/i.test(file.name) ? 'video' : file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name) ? 'audio' : null;
@@ -222,15 +233,38 @@ export async function uploadFiles(files, { toTimeline = false } = {}) {
           toast(`${file.name} may not play in your browser; it still works in Gen's tools.`);
         }
         M.inflight.delete(key);
-        if (toTimeline) await placeAsset(asset);
+        if (then) await then(asset);
+        else if (toTimeline) await placeAsset(asset);
+        else if (P.active) toast(`${file.name} is in Media.`, { action: 'Add to the timeline', onAction: () => placeAsset(asset) });
       } catch (err) {
         M.inflight.delete(key);
-        toast(`${file.name}: ${plainError(err.message)}`);
+        const f = friendly(err);
+        toast(`${file.name}: ${f.text}`);
       }
       drawMedia();
     }
     loadMedia();
   }, 'login');
+}
+
+/** Shows an error with the thing that fixes it (Add credits, Try again). */
+export function showError(err, retry) {
+  const f = friendly(err);
+  if (f.fix === 'credits') return toast(f.text, { action: 'Add credits', onAction: () => openAccount(), ms: 8000 });
+  if (f.fix === 'retry' && retry) return toast(f.text, { action: 'Try again', onAction: retry, ms: 8000 });
+  toast(f.text, { ms: 6500 });
+}
+
+/** A share link anyone can open for a week (the file plays in their browser): copied, or the phone's share sheet. */
+export async function shareAsset(id, name) {
+  try {
+    const r = await api(`/v1/assets/${id}?share=1&name=${encodeURIComponent(name ?? '')}`, { method: 'POST' });
+    const url = `${location.origin}${r.url}`;
+    if (navigator.share && matchMedia('(pointer: coarse)').matches) { await navigator.share({ title: name ?? 'Made with Hawkes Gen', url }).catch(() => {}); return url; }
+    await navigator.clipboard.writeText(url).catch(() => {});
+    toast('Link copied. Anyone with it can watch for 7 days.', { action: 'Open it', onAction: () => open(url, '_blank') });
+    return url;
+  } catch (err) { showError(err); return null; }
 }
 
 /** A library kind as a person says it. */

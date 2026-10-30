@@ -10,14 +10,17 @@
 import { $, $$, h, toast, bus, ICON, icon } from './lib.js';
 import { P, doUndo, doRedo, splitAt, deleteSelected, duplicateSelected, startSignedOut, startSync, remember, changed, save, takeLocal, copySelected, cutSelected, paste } from './project.js';
 import { initPlayer, toggle, seek, closeSource, currentSource } from './player.js';
-import { initTimeline, popMenu, closeMenus, addText, fit, hoverAt, dropAt, overTimeline } from './timeline.js';
-import { initMedia, uploadFiles, showPane } from './media.js';
+import { initTimeline, popMenu, closeMenus, addText, fit, hoverAt, dropAt, checkAt } from './timeline.js';
+import { initMedia, uploadFiles, showPane, busyCount } from './media.js';
 import { initTools, closeSheet, clipTools } from './tools.js';
 import { initAi } from './ai.js';
 import { initStudio } from './studio.js';
 import { initDirector } from './director.js';
 import { initScenes, startWorkspace, activeKind, activeEditor, newScene } from './scenes.js';
 import { initEditor } from './editor.js';
+import { initLanding, show as showLanding } from './landing.js';
+import { initTour, startTour } from './tour.js';
+import { openPalette } from './palette.js';
 import './character.js';
 import { dropTarget } from './dragdrop.js';
 import { initAccount, loadMe, state } from './account.js';
@@ -35,6 +38,8 @@ initScenes();
 initDirector();
 initEditor();
 initAi();
+initLanding();
+initTour();
 
 const onTimelineScene = () => ['video', 'image', 'audio'].includes(activeKind());
 
@@ -48,6 +53,60 @@ bus.on('doc', () => {
   if (onTimelineScene() && P.id) bus.emit('sceneTitle', { id: P.id, title: P.doc.title });
 });
 $('#aspectSel').addEventListener('change', (e) => { const [w, hh] = e.target.value.split('x').map(Number); remember(); P.doc.width = w; P.doc.height = hh; changed(); });
+
+// Clicking a clip brings its Inspector forward (on a desktop, unless a Create form is open there).
+bus.on('inspect', () => {
+  if (getComputedStyle($('#mobileTabs')).display !== 'none' || !$('#pane-kind') || $('#kindTab').hidden) return;
+  if (!$('#pane-generate').hidden && !$('#createTool').hidden) return;
+  showPane('kind');
+});
+
+// ------------------------------------------------------------------ help
+const SHORTCUTS = [
+  ['Space', 'Play or pause'], ['S', 'Split at the playhead'], ['Delete', 'Delete what\'s selected'], ['Ctrl+C / X / V', 'Copy, cut, paste clips'],
+  ['Ctrl+Z / Ctrl+Shift+Z', 'Undo, redo'], ['Ctrl+D', 'Duplicate'], ['Ctrl+S', 'Save now'], ['Ctrl+O', 'Open a scene'], ['T', 'Words at the playhead'],
+  ['I / O', 'Mark a stretch for the AI'], ['← →', 'Step a frame (Shift: a second)'], ['Ctrl+wheel, + / −', 'Zoom the timeline'], ['W / E / R', 'Move, turn, size (3D stage)'], ['Esc', 'Let go of the selection'],
+];
+function shortcuts() {
+  $('#shortcutsPop')?.remove();
+  const pop = h('div', { class: 'picker shortcuts', id: 'shortcutsPop', role: 'dialog' },
+    h('div', { class: 'sheet-head' }, h('b', {}, 'Keyboard shortcuts'), h('button', { class: 'icon-btn', onclick: () => pop.remove() }, icon('close'))),
+    h('dl', {}, ...SHORTCUTS.flatMap(([k, v]) => [h('dt', {}, ...k.split(' / ').flatMap((x, i) => [i ? ' / ' : '', h('kbd', {}, x)])), h('dd', {}, v)])));
+  document.body.append(pop);
+  const off = (e) => { if (e.key === 'Escape' || (e.type === 'pointerdown' && !pop.contains(e.target))) { pop.remove(); removeEventListener('keydown', off, true); removeEventListener('pointerdown', off, true); } };
+  setTimeout(() => { addEventListener('keydown', off, true); addEventListener('pointerdown', off, true); }, 0);
+}
+$('#helpBtn').addEventListener('click', (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  popMenu(r.right - 240, r.bottom + 6, [
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); startTour(); } }, h('span', { class: 'row' }, icon('sparkle'), 'Take the quick tour')),
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); shortcuts(); } }, h('span', { class: 'row' }, icon('keyboard'), 'Keyboard shortcuts')),
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); showLanding({ browsing: true }); } }, h('span', { class: 'row' }, icon('help'), 'What Hawkes Gen does')),
+    h('div', { class: 'menu-sep' }),
+    h('div', { class: 'menu-links' }, h('a', { href: '/legal#terms', target: '_blank' }, 'Terms'), h('a', { href: '/legal#privacy', target: '_blank' }, 'Privacy'), h('a', { href: 'mailto:support@hawkesgen.ai' }, 'Contact')),
+  ]);
+});
+addEventListener('keydown', (e) => { if (e.key === '?' && !e.target.closest?.('input, textarea, select, [contenteditable]')) { e.preventDefault(); shortcuts(); } });
+
+// ------------------------------------------------------------------ search everything, and what's being made
+$('#paletteBtn').addEventListener('click', () => openPalette());
+addEventListener('keydown', (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); } }, true);
+/** The bar's "Making 2" pill: anything being made or uploaded (Media's list) and clips still waiting on a job. */
+function drawBusy() {
+  const n = busyCount() + P.doc.clips.filter((c) => c.pending).length;
+  $('#busyPill').hidden = !n;
+  $('#busyText').textContent = `Making ${n}`;
+}
+bus.on('busy', drawBusy);
+bus.on('doc', drawBusy);
+$('#busyPill').addEventListener('click', () => { showPane('media'); if (getComputedStyle($('#mobileTabs')).display !== 'none') $('#mobileTabs button[data-m="media"]').click(); });
+
+// ------------------------------------------------------------------ an empty scene's first steps
+// Ideas for the scene in front: one tap asks its AI to make it here.
+bus.on('sceneActive', () => import('./starters.js').then((s) => { const box = $('#emptyIdeas'); const list = s.ideasHere(); box.replaceChildren(...(list.length ? [h('span', { class: 'muted small' }, 'Or start from an idea:'), ...list] : [])); }));
+$('#emptyUpload').addEventListener('click', () => $('#uploadInput').click());
+$('#emptyMedia').addEventListener('click', () => { showPane('media'); if (getComputedStyle($('#mobileTabs')).display !== 'none') $('#mobileTabs button[data-m="media"]').click(); });
+$('#emptyAsk').addEventListener('click', () => import('./ai.js').then((a) => a.askAi('')));
 
 // ------------------------------------------------------------------ timeline bar
 $('#splitBtn').addEventListener('click', () => splitAt());
@@ -139,16 +198,34 @@ addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   $('#dropzone').hidden = true;
-  const onTimeline = onTimelineScene() && Boolean(e.target.closest?.('#timelinePane'));
-  uploadFiles([...e.dataTransfer.files], { toTimeline: onTimeline });
+  // Files dropped on the timeline or the center go straight into the scene in front (where it says it takes them);
+  // anywhere else they go to Media, with "Add to the timeline" on the toast.
+  const onCenter = Boolean(e.target.closest?.('#viewerWrap'));
+  const onTimeline = onTimelineScene() && (Boolean(e.target.closest?.('#timelinePane')) || onCenter);
+  const ed = activeEditor();
+  const into = onCenter && !onTimelineScene() && ed?.drop ? (asset) => ed.drop({ asset: asset.id, assetKind: asset.kind, title: asset.title }, { clientX: e.clientX, clientY: e.clientY }) : null;
+  uploadFiles([...e.dataTransfer.files], { toTimeline: onTimeline, then: into });
 });
 
-// Fingers: the timeline (onto a track) and the center (the scene in front takes it).
-dropTarget({ hover: (x, y) => { if (!onTimelineScene() || !overTimeline(x, y)) { hoverAt(null); return false; } hoverAt(x, y); return true; }, leave: () => hoverAt(null), drop: (x, y, it) => dropAt(it, x, y) });
+// Drop targets (dragdrop.js, mouse and finger alike): the timeline (onto a track at a time) and the center (the scene in
+// front takes it). Each says what a drop would do, or why it can't.
 dropTarget({
-  hover: (x, y, it) => { const r = $('#viewerWrap').getBoundingClientRect(); const on = x >= r.left && x <= r.right && y >= r.top && y <= r.bottom && Boolean(activeEditor()?.accepts?.(it)); $('#viewerWrap').classList.toggle('drop-on', on); return on; },
-  leave: () => $('#viewerWrap').classList.remove('drop-on'),
-  drop: (x, y, it) => { $('#viewerWrap').classList.remove('drop-on'); activeEditor()?.drop?.(it, { clientX: x, clientY: y }); },
+  check: (x, y, it) => checkAt(it, x, y),
+  show: (x, y, it, ok) => hoverAt(x, y, ok),
+  leave: () => hoverAt(null),
+  drop: (x, y, it) => dropAt(it, x, y),
+});
+dropTarget({
+  check(x, y, it) {
+    const r = $('#viewerWrap').getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+    const ed = activeEditor();
+    if (!ed) return { ok: false, text: 'Open a scene first (+ in the bar).' };
+    return ed.explain?.(it) ?? (ed.accepts?.(it) ? { ok: true, text: 'Drop to add it' } : { ok: false, text: `This ${ed.label?.toLowerCase() ?? 'scene'} can't take that.` });
+  },
+  show: (x, y, it, ok) => { $('#viewerWrap').classList.toggle('drop-on', ok); $('#viewerWrap').classList.toggle('drop-no', !ok); },
+  leave: () => $('#viewerWrap').classList.remove('drop-on', 'drop-no'),
+  drop: (x, y, it) => activeEditor()?.drop?.(it, { clientX: x, clientY: y }),
 });
 
 // ------------------------------------------------------------------ sizing the areas

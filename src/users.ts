@@ -144,7 +144,7 @@ export function signupUser(input: { email?: unknown; password?: unknown; name?: 
 
 // Continue with Google (J, 2026-10-29: one Google account signs in to every product, each keeping its own account): a
 // Gen account is found by Google's permanent id (`google_sub`), else by its email (an account made with a password
-// before, now linked), else made. Passwords are off on the cloud lanes (passwordsAllowed).
+// before, now linked), else made. Passwords are off (passwordsAllowed).
 // Accounts the owner disabled in /admin > Accounts (src/accounts.ts): their sessions and keys stop working.
 db.exec('CREATE TABLE IF NOT EXISTS user_flags (user_id TEXT PRIMARY KEY, disabled INTEGER NOT NULL DEFAULT 0, note TEXT, updated INTEGER NOT NULL, by TEXT)');
 export function isDisabled(userId: string): boolean {
@@ -152,8 +152,11 @@ export function isDisabled(userId: string): boolean {
 }
 db.exec('CREATE TABLE IF NOT EXISTS user_google (user_id TEXT PRIMARY KEY, sub TEXT UNIQUE NOT NULL, linked INTEGER NOT NULL)');
 
-/** Email-and-password sign-up and sign-in: only off the cloud (local runs and tests), or with HAWKESGEN_PASSWORD_LOGIN=1. */
-export const passwordsAllowed = () => !process.env.K_SERVICE || env('HAWKESGEN_PASSWORD_LOGIN') === '1';
+/**
+ * Email-and-password sign-up and sign-in: off everywhere (J, 2026-10-30: "I don't want email and password"); Google is the
+ * way in. HAWKESGEN_PASSWORD_LOGIN=1 turns them on for automated tests and throwaway local copies only.
+ */
+export const passwordsAllowed = () => env('HAWKESGEN_PASSWORD_LOGIN') === '1';
 
 /** A Gen account that is an admin: its email is on settings.dashboard.googleEmails and it signed in with Google. */
 export function isGenAdmin(user: Pick<UserRow, 'id' | 'email'>): boolean {

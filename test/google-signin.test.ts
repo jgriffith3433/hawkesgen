@@ -33,16 +33,18 @@ test('an older password account is linked by its email, not duplicated', () => {
   assert.equal(googleSignin({ sub: '1000000000002', email: 'old@example.com', name: null }).user.id, old.user.id);
 });
 
-test('passwords are off on the cloud unless turned on', () => {
-  assert.equal(passwordsAllowed(), true, 'local runs and tests');
-  process.env.K_SERVICE = 'gen';
+test('passwords are off everywhere unless turned on for tests', () => {
+  const was = process.env.HAWKESGEN_PASSWORD_LOGIN;
   try {
+    delete process.env.HAWKESGEN_PASSWORD_LOGIN;
+    assert.equal(passwordsAllowed(), false, 'local runs too');
+    process.env.K_SERVICE = 'gen';
     assert.equal(passwordsAllowed(), false);
     process.env.HAWKESGEN_PASSWORD_LOGIN = '1';
     assert.equal(passwordsAllowed(), true);
   } finally {
     delete process.env.K_SERVICE;
-    delete process.env.HAWKESGEN_PASSWORD_LOGIN;
+    if (was == null) delete process.env.HAWKESGEN_PASSWORD_LOGIN; else process.env.HAWKESGEN_PASSWORD_LOGIN = was;
   }
 });
 

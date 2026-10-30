@@ -29,6 +29,15 @@ registerEditor({
   action: { label: 'Stage them', icon: 'cube', run: () => stageThem() },
   rename: (title) => D.change((d) => { d.title = title; }),
   accepts: (it) => (it.asset ? ['image', 'mesh'].includes(it.assetKind) : it.kind === 'image'),
+  explain(it) {
+    if (it.asset?.length && it.assetKind === 'image') return { ok: true, text: 'Add this as a picture of them' };
+    if (it.asset && it.assetKind === 'mesh') return { ok: true, text: 'Make this their 3D model' };
+    if (it.asset && it.assetKind === 'audio') return { ok: false, text: 'Pick their voice in the Voice section. Sounds go on a timeline.' };
+    if (it.asset) return { ok: false, text: 'A character takes pictures of them and a 3D model.' };
+    if (it.kind === 'image') return it.render?.asset ? { ok: true, text: 'Add its picture as a picture of them' } : { ok: false, text: `"${it.title}" has no picture yet. Open it and press Export picture first.` };
+    if (it.kind === 'character') return { ok: false, text: 'Characters meet on a stage. Open a stage and drop them both there.' };
+    return { ok: false, text: 'People go into scenes, not the other way round: drop this character into a stage instead.' };
+  },
   drop: (it) => addFrom(it),
   uses: (s) => [{ label: 'Stage them', run: () => stageThem(s.id, s.title) }],
   ai: { selection: () => ({}) },

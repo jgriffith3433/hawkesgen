@@ -460,6 +460,9 @@ export function libraryPicker(kind, onPick) {
   }).catch(() => grid.replaceChildren(h('p', { class: 'muted small' }, 'Couldn\'t load your library.')));
 }
 
+/** Every tool Create offers, as people see them (the command palette lists them). */
+export const createTools = () => [...S.tools.values()].filter((t) => CURATED.has(t.id) || !HIDDEN.test(t.id)).map((t) => ({ id: t.id, label: CURATED.get(t.id)?.label ?? t.title ?? t.id, about: CURATED.get(t.id)?.about ?? t.description ?? '' }));
+
 /** Whether this Gen has a tool and can run it now (false while its GPU servers are offline). */
 export const toolReady = (id) => Boolean(S.tools.get(id)?.ready);
 export const hasTool = (id) => S.tools.has(id);

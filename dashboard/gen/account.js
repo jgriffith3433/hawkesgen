@@ -29,6 +29,10 @@ function showMe() {
     $('#accountBtn').textContent = (u.name || u.email || '?').trim().slice(0, 1).toUpperCase();
     $('#accountBtn').title = u.email;
     $('#creditsCount').textContent = Number(u.credits ?? 0).toLocaleString();
+    // Running low: the pill says so before anything fails.
+    const low = Number(u.credits ?? 0) < 25;
+    $('#creditsPill').classList.toggle('low', low);
+    $('#creditsPill').title = low ? 'Running low: add credits (1 credit = 1 cent)' : 'Credits (1 credit = 1 cent)';
   }
 }
 export const refreshCredits = () => api('/v1/users/me').then((m) => { state.user = m.user; showMe(); }).catch(() => {});
@@ -57,7 +61,7 @@ async function signedIn(created) {
   $('#authDialog').close();
   await loadMe();
   bus.emit('signedIn', state.user);
-  if (created) toast(`Welcome! You have ${state.user?.credits ?? 0} free credits.`);
+  if (created) { toast(`Welcome! You have ${state.user?.credits ?? 0} free credits.`); bus.emit('welcome'); }
   const then = afterSignIn;
   afterSignIn = null;
   if (then) then();

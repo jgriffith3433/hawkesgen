@@ -262,6 +262,52 @@ portal and Studio use Gen in the back end with their own keys.
       now. Ctrl+O (or "+" > Open a scene…) opens a picker of every scene, fresh from Gen. The interface isn't selectable
       text (only fields and the AI's words). The center outlines the frame and shows its size.
     - **Media:** a click picks a tile, a double-click shows it in the center, the "+" adds it.
+    - **First visit and first steps** (J, 2026-10-30: "When a user first enters the website if they aren't logged in then it
+      should show a landing type of experience ... selling what it can do. Show 3 categories and highlight its strengths
+      ... If it's a new account do a very quick tutorial, just show them 3 sections media, timeline and AI chat. Make it
+      modern and not annoying"):
+      - `landing.js`: signed out, a welcome covers the app (hero with a small live sketch of the studio, Start free and
+        Sign in; three categories Edit, Direct, Generate; four strengths; a closing call to action). "Look around first"
+        hides it for the visit; signing in closes it; the help menu's "What Hawkes Gen does" shows it again.
+      - `tour.js`: a new account (the sign-in says `created`, or the account is under 30 minutes old) gets three cards,
+        each lighting up Media, the timeline and the AI (on a phone: their bottom tabs and the timeline). Next, Back,
+        Skip, arrow keys, Esc; once per account in this browser.
+      - The bar's **?** menu: Take the quick tour, Keyboard shortcuts (also the `?` key), What Hawkes Gen does, Terms,
+        Privacy, Contact.
+    - **Friendliness** (J, 2026-10-30: "Everything you can think of to make it powerful and user friendly"):
+      - **Start from an idea** (`starters.js`): "+" and an empty scene offer briefs per kind (trailer, slideshow,
+        talking character, poster, thumbnail, podcast intro, ambience, two-person scene, a new character); picking one
+        makes the scene and asks its AI to build it.
+      - **Search everything** (`palette.js`, Ctrl+K or the bar's search): scenes, new scenes and ideas, actions on the
+        scene in front, panes, every Create tool; anything else is "Ask the AI".
+      - **Progress where the work is**: a waiting clip says "In line (2 ahead)" or its step; the bar's "Making n" pill
+        counts what's being made or uploaded (click: Media). A finished job with no place says so ("Look").
+      - **Friendly errors** (`lib.js friendly`, `media.js showError`): plain words and the fix (Add credits, Try
+        again); the credits pill turns amber under 25.
+      - **Undo toasts** after deleting clips, cutting a stretch or removing a track.
+      - **Back where you left off**: each timeline scene keeps its playhead, zoom and scroll in the browser.
+      - **Names from content**: an "Untitled" scene takes the name of the first thing put in it.
+      - **File drops**: on the timeline or the center they go into the scene in front (a stage takes them where
+        dropped); elsewhere to Media, with "Add to the timeline" on the toast.
+      - **Share** (`POST /v1/assets/:id?share=1`, `links.ts shareLink`): a signed link anyone can open for a week, shown
+        in the browser (`/dl/...`, inline); from the export and the viewer, the phone's share sheet on phones.
+      - Media marks files the scene in front uses ("In use"); phones pinch-zoom the timeline and get bigger handles.
+    - **Usability rules** (J, 2026-10-30: "The point of the AI is that it's supposed to help with these finer tuning and we
+      want to hide away most advanced knobs and stay away from input fields if possible. It needs to feel more drag and
+      drop, and if I am dragging something that's not supported then it should tell me why"):
+      - **Every drag explains itself** (`dragdrop.js`): a note follows the pointer or finger saying what the drop does
+        ("Add to "Music" at 0:03") or, in red, why it can't and what to do instead; letting go there toasts the reason.
+        Targets register `check`/`show`/`drop`; editors answer `explain(item)` (`timelineRefusal` for timelines,
+        `stageExplain`, the character's). What's dragged is told at dragstart (`setDrag`).
+      - **Simple first, knobs under "Fine-tune"** (closed): the Inspector leads with "Ask the AI" chips for what's
+        selected (`askAi`, one tap sends), Gen's tools, then sliders, chips and swatches; numbers and menus wait below.
+      - **Adjust by dragging**: on the frame (move, size, turn), on the timeline (move, trim, fade dots at a sound clip's
+        top corners).
+      - **Empty states start you off**: an empty scene's center offers Upload, From Media and Ask the AI; added things
+        land where you see them (the playhead goes to them; on the main track they go after the last clip if the
+        playhead's spot is taken: `startFor`).
+      - Clicking a clip brings its Inspector forward on a desktop (not while a Create form is open); the tools under the
+        center hide while the Inspector shows them.
     - **The Inspector** (`editor.js`, the left pane's tab): Gen's tools for the selected clip first (`tools.js clipTools`:
       Remove background, Edit, Repaint, Expand, Relight, Upscale, Animate; for clips Change, Restyle, Swap, Continue...;
       also at the top of a clip's right-click menu), then the clip (track, start, length, speed, place,
@@ -390,8 +436,9 @@ portal and Studio use Gen in the back end with their own keys.
   Sign-in is **Continue with Google** (`POST /v1/users/google`, `users.ts googleSignin`), inline: the first Generate
   asks, then goes on. One Google account signs in to every product (portal, Studio, Gen), each keeping its own
   account. A Gen account is found by Google's permanent id (`user_google`), else by its email (an older account,
-  linked), else made with the starter credits. Email and password are off on the cloud lanes (410 `google_only`;
-  `HAWKESGEN_PASSWORD_LOGIN=1` turns them back on) and stay for local runs and tests. The app uses the admin
+  linked), else made with the starter credits. **No email and password** (J, 2026-10-30: "I don't want email and
+  password"): off everywhere, local runs included (410 `google_only`); `HAWKESGEN_PASSWORD_LOGIN=1` turns them on only for
+  automated tests and throwaway local copies without a Google client. The app uses the admin
   dashboard's Google client (`settings.dashboard.googleClientId`); its JavaScript origins must list each Gen address.
   The editor's timeline lives in the browser (`localStorage`).
 - **Paying** (`src/subscriptions.ts`, `src/billing.ts`, `test/subscriptions.test.ts`):

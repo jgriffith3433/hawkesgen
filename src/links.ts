@@ -40,6 +40,12 @@ export function downloadLink(base: string, assetId: string, name = assetId, now 
   return `${base.replace(/\/+$/, '')}/dl/${sign({ k: 'dl', a: assetId, exp: now + DL_TTL })}/${safeName(name)}`;
 }
 
+/** The app's share link: anyone with it sees the file in their browser (not a download) for a week. */
+export const SHARE_TTL = 7 * 24 * 3600 * 1000;
+export function shareLink(base: string, assetId: string, name = assetId, now = Date.now()) {
+  return `${base.replace(/\/+$/, '')}/dl/${sign({ k: 'dl', a: assetId, v: 1, exp: now + SHARE_TTL })}/${safeName(name)}`;
+}
+
 /** A one-time upload link (curl -T file <url>) whose blob belongs to this caller. */
 export function uploadLink(base: string, owner: { id: string; projects: string[] }, filename: string, now = Date.now()) {
   return `${base.replace(/\/+$/, '')}/up/${sign({ k: 'up', c: owner.id, p: owner.projects, n: crypto.randomBytes(9).toString('base64url'), exp: now + UP_TTL })}/${safeName(filename)}`;
@@ -47,9 +53,13 @@ export function uploadLink(base: string, owner: { id: string; projects: string[]
 
 /** The asset a download link names, or null. The route then serves it like /v1/files (api.ts). */
 export function downloadTarget(route: string): string | null {
+  return linkTarget(route)?.asset ?? null;
+}
+/** The asset a link names and whether it's a share (shown in the browser rather than downloaded). */
+export function linkTarget(route: string): { asset: string; view: boolean } | null {
   const m = /^\/dl\/([\w-]+\.[\w-]+)\/[^/]*$/.exec(route);
-  const o = m && open<{ k: string; a: string }>(m[1]);
-  return o && o.k === 'dl' && /^a_[0-9a-f]+$/.test(o.a) ? o.a : null;
+  const o = m && open<{ k: string; a: string; v?: number }>(m[1]);
+  return o && o.k === 'dl' && /^a_[0-9a-f]+$/.test(o.a) ? { asset: o.a, view: o.v === 1 } : null;
 }
 
 /** Handles PUT/POST /up/<token>/<name>; false when the route isn't an upload link. */

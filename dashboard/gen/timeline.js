@@ -9,9 +9,13 @@
 import { $, $$, h, fmt, bus, icon, thumb, peaks, toast } from './lib.js';
 import { P, tracks, trackOf, isMagnetic, onTrack, clipLength, clipEnd, docLength, byId, remember, changed, addClip, setClip, isStill, mainTrack, addTrack, setTrack, removeTrack, moveTrack, hasSound, fitStart, neighbours } from './project.js';
 import { seek, isPlaying, pause } from './player.js';
-import { readDrag } from './scenes.js';
 
 const T = { z: 60, snap: true, scroll: null, canvas: null, lanes: null, raf: 0 };
+/** What each job being made is doing now (by job id), for its waiting clip's label. */
+const PROGRESS = new Map();
+/** The timeline's zoom and scroll, to put back when a scene opens again (editor.js). */
+export const viewState = () => ({ z: T.z, left: T.scroll?.scrollLeft ?? 0 });
+export function setView({ z, left } = {}) { if (z) { T.z = Math.min(MAX_Z, Math.max(MIN_Z, z)); render(); } if (left != null && T.scroll) T.scroll.scrollLeft = left; }
 const MIN_Z = 4, MAX_Z = 480;
 const xOf = (t) => t * T.z;
 const tOf = (x) => x / T.z;
@@ -35,7 +39,7 @@ export function initTimeline() {
   $('#snapBtn').addEventListener('click', () => { T.snap = !T.snap; $('#snapBtn').classList.toggle('on', T.snap); });
   $('#snapBtn').classList.toggle('on', T.snap);
   $('#addTrackBtn').addEventListener('click', (e) => newTrackMenu(e.currentTarget));
-  T.scroll.addEventListener('scroll', () => { const l = $('#tlHeadsList'); if (l) l.style.transform = `translateY(${-T.scroll.scrollTop}px)`; });
+  T.scroll.addEventListener('scroll', () => { const l = $('#tlHeadsList'); if (l) l.style.transform = `translateY(${-T.scroll.scrollTop}px)`; placeEmpty(); });
   T.scroll.addEventListener('wheel', (e) => {
     if (!(e.ctrlKey || e.metaKey)) return;
     e.preventDefault();
@@ -69,38 +73,71 @@ export function initTimeline() {
     bus.emit('selection');
     if (e.pointerType === 'mouse') rangeDrag(e, t0);
   });
-  // Drops from Media and Scenes (desktop drag and drop; phones use dragdrop.js, which calls dropAt).
-  $('#tlTracks').addEventListener('dragover', (e) => {
-    const types = [...e.dataTransfer.types];
-    if (lender || (!types.includes('application/x-hg-asset') && !types.includes('application/x-hg-scene'))) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    hoverAt(e.clientX, e.clientY);
-  });
-  $('#tlTracks').addEventListener('dragleave', (e) => { if (!e.currentTarget.contains(e.relatedTarget)) hoverAt(null); });
-  $('#tlTracks').addEventListener('drop', async (e) => {
-    hoverAt(null);
-    if (lender) return;
-    // Read the drop now: the browser empties it once this handler awaits anything.
-    const it = readDrag(e);
-    if (!it) return;
-    e.preventDefault();
-    e.stopPropagation();
-    dropAt(it, e.clientX, e.clientY);
-  });
+  // Drops from Media and Scenes come through dragdrop.js (mouse and finger alike): checkAt says what would happen.
   bus.on('doc', render);
   bus.on('selection', render);
   bus.on('time', movePlayhead);
   bus.on('lanes', () => { if (lender) render(); });
+  // A clip being made says how it's going (in line, working, which step) right where it sits.
+  bus.on('jobProgress', (p) => {
+    const text = p.step ?? (p.status === 'queued' ? (p.ahead ? `In line (${p.ahead} ahead)` : 'In line') : p.detail || 'Working');
+    PROGRESS.set(p.job, text);
+    for (const c of P.doc.clips) if (c.job === p.job && c.pending) { const l = $(`#tlTracks .clip[data-id="${c.id}"] .clip-label`); if (l) l.textContent = `${text} · ${c.label ?? ''}`; }
+  });
+  // Two fingers pinch the timeline in and out (phones and trackpads that send touches).
+  let pinch = null;
+  T.scroll.addEventListener('touchstart', (e) => { if (e.touches.length === 2) { const [a, b] = e.touches; pinch = { d: Math.abs(a.clientX - b.clientX), z: T.z, at: tOf((a.clientX + b.clientX) / 2 - T.scroll.getBoundingClientRect().left + T.scroll.scrollLeft) }; } }, { passive: true });
+  T.scroll.addEventListener('touchmove', (e) => {
+    if (!pinch || e.touches.length !== 2) return;
+    e.preventDefault();
+    const [a, b] = e.touches;
+    const d = Math.max(10, Math.abs(a.clientX - b.clientX));
+    zoomTo(pinch.z * (d / Math.max(10, pinch.d)), pinch.at, (a.clientX + b.clientX) / 2 - T.scroll.getBoundingClientRect().left);
+  }, { passive: false });
+  T.scroll.addEventListener('touchend', () => { pinch = null; });
   render();
 }
 
 // ------------------------------------------------------------------ where things land
 function trackAt(y) { return $$('#tlTracks .tl-track').find((row) => { const r = row.getBoundingClientRect(); return y >= r.top && y < r.bottom; }) ?? null; }
-/** Shows where a drag would land (the track, or a new one), or clears it. */
-export function hoverAt(x, y) {
+/** Shows where a drag would land (the track, or a new one), or clears it; `ok` false shows it refused. */
+export function hoverAt(x, y, ok = true) {
   const row = x == null ? null : trackAt(y);
-  $$('#tlTracks .tl-track').forEach((r) => r.classList.toggle('drop', r === row));
+  $$('#tlTracks .tl-track').forEach((r) => { r.classList.toggle('drop', r === row && ok); r.classList.toggle('drop-no', r === row && !ok); });
+}
+
+const ACTION_OF = { video: 'Export', image: 'Export picture', audio: 'Mixdown', stage: 'Film it' };
+/**
+ * Why a dragged thing can't go on a timeline scene, in plain words with what to do instead; null when it can. The
+ * timeline and the center both say it.
+ */
+export function timelineRefusal(it) {
+  if (it.asset) {
+    if (it.assetKind === 'mesh') return '3D models go on a stage. Open one (+ > Stage) and drop it there.';
+    if (!['image', 'video', 'audio'].includes(it.assetKind)) return 'Only pictures, clips and sounds go on a timeline.';
+    return null;
+  }
+  if (it.scene) {
+    if (it.kind === 'character') return 'A character goes on a stage, not a timeline. Open a stage (+ > Stage) and drop them there.';
+    if (it.scene === P.id) return 'A scene can\'t play inside itself.';
+    if (!it.render?.asset) return `"${it.title}" has nothing to show yet. Open it and press ${ACTION_OF[it.kind] ?? 'its export'}, then drop it here.`;
+    return null;
+  }
+  return 'That can\'t go here.';
+}
+/** What a drag over a point of the timeline would do: null off the timeline, else { ok, text }. */
+export function checkAt(it, x, y) {
+  if (!overTimeline(x, y)) return null;
+  if (lender) return { ok: false, text: lender.dropHint ?? 'These are the stage\'s timings. Drop it on the stage above to add it to the shot.' };
+  const no = timelineRefusal(it);
+  if (no) return { ok: false, text: no };
+  const r = T.canvas.getBoundingClientRect();
+  const t = Math.max(0, tOf(x - r.left));
+  const row = trackAt(y);
+  const tr = row?.dataset.track ? trackOf(row.dataset.track) : null;
+  if (!tr) return { ok: true, text: `On a new track, at ${fmt(t, 1)}` };
+  if (tr.locked) return { ok: false, text: `"${tr.name}" is locked. Unlock it (the lock by its name), or drop it on another track.` };
+  return { ok: true, text: `Add to "${tr.name}" at ${fmt(t, 1)}` };
 }
 /** True when a point is over the timeline's tracks. */
 export function overTimeline(x, y) { const r = $('#tlScroll')?.getBoundingClientRect(); return Boolean(r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom); }
@@ -162,6 +199,9 @@ export function fit() {
   render();
   T.scroll.scrollLeft = 0;
 }
+
+/** The empty timeline's hint stays in the middle of what's in view, however far it's scrolled. */
+function placeEmpty() { const el = $('#tlEmpty'); if (el && T.scroll) el.style.left = `${T.scroll.scrollLeft + T.scroll.clientWidth / 2}px`; }
 
 function movePlayhead() {
   const el = $('#tlPlayhead');
@@ -243,6 +283,7 @@ export function render() {
   drawRange();
   movePlayhead();
   $('#tlEmpty').hidden = P.doc.clips.length > 0;
+  placeEmpty();
   $('#tlEmpty').textContent = P.kind === 'audio' ? 'Drag sounds here, or ask the AI for music, voices and effects' : P.kind === 'image' ? 'Drag pictures here: each track is a layer, the top one in front' : 'Drag clips, pictures and sounds onto any track';
 }
 
@@ -328,7 +369,7 @@ function clipEl(c) {
     style: { left: `${xOf(c.start)}px`, width: `${Math.max(6, xOf(clipLength(c)))}px`, ...(c.kind === 'fill' ? { '--fill': c.color ?? '#000' } : {}) },
     title: c.failed ? `Couldn't make this: ${c.failed}` : c.label ?? c.text ?? '',
   });
-  const label = c.kind === 'text' ? c.text : c.kind === 'fill' ? `Color ${c.color ?? ''}` : c.pending ? `Generating… ${c.label ?? ''}` : c.failed ? `Failed: ${c.label ?? ''}` : c.label ?? '';
+  const label = c.kind === 'text' ? c.text : c.kind === 'fill' ? `Color ${c.color ?? ''}` : c.pending ? `${PROGRESS.get(c.job) ?? 'Making'} · ${c.label ?? ''}` : c.failed ? `Couldn't make it · ${c.label ?? ''}` : c.label ?? '';
   if (c.asset && (c.kind === 'video' || c.kind === 'image')) {
     const strip = h('div', { class: 'clip-thumbs' });
     thumb(c.asset, c.kind).then((u) => { if (u) strip.style.backgroundImage = `url("${u}")`; });
@@ -342,7 +383,16 @@ function clipEl(c) {
   if (c.fadeIn) el.append(h('span', { class: 'clip-fade in', style: { width: `${xOf(c.fadeIn)}px` } }));
   if (c.fadeOut) el.append(h('span', { class: 'clip-fade out', style: { width: `${xOf(c.fadeOut)}px` } }));
   el.append(h('div', { class: 'clip-label' }, c.scene ? '🔗 ' : '', (c.speed && c.speed !== 1) ? `${c.speed}× ` : '', c.muted ? '🔇 ' : '', label));
-  if (!c.pending && !tr?.locked) el.append(h('div', { class: 'h-l' }), h('div', { class: 'h-r' }));
+  if (!c.pending && !tr?.locked) el.append(h('div', { class: 'h-l', title: 'Drag to trim the start' }), h('div', { class: 'h-r', title: 'Drag to trim the end' }));
+  // Sound fades by dragging a dot at the top corners (no seconds to type).
+  if (hasSound(c) && c.asset && !c.pending && !tr?.locked) {
+    for (const side of ['in', 'out']) {
+      const key = side === 'in' ? 'fadeIn' : 'fadeOut';
+      const dot = h('span', { class: `fade-h ${side}`, title: side === 'in' ? 'Drag to fade in' : 'Drag to fade out', style: { [side === 'in' ? 'left' : 'right']: `${Math.max(0, xOf(c[key] ?? 0) - 5)}px` } });
+      dot.addEventListener('pointerdown', (e) => fadeDrag(e, c, side, dot));
+      el.append(dot);
+    }
+  }
   el.addEventListener('pointerdown', (e) => clipPointer(e, c));
   el.addEventListener('dblclick', () => { if (c.kind === 'text') bus.emit('editText', c); else if (c.scene) import('./scenes.js').then((s) => s.openScene(c.scene)); else bus.emit('openClip', c); });
   el.addEventListener('contextmenu', (e) => { e.preventDefault(); select(c, e); bus.emit('clipMenu', { clip: c, x: e.clientX, y: e.clientY }); });
@@ -373,6 +423,27 @@ function select(c, e) {
   }
   P.selection.track = c.track;
   bus.emit('selection');
+  bus.emit('inspect');
+}
+
+/** Dragging a fade dot: the fade grows toward the middle of the clip (up to half of it). One undo step. */
+function fadeDrag(e, c, side, dot) {
+  e.stopPropagation();
+  e.preventDefault();
+  const key = side === 'in' ? 'fadeIn' : 'fadeOut';
+  const x0 = e.clientX, v0 = c[key] ?? 0;
+  const max = clipLength(c) / 2;
+  let v = v0;
+  const shade = dot.parentElement.querySelector(`.clip-fade.${side}`) ?? dot.parentElement.appendChild(h('span', { class: `clip-fade ${side}` }));
+  const move = (ev) => {
+    v = Math.round(Math.min(max, Math.max(0, v0 + ((side === 'in' ? 1 : -1) * (ev.clientX - x0)) / T.z)) * 10) / 10;
+    dot.style[side === 'in' ? 'left' : 'right'] = `${Math.max(0, xOf(v) - 5)}px`;
+    shade.style.width = `${xOf(v)}px`;
+    dot.title = v ? `Fade ${side} ${fmt(v, 1)}` : side === 'in' ? 'Drag to fade in' : 'Drag to fade out';
+  };
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (v !== v0) setClip(c.id, { [key]: v || null }); };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
 }
 
 /** Snap a time to the playhead, 0, and other clips' edges within 8 px. */

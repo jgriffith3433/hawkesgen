@@ -5,6 +5,9 @@
 
 import { api, bus, toast, plainError } from './lib.js';
 
+/** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
+const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
+
 /** The tracks a new scene of each kind starts with, top first. */
 export function blankTracks(kind = 'video') {
   if (kind === 'image') return [{ id: 'L3', name: 'Top', role: 'any' }, { id: 'L2', name: 'Middle', role: 'any' }, { id: 'L1', name: 'Background', role: 'any' }];
@@ -47,6 +50,18 @@ export const isVisual = (c) => c.kind !== 'audio';
 export const hasSound = (c) => c.kind === 'video' || c.kind === 'audio';
 /** The track that plays the picture: the magnetic one, else the first that isn't for sound. */
 export const mainTrack = () => tracks().find((t) => t.magnetic) ?? tracks().find((t) => t.role === 'main' || t.role === 'video') ?? tracks().find((t) => t.role !== 'audio') ?? tracks()[0];
+
+/**
+ * When something is added without a time: in an image scene a picture spans it from 0; on the main track it goes at the
+ * playhead if that spot is free, else after the last clip there (so adding one thing after another builds the cut);
+ * elsewhere at the playhead.
+ */
+export function startFor(trackId, kind) {
+  if (P.kind === 'image' && kind !== 'audio') return 0;
+  if (trackId !== mainTrack()?.id) return P.playhead;
+  const on = onTrack(trackId);
+  return on.some((c) => P.playhead >= c.start - 0.01 && P.playhead < clipEnd(c)) ? on.reduce((m, c) => Math.max(m, clipEnd(c)), 0) : P.playhead;
+}
 
 /** Where a clip of this kind goes when the person didn't pick a track: the selected track, else the first that fits. */
 export function defaultTrack(kind) {
@@ -186,9 +201,11 @@ export function deleteSelected() {
   remember();
   if (ids.length) P.doc.clips = P.doc.clips.filter((c) => !P.selection.clips.has(c.id) || trackOf(c.track)?.locked);
   else cutRange(P.selection.range.start, P.selection.range.end);
+  const what = ids.length ? `Deleted ${ids.length} clip${ids.length === 1 ? '' : 's'}.` : 'Cut that stretch out.';
   P.selection.clips.clear();
   P.selection.range = null;
   changed();
+  undoable(what);
   return true;
 }
 
@@ -291,9 +308,11 @@ export function setTrack(id, patch, { history = true } = {}) {
 export function removeTrack(id) {
   if (tracks().length < 2) return toast('One track stays.');
   remember();
+  const name = trackOf(id)?.name ?? 'the track';
   P.doc.tracks = tracks().filter((t) => t.id !== id);
   P.doc.clips = P.doc.clips.filter((c) => c.track !== id);
   changed();
+  undoable(`Removed "${name}".`);
 }
 export function moveTrack(id, by) {
   const i = tracks().findIndex((t) => t.id === id), j = i + by;

@@ -202,3 +202,17 @@ test('an upload that needs normalizing queues media.normalize in the uploader\'s
   assert.equal(only.body.needsNormalize, true);
   assert.equal(only.body.normalizeJob, undefined);
 });
+
+test('share links: only the owner can make one; anyone with it sees the file, inline, and a forged one fails', async () => {
+  const up = await json(await call(portal, '/v1/assets?filename=still.png', { project: 'usr_aaaa', raw: Buffer.from('a picture, sort of') }));
+  assert.equal(up.status, 200, JSON.stringify(up.body));
+  const id = (up.body.id ?? up.body.asset?.id) as string;
+  assert.equal((await call(portal, `/v1/assets/${id}?share=1`, { method: 'POST', project: 'usr_bbbb' })).status, 404, 'another customer can\'t share it');
+  const sh = await json(await call(portal, `/v1/assets/${id}?share=1`, { method: 'POST', project: 'usr_aaaa' }));
+  assert.equal(sh.status, 200);
+  assert.match(sh.body.url, /^\/dl\//);
+  const got = await fetch(base + sh.body.url);
+  assert.equal(got.status, 200);
+  assert.match(String(got.headers.get('content-disposition')), /^inline/);
+  assert.equal((await fetch(base + sh.body.url.replace(/\.[\w-]+\//, '.forged/'))).status, 404);
+});

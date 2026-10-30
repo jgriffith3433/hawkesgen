@@ -46,7 +46,7 @@ import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { genOAuth } from './genoauth.ts';
-import { handleUpload, downloadTarget } from './links.ts';
+import { handleUpload, downloadTarget, linkTarget, shareLink } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
@@ -271,11 +271,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   // Signed links for MCP editors (src/links.ts): a one-time upload, and a download that needs no credential for a day.
   if (route.startsWith('/up/') && (await handleUpload(req, res, route))) return;
   if (route.startsWith('/dl/') && (method === 'GET' || method === 'HEAD')) {
-    const assetId = downloadTarget(route);
-    const a = assetId ? getAsset(assetId) : null;
+    const link = linkTarget(route);
+    const a = link ? getAsset(link.asset) : null;
     if (!a) return send(res, 404, { error: 'This link is invalid or expired' });
     if (!fs.existsSync(a.path) && !(await storage.ensureLocal({ path: a.path, sha256: a.sha256 } as any))) return send(res, 404, { error: 'The file is missing' });
-    return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=300', 'Content-Disposition': `attachment; filename="${route.split('/').pop()}"` });
+    // A share link (the app's Share) plays in the browser; an editor's download link downloads.
+    return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=300', 'Content-Disposition': `${link!.view ? 'inline' : 'attachment'}; filename="${route.split('/').pop()}"` });
   }
 
   // Player analytics from every product's pages: public, with its own CORS for the registered origins (src/analytics/).
@@ -1444,6 +1445,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (String(req.headers['if-none-match'] ?? '') === etag) { res.writeHead(304, cache); return void res.end(); }
         const name = `${a.project}-${a.tool}-${a.id}${lod ? `.lod${lod.level}` : ''}${path.extname(file.path)}`;
         return serveFile(req, res, file.path, file.mime, { ...cache, ...(q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {}) });
+      }
+      // Share (the app): a link anyone can open for a week, that shows the file in their browser.
+      if (m[1] === 'assets' && !m[3] && method === 'POST' && q('share') != null) {
+        if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
+        const title = String(q('name') || a.title || a.id).replace(/[^\w .-]+/g, '').trim() || a.id;
+        return send(res, 200, { url: shareLink('', a.id, `${title}${path.extname(a.path)}`), expires: Date.now() + 7 * 24 * 3600 * 1000 });
       }
       if (method === 'GET') return send(res, 200, { ...a, inS3: storage.inS3(a.sha256), ...cdnField(a.sha256), lods: lodSummary(a.id) });
       if (method === 'PATCH') {

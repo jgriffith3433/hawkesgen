@@ -7,7 +7,7 @@
 // timelines too, so their AI is the AI editor told which kind it's in. For a character it's the character AI
 // (src/sceneai.ts): it changes the sheet and makes what it needs, and asks before spending more than the auto limit.
 
-import { $, h, api, toast, fmt, bus, icon, plainError } from './lib.js';
+import { $, h, api, toast, fmt, bus, icon, plainError, friendly } from './lib.js';
 import { P, selectedClips, remember, take, save, docLength, clipLength } from './project.js';
 import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './account.js';
 import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions } from './director.js';
@@ -170,6 +170,20 @@ function msgEl(m) {
 const OP_WORDS = { add: 'Added a clip', generate: 'Making', trim: 'Trimmed', split: 'Split', move: 'Moved', delete: 'Deleted a clip', deleteRange: 'Cut a stretch out', set: 'Changed a clip', text: 'Added text', track: 'Changed the tracks', settings: 'Changed the scene' };
 const describe = (r) => (r.op === 'generate' && r.label ? `Making ${r.label}` : OP_WORDS[r.op] ?? r.op);
 
+/**
+ * Asks the AI from anywhere (the Inspector's suggestions): the words go in and are sent, with the selection as it is;
+ * with no words, the box is just focused for the person's own. On a phone the AI sheet comes up to show the answer.
+ */
+export function askAi(text) {
+  const tabs = $('#mobileTabs');
+  if (tabs && getComputedStyle(tabs).display !== 'none') $('#mobileTabs button[data-m="ai"]')?.click();
+  if ($('#app').classList.contains('no-right')) $('.grip-right')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  const box = $('#aiInput');
+  box.value = text;
+  box.focus();
+  if (text) send();
+}
+
 async function send() {
   const text = $('#aiInput').value.trim();
   if (!text || A.busy) return;
@@ -201,7 +215,9 @@ async function send() {
   } catch (err) {
     A.messages.pop();
     if (err.status === 402) { await loadAi(); drawGate(); }
-    A.messages.push({ role: 'assistant', text: err.status === 402 ? `${plainError(err.message)}` : `I couldn't do that: ${plainError(err.message)}`, error: true });
+    const f = friendly(err);
+    A.messages.push({ role: 'assistant', text: f.fix ? f.text : `I couldn't do that: ${f.text}`, error: true });
+    if (f.fix === 'credits') import('./media.js').then((m) => m.showError(err));
   } finally {
     A.busy = false;
     $('#aiSend').disabled = false;

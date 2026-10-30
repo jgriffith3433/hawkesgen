@@ -10,7 +10,7 @@ import { $, $$, h, api, toast, bus, icon, fileUrl, plainError } from './lib.js';
 import { state, needSignIn } from './account.js';
 import { showPane } from './media.js';
 import { popMenu, closeMenus, lendTimeline } from './timeline.js';
-import { touchDrag } from './dragdrop.js';
+import { touchDrag, setDrag } from './dragdrop.js';
 
 /**
  * An editor:
@@ -22,6 +22,7 @@ import { touchDrag } from './dragdrop.js';
  *   undo(), redo(), canUndo(), canRedo()
  *   action                             the bar's main action: { label, icon, run } ("Export", "Render", "Mixdown"...)
  *   accepts(item) / drop(item, at)     plug and play: a dragged scene or file ({ scene } or { asset }) it can take
+ *   explain(item)                      { ok, text }: what dropping it here does, or why it can't (said while dragging)
  *   rename(title)                      the tab was renamed
  */
 export const EDITORS = {};
@@ -61,11 +62,8 @@ export function initScenes() {
   bus.on('sceneTitle', ({ id, title }) => { const t = W.tabs.find((x) => x.id === id); if (t && t.title !== title) { t.title = title; keepTabs(); drawTabs(); } const l = W.list.find((x) => x.id === id); if (l) { l.title = title; drawList(); } });
   bus.on('sceneRendered', () => loadList());
   bus.on('jobDone', () => { if (W.list.length) loadList(); });
-  // Dropping a scene or a file on the center hands it to the editor in front (plug and play).
-  const center = $('#viewerWrap');
-  center.addEventListener('dragover', (e) => { const it = dragItem(e); if (it && W.editor?.accepts?.(it)) { e.preventDefault(); center.classList.add('drop-on'); } });
-  center.addEventListener('dragleave', () => center.classList.remove('drop-on'));
-  center.addEventListener('drop', (e) => { center.classList.remove('drop-on'); const it = readDrag(e); if (!it || !W.editor?.accepts?.(it)) return; e.preventDefault(); e.stopPropagation(); W.editor.drop(it, e); });
+  // Dropping a scene or a file on the center hands it to the editor in front (plug and play): gen.js registers the
+  // center with dragdrop.js, which asks the editor (explain) and says why when it can't.
 }
 
 /** Signed in: the tabs left open last time (those that still exist), else the newest video, else a new one. */
@@ -176,7 +174,7 @@ function drawTabs() {
     el.addEventListener('click', () => { if (t.id !== W.active) activate(t.id); });
     el.addEventListener('dblclick', () => renameTab(t, el));
     el.addEventListener('auxclick', (e) => { if (e.button === 1) closeTab(t.id); });
-    el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-hg-scene', JSON.stringify(sceneItem(t))); e.dataTransfer.setData('application/x-hg-tab', t.id); });
+    el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-hg-scene', JSON.stringify(sceneItem(t))); e.dataTransfer.setData('application/x-hg-tab', t.id); setDrag(sceneItem(t)); });
     el.addEventListener('dragover', (e) => { if ([...e.dataTransfer.types].includes('application/x-hg-tab')) e.preventDefault(); });
     el.addEventListener('drop', (e) => {
       const from = e.dataTransfer.getData('application/x-hg-tab');
@@ -235,9 +233,10 @@ function renameTab(t, el) {
   input.addEventListener('blur', () => done(true));
 }
 
-function newSceneMenu(btn) {
+async function newSceneMenu(btn) {
   const r = btn.getBoundingClientRect();
-  popMenu(r.left, r.bottom + 6, [h('div', { class: 'menu-title' }, 'New scene'),
+  const { starterItems } = await import('./starters.js');
+  popMenu(r.left, r.bottom + 6, [h('div', { class: 'menu-title' }, 'Start from an idea'), h('div', { class: 'menu-scroll menu-starters' }, ...starterItems(closeMenus)), h('div', { class: 'menu-sep' }), h('div', { class: 'menu-title' }, 'Blank'),
     ...KINDS.map((k) => h('button', { class: 'menu-item', onclick: () => { closeMenus(); newScene(k.kind).catch((err) => toast(err.message)); } },
       h('span', { class: 'row' }, icon(k.icon), h('span', {}, h('b', {}, k.label), h('div', { class: 'muted small' }, k.about))))),
     h('div', { class: 'menu-sep' }),

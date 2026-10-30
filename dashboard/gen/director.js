@@ -38,7 +38,8 @@ export function initDirector() {
     panelFirst: true,
     // Plug and play (J, 2026-10-30: "Scenes should be able to be put in 3D too"): a character joins the cast, a 3D model
     // becomes a prop, a picture or a video (or a scene's render: an image, a video, another stage's film) a screen.
-    accepts: (it) => (it.asset ? ['mesh', 'image', 'video'].includes(it.assetKind) : ['character', 'image', 'video', 'stage'].includes(it.kind)),
+    accepts: (it) => stageExplain(it).ok,
+    explain: (it) => stageExplain(it),
     drop: (it, e) => dropOnStage(it, e),
     uses: (sc) => [{ label: 'Film it into a new video', run: () => openScene(sc.id) }],
   });
@@ -372,6 +373,27 @@ function addCharacter(id, at = null) {
   changed({ panel: true });
   flushSave().then(() => api(`/v1/director/shots/${D.shot.id}`)).then((x) => take(x)).catch(() => {});
 }
+/** What dropping something on the stage does, or why it can't (said while dragging). */
+function stageExplain(it) {
+  const s = D.shot?.doc;
+  if (!s) return { ok: false, text: 'The stage is still loading.' };
+  if (it.asset) {
+    if (it.assetKind === 'mesh') return { ok: true, text: 'Put this 3D model on the set, where you drop it' };
+    if (it.assetKind === 'image' || it.assetKind === 'video') return { ok: true, text: `Stand this ${it.assetKind === 'image' ? 'picture' : 'clip'} up on the set, as a screen` };
+    if (it.assetKind === 'audio') return { ok: false, text: 'Sound can\'t stand on a stage. Film the shot, then add sound to it in a video scene.' };
+    return { ok: false, text: 'A stage takes people, 3D models, pictures and clips.' };
+  }
+  if (it.kind === 'character') {
+    if (s.cast.some((c) => c.character === it.scene)) return { ok: false, text: `${it.title} is already in this shot.` };
+    return { ok: true, text: `Cast ${it.title} here` };
+  }
+  if (it.scene === D.shot?.id) return { ok: false, text: 'A stage can\'t show itself.' };
+  if (it.kind === 'audio') return { ok: false, text: 'Sound can\'t stand on a stage. Film the shot, then add sound to it in a video scene.' };
+  if (!it.render?.asset) return { ok: false, text: `"${it.title}" has nothing to show yet. Open it and render it first (Export, or Film it).` };
+  if (s.props.length >= 16) return { ok: false, text: 'A shot holds 16 props at most. Remove one first.' };
+  return { ok: true, text: `Show "${it.title}" on a screen on the set` };
+}
+
 /** Something dropped on the stage, where it was dropped (on the ground under the pointer). */
 async function dropOnStage(it, e) {
   if (!D.shot) return;

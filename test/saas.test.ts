@@ -11,6 +11,9 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 
+// These tests make throwaway accounts with a password; the app itself is Google-only (src/users.ts passwordsAllowed).
+process.env.HAWKESGEN_PASSWORD_LOGIN = '1';
+
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-saas-'));
 process.env.HAWKESGEN_STARTER_CREDITS = '50';
 

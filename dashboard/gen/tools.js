@@ -96,7 +96,7 @@ export function drawToolbar() {
   // Any library file: every tool that takes it, its file, and the recipe that made it.
   if (t.asset && t.kind !== 'text' && t.kind !== 'fill') {
     bar.append(h('span', { class: 'tb-sep' }), tbtn('more', 'Use in…', (e) => useInMenu(t, e)));
-    if (t.from === 'source') bar.append(tbtn('download', 'Download', () => { const a = h('a', { href: `/v1/assets/${t.asset}/file`, download: '' }); document.body.append(a); a.click(); a.remove(); }), tbtn('info', 'Details', () => details(t)));
+    if (t.from === 'source') bar.append(tbtn('download', 'Download', () => { const a = h('a', { href: `/v1/assets/${t.asset}/file?download=1`, download: '' }); document.body.append(a); a.click(); a.remove(); }), tbtn('share', 'Share', () => import('./media.js').then((m) => m.shareAsset(t.asset, t.title))), tbtn('info', 'Details', () => details(t)));
   }
   if (t.from === 'clip') {
     bar.append(h('span', { class: 'tb-sep' }));
@@ -428,7 +428,8 @@ export async function runExport() {
 /** The export is shown, saved to Media, and becomes this video scene's render (scenes that play it can update to it). */
 function finish(out, asset) {
   out.replaceChildren(h('video', { src: `/v1/assets/${asset}/file`, controls: true, playsinline: true }),
-    h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/v1/assets/${asset}/file`, download: `${P.doc.title || 'hawkes-gen'}.mp4` }, icon('download'), 'Download'), h('span', { class: 'muted small' }, 'Also saved to Media.')));
+    h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/v1/assets/${asset}/file?download=1`, download: `${P.doc.title || 'hawkes-gen'}.mp4` }, icon('download'), 'Download'),
+      h('button', { class: 'ghost', onclick: () => import('./media.js').then((m) => m.shareAsset(asset, P.doc.title)) }, icon('share'), 'Share a link'), h('span', { class: 'muted small' }, 'Also saved to Media.')));
   bus.emit('jobDone');
   if (P.id) import('./scenes.js').then((sc) => sc.setRender(P.id, asset, 'video')).then((s) => { if (s && s.id === P.id) { P.version = s.version; P.doc.render = s.doc.render; } }).catch(() => {});
 }

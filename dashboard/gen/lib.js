@@ -49,6 +49,22 @@ export function plainError(msg) {
   return line.length > 220 ? `${line.slice(0, 217)}…` : line;
 }
 
+/**
+ * An error as a person can act on it: what happened in plain words, and the one thing that fixes it when there is one
+ * (`fix`: 'credits' opens Add credits, 'retry' is worth another go, 'connection' means check the network).
+ */
+export function friendly(err) {
+  const raw = String(err?.message ?? err ?? '');
+  const status = err?.status ?? 0;
+  if (status === 402 || /not enough credits|insufficient credits|out of credits|top up/i.test(raw)) return { text: 'You\'re out of credits for that. Add some and it goes straight on.', fix: 'credits' };
+  if (/failed to fetch|networkerror|load failed|network/i.test(raw) && !status) return { text: 'Can\'t reach Gen right now. Your work is kept here; it saves as soon as you\'re back online.', fix: 'connection' };
+  if (status === 413 || /too large|payload/i.test(raw)) return { text: 'That file is too big (1.5 GB at most).' };
+  if (status === 429 || /rate limit|too many/i.test(raw)) return { text: 'That\'s a lot at once: give it a few seconds, then try again.', fix: 'retry' };
+  if (status === 503 || /offline|unavailable|no gpu|no server|busy/i.test(raw)) return { text: 'Those servers are busy or resting right now. It waits in line on its own, or try another tool.', fix: 'retry' };
+  if (status === 401) return { text: 'You\'ve been signed out. Sign in again and carry on.' };
+  return { text: plainError(raw) };
+}
+
 /** 0:03.4, 1:02.0 */
 export function fmt(t, frac = 1) {
   t = Math.max(0, t || 0);
@@ -164,6 +180,8 @@ export const ICON = {
   wand: svg('<path d="M15 4V2M15 10V8M11 6h2M17 6h2M4 20L14 10"/>'),
   cut: svg('<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  search: svg('<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>'),
+  share: svg('<circle cx="18" cy="5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="19" r="2.5"/><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4"/>'),
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   send: svg('<path d="M4 12l16-8-6 16-2-7z"/>'),
   person: svg('<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-7 8-7s8 3 8 7"/>'),
@@ -175,6 +193,9 @@ export const ICON = {
   move: svg('<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>'),
   turn: svg('<path d="M20 12a8 8 0 11-2.3-5.6"/><path d="M20 4v5h-5"/>'),
   size: svg('<path d="M4 20l7-7M4 20v-5M4 20h5M20 4l-7 7M20 4v5M20 4h-5"/>'),
+  phone: svg('<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>'),
+  help: svg('<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 015 0c0 1.7-2.5 2-2.5 4"/><path d="M12 17h.01"/>'),
+  keyboard: svg('<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>'),
   sliders: svg('<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>'),
   layers: svg('<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>'),
   download: svg('<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>'),

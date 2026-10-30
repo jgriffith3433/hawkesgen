@@ -28,6 +28,9 @@
         <button class="icon-btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)" disabled><span class="ico-wrap" data-icon="redo"></span></button>
       </div>
       <div class="me">
+        <button class="busy-pill" id="busyPill" hidden title="Being made now: see them in Media"><span class="busy-dot"></span><span id="busyText">Making</span></button>
+        <button class="icon-btn" id="paletteBtn" title="Search everything (Ctrl+K)"><span class="ico-wrap" data-icon="search"></span></button>
+        <button class="icon-btn" id="helpBtn" title="Help: the quick tour, shortcuts"><span class="ico-wrap" data-icon="help"></span></button>
         <a id="adminLink" class="ghost small" href="/admin" hidden>Admin</a>
         <button id="creditsPill" class="pill" hidden title="Credits (1 credit = 1 cent)"><span id="creditsCount">0</span> credits</button>
         <button id="sceneAction" class="primary small" hidden></button>
@@ -98,9 +101,15 @@
       <div class="viewer" id="viewer">
         <div class="stage" id="stage">
           <div class="stage-empty" id="stageEmpty">
-            <span class="ico-wrap big" data-icon="film"></span>
-            <p>What's at the playhead shows here.</p>
-            <p class="muted small">Drag media onto any track below, generate something, or ask the AI.</p>
+            <span class="ico-wrap big" data-icon="upload"></span>
+            <p class="stage-empty-t" id="stageEmptyT">Start your video</p>
+            <p class="muted small" id="stageEmptyS">Drop clips, pictures or sounds here or onto a track below. Or ask the AI to make it for you.</p>
+            <div class="stage-empty-acts">
+              <button class="ghost small" id="emptyUpload"><span class="ico-wrap" data-icon="upload"></span>Upload</button>
+              <button class="ghost small" id="emptyMedia"><span class="ico-wrap" data-icon="image"></span>From Media</button>
+              <button class="primary small" id="emptyAsk"><span class="ico-wrap" data-icon="sparkle"></span>Ask the AI</button>
+            </div>
+            <div class="stage-empty-ideas" id="emptyIdeas"></div>
           </div>
           <div class="stage-pending" id="stagePending" hidden><div class="working">Generating…</div></div>
         </div>

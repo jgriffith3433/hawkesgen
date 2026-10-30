@@ -288,7 +288,21 @@ function draw(ctx, t, { live = false } = {}) {
   const prev = onTrack(main).find((c) => /^fade/.test(c.transition ?? '') && Math.abs(clipEnd(c) - t) < (c.transitionSeconds ?? 0.5) && t >= clipEnd(c));
   if (prev) { ctx.fillStyle = prev.transition === 'fadewhite' ? '#fff' : '#000'; ctx.globalAlpha = Math.max(0, 1 - ((t - clipEnd(prev)) / ((prev.transitionSeconds ?? 0.5) / 2))); ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
   ctx.restore();
-  $('#stageEmpty').hidden = P.doc.clips.length > 0 || P.kind === 'audio';
+  emptyState();
+}
+
+/** An empty scene says how to start: drop something, pick from Media, or ask the AI. */
+const EMPTY = {
+  video: ['Start your video', 'Drop clips, pictures or sounds here or onto a track below. Or ask the AI to make it for you.'],
+  image: ['Start your picture', 'Drop pictures here: each one is a layer you can move, size and turn. Or ask the AI to design it.'],
+  audio: ['Start your sound', 'Drop music, voices and effects onto the tracks below. Or ask the AI to compose and voice it.'],
+};
+function emptyState() {
+  const el = $('#stageEmpty');
+  el.hidden = P.doc.clips.length > 0;
+  if (el.hidden) return;
+  const [t, s] = EMPTY[P.kind] ?? EMPTY.video;
+  if ($('#stageEmptyT').textContent !== t) { $('#stageEmptyT').textContent = t; $('#stageEmptyS').textContent = s; }
 }
 
 function drawClip(ctx, c, t, live, alpha) {
@@ -391,9 +405,6 @@ function drawSound(ctx, t, live) {
       ctx.fillStyle = `hsla(${250 - (i / bars) * 90}, 80%, 66%, .85)`;
       ctx.fillRect(i * bw + 1, base - hh, bw - 2, hh);
     }
-  } else if (live && !P.doc.clips.length) {
-    ctx.fillStyle = '#8b93a3'; ctx.font = `500 ${Math.round(H * 0.032)}px Inter, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('Drop sounds on the tracks below, or ask the AI for music, voices and effects.', W / 2, H * 0.78);
   }
   // What's being said: voice lines (their labels) unless a text clip says it.
   const said = P.doc.clips.filter((c) => c.kind === 'audio' && active(c, t) && c.label && /voice|line/i.test(trackOf(c.track)?.name ?? '')).map((c) => c.label);
@@ -447,7 +458,7 @@ function onCanvasDown(e) {
   let c = hd ? handled() : hit(p0);
   if (!hd) {
     if (!c) { if (P.selection.clips.size) { P.selection.clips.clear(); bus.emit('selection'); } return; }
-    if (!P.selection.clips.has(c.id) || P.selection.clips.size !== 1) { P.selection.clips.clear(); P.selection.clips.add(c.id); P.selection.track = c.track; bus.emit('selection'); }
+    if (!P.selection.clips.has(c.id) || P.selection.clips.size !== 1) { P.selection.clips.clear(); P.selection.clips.add(c.id); P.selection.track = c.track; bus.emit('selection'); bus.emit('inspect'); }
     c = handled();
   }
   if (!c) return;
