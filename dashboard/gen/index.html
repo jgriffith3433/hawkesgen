@@ -41,8 +41,12 @@
             <span id="quote" class="quote"></span>
             <button id="generateBtn" class="primary" type="submit">Generate</button>
           </div>
+          <div class="chips styles" id="styles" role="radiogroup" aria-label="Style"></div>
         </form>
+        <div class="examples" id="examples"><span class="muted">Try:</span></div>
+        <p class="upload-line">or <label class="linkish">upload your own image<input id="uploadInput" type="file" accept="image/png,image/jpeg,image/webp" hidden></label> to edit or animate it</p>
       </div>
+      <h3 id="recentHead" class="feed-head" hidden>Your recent work</h3>
       <div id="feed" class="feed" aria-live="polite"></div>
     </section>
 
@@ -84,6 +88,28 @@
             <input id="musicPrompt" placeholder="Make music: calm piano, rain" maxlength="300">
             <button class="ghost small" type="submit">Make</button>
           </form>
+          <h3>Voice-over</h3>
+          <form id="voiceForm" class="stack">
+            <textarea id="voiceText" rows="2" maxlength="1000" placeholder="What the narrator says"></textarea>
+            <select id="voiceKind" aria-label="Voice">
+              <option value="A warm, calm male narrator, clear studio recording">Warm narrator (male)</option>
+              <option value="A warm, friendly female narrator, clear studio recording">Warm narrator (female)</option>
+              <option value="An energetic young trailer announcer, punchy and excited, studio recording">Trailer announcer</option>
+              <option value="A deep, slow, dramatic movie-trailer voice, studio recording">Epic trailer voice</option>
+            </select>
+            <div class="inline">
+              <label class="at">Starts at</label>
+              <input id="voiceAt" type="number" step="0.5" min="0" value="0" title="Starts at (seconds)" aria-label="Starts at (seconds)">
+              <button class="ghost small" type="submit">Make</button>
+            </div>
+          </form>
+          <h3>Sound effect</h3>
+          <form id="sfxForm" class="inline">
+            <input id="sfxText" placeholder="Thunder rumbling far away" maxlength="300">
+            <input id="sfxAt" type="number" step="0.5" min="0" value="0" title="Starts at (seconds)" aria-label="Starts at (seconds)">
+            <button class="ghost small" type="submit">Make</button>
+          </form>
+          <div id="tracks" class="tracks"></div>
           <h3>Finish</h3>
           <label class="field">Shape
             <select id="exportShape">
@@ -143,6 +169,21 @@
       <div class="row end">
         <button type="button" class="ghost" id="animateCancel">Cancel</button>
         <button class="primary" type="submit">Animate</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Edit an image with words -->
+  <dialog id="editDialog" class="sheet">
+    <form id="editForm" method="dialog">
+      <h2>Edit</h2>
+      <img id="editFrom" class="thumb-lg" alt="">
+      <label class="field">What to change <textarea id="editPrompt" rows="2" maxlength="1000" placeholder="Make it night time, add a full moon" required></textarea></label>
+      <div class="chips" id="editIdeas"></div>
+      <p class="muted" id="editQuote"></p>
+      <div class="row end">
+        <button type="button" class="ghost" id="editCancel">Cancel</button>
+        <button class="primary" type="submit">Edit</button>
       </div>
     </form>
   </dialog>

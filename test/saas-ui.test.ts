@@ -111,6 +111,14 @@ test('/ is the Gen app; the operator console is /admin (its files beside it); th
   }
 });
 
+test('the Gen app: every element gen.js looks up by id is on the page, and the new tools are offered', async () => {
+  const page = (await fetchRoute('/')).text;
+  const js = (await fetchRoute('/gen/gen.js')).text;
+  const ids = new Set([...js.matchAll(/\$\('#([A-Za-z][\w-]*)/g)].map((m) => m[1]));
+  for (const id of ids) if (!js.includes(`id="${id}"`)) assert.match(page, new RegExp(`id="${id}"`), `#${id} is used by gen.js but missing from the page`);
+  for (const tool of ['image.edit', 'image.cutout', 'image.upscale', 'audio.voice', 'audio.sfx', 'video.compose']) assert.ok(js.includes(`'${tool}'`), tool);
+});
+
 test('all endpoints referenced by /home and /app respond properly', async () => {
   // 1. Public endpoints: /v1/portfolio, /v1/billing/packs, /v1/motions
   const portfolioRes = await fetchRoute('/v1/portfolio');

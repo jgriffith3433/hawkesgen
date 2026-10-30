@@ -1,7 +1,8 @@
-// Hawkes Gen, the app (gen.hawkesgen.ai /). Gen's own accounts (src/users.ts: email and password, credits, Stripe),
-// its own API (/v1). Create: a prompt becomes an image (image.generate), an image becomes a clip (video.i2v). Library:
-// everything made. Editor: a timeline of clips with trims, transitions, captions and music, previewed here and
-// rendered by video.compose. The admin dashboard is /admin.
+// Hawkes Gen, the app (gen.hawkesgen.ai /). Gen's own accounts (src/users.ts: Google sign-in, credits, Stripe), its own
+// API (/v1). Create: a prompt (and a style) becomes an image (image.generate), or the person uploads one; an image can be
+// edited with words (image.edit), cut out (image.cutout), upscaled (image.upscale) or made a clip (video.i2v). Library:
+// everything made. Editor: a timeline of clips with trims, transitions, captions, music, voice-overs (audio.voice) and
+// sound effects (audio.sfx), previewed here and rendered by video.compose. The admin dashboard is /admin.
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -104,6 +105,7 @@ async function googleDone(credential) {
     $('#authDialog').close();
     await loadMe();
     updateQuote();
+    showRecent();
     if (r.created) toast(`Welcome! You have ${state.user?.credits ?? 0} free credits.`);
     const then = afterSignIn;
     afterSignIn = null;
@@ -300,6 +302,33 @@ $('#prompt').addEventListener('input', updateQuote);
 $('#prompt').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#promptForm').requestSubmit(); }
 });
+// A style is words added to the prompt; the card keeps what the person typed.
+const STYLES = [
+  ['', 'Any style'],
+  ['photograph, natural light, sharp focus, high detail', 'Photo'],
+  ['cinematic film still, dramatic lighting, anamorphic, color graded', 'Cinematic'],
+  ['digital illustration, clean lines, rich color', 'Illustration'],
+  ['anime style, cel shading, vibrant', 'Anime'],
+  ['3D render, soft studio lighting, octane, high detail', '3D render'],
+  ['pixel art, 16-bit, crisp pixels, limited palette', 'Pixel art'],
+  ['watercolor painting, soft washes, paper texture', 'Watercolor'],
+];
+let style = '';
+$('#styles').append(...STYLES.map(([words, label]) => h('button', {
+  type: 'button', class: `chip${words === style ? ' on' : ''}`, onclick: (e) => {
+    style = words;
+    $$('#styles .chip').forEach((x) => x.classList.toggle('on', x === e.currentTarget));
+  },
+}, label)));
+const EXAMPLES = [
+  'A cozy cabin in a snowy forest at night, warm windows glowing',
+  'A tiny robot watering a flower on a windowsill',
+  'A neon-lit street market in the rain, people with umbrellas',
+  'A dragon made of autumn leaves flying over a lake',
+];
+$('#examples').append(...EXAMPLES.map((x) => h('button', { type: 'button', class: 'chip', onclick: () => { $('#prompt').value = x; updateQuote(); $('#prompt').focus(); } }, x)));
+const styled = (prompt) => (style ? `${prompt}, ${style}` : prompt);
+
 $('#promptForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const prompt = $('#prompt').value.trim();
@@ -307,35 +336,147 @@ $('#promptForm').addEventListener('submit', (e) => {
   needSignIn(() => generate(prompt, shape));
 });
 
+// Upload: the person's own image becomes an asset in their project, then the same card as a made one.
+$('#uploadInput').addEventListener('change', (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) return toast('That image is over 20 MB.');
+  needSignIn(() => upload(file), 'login');
+});
+async function upload(file) {
+  const c = card({ title: file.name, ratio: '1 / 1' });
+  c.step('Uploading');
+  try {
+    const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(file.name)}`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Filename': file.name }, body: file,
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new ApiError(j.error ?? `HTTP ${r.status}`, r.status);
+    const size = await imageSize(fileUrl(j.id));
+    c.media.style.aspectRatio = `${size.w} / ${size.h}`;
+    showImage(c, j.id, file.name.replace(/\.[a-z0-9]+$/i, ''), size);
+  } catch (err) {
+    c.fail(err.message);
+  }
+}
+const imageSize = (src) => new Promise((resolve) => {
+  const img = new Image();
+  img.onload = () => resolve({ w: img.naturalWidth || 1024, h: img.naturalHeight || 1024 });
+  img.onerror = () => resolve({ w: 1024, h: 1024 });
+  img.src = src;
+});
+
+/** An error as a person should read it: no terminal colors or stack traces, one short line. */
+function plainError(msg) {
+  const lines = String(msg ?? '').replace(/\u001b\[[0-9;]*m/g, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.some((l) => /^Traceback|^\s*at |^File "/.test(l))) return 'Something went wrong on our side. Your credits were returned; please try again.';
+  const line = lines[0] ?? 'Something went wrong.';
+  return line.length > 220 ? `${line.slice(0, 217)}…` : line;
+}
+
 /** A card in the feed for one job: working, then the result with what to do next. */
-function card({ title, ratio }) {
+function card({ title, ratio, append = false }) {
   const media = h('div', { class: 'media', style: `aspect-ratio:${ratio}` }, h('div', { class: 'working' }, 'Starting'));
   const actions = h('div', { class: 'actions' });
   const el = h('article', { class: 'card' }, media, h('div', { class: 'body' }, h('div', { class: 'prompt-text', title }, title), actions));
-  $('#feed').prepend(el);
+  if (append) $('#feed').append(el); else $('#feed').prepend(el);
   return {
     el, media, actions,
     step(text) { const w = $('.working', media); if (w) w.textContent = text; },
-    fail(msg) { el.classList.add('failed'); media.replaceChildren(h('div', {}, msg)); },
+    fail(msg) { el.classList.add('failed'); media.replaceChildren(h('div', { title: String(msg ?? '') }, plainError(msg))); },
   };
 }
 
 async function generate(prompt, size, seed = Math.floor(Math.random() * 2 ** 31)) {
   const c = card({ title: prompt, ratio: `${size.w} / ${size.h}` });
   try {
-    const job = await submit({ tool: 'image.generate', params: { prompt, width: size.w, height: size.h, seed } });
+    const job = await submit({ tool: 'image.generate', params: { prompt: styled(prompt), width: size.w, height: size.h, seed } });
     const done = await waitJob(job.id, c.step);
     refreshCredits();
-    const out = done.outputs[0];
-    c.media.replaceChildren(h('img', { src: fileUrl(out.asset), alt: prompt, loading: 'lazy' }));
-    c.actions.append(
-      h('button', { class: 'primary', onclick: () => openAnimate({ asset: out.asset, prompt, size }) }, 'Animate'),
-      h('button', { onclick: () => needSignIn(() => generate(prompt, size)) }, 'Another'),
-      h('a', { class: 'btn ghost', href: fileUrl(out.asset), download: '' }, 'Download'),
-    );
+    showImage(c, done.outputs[0].asset, prompt, size, () => needSignIn(() => generate(prompt, size)));
   } catch (err) {
     c.fail(err.message);
     if (err.status === 402) openAccount();
+  }
+}
+
+/** A finished image in its card, with everything that can be done to it next. */
+function showImage(c, asset, prompt, size, again = null) {
+  c.media.replaceChildren(h('img', { src: fileUrl(asset), alt: prompt, loading: 'lazy' }));
+  c.actions.replaceChildren(
+    h('button', { class: 'primary', onclick: () => openAnimate({ asset, prompt, size }) }, 'Animate'),
+    h('button', { onclick: () => openEdit({ asset, prompt, size }) }, 'Edit'),
+    h('button', { title: 'Cut the subject out on a transparent background', onclick: () => needSignIn(() => imageStep({ asset, prompt, size }, 'cutout')) }, 'Remove background'),
+    h('button', { title: 'A sharper, larger copy', onclick: () => needSignIn(() => imageStep({ asset, prompt, size }, 'upscale')) }, 'Upscale'),
+    again ? h('button', { onclick: again }, 'Another') : null,
+    h('a', { class: 'btn ghost', href: fileUrl(asset), download: '' }, 'Download'),
+  );
+}
+
+// One step on an image: edit with words (image.edit), cut out (image.cutout, CPU), upscale (image.upscale).
+const STEPS = {
+  edit: (from, words) => ({ title: `Edit: ${words}`, spec: { tool: 'image.edit', params: { prompt: words }, inputs: { images: [`asset:${from.asset}`] } } }),
+  cutout: (from) => ({ title: `Background removed: ${from.prompt}`, spec: { tool: 'image.cutout', params: { crop: false }, inputs: { image: `asset:${from.asset}` } } }),
+  upscale: (from) => ({ title: `Upscaled: ${from.prompt}`, spec: { tool: 'image.upscale', params: {}, inputs: { image: `asset:${from.asset}` } }, scale: 2 }),
+};
+async function imageStep(from, kind, words) {
+  const { title, spec, scale = 1 } = STEPS[kind](from, words);
+  const c = card({ title, ratio: `${from.size.w} / ${from.size.h}` });
+  if (kind === 'cutout') c.el.classList.add('checker');
+  try {
+    const job = await submit(spec);
+    const done = await waitJob(job.id, c.step);
+    refreshCredits();
+    const out = done.outputs.find((o) => o.kind === 'image') ?? done.outputs[0];
+    showImage(c, out.asset, kind === 'edit' ? words : from.prompt, { w: from.size.w * scale, h: from.size.h * scale });
+  } catch (err) {
+    c.fail(err.message);
+    if (err.status === 402) openAccount();
+  }
+}
+
+let editing = null;
+const EDIT_IDEAS = ['Make it night time', 'Make it snow', 'Turn it into a painting', 'Add dramatic sunset light', 'Make it look like a toy'];
+$('#editIdeas').append(...EDIT_IDEAS.map((x) => h('button', { type: 'button', class: 'chip', onclick: () => { $('#editPrompt').value = x; } }, x)));
+async function openEdit(from) {
+  editing = from;
+  $('#editFrom').src = fileUrl(from.asset);
+  $('#editPrompt').value = '';
+  $('#editQuote').textContent = '';
+  $('#editDialog').showModal();
+  const q = await quote('image.edit', { prompt: 'x' });
+  $('#editQuote').textContent = q ? `About ${credits(q)}` : '';
+}
+$('#editCancel').addEventListener('click', () => $('#editDialog').close());
+$('#editForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const words = $('#editPrompt').value.trim();
+  if (!words) return;
+  $('#editDialog').close();
+  const from = editing;
+  location.hash = '#create';
+  needSignIn(() => imageStep(from, 'edit', words));
+});
+
+// Create shows the account's recent work under the prompt, so a reload never looks like an empty page.
+let recentShown = false;
+async function showRecent() {
+  if (recentShown || !state.user || $('#feed').children.length) return;
+  recentShown = true;
+  const items = (await myAssets('', 12).catch(() => [])).filter((a) => a.kind !== 'audio').slice(0, 8);
+  $('#recentHead').hidden = !items.length;
+  for (const a of items) {
+    const size = { w: a.meta?.width ?? a.recipe?.params?.width ?? 1024, h: a.meta?.height ?? a.recipe?.params?.height ?? 1024 };
+    const prompt = a.recipe?.params?.prompt ?? a.title ?? '';
+    const c = card({ title: prompt || 'Untitled', ratio: `${size.w} / ${size.h}`, append: true });
+    if (a.kind === 'image') showImage(c, a.id, prompt, size);
+    else {
+      c.media.replaceChildren(h('video', { src: fileUrl(a.id), muted: true, loop: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => e.target.pause() }));
+      c.actions.append(
+        h('button', { class: 'primary', onclick: () => { addClip(a.id); location.hash = '#editor'; } }, 'Add to edit'),
+        h('a', { class: 'btn ghost', href: fileUrl(a.id), download: '' }, 'Download'));
+    }
   }
 }
 
@@ -402,7 +543,14 @@ function tile(a, { compact = false } = {}) {
     : h('div', { class: 'audio' }, `♪ ${a.title ?? 'Audio'}`);
   const acts = [];
   const prompt = a.recipe?.params?.prompt ?? a.title ?? '';
-  if (a.kind === 'image') acts.push(h('button', { onclick: (e) => { e.stopPropagation(); openAnimate({ asset: a.id, prompt, size: { w: a.meta?.width ?? a.recipe?.params?.width ?? 1024, h: a.meta?.height ?? a.recipe?.params?.height ?? 1024 } }); } }, 'Animate'));
+  const size = { w: a.meta?.width ?? a.recipe?.params?.width ?? 1024, h: a.meta?.height ?? a.recipe?.params?.height ?? 1024 };
+  if (a.kind === 'image') {
+    acts.push(h('button', { onclick: (e) => { e.stopPropagation(); openAnimate({ asset: a.id, prompt, size }); } }, 'Animate'));
+    if (!compact) acts.push(h('button', { onclick: (e) => { e.stopPropagation(); openEdit({ asset: a.id, prompt, size }); } }, 'Edit'));
+  }
+  if (!compact && a.recipe?.params?.prompt && a.recipe?.tool === 'image.generate') {
+    acts.push(h('button', { title: 'Start a new image from this prompt', onclick: (e) => { e.stopPropagation(); $('#prompt').value = a.recipe.params.prompt; location.hash = '#create'; updateQuote(); } }, 'Reuse prompt'));
+  }
   if (a.kind === 'video') acts.push(h('button', { onclick: (e) => { e.stopPropagation(); addClip(a.id); toast('Added to the timeline'); } }, compact ? '+' : 'Add to edit'));
   if (a.kind === 'audio') acts.push(h('button', { onclick: (e) => { e.stopPropagation(); setMusic(a); toast('Set as the music'); } }, 'Use as music'));
   return h('div', { class: 'tile', tabindex: 0, title: prompt }, media, h('div', { class: 'tile-actions' }, acts));
@@ -424,7 +572,8 @@ async function loadLibrary() {
 
 // ------------------------------------------------------------------ Editor
 const TL_KEY = 'hg.timeline.v1';
-let tl = { clips: [], music: null };
+// tracks: voice-overs and sound effects, each at a time on the cut ({ asset, title, kind: voice|sfx, start }).
+let tl = { clips: [], music: null, tracks: [] };
 try { tl = { ...tl, ...JSON.parse(localStorage.getItem(TL_KEY) || '{}') }; } catch { /* a fresh timeline */ }
 const saveTl = () => { try { localStorage.setItem(TL_KEY, JSON.stringify(tl)); } catch { /* private window */ } };
 
@@ -482,6 +631,51 @@ function renderMusic() {
   slot.append(h('div', {}, `♪ ${tl.music.title}`), h('audio', { src: fileUrl(tl.music.asset), controls: true, preload: 'none' }),
     h('button', { class: 'ghost small', onclick: () => { tl.music = null; saveTl(); renderMusic(); } }, 'Remove'));
 }
+function renderTracks() {
+  tl.tracks ??= [];
+  $('#tracks').replaceChildren(...tl.tracks.map((t, i) => h('div', { class: 'track' },
+    h('div', {}, `${t.kind === 'voice' ? '🗣' : '🔊'} ${t.title}`),
+    h('audio', { src: fileUrl(t.asset), controls: true, preload: 'none' }),
+    h('label', { class: 'inline' }, 'at', h('input', { type: 'number', step: '0.5', min: '0', value: String(t.start ?? 0), oninput: (e) => { t.start = Math.max(0, Number(e.target.value) || 0); saveTl(); } }), 's'),
+    h('button', { class: 'ghost small', onclick: () => { tl.tracks.splice(i, 1); saveTl(); renderTracks(); } }, 'Remove'))));
+}
+/** Makes a voice-over (audio.voice: the open voice models, a voice described in words) or a sound effect (audio.sfx). */
+function makeTrack(kind, text, start, describe) {
+  needSignIn(async () => {
+    const note = h('div', { class: 'muted' }, kind === 'voice' ? 'Recording the voice…' : 'Making the sound…');
+    $('#tracks').prepend(note);
+    try {
+      const spec = kind === 'voice' ? { tool: 'audio.voice', params: { text, description: describe } } : { tool: 'audio.sfx', params: { text } };
+      const job = await submit(spec);
+      const done = await waitJob(job.id, (s) => { note.textContent = s; });
+      refreshCredits();
+      const out = done.outputs.find((o) => o.kind === 'audio') ?? done.outputs[0];
+      tl.tracks ??= [];
+      tl.tracks.push({ asset: out.asset, title: text.slice(0, 80), kind, start });
+      saveTl();
+      renderTracks();
+    } catch (err) {
+      note.textContent = err.message;
+      note.className = 'error';
+      if (err.status === 402) openAccount();
+    }
+  });
+}
+$('#voiceForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = $('#voiceText').value.trim();
+  if (!text) return;
+  makeTrack('voice', text, Number($('#voiceAt').value) || 0, $('#voiceKind').value);
+  $('#voiceText').value = '';
+});
+$('#sfxForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = $('#sfxText').value.trim();
+  if (!text) return;
+  makeTrack('sfx', text, Number($('#sfxAt').value) || 0);
+  $('#sfxText').value = '';
+});
+
 async function renderBin() {
   const bin = $('#bin');
   if (!state.user) { bin.replaceChildren(h('p', { class: 'muted' }, 'Sign in to see your clips.')); return; }
@@ -499,6 +693,8 @@ async function play() {
   const mon = $('#monitor');
   const music = tl.music ? new Audio(fileUrl(tl.music.asset)) : null;
   if (music) { music.volume = 0.4; music.play().catch(() => {}); }
+  // Voice-overs and sound effects at their times (preview only: the export places them exactly).
+  const extras = (tl.tracks ?? []).map((t) => { const a = new Audio(fileUrl(t.asset)); return { a, timer: setTimeout(() => { if (playing) a.play().catch(() => {}); }, (t.start ?? 0) * 1000) }; });
   for (let i = 0; i < tl.clips.length && playing; i++) {
     const c = tl.clips[i];
     $$('#timeline .clip').forEach((el) => el.classList.toggle('playing', Number(el.dataset.i) === i));
@@ -517,13 +713,14 @@ async function play() {
   }
   mon.pause();
   music?.pause();
+  for (const x of extras) { clearTimeout(x.timer); x.a.pause(); }
   $('#monitorCaption').hidden = true;
   $$('#timeline .clip').forEach((el) => el.classList.remove('playing'));
   playing = false;
   $('#playBtn').textContent = 'Play';
 }
 $('#playBtn').addEventListener('click', play);
-$('#clearBtn').addEventListener('click', () => { if (confirm('Clear the timeline?')) { tl = { clips: [], music: null }; saveTl(); $('#monitor').removeAttribute('src'); renderTimeline(); renderMusic(); } });
+$('#clearBtn').addEventListener('click', () => { if (confirm('Clear the timeline?')) { tl = { clips: [], music: null, tracks: [] }; saveTl(); $('#monitor').removeAttribute('src'); renderTimeline(); renderMusic(); renderTracks(); } });
 
 // Make music for the edit (audio.music, ACE-Step).
 $('#musicForm').addEventListener('submit', (e) => {
@@ -554,9 +751,17 @@ $('#exportBtn').addEventListener('click', () => needSignIn(async () => {
     ...(i < tl.clips.length - 1 && c.transition !== 'cut' ? { transition: c.transition, seconds: 0.5 } : {}),
   }));
   const captions = tl.clips.flatMap((c, i) => (c.caption ? [{ clip: i, start: 0, end: Math.max(0.5, clipLen(c) - 0.2) || 2, text: c.caption }] : []));
+  // Audio inputs: the music first (if any), then each voice-over and sound effect. Music dips under the voice.
+  const tracks = tl.tracks ?? [];
+  const audioIn = [...(tl.music ? [tl.music.asset] : []), ...tracks.map((t) => t.asset)];
+  const base = tl.music ? 1 : 0;
+  const hasVoice = tracks.some((t) => t.kind === 'voice');
   const timeline = {
     clips, captions, fadeIn: 0.3, fadeOut: 0.6,
-    audio: tl.music ? [{ audio: 0, volume: 0.35, loop: true, fadeIn: 0.5, fadeOut: 1.5 }] : [],
+    audio: [
+      ...(tl.music ? [{ audio: 0, volume: 0.35, loop: true, fadeIn: 0.5, fadeOut: 1.5, ...(hasVoice ? { duck: true } : {}) }] : []),
+      ...tracks.map((t, i) => ({ audio: base + i, start: t.start ?? 0, ...(t.kind === 'voice' ? { dialogue: true, volume: 1 } : { volume: 0.8 }) })),
+    ],
   };
   const slot = h('div', { class: 'muted' }, 'Rendering…');
   $('#exports').prepend(slot);
@@ -564,7 +769,7 @@ $('#exportBtn').addEventListener('click', () => needSignIn(async () => {
   try {
     const job = await submit({
       tool: 'video.compose',
-      inputs: { clips: tl.clips.map((c) => `asset:${c.asset}`), ...(tl.music ? { audio: [`asset:${tl.music.asset}`] } : {}) },
+      inputs: { clips: tl.clips.map((c) => `asset:${c.asset}`), ...(audioIn.length ? { audio: audioIn.map((a) => `asset:${a}`) } : {}) },
       params: { timeline, width: w, height: hh, captions: captions.length ? $('#exportCaptions').value : 'vtt', fit: 'crop' },
     });
     const done = await waitJob(job.id, (s) => { slot.textContent = `Rendering: ${s}`; });
@@ -586,8 +791,8 @@ function route() {
   $$('.view').forEach((s) => { s.hidden = s.id !== `view-${view}`; });
   $$('.views a').forEach((a) => a.classList.toggle('on', a.dataset.view === view));
   if (view === 'library') loadLibrary();
-  if (view === 'editor') { renderTimeline(); renderMusic(); renderBin(); }
-  if (view === 'create') $('#prompt').focus({ preventScroll: true });
+  if (view === 'editor') { renderTimeline(); renderMusic(); renderTracks(); renderBin(); }
+  if (view === 'create') { $('#prompt').focus({ preventScroll: true }); showRecent(); }
 }
 addEventListener('hashchange', route);
 

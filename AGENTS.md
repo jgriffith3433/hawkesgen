@@ -161,11 +161,16 @@ Hawkes Gen is a product of its own (J, 2026-10-29): people sign up at gen.hawkes
 (`src/users.ts`: email and password, starter credits, Stripe packs), separate from hawkesgen.ai's and Studio's. The
 portal and Studio use Gen in the back end with their own keys.
 - **The app** (`dashboard/gen/`: plain HTML, CSS and JS over `/v1`) is at `/`:
-  - **Create:** a prompt makes an image (`image.generate`), and Animate turns an image into a clip (`video.i2v`,
-    sized from the image's shape).
-  - **Library:** what the account made.
+  - **Create:** a prompt (plus an optional style chip, words added to the prompt) makes an image (`image.generate`),
+    or the person uploads their own (`POST /v1/assets` into their project). Every image card offers Animate (`video.i2v`,
+    sized from the image's shape), Edit with words (`image.edit`), Remove background (`image.cutout`, CPU) and Upscale
+    (`image.upscale`). After a reload, Create shows the account's recent work. Failed cards show one plain line
+    (`plainError`), never a stack trace.
+  - **Library:** what the account made (Animate, Edit, Reuse prompt).
   - **Editor:** a timeline of clips with in/out, transitions and captions, plus music (`audio.music` or a library
-    track), previewed in the page and rendered by `video.compose` (CPU, a 3-credit floor).
+    track), voice-overs (`audio.voice` with a voice described in words: the open voice models) and sound effects
+    (`audio.sfx`) at a start time (music ducks under the voice), previewed in the page and rendered by
+    `video.compose` (CPU, a 3-credit floor). `test/saas-ui.test.ts` checks every id `gen.js` looks up is on the page.
 
   Sign-in is **Continue with Google** (`POST /v1/users/google`, `users.ts googleSignin`), inline: the first Generate
   asks, then goes on. One Google account signs in to every product (portal, Studio, Gen), each keeping its own

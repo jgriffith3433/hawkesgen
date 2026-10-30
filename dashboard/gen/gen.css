@@ -68,6 +68,17 @@ main { max-width: 1180px; margin: 0 auto; padding: 0 22px 80px; }
 .prompt-row { display: flex; align-items: center; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
 .prompt-row .primary { margin-left: auto; padding: 10px 22px; }
 .quote { color: var(--muted); font-size: 13px; }
+.prompt .styles { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.styles .chip { padding: 4px 10px; font-size: 12px; }
+.examples { max-width: 760px; margin: 14px auto 0; display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; align-items: center; font-size: 13px; }
+.examples .chip { font-size: 12px; padding: 4px 10px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-line { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
+.linkish { color: var(--accent); cursor: pointer; }
+.feed-head { margin-top: 34px; }
+.feed-head + .feed { margin-top: 0; }
+/* A cut-out shows its transparency on a checkerboard. */
+.card.checker .media { background: repeating-conic-gradient(var(--panel-2) 0 25%, var(--panel) 0 50%) 0 0 / 22px 22px; }
+.card.checker .media img { object-fit: contain; }
 
 .feed { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px; margin-top: 30px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
@@ -108,6 +119,15 @@ input, select, textarea { font: inherit; color: var(--text); background: var(--p
 .inline input { flex: 1; min-width: 0; }
 .music { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
 .music audio { width: 100%; margin-top: 6px; }
+.stack { display: flex; flex-direction: column; gap: 6px; }
+.stack textarea { resize: vertical; }
+.inline select { flex: 1; min-width: 0; }
+.inline .at { align-self: center; font-size: 13px; color: var(--muted); flex: 1; }
+.inline input[type="number"] { flex: 0 0 64px; }
+.tracks { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; font-size: 13px; }
+.track { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; }
+.track audio { width: 100%; }
+.track label.inline { align-items: center; color: var(--muted); }
 .exports { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .exports video { width: 100%; border-radius: 10px; }
 .tl-head { display: flex; gap: 10px; align-items: baseline; }
