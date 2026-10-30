@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { changedFiles } from '../src/cloudhost.ts';
+import { changedFiles, isStateFile } from '../src/cloudhost.ts';
 
 function scratch() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gen-cloudhost-'));
@@ -18,6 +18,14 @@ test('settings and small state files are synced; databases, the library, blobs a
   for (const f of ['settings.json', 'cloudrun/image.json', 'comfy-cache/object_info.json',
     'hawkesgen.db', 'hawkesgen.db-wal', 'hawkesgen.db-shm', 'analytics.db', 'library/a/b.png', 'blobs/x', 'tmp/y', 'graphs/g.json', 'fleet/key.pem', 'comfy-cache/templates/t.json']) put(f);
   assert.deepEqual(changedFiles(dir, new Map()).sort(), ['cloudrun/image.json', 'comfy-cache/object_info.json', 'settings.json']);
+});
+
+test("Litestream's working folders never sync (2026-10-30: pulling them raced Litestream, the pull stopped before settings.json)", () => {
+  const { dir, put } = scratch();
+  for (const f of ['settings.json', '.analytics.db-litestream/generations/5391/wal/00000038.wal', '.hawkesgen.db-litestream/generation', 'x.litestream/y']) put(f);
+  assert.deepEqual(changedFiles(dir, new Map()), ['settings.json']);
+  assert.ok(isStateFile('settings.json') && isStateFile('claude/accounts.json'));
+  assert.ok(!isStateFile('.analytics.db-litestream/generations/5391/wal/00000038.wal') && !isStateFile('.hawkesgen.db-litestream/generation'));
 });
 
 test('a file is pushed again only after it changes', () => {

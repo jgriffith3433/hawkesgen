@@ -17,7 +17,12 @@ export const onCloudRun = () => !!process.env.K_SERVICE;
 
 const STATE_PREFIX = 'state/';
 /** What is synced: small files under DATA_DIR, never the databases (Litestream's), the library, blobs or scratch. */
-const SKIP = /^(hawkesgen\.db|analytics\.db)(-wal|-shm|-journal)?$|^(library|blobs|tmp|graphs|fleet|builder|comfy-cache\/(templates|thumbs))(\/|$)|\.litestream/;
+// Litestream's working folders (`.hawkesgen.db-litestream/`, `.analytics.db-litestream/`) are its own business: its replica
+// is under db/. Pulling them raced Litestream rewriting them, and one missing file stopped the pull before settings.json
+// (2026-10-30: both Gens came up on default settings).
+const SKIP = /^(hawkesgen\.db|analytics\.db)(-wal|-shm|-journal)?$|^(library|blobs|tmp|graphs|fleet|builder|comfy-cache\/(templates|thumbs))(\/|$)|[.-]litestream(\/|$)/;
+/** Whether a path under the data folder is a state file (synced with Cloud Storage). Exported for the tests. */
+export const isStateFile = (rel: string) => Boolean(rel) && !SKIP.test(rel);
 const MAX_BYTES = 20 * 1024 * 1024;
 
 function walk(dir: string, base = dir): string[] {
@@ -56,13 +61,18 @@ export async function pullState() {
   let n = 0;
   for await (const o of g.list(bucket, STATE_PREFIX)) {
     const rel = o.name.slice(STATE_PREFIX.length);
-    if (!rel || SKIP.test(rel)) continue;
-    const data = await g.read(`gs://${bucket}/${o.name}`);
-    if (!data) continue;
-    const dest = path.join(DATA_DIR, rel);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, data);
-    n++;
+    if (!isStateFile(rel)) continue;
+    // One file that can't be read or written is skipped with a warning; it never stops the rest (settings.json above all).
+    try {
+      const data = await g.read(`gs://${bucket}/${o.name}`);
+      if (!data) continue;
+      const dest = path.join(DATA_DIR, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data);
+      n++;
+    } catch (e) {
+      console.warn(`[cloudhost] state pull: ${rel}: ${(e as Error).message}`);
+    }
   }
   return n;
 }
