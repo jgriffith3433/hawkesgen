@@ -17,7 +17,7 @@ export type BrokerDeps = {
 
 // Models straight from Hugging Face (J, 2026-10-29: "for now, download from hugging face"; provider volumes later): a
 // models/<dir>/<file> the bucket doesn't hold is answered with models.json's public URL, which workers download in
-// ranges like a signed one (free egress, no copy to keep). Sizes are asked once per file.
+// ranges like a signed one (free egress, no copy to keep). Workflow manifests' models count too. Sizes are asked once per file.
 const sizes = new Map<string, number>();
 async function modelSource(uri: string): Promise<{ url: string; size: number } | null> {
   const m = /^gs:\/\/[^/]+\/models\/([^/]+)\/(.+)$/.exec(uri);
@@ -25,7 +25,10 @@ async function modelSource(uri: string): Promise<{ url: string; size: number } |
   const { readFileSync } = await import('node:fs');
   const { fileURLToPath } = await import('node:url');
   const list = JSON.parse(readFileSync(fileURLToPath(new URL('../../../server/models.json', import.meta.url)), 'utf8'));
-  const e = (list.models ?? []).find((x: any) => x.dir === m[1] && x.file === m[2] && /^https:\/\//.test(String(x.url ?? '')));
+  // Core models first, then the ones a workflow tool's manifest names with their download (audio.music, audio.sfx-sa3...).
+  const { listWorkflows } = await import('../../workflows/registry.ts');
+  const all = [...(list.models ?? []), ...listWorkflows().flatMap((w) => w.manifest.models ?? [])];
+  const e = all.find((x: any) => x.dir === m[1] && x.file === m[2] && /^https:\/\//.test(String(x.url ?? '')));
   if (!e) return null;
   let size = sizes.get(e.url);
   if (size === undefined) {

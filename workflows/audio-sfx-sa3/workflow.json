@@ -1,0 +1,97 @@
+{
+  "id": "audio.sfx-sa3",
+  "version": 1,
+  "title": "Sound effect (Stable Audio 3)",
+  "description": "Stable Audio 3 Medium on ComfyUI: a stereo sound effect, ambience, one-shot or short instrument phrase from a description, in a few seconds of GPU. audio.sfx runs it (with trimming, loudness and seamless loops); call audio.sfx, not this.",
+  "family": "stable-audio",
+  "output": "audio",
+  "models": [
+    {
+      "file": "stable_audio_3_medium.safetensors",
+      "dir": "checkpoints",
+      "url": "https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/checkpoints/stable_audio_3_medium.safetensors"
+    },
+    {
+      "file": "t5gemma_b_b_ul2.safetensors",
+      "dir": "text_encoders",
+      "url": "https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/text_encoders/t5gemma_b_b_ul2.safetensors"
+    }
+  ],
+  "inputs": {},
+  "params": {
+    "prompt": {
+      "type": "text",
+      "required": true,
+      "description": "What it sounds like: the source, the material, the space, the feel.",
+      "example": "Heavy wooden door creaks open slowly in a stone hall, low reverb",
+      "targets": [
+        [
+          "3",
+          "text"
+        ]
+      ]
+    },
+    "negative": {
+      "type": "text",
+      "default": "",
+      "advanced": true,
+      "description": "What to keep out (music, speech...).",
+      "targets": [
+        [
+          "4",
+          "text"
+        ]
+      ]
+    },
+    "seconds": {
+      "type": "number",
+      "min": 1,
+      "max": 47,
+      "default": 5,
+      "targets": [
+        [
+          "5",
+          "seconds"
+        ]
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "min": 0,
+      "max": 281474976710656,
+      "description": "Random when empty.",
+      "targets": [
+        [
+          "6",
+          "seed"
+        ]
+      ]
+    },
+    "steps": {
+      "type": "integer",
+      "min": 4,
+      "max": 50,
+      "default": 8,
+      "advanced": true,
+      "targets": [
+        [
+          "6",
+          "steps"
+        ]
+      ]
+    }
+  },
+  "outputs": [
+    "8"
+  ],
+  "source": {
+    "template": "audio_stable_audio_3_medium",
+    "size": 15676630630,
+    "note": "the template's Qwen prompt rewrite is left out: Gen's AI writes the description"
+  },
+  "tags": [
+    "audio",
+    "sfx"
+  ],
+  "seconds": 8
+}

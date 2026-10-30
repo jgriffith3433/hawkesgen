@@ -351,3 +351,48 @@ print(json.dumps({"inputs": g["1"]["inputs"], "files": files, "models": worker.g
   assert.deepEqual(out.files, [{ filename: 'a.png', subfolder: '', type: 'output', node: '9' }]);
   assert.deepEqual(out.models, ['loras/x.safetensors'], 'only what the instance lacks and the mount has');
 });
+
+test('worker.py runs an open audio model for a hawkes_audio request: run.py in its venv, the takes uploaded', (t) => {
+  if (process.platform === 'win32') return t.skip('the fake model venv is a shell script');
+  const py = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0);
+  if (!py) return t.skip('no Python here');
+  const dir = path.join(ROOT, 'server', 'cloudrun');
+  const audio = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-audio-root-'));
+  const comfy = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-comfy-'));
+  fs.mkdirSync(path.join(audio, 'qwen3-tts', 'venv', 'bin'), { recursive: true });
+  // The "model": writes a take and result.json the way post/audio/run.py does, and says a step.
+  const fakePy = path.join(audio, 'qwen3-tts', 'venv', 'bin', 'python');
+  fs.writeFileSync(fakePy, '#!/bin/sh\nmkdir -p out\necho "HB step loading qwen3-tts"\nprintf wav > out/take0.wav\nprintf \'{"items":[{"id":"take0","seconds":1}]}\' > out/result.json\n', { mode: 0o755 });
+  const code = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(dir)})
+import worker
+worker.comfy = lambda *a, **k: {}
+class Store:
+    def __init__(self): self.w = {}
+    def stat(self, uri): return None
+    def read(self, uri): return None
+    def write(self, uri, data, ct="application/octet-stream"): self.w[uri] = data
+    def download(self, uri, dest, parallel=4): pass
+store = Store()
+worker.store_for = lambda req: store
+r = worker.Run({"key": "k1", "out": "gs://b/cloudrun/runs/k1/", "graph": {"hawkes_audio": {"task": "speak", "model": "qwen3-tts", "items": [{"id": "take0", "text": "hi"}]}}})
+steps = []
+r.step = lambda d: steps.append(d)
+final = r._execute()
+missing = worker.Run({"key": "k2", "out": "gs://b/cloudrun/runs/k2/", "graph": {"hawkes_audio": {"model": "voxcpm2", "items": []}}})
+try:
+    missing._execute(); err = None
+except Exception as e:
+    err = str(e)
+print(json.dumps({"final": final, "steps": steps, "written": sorted(store.w), "err": err}))
+`;
+  const r = spawnSync(py, ['-c', code], { encoding: 'utf8', env: { ...process.env, AUDIO_ROOT: audio, COMFY_DIR: comfy } });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout.trim().split('\n').pop()!);
+  assert.equal(out.final.t, 'done');
+  assert.deepEqual(out.final.files.map((f: any) => f.filename), ['result.json', 'take0.wav']);
+  assert.deepEqual(out.written, ['gs://b/cloudrun/runs/k1/00-result.json', 'gs://b/cloudrun/runs/k1/01-take0.wav']);
+  assert.ok(out.steps.includes('loading qwen3-tts'), JSON.stringify(out.steps));
+  assert.match(out.err, /no open audio model 'voxcpm2' \(it has qwen3-tts\)/);
+});

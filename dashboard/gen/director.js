@@ -1229,7 +1229,7 @@ async function priceShot(s, look, action) {
   const parts = [quote(s.film.keyframe, { prompt: look })];
   if (s.kind === 'talk') parts.push(quote('video.talk', { prompt: action, width: TALK_SIZE[s.aspect][0], height: TALK_SIZE[s.aspect][1], frames: talkFrames(4), fps: 25 }));
   else { const v = videoJob(s, { prompt: action, width: w, height: hh, ...filmClock(s) }); parts.push(quote(v.tool, v.params)); }
-  for (const l of s.lines) parts.push(quote('audio.voice', { text: l.text, voice: voiceOf(s, l.who), provider: 'elevenlabs' }));
+  for (const l of s.lines) parts.push(quote('audio.voice', { text: l.text, voice: voiceOf(s, l.who) }));
   const qs = await Promise.all(parts);
   return qs.every(Boolean) ? qs.reduce((n, x) => n + x.credits, 0) : null;
 }
@@ -1241,7 +1241,7 @@ async function priceShot(s, look, action) {
  */
 async function filmShot(s, rec, { look, action, talk }, say) {
   const lines = await Promise.all(s.lines.map(async (l) => {
-    const r = await runJob({ tool: 'audio.voice', params: { text: l.text, voice: voiceOf(s, l.who), provider: 'elevenlabs' }, label: `${s.cast[l.who]?.name ?? 'Line'}: ${l.text.slice(0, 50)}` });
+    const r = await runJob({ tool: 'audio.voice', params: { text: l.text, voice: voiceOf(s, l.who) }, label: `${s.cast[l.who]?.name ?? 'Line'}: ${l.text.slice(0, 50)}` });
     const a = (r.outputs.find((o) => o.kind === 'audio') ?? r.outputs[0]).asset;
     return { asset: a, at: l.at, seconds: (await mediaInfo(a, 'audio')).duration ?? 3 };
   }));

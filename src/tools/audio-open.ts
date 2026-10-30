@@ -2,13 +2,18 @@
 // audio.voice-design/-save/-list/-delete) hand a call to these at submit (Tool.route, src/audio/plan.ts routeAudio);
 // the voice clone, process, analyze and loop tools are new.
 //
-// GPU tools run in the model's own venv on a fleet server (family `audio:<model>`, installed on first use, one job per
-// server and the fleet's idle shutdown as for every GPU tool). HAWKESGEN_AUDIO_MOCK=1 swaps the server for ffmpeg tones
-// so a spare-port Gen and the tests run the whole path (planning, post-processing, checks, the voice library) with no GPU.
+// GPU tools run wherever GPU jobs run (docs/gpu-providers.md). On a GPU provider (RunPod, Modal) the worker image has the
+// voice models' venvs and runs post/audio/run.py as one request (`{ hawkes_audio: spec }` in place of a graph:
+// server/cloudrun/worker.py); on a fleet server the venv is installed on first use over SSH. Sound effects are Stable
+// Audio 3, a ComfyUI workflow (workflows/audio-sfx-sa3), so they run like any graph. HAWKESGEN_AUDIO_MOCK=1 swaps the GPU
+// for ffmpeg tones so a spare-port Gen and the tests run the whole path (planning, post-processing, checks, the voice
+// library) with no GPU.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { RunContext, Tool } from './types.ts';
+import type { ComfyRun, RunContext, Tool } from './types.ts';
+import { getWorkflow } from '../workflows/registry.ts';
+import { isOwnVoiceId } from '../audio/house.ts';
 import { GenError } from '../util.ts';
 import { blenderWorkspace } from '../providers/blender/blender.ts';
 import { ensureAudio } from '../providers/audio/audio.ts';
@@ -42,7 +47,7 @@ export function postOptions(p: Record<string, any>, project: string, kind: 'voic
 type Synth = { dir: string; items: { id: string; file: string; seconds: number; transcript?: string }[]; model: AudioModel; /** Set when verify was asked for and the transcriber could not be installed: the takes were made unchecked. */ verifySkipped?: string };
 
 /** Runs a job's items on a GPU server (or the mock) and brings the WAVs back. */
-async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak' | 'design' | 'sfx'; items: Record<string, any>[]; refs?: Record<string, string>; asr?: boolean; language?: string }): Promise<Synth> {
+export async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak' | 'design' | 'sfx'; items: Record<string, any>[]; refs?: Record<string, string>; asr?: boolean; language?: string }): Promise<Synth> {
   const out = ctx.tmp(`audio-${o.task}`);
   fs.rmSync(out, { recursive: true, force: true });
   fs.mkdirSync(out, { recursive: true });
@@ -58,6 +63,8 @@ async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak'
     return { dir: out, items, model: o.model };
   }
   const c = ctx.comfy!;
+  // A GPU provider (no SSH): its worker runs the same run.py in the model's venv from its image, as one request.
+  if (!c.comfy) return synthesizeRemote(ctx, c, o, out);
   await ensureAudio(c.server.id, o.model.id, ctx.step, ctx.signal);
   let asr = Boolean(o.asr);
   let verifySkipped: string | undefined;
@@ -82,7 +89,7 @@ async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak'
       return { ...it, ref: name };
     });
     await ws.put(put);
-    const spec = { task: o.task, model: o.model.id, items: items.map((it) => ({ id: it.id, text: it.text, instruct: it.instruct, exaggeration: it.exaggeration, cfg_weight: it.cfgWeight, speed: it.speed, ref: it.ref, ref_text: it.refText, description: it.description, seconds: it.seconds, loop: it.loop, seed: it.seed, language: it.language })) };
+    const spec = { task: o.task, model: o.model.id, items: items.map(specItem) };
     await ws.write({ 'spec.json': JSON.stringify(spec) });
     const script = [
       'set -euo pipefail',
@@ -97,9 +104,27 @@ async function synthesize(ctx: RunContext, o: { model: AudioModel; task: 'speak'
   } finally {
     await ws.clean();
   }
+  return readOut(out, o.model, verifySkipped);
+}
+
+/** One item as run.py reads it. */
+const specItem = (it: Record<string, any>) => ({ id: it.id, text: it.text, instruct: it.instruct, exaggeration: it.exaggeration, cfg_weight: it.cfgWeight, speed: it.speed, ref: it.ref, ref_text: it.refText, description: it.description, seconds: it.seconds, loop: it.loop, seed: it.seed, language: it.language });
+
+/** The same job on a GPU provider's worker: references uploaded, one request, run.py's out/ folder back. */
+async function synthesizeRemote(ctx: RunContext, c: ComfyRun, o: { model: AudioModel; task: 'speak' | 'design' | 'sfx'; items: Record<string, any>[]; asr?: boolean; language?: string }, out: string): Promise<Synth> {
+  const items: Record<string, any>[] = [];
+  for (const it of o.items) items.push({ ...it, ref: it.refFile ? await c.upload(it.refFile) : null });
+  ctx.step(`${o.task === 'sfx' ? 'making sounds' : 'speaking'} with ${o.model.id} on ${c.server.id.replace(/^cloudrun:/, '')}`);
+  const files = await c.runGraph({ hawkes_audio: { task: o.task, model: o.model.id, items: items.map(specItem), asr: Boolean(o.asr), language: o.language ?? 'en' } } as any);
+  for (const f of files) fs.writeFileSync(path.join(out, path.basename(f.filename)), await c.download(f));
+  return readOut(out, o.model);
+}
+
+/** run.py's out/ folder: the takes, and each one's transcript when verify asked for it. */
+function readOut(out: string, model: AudioModel, verifySkipped?: string): Synth {
   const meta = JSON.parse(fs.readFileSync(path.join(out, 'result.json'), 'utf8'));
   return {
-    dir: out, model: o.model, verifySkipped,
+    dir: out, model, verifySkipped,
     items: meta.items.map((r: any) => {
       const asrFile = path.join(out, `${r.id}.asr.json`);
       return { id: r.id, file: path.join(out, `${r.id}.wav`), seconds: r.seconds, transcript: fs.existsSync(asrFile) ? JSON.parse(fs.readFileSync(asrFile, 'utf8')).text : undefined };
@@ -130,7 +155,7 @@ async function fallback(ctx: RunContext, el: Tool, why: unknown) {
 export const voiceOpenTool: Tool = {
   id: OPEN.voice, version: 1, title: 'Speak a line (open models)',
   description: 'Speaks a line on an open model on the Gen GPU fleet (MOSS-TTS, Qwen3-TTS, VoxCPM2, Chatterbox): with DIRECTION (emotion, delivery, pace, style), in a saved Gen voice (voice: gv_...), cloned from a 3-10 s sample (input reference), or from a description. This is the default for audio.voice (the same tool: ElevenLabs only with provider "elevenlabs" or an ElevenLabs voice id). Loudness-normalised, silence-trimmed; verify: true transcribes each take and checks it says the text.',
-  provider, server: 'ssh', family: (p) => `audio:${planModelId(p)}`, output: 'audio',
+  provider, family: (p) => `audio:${planModelId(p)}`, output: 'audio',
   inputs: referenceInput,
   params: {
     text: { type: 'text', required: true },
@@ -159,15 +184,17 @@ export const voiceOpenTool: Tool = {
       }
       ctx.result({ provider: 'open', model: plan.model.id, voice: p.voice ?? null, takes, dropped: plan.items[0].dropped, applied: { instruct: plan.items[0].instruct, exaggeration: plan.items[0].exaggeration, cfgWeight: plan.items[0].cfgWeight }, warnings: plan.warnings, ...(s.verifySkipped ? { verified: false, verifySkipped: s.verifySkipped } : {}) });
     } catch (e) {
-      if (!ctx.params.voice || isGenVoiceId(ctx.params.voice)) throw e;
+      if (!ctx.params.voice || isOwnVoiceId(ctx.params.voice)) throw e;
       await fallback(ctx, voiceTool, e);
     }
   },
 };
 
 function safeModel(kind: 'voice' | 'sfx', needs: any[], wanted?: string) {
-  try { return pickModel(kind, needs, wanted).id; } catch { return kind === 'voice' ? 'qwen3-tts' : 'moss-soundeffect'; }
+  try { return pickModel(kind, needs, wanted).id; } catch { return kind === 'voice' ? 'qwen3-tts' : 'stable-audio-3'; }
 }
+/** A ComfyUI model's family is its workflow's; a venv model's is `audio:<id>`. */
+const sfxFamily = (id: string) => modelById(id)?.comfy ?? `audio:${id}`;
 
 /** The model a call will use, for the family and the price (before the voice is looked up). */
 export function planModelId(p: Record<string, any>): string {
@@ -190,7 +217,7 @@ const SAMPLE = 'The door was open when we got there, and nobody was inside. Some
 export const voiceDesignOpenTool: Tool = {
   id: OPEN.design, version: 1, title: 'Design a voice (open models)',
   description: 'Designs voices from a description on an open model (Qwen3-TTS or VoxCPM2): candidates (default 3), each saved in the Gen voice library as a candidate with its recipe and its preview clip as the reference, so it can be recreated and spoken by any cloning model. No slot cap. audio.voice-save (a gv_ id) names the one you keep.',
-  provider, server: 'ssh', family: (p) => `audio:${safeModel('voice', ['design'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['design'], params.openModel), output: 'audio', inputs: {},
+  provider, family: (p) => `audio:${safeModel('voice', ['design'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['design'], params.openModel), output: 'audio', inputs: {},
   params: {
     description: { type: 'text', required: true, description: 'Age, tone, accent, attitude, recording quality.' },
     text: { type: 'text', description: 'What the previews say. Empty: a short neutral passage.' },
@@ -298,10 +325,38 @@ export const voiceCloneTool: Tool = {
 
 // ---- audio.sfx-open --------------------------------------------------------------------------------------------
 
+/** Stable Audio 3 (workflows/audio-sfx-sa3): one graph per take, on any GPU provider or fleet server. */
+export async function stableAudio(ctx: RunContext, model: AudioModel, items: { id: string; text: string; seconds?: number; seed: number }[]): Promise<Synth> {
+  const wf = getWorkflow('audio.sfx-sa3');
+  if (!wf) throw new GenError('workflows/audio-sfx-sa3 is missing: sound effects need it');
+  const c = ctx.comfy!;
+  await c.ensureModels(wf.manifest.models);
+  const out = ctx.tmp('audio-sfx');
+  fs.rmSync(out, { recursive: true, force: true });
+  fs.mkdirSync(out, { recursive: true });
+  const made: Synth['items'] = [];
+  for (const [i, it] of items.entries()) {
+    const g: any = structuredClone(wf.graph);
+    const seconds = Math.max(1, Math.min(47, it.seconds ?? 5));
+    g['3'].inputs.text = it.text;
+    g['4'].inputs.text = 'speech, talking, vocals, music';
+    g['5'].inputs.seconds = seconds;
+    g['6'].inputs.seed = it.seed;
+    ctx.step(items.length > 1 ? `making sound ${i + 1} of ${items.length}` : 'making the sound');
+    const files = await c.runGraph(g);
+    const f = files.find((x) => /\.(flac|wav|mp3|ogg)$/i.test(x.filename)) ?? files[0];
+    if (!f) throw new GenError('Stable Audio returned no sound');
+    const file = path.join(out, `${it.id}${path.extname(f.filename) || '.flac'}`);
+    fs.writeFileSync(file, await c.download(f));
+    made.push({ id: it.id, file, seconds });
+  }
+  return { dir: out, items: made, model };
+}
+
 export const sfxOpenTool: Tool = {
-  id: OPEN.sfx, version: 1, title: 'Sound effect (open models)',
-  description: 'A sound effect on an open model (MOSS-SoundEffect; Stable Audio 3 Small-SFX when its ComfyUI template is imported). duration: seconds (empty: the model decides). loop: a seamless bed (made a little longer, crossfaded, loop point checked). count: takes; variants: a list of different prompts for one game event (e.g. six footsteps), each a take. Normalised, trimmed, converted. This is the default for audio.sfx (ElevenLabs only with provider "elevenlabs").',
-  provider, server: 'ssh', family: (p) => `audio:${safeModel('sfx', ['sfx'], p.openModel)}`, guard: ({ params }) => void pickModel('sfx', params.loop ? ['sfx', 'loop'] : ['sfx'], params.openModel), output: 'audio', inputs: {},
+  id: OPEN.sfx, version: 2, title: 'Sound effect (open models)',
+  description: 'A sound effect on Stable Audio 3 (ComfyUI, seconds of GPU). duration: seconds (empty: 5). loop: a seamless bed (made a little longer, crossfaded, loop point checked). count: takes; variants: a list of different prompts for one game event (e.g. six footsteps), each a take. Normalised, trimmed, converted. This is the default for audio.sfx (ElevenLabs only with provider "elevenlabs").',
+  provider, family: (p) => sfxFamily(safeModel('sfx', ['sfx'], p.openModel)), guard: ({ params }) => void pickModel('sfx', params.loop ? ['sfx', 'loop'] : ['sfx'], params.openModel), output: 'audio', inputs: {},
   params: {
     text: { type: 'text', required: true },
     duration: { type: 'number', min: 0.5, max: 30, description: 'Seconds (empty: the model decides).' },
@@ -327,7 +382,7 @@ export const sfxOpenTool: Tool = {
       const xf = p.crossfade ?? 1;
       // A loop is made longer by its crossfade, which is then eaten by the join.
       const items = prompts.map((t, i) => ({ id: `take${i}`, text: Array.isArray(p.variants) ? `${p.text}, ${t}` : t, seconds: p.duration ? p.duration + (p.loop ? xf : 0) : undefined, loop: p.loop === true, seed: ctx.seed(i), language: 'en' }));
-      const s = await synthesize(ctx, { model, task: 'sfx', items });
+      const s = model.comfy && !MOCK ? await stableAudio(ctx, model, items) : await synthesize(ctx, { model, task: 'sfx', items });
       const takes: any[] = [];
       for (const [i, it] of s.items.entries()) {
         let file = it.file;
@@ -355,7 +410,7 @@ export const sfxOpenTool: Tool = {
 export const dialogueOpenTool: Tool = {
   id: OPEN.dialogue, version: 1, title: "Table read (open models)",
   description: "A scene's dialogue on an open model: every line in its character's Gen voice (cast { who: gv_... }), each line with its own direction ({ who, text, direction }), laid on one track with gaps (gapMs; a line's pauseMs overrides) and returned with each line as its own clip and when it starts and ends, the shape audio.dialogue returns. Lines are spoken one by one (no overlap); [interrupting] and other ElevenLabs-only timing is not modelled.",
-  provider, server: 'ssh', family: (p) => `audio:${safeModel('voice', ['speak'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['speak'], params.openModel), output: 'audio', inputs: {},
+  provider, family: (p) => `audio:${safeModel('voice', ['speak'], p.openModel)}`, guard: ({ params }) => void pickModel('voice', ['speak'], params.openModel), output: 'audio', inputs: {},
   params: {
     lines: { type: 'json', required: true, description: '[{ who, text, direction?, pauseMs? }] in order', example: [{ who: 'The Mechanic', text: "You're late." }, { who: 'Exit Punk', text: "I'm eleven seconds late.", direction: 'out of breath' }] },
     cast: { type: 'json', description: '{ "Exit Punk": "gv_..." }', example: { 'The Mechanic': 'gv_voice', 'Exit Punk': 'gv_voice' } },
@@ -374,7 +429,7 @@ export const dialogueOpenTool: Tool = {
     try {
       const p = ctx.params;
       const lines = dialogueLines(p.lines, p.cast);
-      const bad = lines.find((l) => !isGenVoiceId(l.voice));
+      const bad = lines.find((l) => !isOwnVoiceId(l.voice));
       if (bad) throw new GenError(`line "${bad.text.slice(0, 30)}": ${bad.voice} is an ElevenLabs voice; the open table read needs Gen voices (gv_...). Use provider: "elevenlabs" for this scene.`);
       const sr = p.sampleRate ?? 44100;
       const takes: any[] = [];
@@ -427,7 +482,7 @@ export const dialogueOpenTool: Tool = {
       ctx.result({ provider: 'open', takes, seconds: takes[0]?.seconds, segments: takes[0]?.segments, ...(verifySkipped ? { verified: false, verifySkipped } : {}) });
     } catch (e) {
       const cast = Object.values((ctx.params.cast ?? {}) as Record<string, string>);
-      if (!cast.length || cast.every(isGenVoiceId) || ctx.params.provider === 'open') throw e;
+      if (!cast.length || cast.every(isOwnVoiceId) || ctx.params.provider === 'open') throw e;
       await fallback(ctx, dialogueTool, e);
     }
   },

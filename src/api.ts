@@ -1922,6 +1922,16 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const verified = new Set(loadSettings().audio.verified);
       return send(res, 200, { models: AUDIO_MODELS.map((m) => ({ ...m, verified: verified.has(m.id), selectable: !m.blocked && m.license.commercial !== false })), refused: REFUSED_MODELS, verified: [...verified], targetLufs: loadSettings().audio.targetLufs });
     }
+    // A house voice's sample (src/audio/house.ts): its saved reference clip, the app's voice preview.
+    const hv = /^\/v1\/audio\/house\/(hv_[a-z0-9_]+)\/preview$/.exec(route);
+    if (hv && method === 'GET') {
+      const { houseReference } = await import('./audio/house.ts');
+      const { refPath } = await import('./audio/voicelib.ts');
+      const v = houseReference(hv[1]);
+      const file = v ? refPath(v) : null;
+      if (!file || !fs.existsSync(file)) throw new GenError('This house voice has no sample yet', { status: 404 });
+      return serveFile(req, res, file, mimeOf(file), { 'Cache-Control': 'private, max-age=3600' });
+    }
     if (route === '/v1/providers/anthropic/models' && method === 'GET') return send(res, 200, { models: claude.MODELS, default: claude.DEFAULT_MODEL });
 
     // ------------------------------------------------------ settings, clients

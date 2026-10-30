@@ -83,10 +83,9 @@ export const EDITOR_TOOLS: { tool: string; use: string }[] = [
   { tool: 'video.interpolate', use: 'smoother motion (more frames). inputs video; params multiplier' },
   { tool: 'video.lipsync', use: 'a character from an image says an audio line. inputs image, audio; params prompt' },
   { tool: 'audio.music', use: 'music. params prompt, seconds' },
-  { tool: 'audio.voice', use: 'a spoken line. params text, voice (an id from "voices" in the project data: pick by name, gender, age, accent), provider "elevenlabs"' },
-  { tool: 'audio.sfx', use: 'a sound effect. params text, duration, provider "elevenlabs"' },
-  // audio.revoice and the open voice models run only on the SSH GPU fleet (AWS, suspended since 2026-10-28): offered
-  // again once the open audio models have a GPU provider.
+  { tool: 'audio.voice', use: 'a spoken line on Gen\'s own voice model. params text, voice (an id from "voices" in the project data: pick by name and about), direction (how to say it: "tired, almost whispering")' },
+  { tool: 'audio.sfx', use: 'a sound effect, ambience or one-shot on Gen\'s own model. params text (the source, the material, the space), duration (seconds, 5 if unsure), loop (true for a seamless bed)' },
+  // audio.revoice changes a voice with audio.voice-change, which only ElevenLabs does: left out.
   // The studio's tools: game art, 3D and sound. Their results go to the library (place {"library":true}), never the timeline.
   { tool: 'image.panorama', use: 'a 360° equirectangular skybox. params prompt. Library only' },
   { tool: 'texture.maps', use: 'PBR material maps (normal, roughness, height...) from a seamless texture. inputs image. Library only' },
@@ -121,7 +120,7 @@ export function relevantTools(text: string, max = 4): string[] {
 }
 
 /** Tools the app never lists in Create: the studio's machinery, plumbing the editor runs itself, and admin work. */
-const NOT_IN_CATALOG = /^(comfy\.graph|unity\.|playtest\.|asset\.lod|media\.|file\.import|library\.|lora\.train|audio\.voice-(list|delete|save)|film\.|video\.compose|video\.still|image\.frame|video\.fit|llm\.)/;
+const NOT_IN_CATALOG = /^(comfy\.graph|unity\.|playtest\.|asset\.lod|media\.|file\.import|library\.|lora\.train|audio\.voice-(list|delete|save)|film\.|video\.compose|video\.still|image\.frame|video\.fit|llm\.|audio\.sfx-sa3$)/;
 
 /**
  * Every tool the app's Create pane offers: Gen's own description of it (params, inputs, outputs), and whether it can
@@ -134,20 +133,15 @@ export async function catalog(describe: (t: any) => any, all: any[], fleetDown: 
 // ------------------------------------------------------------------ voices
 export type EditorVoice = { id: string; name: string; about: string; preview: string };
 /**
- * The voices the app and the AI editor offer: ElevenLabs' own premade voices only (never the account's cloned or
- * designed ones: those are the studio's characters). Empty when ElevenLabs isn't set up.
+ * The voices the app and the AI editor offer: Gen's house voices (src/audio/house.ts), spoken by Gen's own voice model
+ * (never ElevenLabs, never the account's or the studio's characters). A preview is the house voice's saved reference.
  */
 export async function editorVoices(): Promise<EditorVoice[]> {
-  try {
-    const eleven = await import('./providers/elevenlabs.ts');
-    if (!eleven.configured()) return [];
-    return (await eleven.voices()).filter((v: any) => v.category === 'premade').map((v: any) => ({
-      id: v.id, name: v.name, preview: v.preview,
-      about: [v.labels?.gender, v.labels?.age, v.labels?.accent, v.labels?.descriptive ?? v.labels?.description, v.labels?.use_case ?? v.labels?.['use case']].filter(Boolean).join(', ') || v.description || '',
-    })).slice(0, 40);
-  } catch {
-    return [];
-  }
+  const { HOUSE_VOICES, houseReference } = await import('./audio/house.ts');
+  return HOUSE_VOICES.map((v) => {
+    const ref = houseReference(v.id);
+    return { id: v.id, name: v.name, about: v.about, preview: ref ? `/v1/audio/house/${v.id}/preview` : '' };
+  });
 }
 export const availableEditorTools = () => EDITOR_TOOLS.filter((t) => getTool(t.tool));
 

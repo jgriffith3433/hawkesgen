@@ -58,23 +58,28 @@ test('registry: no refused model is listed, blocked ones are not selectable, eve
   for (const r of REFUSED_MODELS) assert.equal(modelById(r.id), null);
   for (const m of AUDIO_MODELS) assert.ok(m.license.note && m.license.checked, m.id);
   assert.ok(AUDIO_MODELS.filter((m) => m.license.commercial === false).length === 0);
-  assert.ok(!selectable('sfx', 'sfx').some((m) => m.id === 'stable-audio-3-sfx'));
+  // Sound effects are Stable Audio 3 (a ComfyUI workflow); the MOSS models have no runner yet.
+  assert.deepEqual(selectable('sfx', 'sfx').map((m) => m.id), ['stable-audio-3']);
+  assert.ok(!selectable('voice', 'speak').some((m) => m.id === 'moss-tts'));
   assert.ok(selectable('voice', 'speak').every((m) => !m.blocked));
-  assert.equal(modelById('stable-audio-3-sfx')!.license.code, 'Stability AI Community License');
+  assert.equal(modelById('stable-audio-3')!.license.code, 'Stability AI Community License');
+  assert.equal(modelById('stable-audio-3')!.comfy, 'stable-audio');
 });
 
 test('pickModel: capability, verified first, refuses blocked and wrong kind', () => {
   assert.equal(pickModel('voice', ['speak', 'clone'], 'auto', new Set()).id, 'qwen3-tts');
   assert.equal(pickModel('voice', ['speak', 'clone'], 'auto', new Set(['chatterbox'])).id, 'chatterbox');
   assert.throws(() => pickModel('voice', ['design'], 'chatterbox'), /cannot design/);
-  assert.throws(() => pickModel('voice', ['speak'], 'stable-audio-3-sfx'), /not a voice model/);
-  assert.throws(() => pickModel('sfx', ['sfx'], 'stable-audio-3-sfx'), /cannot be used/);
+  assert.throws(() => pickModel('voice', ['speak'], 'stable-audio-3'), /not a voice model/);
+  assert.throws(() => pickModel('sfx', ['sfx'], 'moss-soundeffect'), /cannot be used/);
+  assert.equal(pickModel('sfx', ['sfx', 'loop'], 'auto', new Set()).id, 'stable-audio-3');
+  assert.equal(pickModel('voice', ['speak', 'direction'], 'auto', new Set()).id, 'qwen3-tts');
   assert.throws(() => pickModel('voice', ['speak'], undefined, new Set(), { onlyVerified: true }), /verified/);
 });
 
 test('routing: the open suite is the default; ElevenLabs only with provider elevenlabs or an ElevenLabs voice id', () => {
   const GV = 'gv_0123456789abcdef';
-  for (const verified of [[], ['qwen3-tts', 'moss-soundeffect']]) {
+  for (const verified of [[], ['qwen3-tts', 'stable-audio-3']]) {
     saveSettings({ audio: { verified, targetLufs: {} } });
     // Unset provider: open, verified or not.
     assert.equal(routeAudio('voice', { text: 'x' }), 'audio.voice-open');
@@ -90,6 +95,9 @@ test('routing: the open suite is the default; ElevenLabs only with provider elev
     // Old content with an ElevenLabs voice id keeps working on ElevenLabs.
     assert.equal(routeAudio('voice', { text: 'x', voice: '21m00Tcm4TlvDq8ikWAM' }), null);
     assert.equal(routeAudio('dialogue', { lines: [], cast: { A: GV, B: 'elid' } }), null);
+    // House voices (src/audio/house.ts) are Gen's own: never ElevenLabs.
+    assert.equal(routeAudio('voice', { text: 'x', voice: 'hv_villain' }), 'audio.voice-open');
+    assert.equal(routeAudio('dialogue', { lines: [], cast: { A: 'hv_villain', B: GV } }), 'audio.dialogue-open');
     // Explicit ElevenLabs.
     for (const t of ['voice', 'sfx', 'design', 'save', 'delete', 'list', 'dialogue'] as const) assert.equal(routeAudio(t, { provider: 'elevenlabs', voice: GV, voiceId: GV, generatedVoiceId: GV }), null, t);
     assert.equal(routeAudio('voice', { text: 'x', voice: 'abc', provider: 'open' }), 'audio.voice-open');
@@ -220,7 +228,7 @@ test('install: resumable and verified, Python 3.11 from deadsnakes, pins keep mo
   assert.match(installScript('asr'), /faster-whisper/);
   assert.notEqual(pinOf(modelById('qwen3-tts')!), pinOf(modelById('chatterbox')!));
   assert.match(VERIFY_PY, /\.incomplete/);
-  assert.throws(() => installScript('stable-audio-3-sfx'), /cannot be installed/);
+  assert.throws(() => installScript('stable-audio-3'), /cannot be installed/);
 });
 
 test('verify: word error rate ignores case, punctuation and tags', () => {
@@ -313,9 +321,9 @@ test('mock path: design -> save -> speak with direction and verify -> table read
   assert.equal(seg.length, 2);
   assert.ok(seg[1].start >= seg[0].end + 0.2, JSON.stringify(seg));
   // SFX: variants, then a loop.
-  const sfx = await run('audio.sfx-open', { text: 'footstep on gravel', variants: ['heavy', 'light', 'dragging'], duration: 1, format: 'wav', openModel: 'moss-soundeffect' });
+  const sfx = await run('audio.sfx-open', { text: 'footstep on gravel', variants: ['heavy', 'light', 'dragging'], duration: 1, format: 'wav' });
   assert.equal(sfx.outputs.length, 3);
-  assert.equal(sfx.result.model, 'moss-soundeffect');
+  assert.equal(sfx.result.model, 'stable-audio-3');
   const loop = await run('audio.sfx-open', { text: 'engine hum bed', duration: 6, loop: true, format: 'wav', crossfade: 1 });
   assert.equal(loop.result.takes[0].loop.crossfade, 1);
   assert.ok(Math.abs(loop.result.takes[0].seconds - 6) < 0.3, `len ${loop.result.takes[0].seconds}`);
@@ -405,4 +413,30 @@ test('prune: least recently used first, never the kept ones, and says when it ca
   assert.equal(all.freed, 35);
   assert.ok(!all.remove.includes('a/core.safetensors'));
   assert.deepEqual(planPrune(files, keep, used, 0).remove, []);
+});
+
+test('house voices: planned from their description and seed until they have a saved sample', async () => {
+  const { HOUSE_VOICES, houseVoice } = await import('../src/audio/house.ts');
+  const { planSpeak } = await import('../src/audio/plan.ts');
+  assert.ok(HOUSE_VOICES.length >= 8 && new Set(HOUSE_VOICES.map((v) => v.id)).size === HOUSE_VOICES.length);
+  const v = houseVoice('hv_villain')!;
+  const plan = planSpeak({ text: 'You came back.', voice: 'hv_villain', count: 2 }, { seed: (n) => 7 + n });
+  assert.equal(plan.model.id, 'qwen3-tts');
+  assert.equal(plan.items[0].description, v.description);
+  assert.deepEqual(plan.items.map((i) => i.seed), [v.seed, v.seed + 1]);
+  assert.throws(() => planSpeak({ text: 'x', voice: 'hv_nobody' }, { seed: () => 1 }), /No house voice/);
+  const { editorVoices } = await import('../src/editor.ts');
+  assert.ok((await editorVoices()).every((x) => x.id.startsWith('hv_')));
+});
+
+test('the voice and sound tools run on any GPU provider (no SSH), sound effects as the Stable Audio 3 workflow', async () => {
+  for (const id of ['audio.voice-open', 'audio.voice-design-open', 'audio.sfx-open', 'audio.dialogue-open']) assert.equal(getTool(id)?.server, undefined, id);
+  const sfx = getTool('audio.sfx-open')!;
+  assert.equal(typeof sfx.family === 'function' ? sfx.family({ text: 'x' }) : sfx.family, 'stable-audio');
+  const { getWorkflow, loadWorkflows } = await import('../src/workflows/registry.ts');
+  loadWorkflows();
+  const wf = getWorkflow('audio.sfx-sa3')!;
+  assert.equal(wf.manifest.family, 'stable-audio');
+  assert.ok(wf.manifest.models.every((m) => m.url.startsWith('https://huggingface.co/')));
+  assert.equal(wf.graph['8'].class_type, 'SaveAudioAdvanced');
 });

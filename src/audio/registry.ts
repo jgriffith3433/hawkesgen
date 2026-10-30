@@ -33,6 +33,8 @@ export type AudioModel = {
   languages: string[];
   /** Why it is not selectable, if it is not. */
   blocked?: string;
+  /** A model that runs as a ComfyUI workflow (not a venv): that workflow's family. */
+  comfy?: string;
 };
 
 const CHECKED = '2026-10-25 from the model pages named in `note`; re-check before shipping a product on it';
@@ -46,6 +48,7 @@ export const AUDIO_MODELS: AudioModel[] = [
     sizeGb: 6, vramGb: 12,
     license: { code: 'Apache-2.0', weights: 'Apache-2.0', commercial: true, note: 'OpenMOSS-Team model card and github.com/OpenMOSS/MOSS-TTS; the 4B and 8B variants share the license (8B is about 18 GB, not installed by default)', checked: CHECKED },
     adapter: 'planned', gpuPerAudioSecond: 1.2, gpuLoadSeconds: 60, sampleRate: 24000, languages: ['en', 'zh', 'multi'],
+    blocked: 'the runner adapter (post/audio/run.py) is not written; Qwen3-TTS speaks',
   },
   {
     id: 'qwen3-tts', title: 'Qwen3-TTS (1.7B)', kind: 'voice',
@@ -82,16 +85,17 @@ export const AUDIO_MODELS: AudioModel[] = [
     sizeGb: 5, vramGb: 10,
     license: { code: 'Apache-2.0', weights: 'verify', commercial: 'verify', note: 'The MOSS family is Apache-2.0; the v2 sound-effect card was not confirmed. Verify before it is used for a shipped product', checked: CHECKED },
     adapter: 'planned', gpuPerAudioSecond: 1.0, gpuLoadSeconds: 40, sampleRate: 24000, languages: ['en'],
+    blocked: 'the runner adapter (post/audio/run.py) is not written; sound effects run on Stable Audio 3',
   },
   {
-    id: 'stable-audio-3-sfx', title: 'Stable Audio 3 Small-SFX', kind: 'sfx',
+    id: 'stable-audio-3', title: 'Stable Audio 3 Medium (ComfyUI)', kind: 'sfx',
     caps: ['sfx', 'loop'], direction: 'none',
-    repo: 'https://github.com/Stability-AI/stable-audio-tools', weights: ['stabilityai/stable-audio-3-small-sfx'], ref: 'main',
-    pip: ['stable-audio-tools'],
-    sizeGb: 3, vramGb: 8,
-    license: { code: 'Stability AI Community License', weights: 'Stability AI Community License', commercial: true, note: 'Free for commercial use under US$1M annual revenue, enterprise license above that. Needs ComfyUI\'s official template (workflows/audio-sfx-sa3 is not imported yet), so it is not selectable', checked: CHECKED },
-    adapter: 'planned', gpuPerAudioSecond: 0.3, gpuLoadSeconds: 25, sampleRate: 44100, languages: ['en'],
-    blocked: 'wiring needs the official ComfyUI template imported from a running server (hawkesgen_import_workflow); no server was started in phase 1',
+    repo: 'https://github.com/Stability-AI/stable-audio-3', weights: ['Comfy-Org/stable-audio-3'], ref: 'workflows/audio-sfx-sa3',
+    pip: [],
+    sizeGb: 9.7, vramGb: 12,
+    license: { code: 'Stability AI Community License', weights: 'Stability AI Community License', commercial: true, note: 'Free for commercial use under US$1M annual revenue, enterprise license above that. ComfyUI\'s own template (audio_stable_audio_3_medium) without its Qwen prompt rewrite: workflows/audio-sfx-sa3', checked: CHECKED },
+    adapter: 'written', gpuPerAudioSecond: 0.3, gpuLoadSeconds: 20, sampleRate: 44100, languages: ['en'],
+    comfy: 'stable-audio',
   },
   {
     id: 'mmaudio', title: 'MMAudio (video to foley)', kind: 'foley',

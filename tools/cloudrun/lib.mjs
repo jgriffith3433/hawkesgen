@@ -101,6 +101,9 @@ export function contextFiles() {
     Dockerfile: fs.readFileSync(path.join(CLOUDRUN_DIR, 'Dockerfile')),
     'worker.py': fs.readFileSync(path.join(CLOUDRUN_DIR, 'worker.py')),
     'entrypoint.sh': fs.readFileSync(path.join(CLOUDRUN_DIR, 'entrypoint.sh')),
+    // The open voice models' runner and checker (post/audio), copied into the image beside their venvs.
+    'audio-run.py': fs.readFileSync(path.join(CLOUDRUN_DIR, '..', '..', 'post', 'audio', 'run.py')),
+    'audio-asr.py': fs.readFileSync(path.join(CLOUDRUN_DIR, '..', '..', 'post', 'audio', 'asr.py')),
     'nodes.txt': Buffer.from(nodes),
   };
   const h = crypto.createHash('sha256');

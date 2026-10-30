@@ -1,8 +1,31 @@
 # Audio: the open-model sound suite
 
-Voices, sound effects and music from open models on the Gen GPU fleet are the **primary** path; ElevenLabs is
-**secondary** (decision m_0d7841671d85, J 2026-10-25). Phase 1 (this change) designed, wired and priced all of it; **nothing
-has run on a GPU yet**. What still needs a server is at the end ("Not verified without a server").
+Voices, sound effects and music from Gen's own open models are the **primary** path; ElevenLabs is **secondary** (decision
+m_0d7841671d85, J 2026-10-25). They run wherever GPU jobs run (below, "Where it runs"). What still needs a real GPU run is
+at the end ("Not verified without a server").
+
+## Where it runs (2026-10-30)
+
+J, 2026-10-30: "We have our own audio jobs on gen right? We should use those", "fast and cheap. AND we want quality ...
+implement it so it's not complicated, works in the existing system". The AWS fleet (the only place the open models ran, over
+SSH) is gone, so they now run on the same GPU providers as every image and video job (RunPod, Modal: docs/gpu-providers.md),
+through the same queue, broker, billing and resume:
+- **Voices: Qwen3-TTS** (speak, direction, voice design, clone; Apache-2.0) is **in the GPU worker image**
+  (`server/cloudrun/Dockerfile`): its own venv under `/opt/hawkes-audio/qwen3-tts` that shares ComfyUI's PyTorch through a
+  `.pth` (its `transformers==4.57.3` pin wins inside the venv and never touches ComfyUI), plus `asr` (faster-whisper, on the
+  CPU) for `verify`. Gen sends one request whose "graph" is `{ "hawkes_audio": spec }` (`audio-open.ts synthesizeRemote`);
+  the worker runs `post/audio/run.py` (copied into the image) and returns its `out/` folder. Weights download from Hugging
+  Face on a worker's first voice job (about 4.5 GB per Qwen repo; on the provider's volume at `MODELS_MOUNT/hf` when mounted).
+  VoxCPM2 and Chatterbox are not in the image (a job naming them says so).
+- **Sound effects: Stable Audio 3 Medium** as a ComfyUI workflow (`workflows/audio-sfx-sa3`: ComfyUI's own template without its
+  Qwen prompt rewrite, 8 LCM steps, about 10 GB of models fetched from their Hugging Face URLs). `audio.sfx` runs it one graph
+  per take and keeps its own post-processing (trim, loudness, seamless loops). The broker also serves any workflow
+  manifest's model URLs now, so `audio.music` (ACE-Step) fetches its models the same way.
+- **House voices** (`src/audio/house.ts`): twelve ready-made voices (`hv_` ids: name, about, a voice description and a
+  seed) that the app, the AI and the director cast. `tools/house-voices.mjs --make` designs each once and saves it to the
+  `shared` project under its id; from then on every line clones that sample (the same voice in every line) and the app plays
+  it as the preview (`GET /v1/audio/house/:id/preview`). Before that, each line is designed from the description and seed.
+- On the fleet (if it comes back) nothing changed: the same tools install the venv over SSH.
 
 Every name that callers use today keeps working: `audio.voice`, `audio.sfx`, `audio.dialogue`, `audio.voice-design`,
 `audio.voice-save`, `audio.voice-list`, `audio.voice-delete`, `audio.voice-change`, `audio.music`. Their ElevenLabs params,
@@ -40,12 +63,12 @@ It no longer gates routing; it only ranks models when several can do the job.
 
 | Model | Use | Size / VRAM | License | Status |
 |---|---|---|---|---|
-| MOSS-TTS v1.5 (1.7B) | speak, direction, clone, design, dialogue | ~6 GB / 12 GB | Apache-2.0 (code and weights) | adapter **not written** (see below) |
-| Qwen3-TTS 1.7B (VoiceDesign, Base, CustomVoice) | speak, direction, clone, design | ~14 GB / 10 GB | Apache-2.0; pins `transformers==4.57.3`, own venv | adapter written |
+| MOSS-TTS v1.5 (1.7B) | speak, direction, clone, design, dialogue | ~6 GB / 12 GB | Apache-2.0 (code and weights) | **blocked**: adapter not written |
+| Qwen3-TTS 1.7B (VoiceDesign, Base, CustomVoice) | speak, direction, clone, design | ~14 GB / 10 GB | Apache-2.0; pins `transformers==4.57.3`, own venv | **the voice model**: in the worker image |
 | VoxCPM2 (2B, 48 kHz) | speak, direction (voice description), clone, design | ~5 GB / 10 GB | Apache-2.0 | adapter written |
 | Chatterbox | speak, direction (knobs and tags), clone | ~4 GB / 8 GB | MIT; outputs carry Resemble's Perth watermark | adapter written |
-| MOSS-SoundEffect v2 (1.3B) | sfx, loop | ~5 GB / 10 GB | Apache-2.0 family, **v2 card not confirmed**: results carry a license warning | adapter **not written** |
-| Stable Audio 3 Small-SFX | sfx, loop | ~3 GB / 8 GB | Stability AI Community License: free under US$1M annual revenue | **blocked**: needs the official ComfyUI template imported from a running server |
+| MOSS-SoundEffect v2 (1.3B) | sfx, loop | ~5 GB / 10 GB | Apache-2.0 family, **v2 card not confirmed** | **blocked**: adapter not written |
+| Stable Audio 3 Medium | sfx, loop | ~10 GB / 12 GB | Stability AI Community License: free under US$1M annual revenue | **the sound-effect model**: `workflows/audio-sfx-sa3` |
 | ACE-Step 1.5 XL | music | ~12 GB / 20 GB | MIT | already `audio.music` |
 | MMAudio / HunyuanVideo-Foley | video to foley | | MMAudio code MIT, weights unverified; Hunyuan excludes EU/UK/KR | not wired (optional, later) |
 | MiniMax Music 3 | vocal songs | | license sources conflict | evaluation only, not wired |
@@ -151,6 +174,9 @@ MiniMax needs its license read first (sources conflict). Both are in the follow-
   `openbmb/VoxCPM2`, `ResembleAI/chatterbox`), sample rates, VRAM and install sizes are from model pages, not measured.
 - **MOSS-TTS and MOSS-SoundEffect have no adapter yet** (`NotWired`): their entry points and the repo names
   (`OpenMOSS-Team/MOSS-TTS`, `OpenMOSS-Team/MOSS-SoundEffect`) need reading on a real install. richservo's ComfyUI nodes are the alternative.
-- Stable Audio 3: the official template and its node/model file names must be imported from a server.
+- The worker image with the audio venvs has not been built yet (push a `gpu-image-*` tag), and no voice or Stable Audio 3
+  job has run on RunPod or Modal: the first ones measure the cold start, the GPU seconds and the quality. The venv step was
+  checked in a Linux container with CPU PyTorch (the `.pth` share, the pins, the imports), and the worker's audio request
+  with a fake model.
 - Code pins are `main` until the first install; the READY mark then records what was installed (`COMMIT` file for MOSS).
 - Whether Qwen3-TTS runs on a 16 GB T4-class card in bf16, and which GPU the fleet should use for 8B MOSS.

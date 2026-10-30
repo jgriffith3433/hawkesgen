@@ -69,8 +69,8 @@ const HIDDEN = /(-open$|^image\.remove-background$|^image\.repaint$|^asset\.make
 // Params every form keeps under "More settings", and ones it never shows (the app sets them).
 const ADVANCED = new Set(['seed', 'count', 'denoise', 'fps', 'frames', 'width', 'height', 'openModel', 'direction', 'verify', 'normalize', 'trim', 'variants', 'feather', 'threshold', 'influence', 'strength', 'texture_resolution', 'enable_lightning_lora', 'lightning_lora', 'enable_distill_lora', 'full', 'replacement_mode', 'longer_size', 'cell', 'retries', 'straighten', 'method', 'detail', 'faces', 'texture', 'size', 'names', 'facing', 'keepTextures', 'isolate']);
 const NEVER = new Set(['provider', 'nodes']);
-// Tools whose voices and sounds are made on ElevenLabs while the open models wait for a GPU provider (see AGENTS.md).
-const FIXED = { 'audio.voice': { provider: 'elevenlabs' }, 'audio.sfx': { provider: 'elevenlabs' }, 'audio.voice-design': { provider: 'elevenlabs' }, 'audio.voice-change': { provider: 'elevenlabs' } };
+// Voices, voice design and sound effects run on Gen's own models; changing a voice is ElevenLabs only (see AGENTS.md).
+const FIXED = { 'audio.voice-change': { provider: 'elevenlabs' } };
 const WORDS = { prompt: 'Prompt', text: 'Text', lyrics: 'Lyrics (blank for instrumental)', seconds: 'Seconds', duration: 'Seconds', description: 'Description', form: 'What it is', look: 'What it looks like', aspect: 'Shape', at: 'At (seconds, "first" or "last")', kind: 'Kind', multiplier: 'Frames between frames', loop: 'Loop', allowSingleView: 'Allow one view (props and blockouts)', voice: 'Voice', bpm: 'Beats per minute', resize: 'Scale', mode: 'Mode', format: 'Format', name: 'Name', brief: 'What to check', focus: 'Focus', language: 'Language' };
 const words = (name) => WORDS[name] ?? name.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]/g, ' ').replace(/^./, (c) => c.toUpperCase());
 const KIND_LABEL = { image: 'Image', video: 'Video', audio: 'Audio', file: 'File' };
@@ -235,7 +235,7 @@ function toolForm(t, prefill, prefillNodes) {
     const ctl = control(t.id, k, spec);
     if (!ctl) continue;
     get[k] = ctl.get;
-    (spec.advanced || ADVANCED.has(k) || (!spec.required && k !== 'prompt' && k !== 'text' && params.length > 6 && !['seconds', 'duration', 'aspect', 'lyrics', 'voice', 'kind', 'look', 'form', 'description', 'allowSingleView', 'at'].includes(k)) ? adv : main).push(ctl.el);
+    (spec.advanced || ADVANCED.has(k) || (k === 'description' && t.id === 'audio.voice') || (!spec.required && k !== 'prompt' && k !== 'text' && params.length > 6 && !['seconds', 'duration', 'aspect', 'lyrics', 'voice', 'kind', 'look', 'form', 'description', 'allowSingleView', 'at'].includes(k)) ? adv : main).push(ctl.el);
   }
   let shape = projectShape();
   let style = '';

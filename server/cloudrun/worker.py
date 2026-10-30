@@ -41,8 +41,11 @@ no bucket to read before a request brings a token); MODELS_MOUNT on a provider's
 import hmac
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -64,6 +67,10 @@ MODELS_MOUNT = os.environ.get("MODELS_MOUNT", "/mnt/models")
 # "dir/file" entries, comma separated: what this service preloads (deploy.mjs sets it from services.json).
 PRELOAD = [m for m in os.environ.get("HAWKES_MODELS", "").split(",") if m.strip()]
 COMFY_FLAGS = os.environ.get("COMFY_FLAGS", "--disable-pinned-memory").split()
+# The open voice models (Gen's docs/audio.md): one venv per model under here, made in the image (Dockerfile), with
+# post/audio/run.py and asr.py beside them. Their weights come from Hugging Face on first use into the cache below
+# (on the provider's volume when one is mounted, so a cold worker skips the download).
+AUDIO_ROOT = os.environ.get("AUDIO_ROOT", "/opt/hawkes-audio")
 HEARTBEAT_S = 15
 CANCEL_CHECK_S = 5
 CHUNK = 64 * 1024 * 1024
@@ -601,6 +608,94 @@ class Run:
                 log(f"manifest for {self.key}: {e}")
         self.emit(final)
 
+    def _audio(self, spec, written):
+        """An open audio model's job (Gen's src/tools/audio-open.ts synthesize): run.py in the model's venv, not a graph.
+        The same request, files and answer as a graph; the outputs are run.py's out/ folder (takes, result.json and the
+        transcripts when asked)."""
+        model = str(spec.get("model", ""))
+        py = os.path.join(AUDIO_ROOT, model, "venv", "bin", "python")
+        if not re.fullmatch(r"[\w.-]+", model) or not os.path.exists(py):
+            have = sorted(d for d in os.listdir(AUDIO_ROOT) if os.path.exists(os.path.join(AUDIO_ROOT, d, "venv"))) if os.path.isdir(AUDIO_ROOT) else []
+            raise RuntimeError(f"this worker image has no open audio model {model!r} (it has {', '.join(have) or 'none'}): build the GPU image again")
+        work = tempfile.mkdtemp(prefix="audio-")
+        try:
+            items = []
+            for it in spec.get("items") or []:
+                it = dict(it)
+                if it.get("ref"):
+                    it["ref"] = os.path.join(COMFY_DIR, "input", it["ref"])
+                items.append(it)
+            with open(os.path.join(work, "spec.json"), "w") as fh:
+                json.dump({**spec, "items": items}, fh)
+            # The GPU is ComfyUI's too: let go of what its last graph left loaded.
+            try:
+                comfy("/free", {"unload_models": True, "free_memory": True})
+            except Exception:  # noqa: BLE001
+                pass
+            mounted_hf = os.path.join(MODELS_MOUNT, "hf")
+            env = {**os.environ, "HF_HOME": mounted_hf if os.path.isdir(mounted_hf) else os.path.join(AUDIO_ROOT, "hf"), "HF_HUB_ENABLE_HF_TRANSFER": "0", "PYTHONUNBUFFERED": "1"}
+            self.step(f"{'making sounds' if spec.get('task') == 'sfx' else 'speaking'} with {model}")
+            self._proc([py, os.path.join(AUDIO_ROOT, "run.py"), "spec.json"], work, env)
+            outdir = os.path.join(work, "out")
+            asr_py = os.path.join(AUDIO_ROOT, "asr", "venv", "bin", "python")
+            if spec.get("asr") and os.path.exists(asr_py):
+                self.step("checking each take says its text")
+                for name in sorted(os.listdir(outdir)):
+                    if not name.endswith(".wav"):
+                        continue
+                    dest = os.path.join(outdir, name[:-4] + ".asr.json")
+                    try:
+                        r = subprocess.run([asr_py, os.path.join(AUDIO_ROOT, "asr.py"), os.path.join(outdir, name), str(spec.get("language") or "en")],
+                                           cwd=work, env={**env, "ASR_DEVICE": "cpu"}, capture_output=True, text=True, timeout=300)
+                        line = r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else '{"text":""}'
+                    except Exception:  # noqa: BLE001 - an unchecked take is still a take
+                        line = '{"text":""}'
+                    with open(dest, "w") as fh:
+                        fh.write(line)
+            out = []
+            for i, name in enumerate(sorted(os.listdir(outdir))):
+                with open(os.path.join(outdir, name), "rb") as fh:
+                    data = fh.read()
+                uri = f"{self.out}{i:02d}-{name}"
+                self.store.write(uri, data)
+                out.append({"filename": name, "subfolder": "", "type": "output", "node": "audio", "uri": uri, "bytes": len(data)})
+            return {"t": "done", "files": out}
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            for p in written:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    def _proc(self, cmd, cwd, env):
+        """Runs a command, passing its "HB step ..." lines on as steps, with the run's cancel and time limit."""
+        logf = os.path.join(cwd, "run.log")
+        started = time.time()
+        with open(logf, "w") as lf:
+            p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=lf, stderr=subprocess.STDOUT)
+        seen = 0
+        while True:
+            code = p.poll()
+            with open(logf, errors="replace") as fh:
+                lines = fh.read().splitlines()
+            for line in lines[seen:]:
+                if line.startswith("HB step "):
+                    self.step(line[8:])
+            seen = len(lines)
+            if code is not None:
+                if code != 0:
+                    raise RuntimeError(f"the audio model failed (exit {code}): " + " / ".join(lines[-12:])[-1500:])
+                return
+            if self.cancelled():
+                p.kill()
+                raise Cancelled()
+            if time.time() - started > self.limit:
+                p.kill()
+                raise OverLimit()
+            self.progress(f"running for {int(time.time() - started)}s")
+            time.sleep(1)
+
     def _execute(self):
         done = self.store.read(self.out + "manifest.json")
         if done:
@@ -622,6 +717,8 @@ class Run:
                 self.step(f"fetching input {name}")
                 self.store.download(uri, dest, parallel=4)
                 written.append(dest)
+        if isinstance(req["graph"], dict) and "hawkes_audio" in req["graph"]:
+            return self._audio(req["graph"]["hawkes_audio"], written)
         more = graph_models(req["graph"])
         if more:
             self.step(f"linking {len(more)} model(s) from the bucket")

@@ -40,6 +40,21 @@ RUN set -e; while read -r repo commit; do \
       if [ -f "$COMFY_DIR/custom_nodes/$name/requirements.txt" ]; then pip install -r "$COMFY_DIR/custom_nodes/$name/requirements.txt"; fi; \
     done < /tmp/nodes.txt
 
+# The open voice models (Gen's docs/audio.md): one venv each, so their pins (Qwen3-TTS: transformers 4.57.3) never touch
+# ComfyUI's. A .pth puts ComfyUI's site-packages after the venv's own, so they share its PyTorch instead of carrying a
+# second copy. No weights: they come from Hugging Face on first use. The transcriber checks each take (on the CPU).
+ENV AUDIO_ROOT=/opt/hawkes-audio
+COPY audio-run.py /opt/hawkes-audio/run.py
+COPY audio-asr.py /opt/hawkes-audio/asr.py
+RUN set -e; base=$("$COMFY_DIR/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])'); \
+    for m in qwen3-tts asr; do \
+      /usr/bin/python3 -m venv "$AUDIO_ROOT/$m/venv"; \
+      echo "$base" > "$("$AUDIO_ROOT/$m/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')/zz-comfy.pth"; \
+    done; \
+    "$AUDIO_ROOT/qwen3-tts/venv/bin/pip" install qwen-tts soundfile; \
+    "$AUDIO_ROOT/asr/venv/bin/pip" install faster-whisper; \
+    "$AUDIO_ROOT/qwen3-tts/venv/bin/python" -c 'import torch, qwen_tts; print("qwen3-tts ok, torch", torch.__version__)'
+
 COPY worker.py /opt/hawkes/worker.py
 COPY entrypoint.sh /opt/hawkes/entrypoint.sh
 RUN chmod +x /opt/hawkes/entrypoint.sh && mkdir -p "$COMFY_DIR/input/hawkesgen" "$COMFY_DIR/output"

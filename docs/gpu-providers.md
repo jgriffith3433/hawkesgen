@@ -176,7 +176,7 @@ container image stays small). Gen already routes by family (`families` on each `
 | image | z-image, qwen-image / qwen-edit, utility (cutout, depth, upscale, segment, pose) | RunPod (load balancer: requests end at 5.5 min) | L40S | ~120 GB, ~$8/month |
 | 3D | trellis2, hunyuan3d, multi-view | RunPod | L40S | ~50 GB, ~$3.50/month |
 | video | wan (i2v, animate, infinitetalk, t2v, control), ltx-2.3, minimax-h3 | Modal (requests up to ~55 min) | L40S, or 80 GB if Wan needs it | ~200 GB |
-| audio | ACE-Step and the open voice/SFX models | Modal | 24 GB card | ~40 GB; needs its own worker (these aren't ComfyUI) |
+| audio | ACE-Step, Stable Audio 3, Qwen3-TTS (its venv is in the worker image; docs/audio.md "Where it runs") | any | 24 GB card | ~35 GB with the Hugging Face cache at `MODELS_MOUNT/hf` |
 
 The work: a fill job per volume (Hugging Face into the volume: a cheap RunPod CPU pod, a Modal function), MODEL_LOAD
 mount with MODELS_MOUNT on each endpoint, one settings entry per endpoint with its families. A family lives on one

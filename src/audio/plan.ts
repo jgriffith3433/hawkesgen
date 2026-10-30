@@ -6,11 +6,14 @@ import { loadSettings } from '../config.ts';
 import { AUDIO_MODELS, modelById, selectable, type AudioModel, type Capability } from './registry.ts';
 import { mapDirection, type Mapped } from './direction.ts';
 import { getVoice, isGenVoiceId, refPath, type Voice } from './voicelib.ts';
+import { houseReference, houseVoice, isHouseVoiceId, isOwnVoiceId } from './house.ts';
 
 export type Provider = 'open' | 'elevenlabs' | 'auto';
 
 /** Preference when several models can do the job: the audition list's order, models whose adapter is written first. */
-const ORDER = ['moss-tts', 'qwen3-tts', 'voxcpm2', 'chatterbox', 'moss-soundeffect'];
+// Qwen3-TTS first: it speaks, takes direction, designs and clones, and it is the one in the GPU worker image
+// (server/cloudrun/Dockerfile). Stable Audio 3 is the sound effects (a ComfyUI workflow).
+const ORDER = ['qwen3-tts', 'voxcpm2', 'chatterbox', 'stable-audio-3', 'moss-tts', 'moss-soundeffect'];
 const rank = (m: AudioModel) => (m.adapter === 'written' ? 0 : 10) + ORDER.indexOf(m.id);
 
 export const verifiedModels = () => new Set(loadSettings().audio.verified);
@@ -55,14 +58,18 @@ export function planSpeak(c: VoiceCall, o: { reference?: string | null; referenc
   const text = String(c.text ?? '').trim();
   if (!text) throw new GenError('text is required');
   let voice: Voice | null = null;
-  if (c.voice) {
+  // A house voice (src/audio/house.ts): its saved reference when it has one (the same voice every line), else its description.
+  const house = isHouseVoiceId(c.voice) ? houseVoice(String(c.voice)) : null;
+  if (isHouseVoiceId(c.voice) && !house) throw new GenError(`No house voice ${c.voice}`, { status: 404 });
+  if (house) voice = houseReference(house.id);
+  else if (c.voice) {
     if (!isGenVoiceId(c.voice)) throw new GenError(`voice ${c.voice} is not a Gen voice id (gv_...); ElevenLabs ids run with provider: "elevenlabs"`);
     voice = getVoice(c.voice);
     if (!voice) throw new GenError(`No voice ${c.voice} in the Gen voice library`, { status: 404 });
   }
   const ref = o.reference ?? (voice ? refPath(voice) : null);
   const refText = o.referenceText ?? voice?.refText ?? null;
-  const description = c.description ?? voice?.description ?? null;
+  const description = c.description ?? voice?.description ?? house?.description ?? null;
   // A designed voice with no reference clip can only be spoken by the model that designed it (its description is its voice).
   const wanted = c.openModel && c.openModel !== 'auto' ? c.openModel : !ref && voice?.model && modelById(voice.model) ? voice.model : undefined;
   const model = pickModel('voice', need(voice, c, Boolean(ref)), wanted, o.verified);
@@ -73,7 +80,7 @@ export function planSpeak(c: VoiceCall, o: { reference?: string | null; referenc
     const m: Mapped = mapDirection(model, text, c.direction);
     return {
       id: `take${i}`, text: m.text, instruct: m.instruct, exaggeration: m.exaggeration, cfgWeight: m.cfgWeight, speed: m.speed,
-      description, refFile: ref, refText, language: c.language ?? voice?.language ?? 'en', seed: o.seed(i), dropped: m.dropped,
+      description, refFile: ref, refText, language: c.language ?? voice?.language ?? 'en', seed: house && !ref && c.seed == null ? house.seed + i : o.seed(i), dropped: m.dropped,
     };
   });
   return { model, voice, items, warnings };
@@ -121,10 +128,10 @@ export function routeAudio(tool: 'voice' | 'sfx' | 'dialogue' | 'design' | 'save
   if (prov === 'elevenlabs') return null;
   if (prov === 'auto') {
     // Old content: a call that names an ElevenLabs voice id keeps its ElevenLabs voice.
-    if (tool === 'voice' && p.voice && !isGenVoiceId(p.voice)) return null;
+    if (tool === 'voice' && p.voice && !isOwnVoiceId(p.voice)) return null;
     if (tool === 'dialogue') {
       const cast = Object.values((p.cast && typeof p.cast === 'object' ? p.cast : {}) as Record<string, unknown>).concat(Array.isArray(p.lines) ? p.lines.map((l: any) => l?.voice) : []).filter(Boolean);
-      if (cast.some((v) => !isGenVoiceId(v))) return null;
+      if (cast.some((v) => !isOwnVoiceId(v))) return null;
     }
   }
   return OPEN[tool];
