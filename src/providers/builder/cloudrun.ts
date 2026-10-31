@@ -289,6 +289,17 @@ const CAPACITY_WAIT_MS = 3 * 60_000;
 /** The build's regions in order: the main one, then settings.unityBuild.gcp.regions. */
 export const regionsOf = (cfg: { gcp: { region: string; regions?: string[] } }) => [cfg.gcp.region, ...(cfg.gcp.regions ?? []).filter((r) => r !== cfg.gcp.region)];
 
+/** The regions whose customer job is there and safe (checkCustomerJob), in order; none: the first region's reason. */
+export async function customerRegions(all: string[], target: CloudRunTarget, hooks: BuildHooks, check: (t: CloudRunTarget) => Promise<void> = checkCustomerJob): Promise<string[]> {
+  const ok: string[] = [];
+  let first: unknown = null;
+  for (const r of all) {
+    try { await check({ ...target, region: r }); ok.push(r); } catch (e: any) { first ??= e; hooks.log(`(${r}: ${e.message.split(':')[0]}; skipped)`); }
+  }
+  if (!ok.length) throw first;
+  return ok;
+}
+
 /** Starts the execution in the first region from `from` that has the job (customer jobs checked there too); a region
  *  whose job is missing, or that refuses the start (quota, unavailable), is skipped with a log line. */
 async function startInRegion(regions: string[], from: number, target: CloudRunTarget, envs: Record<string, string>, timeoutMinutes: number, customer: boolean, hooks: BuildHooks): Promise<{ name: string }> {
@@ -318,6 +329,8 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   let job = await loadJob(jobId, cfg.gcp.bucket);
   // The env the build was started with, kept in memory only (a customer's token is in it) so a full region can hand it on.
   let startEnvs: Record<string, string> | null = null;
+  // The regions this build may run in, in order (customer builds: only those with a checked customer job).
+  let regions = regionsOf(cfg);
   const baseTarget = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
   if (job) {
     hooks.log(`the cloud build was already started (${job.execution.split('/').pop()}); following it`);
@@ -328,7 +341,9 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     let sign: Signer | null = null;
     try {
       if (spec.customer) {
-        await checkCustomerJob(target);
+        // The first region whose customer job is there and checks out: a region with only J's job is skipped
+        // (2026-10-31: live Gen's main region had no customer job, and the build failed instead of moving on).
+        regions = await customerRegions(regionsOf(cfg), target, hooks);
         sign = await gcsSigner();
         if (!sign) throw fail('Customer builds reach the bucket only through signed URLs, and Hawkes Gen can\'t sign here: on Cloud Run it signs as its own service account (roles/iam.serviceAccountTokenCreator on itself); on a PC set HAWKESGEN_GCP_IMPERSONATE to that account.', 'config');
       }
@@ -347,7 +362,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
       envs.HAWKES_SIGNED = JSON.stringify(await customerSigned(cfg, p, sign!));
     }
     startEnvs = envs;
-    const execution = await startInRegion(regionsOf(cfg), 0, target, envs, cfg.timeoutMinutes, !!spec.customer, hooks);
+    const execution = await startInRegion(regions, 0, target, envs, cfg.timeoutMinutes, !!spec.customer, hooks);
     job = { execution: execution.name, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
     await saveJob(jobId, job, cfg.gcp.bucket);
     hooks.log(`cloud build started: ${execution.name.split('/').pop()} in ${regionOfExecution(execution.name)} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
@@ -377,7 +392,6 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     // No machine free in this region: hand the build to the next region that has the job (only while this process has
     // the env it started with; a resumed follow just waits).
     if (state.waitingForCapacity && startEnvs && Date.now() - job.started > CAPACITY_WAIT_MS) {
-      const regions = regionsOf(cfg);
       const at = regions.indexOf(regionOfExecution(job.execution));
       if (at >= 0 && at < regions.length - 1) {
         try {

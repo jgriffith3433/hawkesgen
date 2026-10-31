@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 
 const cache = await import('../src/providers/builder/cache.ts');
 const gcp = await import('../src/providers/builder/gcp.ts');
-const { cloudRunCost, regionsOf } = await import('../src/providers/builder/cloudrun.ts');
+const { cloudRunCost, regionsOf, customerRegions } = await import('../src/providers/builder/cloudrun.ts');
 const { unityBackendOf, SETTINGS_DEFAULTS } = await import('../src/config.ts');
 
 test('cache names are safe and repos are the project path', () => {
@@ -208,4 +208,16 @@ test('a full region hands the build on: waiting for capacity, the regions in ord
   assert.equal(gcp.regionOfExecution('projects/p/locations/us-central1/jobs/j/executions/j-abc'), 'us-central1');
   assert.deepEqual(regionsOf({ gcp: { region: 'us-east4', regions: ['us-central1', 'us-east4', 'us-west1'] } }), ['us-east4', 'us-central1', 'us-west1']);
   assert.deepEqual(SETTINGS_DEFAULTS.unityBuild.gcp.regions, ['us-central1']);
+});
+
+test("a customer build skips a region that has only J's job, and says why when none has one", async () => {
+  const logs: string[] = [];
+  const hooks: any = { log: (s: string) => logs.push(s) };
+  const t = { project: 'p', region: 'us-west1', job: 'hawkes-unity-build-customer' };
+  const has = new Set(['us-east4', 'us-central1']);
+  const check = async (x: typeof t) => { if (!has.has(x.region)) throw Object.assign(new Error(`Customer builds run only on their own Cloud Run job, and ${x.job} isn't there (p, ${x.region})`), { kind: 'config' }); };
+  assert.deepEqual(await customerRegions(['us-west1', 'us-east4', 'us-central1'], t, hooks, check), ['us-east4', 'us-central1']);
+  assert.match(logs[0], /us-west1.*skipped/);
+  has.clear();
+  await assert.rejects(customerRegions(['us-west1'], t, hooks, check), /isn't there \(p, us-west1\)/);
 });
