@@ -442,6 +442,11 @@ if [ "$CUSTOMER" = true ]; then
   key="$OUT_PREFIX/artifact.tgz"
   log "packing the build: $files files ($(( raw / 1048576 )) MB)"
   tar -czf "$OUT/artifact.tgz" -C "$HAWKES_OUT" . || die output "couldn't pack the build"
+  # What a cloud build can hand back: Gen holds the output in memory once to keep it (2026-10-31 review: a bigger one
+  # could take Gen down with every job running beside it). Said plainly, with what to do.
+  packed=$(stat -c %s "$OUT/artifact.tgz" 2>/dev/null || wc -c < "$OUT/artifact.tgz")
+  max=${HAWKES_ARTIFACT_MAX:-1610612736}
+  [ "$packed" -le "$max" ] || die output "the build is $(( packed / 1048576 )) MB packed, over the $(( max / 1048576 )) MB a cloud build can hand back: turn WebGL compression on (Player Settings > Publishing), strip unused assets, or build it in your own GitHub Actions (the builds skill's template)"
   gs_put "$OUT_BUCKET" "$key" "$OUT/artifact.tgz" application/gzip || die output "couldn't upload the build"
   rm -f "$OUT/artifact.tgz"
   OUTPUT_JSON=$(jq -nc --arg object "$key" --argjson bytes "$raw" --argjson files "$files" '{ object: $object, bytes: $bytes, files: $files, changed: [], deleted: [] }')
