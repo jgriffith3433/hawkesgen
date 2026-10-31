@@ -11,6 +11,23 @@ database and library stayed on AWS.
 - **The databases** (`hawkesgen.db`, `analytics.db`) are restored from Cloud Storage when an instance starts and
   streamed back after every change by [Litestream](https://litestream.io) (`server/gen-cloudrun/entrypoint.sh`,
   `litestream.yml`; `gs://<project>-gen-state/db/`).
+- **One writer across revisions** (`src/cloudlease.ts`, ported from Studio after studio-beta lost data on a deploy,
+  2026-10-31). Max-instances 1 is per revision: during a deploy, and for a while after it, the old revision's instance
+  keeps running and Litestream keeps streaming its own generation while the new one restores another, so what the old
+  one writes afterwards is lost. A lease in the state bucket fixes that:
+  - `db/lease.json` names the holder; `db/alive-<id>` is its heartbeat every 5 s, with each database's Litestream
+    generation; `db/released-<id>` is written after its last sync, with those generations.
+  - A starting instance claims before `litestream restore` (`entrypoint.sh`: `node src/cloudlease.ts claim`), then waits
+    up to 30 s for the previous holder's release and restores exactly the generations it names (`-generation`). Only a
+    holder already silent for 15 s before the claim (crashed, gone) is skipped, and then its last heartbeat's generations
+    are restored.
+  - The holder checks the lease every 5 s (`startCloudHost` → `watchLease`): when another instance claimed it, it pushes
+    its state files and exits; Litestream syncs one last time (it runs in the background, not `exec`, with a TERM trap)
+    and `entrypoint.sh` writes the release (`cloudlease.ts release`).
+  - An older revision (by its number in `K_REVISION`) never claims from a newer one: its claim exits 3 and the instance
+    logs "stays down" and stops.
+  - Nothing the claim imports opens a database (an empty one would make `restore -if-db-not-exists` skip). Test
+    `test/cloud-lease.test.ts`. In the logs a clean deploy reads `[lease] {..."how":"released","generation":{...}}`.
 - **State files** beside them (`settings.json`, Cloud Run image refs, small caches) are pulled before Gen reads them and
   pushed when they change and when Cloud Run stops the instance (`src/cloudhost.ts`; `gs://<project>-gen-state/state/`).
 - **Library files** live in `gs://<project>-gen-library` (`HAWKESGEN_LIBRARY_STORE=gcs`): every new file is backed up

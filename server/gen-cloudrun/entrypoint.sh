@@ -6,8 +6,22 @@ set -e
 : "${HAWKESGEN_STATE_BUCKET:?HAWKESGEN_STATE_BUCKET is not set}"
 export HAWKESGEN_PORT="${PORT:-8080}"
 mkdir -p /data
+# One writer at a time (src/cloudlease.ts): claim the databases and wait until the instance before this one (a deploy's
+# old revision lives on for a while) has stopped writing and made its last sync, then restore what it left.
+LEASE=0
+node --disable-warning=ExperimentalWarning src/cloudlease.ts claim || LEASE=$?
+# A newer revision holds the databases (this is a stray instance of an old one): don't start, don't write.
+if [ "$LEASE" = 3 ]; then echo "[lease] a newer revision holds the database: this old one stays down"; exit 0; fi
 for db in hawkesgen.db analytics.db; do
-  litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists "/data/$db"
+  GEN=$(cat "/tmp/hawkes-restore-generation-$db" 2>/dev/null || true)
+  litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists ${GEN:+-generation "$GEN"} "/data/$db"
 done
-exec litestream replicate -config /etc/litestream.yml \
-  -exec "node --disable-warning=ExperimentalWarning src/cloudrun-main.ts"
+# Not exec: once Gen stops (Cloud Run's SIGTERM, or a newer instance took the lease) and Litestream has made its last
+# sync, this shell tells the next instance it may restore.
+litestream replicate -config /etc/litestream.yml \
+  -exec "node --disable-warning=ExperimentalWarning src/cloudrun-main.ts" &
+LS=$!
+trap 'kill -TERM $LS 2>/dev/null' TERM INT
+wait $LS || true
+wait $LS 2>/dev/null || true
+node --disable-warning=ExperimentalWarning src/cloudlease.ts release || true

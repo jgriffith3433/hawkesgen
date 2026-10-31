@@ -113,6 +113,12 @@ export function startCloudHost({ every = 30_000, ping = 45_000 } = {}) {
   // Mark what came down from the bucket as already pushed, so the first loop sends only real changes.
   changedFiles(DATA_DIR, seen);
   setInterval(() => void pushState().catch((e) => console.warn(`[cloudhost] state push: ${e.message}`)), every).unref();
+  // One writer at a time (cloudlease.ts): once a newer instance has claimed the databases, this one saves its state and
+  // stops, so nothing it writes afterwards is lost on a copy nobody reads.
+  void import('./cloudlease.ts').then((L) => L.watchLease((by) => {
+    console.log(`[cloudhost] ${by.rev ?? 'another instance'} took over the database: saving state and stopping`);
+    void flushOnStop().finally(() => process.exit(0));
+  })).catch((e) => console.warn(`[cloudhost] lease: ${e.message}`));
   const url = selfUrl();
   if (url) {
     setInterval(() => void busy().then(async (b) => { if (b) await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(20_000) }); }).catch(() => {}), ping).unref();

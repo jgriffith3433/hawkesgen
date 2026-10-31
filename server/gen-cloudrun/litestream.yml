@@ -1,5 +1,6 @@
 # Gen's two SQLite databases, streamed to Cloud Storage (the bucket comes from the environment). Credentials are the
-# service's own account (the metadata server). One instance at most writes them: the service runs with max-instances 1.
+# service's own account (the metadata server). One instance at most writes them: max-instances 1, and across revisions
+# the lease in src/cloudlease.ts (a deploy's old instance stops and syncs before the new one restores).
 dbs:
   - path: /data/hawkesgen.db
     replicas:
