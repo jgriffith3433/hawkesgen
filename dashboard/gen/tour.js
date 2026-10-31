@@ -87,7 +87,9 @@ export function initTour() {
   const maybe = (fresh) => {
     if (!state.user || tourDone()) return;
     const isNew = fresh || Date.now() - (state.user.created ?? 0) < 30 * 60 * 1000;
-    if (isNew) setTimeout(() => { if (!T && !$('#landing:not([hidden])') && !document.querySelector('dialog[open]')) startTour(); }, 900);
+    // Only before the person has started: never over an edit already under way (a clip on a track, a tool sheet open).
+    const started = () => !!$('#toolSheet') || !!document.querySelector('#tlTracks .clip');
+    if (isNew) setTimeout(() => { if (!T && !started() && !$('#landing:not([hidden])') && !document.querySelector('dialog[open]')) startTour(); }, 900);
   };
   bus.on('welcome', () => maybe(true));
   bus.on('ready', () => maybe(false));
