@@ -27,7 +27,8 @@ import {
   siteInputKeep, STUB, type CloudResult,
 } from './cache.ts';
 import { githubRepos, githubSite, buildCommitMessage, R2_BUILDS } from './github.ts';
-import { customerCacheRepo, DEFAULT_METHOD } from './customer.ts';
+import { customerCacheRepo, DEFAULT_METHOD, checkCustomerJob, customerSignedUrls, customerUrlSeconds } from './customer.ts';
+import { signer as gcsSigner, signedUrl, type Signer } from '../gpu/sign.ts';
 
 const fail = (message: string, kind = 'builder') => new GenError(message, { status: 409, kind });
 
@@ -186,7 +187,7 @@ export function checkBuild(spec: BuildSpec, cfg: ReturnType<typeof cloudConfig>,
   return { spec, unity, target };
 }
 
-export type Prepared = { prefix: string; specUri: string; repo: string; saveKey: string | null; stateKey: string; clean: boolean };
+export type Prepared = { prefix: string; specUri: string; repo: string; saveKey: string | null; stateKey: string; clean: boolean; restore: string[] };
 
 /** Works out the commits, uploads the inputs and writes spec.json; the same for Cloud Run and the build VM. */
 export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string, target: string, hooks: BuildHooks, opts: BuildOptions, cfg: ReturnType<typeof cloudConfig>, tmp: string): Promise<Prepared> {
@@ -244,7 +245,22 @@ export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string
     github: gh ? { owner: gh.repo.split('/')[0], site: githubSite(gh, spec.site!), packages: gh.packages, ref: gh.ref, message: buildCommitMessage(gh, spec.project), builds: gh.builds ? { game: gh.builds, ...R2_BUILDS, ...(loadSettings().unityBuild as any).r2 } : null } : null,
   };
   await gcsWrite(bucket, `${prefix}/spec.json`, Buffer.from(JSON.stringify(body, null, 2)), 'application/json');
-  return { prefix, specUri: `gs://${bucket}/${prefix}/spec.json`, repo, saveKey: keys.save, stateKey, clean: decision.clean };
+  return { prefix, specUri: `gs://${bucket}/${prefix}/spec.json`, repo, saveKey: keys.save, stateKey, clean: decision.clean, restore: decision.clean ? [] : keys.restore };
+}
+
+/**
+ * The signed URLs of one customer build (customer.ts customerSignedUrls): a restore key gets GET URLs only when its
+ * archive is in the bucket; they live the build's limit plus 30 minutes.
+ */
+export async function customerSigned(cfg: ReturnType<typeof cloudConfig>, p: Prepared, s: Signer) {
+  const bucket = cfg.gcp.bucket;
+  const cachePrefix = `unity-cache/${p.repo}`;
+  const have = p.restore.length ? new Set((await gcsList(bucket, `${cachePrefix}/`)).map((o) => o.name)) : new Set<string>();
+  const seconds = customerUrlSeconds(cfg.timeoutMinutes);
+  return customerSignedUrls({
+    bucket, prefix: p.prefix, cachePrefix, restore: p.restore.filter((k) => have.has(`${cachePrefix}/${k}.tar.zst`)), save: p.saveKey,
+    sign: (method, key) => signedUrl(method, `gs://${bucket}/${key}`, s, seconds),
+  });
 }
 
 /** Shows the build's progress lines (the same as the build server's) and remembers the first license line. */
@@ -279,7 +295,15 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     hooks.log(`the cloud build was already started (${job.execution.split('/').pop()}); following it`);
   } else {
     let p: Prepared;
+    // Customer mode: only on the customer job (its account reaches nothing), checked before anything is uploaded.
+    const target = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
+    let sign: Signer | null = null;
     try {
+      if (spec.customer) {
+        await checkCustomerJob(target);
+        sign = await gcsSigner();
+        if (!sign) throw fail('Customer builds reach the bucket only through signed URLs, and Hawkes Gen can\'t sign here: on Cloud Run it signs as its own service account (roles/iam.serviceAccountTokenCreator on itself); on a PC set HAWKESGEN_GCP_IMPERSONATE to that account.', 'config');
+      }
       p = await prepareBuild(jobId, spec, checked.unity, checked.target, hooks, opts, cfg, tmp);
     } catch (e) {
       fs.rmSync(tmp, { recursive: true, force: true });
@@ -287,9 +311,13 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     }
     hooks.step('starting the cloud build');
     // The execution may run 15 minutes past the build's own limit (fetch, cache, upload); Gen cancels it after that.
-    // Customer mode: the job of the project's Unity version, and the customer's token for this execution only.
-    const target = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
-    const envs: Record<string, string> = { HAWKES_SPEC: p.specUri, ...(spec.customer ? { HAWKES_GITHUB_TOKEN: spec.customer.token } : {}) };
+    // Customer mode: the customer job of the project's Unity version, the customer's token for this execution only, and
+    // one signed URL per object the container may touch (its account has no access to the bucket).
+    const envs: Record<string, string> = { HAWKES_SPEC: p.specUri };
+    if (spec.customer) {
+      envs.HAWKES_GITHUB_TOKEN = spec.customer.token;
+      envs.HAWKES_SIGNED = JSON.stringify(await customerSigned(cfg, p, sign!));
+    }
     const execution = await runJob(target, envs, (cfg.timeoutMinutes + 15) * 60);
     job = { execution, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
     await saveJob(jobId, job, cfg.gcp.bucket);

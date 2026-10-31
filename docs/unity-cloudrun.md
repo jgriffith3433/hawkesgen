@@ -128,7 +128,9 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   version and the supported ones. **The supported versions are `gcp.images`** (`{ "<version>": "<Cloud Run job>" }`; a
   job execution can't change its image, so each version is its own job running its own image). Empty: `gcp.unity` on
   `gcp.job`. Adding a version: build an image with that GameCI editor tag (`tools/unity-cloudrun/build-image.mjs`), make
-  a job from it like `hawkes-unity-build` (same secrets, service account, size), add the line.
+  a job from it like `hawkes-unity-build` (same secrets, service account, size), add the line, then make its customer
+  twin (`node tools/unity-cloudrun/customer-setup.mjs --for-job <that job> --apply`, below). Customer builds never run
+  on these jobs themselves.
 - **The container** fetches the whole repo at the commit into `Projects/src` (no sparse checkout, no package rewrite,
   never J's package repos), checks the version again, and builds into `HAWKES_OUT`. With no `method` it adds
   `HawkesBuild.cs` (in the image) as `Assets/HawkesGenCloud/Editor/` with an Editor-only asmdef: every enabled scene in
@@ -136,9 +138,60 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   is whatever `HAWKES_OUT` holds afterwards; empty fails (kind `output`). The folder goes up as `artifact.tgz`.
 - **Secrets and the customer's code:** the customer's editor scripts run inside Unity, so in this mode the entrypoint
   first moves every secret out of the environment (into files it reads and deletes, then it starts itself again with a
-  clean environment): Unity's process sees no `UNITY_*`, no tokens. **Still open:** the job's service account (Cloud
-  Storage through the metadata server) is reachable from inside the build. Before outside customers use this, give
-  customer builds their own job with a service account that can write only `unity-builds/` and its own caches.
+  clean environment): Unity's process sees no `UNITY_*`, no tokens, no signed URLs.
+- **Isolation: no Google identity with any data access.** Whatever identity the container has, the customer's code has
+  too (the metadata server answers any process in it). So:
+  - **Their own job.** Customer builds run only on `gcp.customerJob` (default `hawkes-unity-build-customer`); another
+    version's job `<job>` has the twin `<job>-customer` (`customer.ts customerJobFor`), so `gcp.images` stays one line
+    per version. It runs as **`unity-customer@<project>`, which has no role on any bucket and no project role**. Its one
+    grant is `secretAccessor` on the Unity license secrets the job mounts (Cloud Run reads mounted secrets as the job's
+    account). The job mounts no other secret (never `GITHUB_TOKEN`, never `R2_BUILDS_TOKEN`) and sets
+    `HAWKES_CUSTOMER_JOB=1`. J's job and its account (`hawkes-unity-build`, bucket objectAdmin) are unchanged and never
+    run a customer build.
+  - **Gen checks the job before every build** (`checkCustomerJob`, remembered 10 minutes): it exists, runs as
+    `unity-customer@<project>`, sets `HAWKES_CUSTOMER_JOB=1`, mounts only `UNITY_EMAIL`, `UNITY_PASSWORD`,
+    `UNITY_SERIAL`. Anything else, or `customerJob` empty, refuses the build with kind `config` naming the setup script,
+    before GitHub is asked (when off) and before anything is uploaded or started.
+  - **Signed URLs, nothing else.** Gen signs V4 URLs as its own service account (IAM signBlob, `src/providers/gpu/sign.ts
+    signedUrl`; `gen-control` on Cloud Run needs `roles/iam.serviceAccountTokenCreator` on itself, which
+    `tools/gen-cloudrun/deploy.mjs` grants; on a PC `HAWKESGEN_GCP_IMPERSONATE`), one per object, for that execution
+    only, valid the build's limit plus 30 minutes (`customerUrlSeconds`), and passes them as the env override
+    `HAWKES_SIGNED` (`{ bucket, get: { key: url }, put: { key: url } }`): GET `unity-builds/<job>/spec.json` and, when
+    the archive exists, that customer's own cache (`unity-cache/cust--.../build.tar.zst` and `build.json`); PUT
+    `unity-builds/<job>/artifact.tgz`, `unity.log`, `result.json` and the cache back (`build.tar.zst`, `build.json`).
+    `customerSignedUrls` refuses any cache that isn't a customer's (`cust--`) and any other prefix. The execution's env
+    overrides are exactly `HAWKES_SPEC` (the spec's `gs://` name, not a credential), `HAWKES_GITHUB_TOKEN` and
+    `HAWKES_SIGNED`. In this mode the container's `gs_get` / `gs_put` use only those URLs with plain curl; an object
+    without one is unreachable, and `token()` refuses (never gsutil, gcloud or the metadata server). On the customer job
+    it runs nothing but customer builds.
+  - **The metadata server** is made unreachable where possible: before anything else the entrypoint tries
+    `iptables -I OUTPUT -d 169.254.169.254 -j REJECT` (the image has iptables) and adds `metadata.google.internal` to
+    `/etc/hosts` as `0.0.0.0`, then logs whether it still answers. Cloud Run doesn't give containers `CAP_NET_ADMIN` as
+    far as we know, so expect "still reachable": the hosts line only stops lookups by name. **The real guard is the
+    account with no roles.** What the customer's code can still get from it: a token for `unity-customer`, which reads
+    nothing but the Unity license secrets it mounts. That is why those are a Unity account of their own by default.
+  - **Still to keep in mind:** the Unity account's email and password are inside the container during the build (as
+    shell variables of the entrypoint and as the mounted secrets' values), and Unity runs as the same user; a
+    determined customer could read them. Use a Unity account only for customer builds (the setup's default), never
+    J's (`--shared-license` is there but warns).
+- **Setting up the customer job** (J, once per lane's project; every step prints first, `--apply` does it):
+  1. `node tools/unity-cloudrun/customer-setup.mjs --project hawkes-staging` (read the plan; `--all` makes a twin for
+     every version's job, `--for-job <job>` one).
+  2. Make a Unity account for customer builds (no two-factor sign-in). `node tools/unity-cloudrun/customer-setup.mjs
+     --project hawkes-staging --apply` creates `unity-customer@`, the secrets `unity-customer-email` and
+     `unity-customer-password` (empty), and stops (exit 3) until they have values: `gcloud secrets versions add
+     unity-customer-email --data-file=<file> --project=hawkes-staging` (and the password; files with only the value, no
+     newline, deleted after).
+  3. Run it again with `--apply`: the job from the same image as J's job, same size, `--service-account
+     unity-customer@...`, only the license secrets, `HAWKES_CUSTOMER_JOB=1`; then `roles/run.jobsExecutorWithOverrides`
+     on that job and `roles/iam.serviceAccountUser` on `unity-customer@` for `gen-control@` and `hawkes-gen@`.
+  4. `gcloud run jobs execute hawkes-unity-build-customer --region=us-east4 --project=hawkes-staging
+     --update-env-vars=HAWKES_LICENSE_CHECK=1 --wait` (the license on the customer account).
+  5. Gen (each lane, owner): `POST /v1/settings` `{ "unityBuild": { "gcp": { "customerJob": "hawkes-unity-build-customer" } } }`
+     (that is also the default; `""` turns customer builds off).
+  The image needs rebuilding once for the new `entrypoint.sh` (signed URLs, `HAWKES_CUSTOMER_JOB`) and iptables:
+  `tools/unity-cloudrun/build-image.mjs`, then point both jobs at it. Until then the customer job's old entrypoint would
+  try the metadata server and fail to read the spec (no access), so no customer build can work, which is safe.
 - **Library cache:** its own per Gen project and repo (`unity-cache/cust--<project>--<owner>--<repo>[--<path>]`, key
   `build`), never J's or another customer's.
 - **Result:** `{ ok, exitCode, seconds, cost, unity, artifact: { asset, url, bytes, files }, github: { repo, commit,
@@ -161,7 +214,7 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
 | `concurrency` | 2 | Cloud Run builds at once (their own queue lane, `builder-cloud`; VM builds `builder-vm` and the Windows box one at a time) |
 | `vmAt` | 0.85 | A Cloud Run build peaking over this share of its memory moves its project to `vm` (0: never) |
-| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`) |
+| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off) |
 | `vm` | | `zone` (us-east4-a), `machineType` (n2-standard-8), `pricePerHour` (0.10, for usage) |
 
 The tool params `backend` (auto/builder/cloudrun/vm), `cache` (a cache name) and `clean` (no cache) override per job.

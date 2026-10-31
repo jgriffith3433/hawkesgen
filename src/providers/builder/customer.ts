@@ -10,12 +10,20 @@
 // there only as an http.extraheader for the fetch. It is never in the stored params, spec.json, the log, the library
 // recipe or any row. Gen's own GitHub secret is never used for a customer: the container unsets it in this mode.
 //
+// Isolation (docs/unity-cloudrun.md, "Customer mode"): the customer's editor scripts run inside Unity, so a customer build
+// runs only on its own Cloud Run job (settings.unityBuild.gcp.customerJob; other versions: "<job>-customer"), whose
+// service account (unity-customer@<project>) has no role on any bucket. Gen checks that job before each build (it
+// exists, runs as that account, mounts no secret but UNITY_*), and everything the container reads or writes in the
+// bucket goes through V4 signed URLs Gen makes for that one execution (env HAWKES_SIGNED): the spec, that customer's
+// own Library cache, and the job's own output, log and result. Nothing else.
+//
 // Before anything is started, Gen asks GitHub (with that token) where the Unity project is and which Unity it uses; a
 // version Gen has no image for fails at once (kind 'config'), naming the project's version and the supported ones.
 
 import { GenError } from '../../util.ts';
 import { holdToken, tokenFor } from '../playtester/intake.ts';
 import { cacheName } from './cache.ts';
+import { gapi, type CloudRunTarget } from './gcp.ts';
 
 const bad = (message: string, kind = 'params') => new GenError(message, { status: 400, kind });
 const config = (message: string) => new GenError(message, { status: 400, kind: 'config' });
@@ -219,3 +227,89 @@ export function customerCacheRepo(owner: string, repo: string, path: string) {
   return cacheName(`cust--${owner}--${repo.replace('/', '--')}${path && path !== '.' ? `--${path}` : ''}`);
 }
 
+
+// ------------------------------------------------------------------ isolation: the customer job and signed URLs
+
+/** The service account customer builds run as: no role on any bucket, no other grant (customer-setup.mjs makes it). */
+export const CUSTOMER_SA = 'unity-customer';
+export const customerServiceAccount = (project: string) => `${CUSTOMER_SA}@${project}.iam.gserviceaccount.com`;
+const SETUP = 'node tools/unity-cloudrun/customer-setup.mjs --apply';
+
+type JobsConfig = { job: string; images?: Record<string, string>; customerJob: string };
+
+/** Customer builds are on only when settings.unityBuild.gcp.customerJob names their job; else a 'config' failure. */
+export function assertCustomerBuildsOn(gcp: JobsConfig) {
+  if (!gcp.customerJob) {
+    throw config(`Customer builds are off: they run only on their own Cloud Run job, whose service account can't reach Hawkes Gen's bucket, and settings.unityBuild.gcp.customerJob is empty. Make the job with ${SETUP} (docs/unity-cloudrun.md, "Customer mode"), then set customerJob.`);
+  }
+}
+
+/**
+ * The customer twin of one of J's build jobs: `customerJob` for `job` itself, "<job>-customer" for another version's
+ * job (one settings line per version stays one line). Never one of J's own jobs.
+ */
+export function customerJobFor(job: string, gcp: JobsConfig): string {
+  assertCustomerBuildsOn(gcp);
+  const twin = job === gcp.job ? gcp.customerJob : `${job}-customer`;
+  const own = new Set([gcp.job, ...Object.values(gcp.images ?? {})]);
+  if (own.has(twin)) throw config(`The customer job "${twin}" is one of Hawkes Gen's own build jobs: customer builds need their own (${SETUP}).`);
+  return twin;
+}
+
+const jobChecks = new Map<string, number>();
+/** Tests: check the job again on the next build. */
+export function forgetCustomerJobChecks() { jobChecks.clear(); }
+
+/**
+ * Checks the customer job before a build is started on it (remembered 10 minutes): it exists, runs as unity-customer,
+ * sets HAWKES_CUSTOMER_JOB=1 (the container then reaches the bucket only through signed URLs), and hands the build no
+ * secret but the Unity license (UNITY_EMAIL, UNITY_PASSWORD, UNITY_SERIAL). Anything else: 'config', run the setup.
+ */
+export async function checkCustomerJob(t: CloudRunTarget, get: (url: string) => Promise<any> = (url) => gapi(url, { missingOk: true })) {
+  const key = `${t.project}/${t.region}/${t.job}`;
+  if ((jobChecks.get(key) ?? 0) > Date.now()) return;
+  const j = await get(`https://run.googleapis.com/v2/projects/${t.project}/locations/${t.region}/jobs/${t.job}`);
+  if (!j) throw config(`Customer builds run only on their own Cloud Run job, and ${t.job} isn't there (${t.project}, ${t.region}). Make it: ${SETUP} (docs/unity-cloudrun.md, "Customer mode").`);
+  const tpl = j.template?.template ?? {};
+  const sa = String(tpl.serviceAccount ?? '');
+  const want = customerServiceAccount(t.project);
+  if (sa !== want) throw config(`The Cloud Run job ${t.job} runs as ${sa || 'the default compute account'}, not ${want} (the account with no access to anything), so no customer build runs on it. Run ${SETUP} again.`);
+  const containers = (tpl.containers ?? []) as { env?: { name: string; value?: string; valueSource?: { secretKeyRef?: unknown } }[] }[];
+  const env = containers.flatMap((c) => c.env ?? []);
+  const extra = env.filter((e) => e.valueSource?.secretKeyRef && !/^UNITY_(EMAIL|PASSWORD|SERIAL)$/.test(e.name)).map((e) => e.name);
+  const volumes = ((tpl.volumes ?? []) as { name: string; secret?: unknown }[]).filter((v) => v.secret).map((v) => v.name);
+  if (extra.length || volumes.length) throw config(`The Cloud Run job ${t.job} hands the build secrets a customer build must never see (${[...extra, ...volumes].join(', ')}); only UNITY_EMAIL, UNITY_PASSWORD and UNITY_SERIAL. Run ${SETUP} again.`);
+  if (!env.some((e) => e.name === 'HAWKES_CUSTOMER_JOB' && e.value === '1')) throw config(`The Cloud Run job ${t.job} doesn't set HAWKES_CUSTOMER_JOB=1 (the container's signed-URL-only mode). Run ${SETUP} again.`);
+  jobChecks.set(key, Date.now() + 10 * 60_000);
+}
+
+/** What the container may read and write in the bucket, one signed URL per object (env HAWKES_SIGNED). */
+export type SignedUrls = { bucket: string; get: Record<string, string>; put: Record<string, string> };
+
+/** How long a customer build's URLs live: the build's limit, the execution's 15 minutes of setup, 15 more of margin. */
+export const customerUrlSeconds = (timeoutMinutes: number) => (timeoutMinutes + 30) * 60;
+
+const BUILD_PREFIX_RE = /^unity-builds\/[A-Za-z0-9_-]+$/;
+const CUST_CACHE_RE = /^unity-cache\/cust--[A-Za-z0-9_.-]+$/;
+const KEY_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * The signed URLs of one customer build: GET its spec and its own Library cache (each restore key whose archive
+ * exists: the archive and its .json), PUT its output (artifact.tgz), log (unity.log) and result (result.json) under the
+ * job's prefix, and its cache back (the save key: archive and .json). Only a customer cache (unity-cache/cust--...),
+ * only that job's prefix. `sign(method, key)` signs one object of `bucket`.
+ */
+export async function customerSignedUrls(o: {
+  bucket: string; prefix: string; cachePrefix: string; restore: string[]; save: string | null;
+  sign: (method: 'GET' | 'PUT', key: string) => Promise<string>;
+}): Promise<SignedUrls> {
+  const no = (m: string) => new GenError(m, { status: 500, kind: 'builder' });
+  if (!BUILD_PREFIX_RE.test(o.prefix)) throw no(`not a build's prefix: ${o.prefix}`);
+  if (!CUST_CACHE_RE.test(o.cachePrefix)) throw no(`not a customer's Library cache: ${o.cachePrefix}`);
+  if ([...o.restore, ...(o.save ? [o.save] : [])].some((k) => !KEY_RE.test(k))) throw no('a cache key with characters a key can\'t have');
+  const get: Record<string, string> = {};
+  const put: Record<string, string> = {};
+  for (const k of [`${o.prefix}/spec.json`, ...o.restore.flatMap((r) => [`${o.cachePrefix}/${r}.tar.zst`, `${o.cachePrefix}/${r}.json`])]) get[k] = await o.sign('GET', k);
+  for (const k of [`${o.prefix}/artifact.tgz`, `${o.prefix}/unity.log`, `${o.prefix}/result.json`, ...(o.save ? [`${o.cachePrefix}/${o.save}.tar.zst`, `${o.cachePrefix}/${o.save}.json`] : [])]) put[k] = await o.sign('PUT', k);
+  return { bucket: o.bucket, get, put };
+}

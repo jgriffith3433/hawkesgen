@@ -17,6 +17,14 @@ const stamp = (d: Date) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}
 
 /** A V4 signed GET URL for gs://bucket/name, valid `seconds`. */
 export async function signedGetUrl(uri: string, signer: Signer, seconds = 900, now = new Date()): Promise<string> {
+  return signedUrl('GET', uri, signer, seconds, now);
+}
+
+/**
+ * A V4 signed URL for gs://bucket/name: GET reads that one object, PUT writes it (also the Unity customer builds,
+ * src/providers/builder/customer.ts). Only the host header is signed, so a PUT may send any Content-Type.
+ */
+export async function signedUrl(method: 'GET' | 'PUT', uri: string, signer: Signer, seconds = 900, now = new Date()): Promise<string> {
   const m = /^gs:\/\/([^/]+)\/(.+)$/.exec(uri);
   if (!m) throw new Error(`not a gs:// URI: ${uri}`);
   const [, bucket, name] = m;
@@ -31,7 +39,7 @@ export async function signedGetUrl(uri: string, signer: Signer, seconds = 900, n
     'X-Goog-SignedHeaders': 'host',
   };
   const query = Object.keys(q).sort().map((k) => `${enc(k)}=${enc(q[k])}`).join('&');
-  const canonical = ['GET', canonicalUri, query, `host:${host}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const canonical = [method, canonicalUri, query, `host:${host}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
   const toSign = ['GOOG4-RSA-SHA256', stamp(now), scope, crypto.createHash('sha256').update(canonical).digest('hex')].join('\n');
   const sig = await signer.sign(Buffer.from(toSign));
   return `https://${host}${canonicalUri}?${query}&X-Goog-Signature=${sig.toString('hex')}`;

@@ -40,6 +40,9 @@ export function config() {
     memoryGiB: Number(flag('memory', gcp.memoryGiB ?? 32)),
     zone: flag('zone', vm.zone ?? 'us-east4-a'),
     machineType: flag('machine-type', vm.machineType ?? 'n2-standard-8'),
+    // Customer builds (customer-setup.mjs): the Unity versions' jobs and the customer job's name.
+    images: gcp.images && typeof gcp.images === 'object' ? gcp.images : {},
+    customerJob: flag('customer-job', gcp.customerJob ?? 'hawkes-unity-build-customer'),
   };
   if (!c.project) die('Which Google Cloud project? Pass --project <id> (or set settings.unityBuild.gcp.project in Gen).');
   return c;

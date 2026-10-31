@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
 import { runCloudBuild, cloudConfig, cloudBuildStarted, type BuildOptions } from '../providers/builder/cloudrun.ts';
-import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, probeProject, unityImages, jobForVersion } from '../providers/builder/customer.ts';
+import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
 import { dropToken } from '../providers/playtester/intake.ts';
 import type { RunContext } from './types.ts';
 import { runVmBuild } from '../providers/builder/vm.ts';
@@ -134,10 +134,12 @@ export async function runCustomerBuild(ctx: RunContext) {
     let job = '';
     let token = '';
     if (!started) {
+      // Customer builds run only on their own job (its account reaches nothing): refused at once when there is none.
+      assertCustomerBuildsOn(cfg.gcp);
       token = customerToken(b);
       ctx.step('reading the project from GitHub');
       probe = await probeProject(b, token, ghFetch.fetch as typeof fetch);
-      job = jobForVersion(probe.version, unityImages(cfg.gcp));
+      job = customerJobFor(jobForVersion(probe.version, unityImages(cfg.gcp)), cfg.gcp);
       ctx.log(`customer build: ${b.repo}@${b.commit.slice(0, 12)}${b.ref ? ` (${b.ref})` : ''}, project ${probe.path === '.' ? 'at the repo root' : probe.path}, Unity ${probe.version}${b.method ? `, ${b.method}` : ', every enabled scene'}`);
     }
     const r: any = await runCloudBuild(ctx.job.id, {

@@ -23,6 +23,16 @@ const { customerMayRun, quoteJobCredits, UNITY_BUILD_CREDITS } = await import('.
 const { runCustomerBuild } = await import('../src/tools/build.ts');
 const { tokenFor } = await import('../src/providers/playtester/intake.ts');
 const { loadSettings } = await import('../src/config.ts');
+const Sign = await import('../src/providers/gpu/sign.ts');
+const crypto = await import('node:crypto');
+
+// Gen's signer: a real RSA key standing in for IAM signBlob, so the signatures can be checked.
+const KEYS = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+const SIGNER = { email: 'gen-control@hawkes-test.iam.gserviceaccount.com', sign: async (b: Buffer) => crypto.sign('RSA-SHA256', b, KEYS.privateKey) };
+Sign.setSigner(SIGNER);
+const SETTINGS = path.join(data, 'settings.json');
+const baseSettings = fs.readFileSync(SETTINGS, 'utf8');
+const withGcp = (patch: Record<string, unknown>) => { const j = JSON.parse(baseSettings); Object.assign(j.unityBuild.gcp, patch); fs.writeFileSync(SETTINGS, JSON.stringify(j)); };
 
 const SHA = 'c'.repeat(40);
 const TOKEN = 'ghs_customerInstallationToken0123456789';
@@ -105,7 +115,21 @@ test('Unity versions: the images setting, and a version without an image fails n
 });
 
 /** A fake GitHub API (tree, ProjectVersion.txt) and Google Cloud (Storage, Cloud Run, Logging). */
-function fakeCloud({ version = '6000.3.7f1', result }: { version?: string; result: unknown }) {
+/** The customer job as Cloud Run describes it (customer-setup.mjs makes it this way). */
+const customerJobResource = (over: Record<string, any> = {}) => ({
+  template: { template: {
+    serviceAccount: 'unity-customer@hawkes-test.iam.gserviceaccount.com',
+    containers: [{ env: [
+      { name: 'HAWKES_WORK', value: '/work' }, { name: 'HAWKES_CUSTOMER_JOB', value: '1' },
+      { name: 'UNITY_EMAIL', valueSource: { secretKeyRef: { secret: 'unity-customer-email', version: 'latest' } } },
+      { name: 'UNITY_PASSWORD', valueSource: { secretKeyRef: { secret: 'unity-customer-password', version: 'latest' } } },
+    ] }],
+    ...over,
+  } },
+});
+
+function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [] }: { version?: string; result: unknown; jobs?: Record<string, unknown>; cacheObjects?: string[] }) {
+  C.forgetCustomerJobChecks();
   const writes = new Map<string, Buffer>();
   const calls: { method: string; url: string; body: string; auth: string }[] = [];
   const real = globalThis.fetch;
@@ -123,6 +147,10 @@ function fakeCloud({ version = '6000.3.7f1', result }: { version?: string; resul
       writes.set(name, Buffer.from(body));
       return json({ name });
     }
+    if (/\/storage\/v1\/b\/[^/]+\/o\?prefix=/.test(url)) {
+      const prefix = new URL(url).searchParams.get('prefix')!;
+      return json({ items: cacheObjects.filter((n) => n.startsWith(prefix)).map((name) => ({ name, size: 10, updated: '2026-10-30T00:00:00Z' })) });
+    }
     if (url.startsWith('https://storage.googleapis.com/storage/v1/b/')) {
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
       if (method === 'DELETE') return new Response(null, { status: 204 });
@@ -135,6 +163,12 @@ function fakeCloud({ version = '6000.3.7f1', result }: { version?: string; resul
     if (url.includes('run.googleapis.com') && url.endsWith(':run')) return json({ metadata: { name: `projects/hawkes-test/locations/us-east4/jobs/${url.split('/jobs/')[1].split(':')[0]}/executions/e-7` } });
     if (url.includes('run.googleapis.com') && url.includes('/executions/e-7')) return json({ startTime: '2026-10-31T10:00:00Z', completionTime: '2026-10-31T10:06:00Z', succeededCount: 1 });
     if (url.startsWith('https://logging.googleapis.com/')) return json({ entries: [] });
+    const jobGet = /run\.googleapis\.com\/v2\/projects\/hawkes-test\/locations\/us-east4\/jobs\/([^/:]+)$/.exec(url);
+    if (jobGet && method === 'GET') {
+      const name = jobGet[1];
+      const j = name in jobs ? jobs[name] : name.endsWith('-customer') ? customerJobResource() : null;
+      return j ? json(j) : json({ error: { message: 'not found' } }, 404);
+    }
     return json({ error: `unexpected ${url}` }, 500);
   }) as typeof fetch;
   return { writes, calls, restore: () => { globalThis.fetch = real; } };
@@ -182,9 +216,10 @@ test('a customer build: the project and version from GitHub, the token only on t
     assert.match(s.cache.prefix, /^unity-cache\/cust--usr_acme--acme--rocket-game--Game$/);
     // The execution of that version's job carries the token as an env override, and nothing else does.
     const run = g.calls.find((c) => c.url.endsWith(':run'))!;
-    assert.match(run.url, /jobs\/hawkes-unity-build:run$/);
+    assert.match(run.url, /jobs\/hawkes-unity-build-customer:run$/, "the customer job, never J's");
     const envs = JSON.parse(run.body).overrides.containerOverrides[0].env;
-    assert.deepEqual(envs.map((e: any) => e.name).sort(), ['HAWKES_GITHUB_TOKEN', 'HAWKES_SPEC']);
+    assert.deepEqual(envs.map((e: any) => e.name).sort(), ['HAWKES_GITHUB_TOKEN', 'HAWKES_SIGNED', 'HAWKES_SPEC']);
+    assert.ok(!envs.find((e: any) => e.name === 'HAWKES_SIGNED').value.includes(TOKEN));
     assert.equal(envs.find((e: any) => e.name === 'HAWKES_GITHUB_TOKEN').value, TOKEN);
     assert.ok(!g.calls.filter((c) => c !== run && !c.url.startsWith('https://api.github.com/')).some((c) => c.body.includes(TOKEN) || c.url.includes(TOKEN)));
     for (const k of g.writes.keys()) assert.ok(!g.writes.get(k)!.toString('utf8').includes(TOKEN), `${k} has no token`);
@@ -216,7 +251,7 @@ test('the other version picks its own job; a lost token says to submit again', a
   try {
     const { ctx } = ctxFor('j_cust3', { ...C.admitCustomer(good()), method: 'Acme.Build.Web' });
     await runCustomerBuild(ctx);
-    assert.match(g.calls.find((c) => c.url.endsWith(':run'))!.url, /jobs\/hawkes-unity-6000-0:run$/);
+    assert.match(g.calls.find((c) => c.url.endsWith(':run'))!.url, /jobs\/hawkes-unity-6000-0-customer:run$/);
     const s = JSON.parse(g.writes.get('unity-builds/j_cust3/spec.json')!.toString('utf8'));
     assert.equal(s.method, 'Acme.Build.Web');
     assert.equal(s.customer.defaultMethod, false);
@@ -235,4 +270,174 @@ test('a result whose output is not this job\'s artifact is refused', async () =>
   } finally {
     g.restore();
   }
+});
+
+// ------------------------------------------------------------------ isolation (docs/unity-cloudrun.md, "Customer mode")
+
+/** Checks a V4 signed URL against the fake signer's public key; returns its parts. */
+function checkSignedUrl(url: string, method: 'GET' | 'PUT') {
+  const u = new URL(url);
+  assert.equal(u.origin, 'https://storage.googleapis.com');
+  const q = Object.fromEntries(u.searchParams);
+  assert.equal(q['X-Goog-Algorithm'], 'GOOG4-RSA-SHA256');
+  assert.match(q['X-Goog-Credential'], /^gen-control@hawkes-test\.iam\.gserviceaccount\.com\/\d{8}\/auto\/storage\/goog4_request$/);
+  assert.equal(q['X-Goog-SignedHeaders'], 'host');
+  // Rebuild what was signed (method, path, query without the signature) and verify it with the public key.
+  const query = u.search.slice(1).split('&').filter((kv) => !kv.startsWith('X-Goog-Signature=')).join('&');
+  const canonical = [method, u.pathname, query, 'host:storage.googleapis.com\n', 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const scope = q['X-Goog-Credential'].split('/').slice(1).join('/');
+  const toSign = ['GOOG4-RSA-SHA256', q['X-Goog-Date'], scope, crypto.createHash('sha256').update(canonical).digest('hex')].join('\n');
+  assert.ok(crypto.verify('RSA-SHA256', Buffer.from(toSign), KEYS.publicKey, Buffer.from(q['X-Goog-Signature'], 'hex')), `${method} ${u.pathname} is signed for ${method}`);
+  return { path: u.pathname, expires: Number(q['X-Goog-Expires']) };
+}
+
+test('signed URLs: V4 shape, GET and PUT signed as such, the expiry asked for', async () => {
+  const now = new Date('2026-10-31T12:00:00Z');
+  const get = await Sign.signedUrl('GET', 'gs://hawkes-unity-test/unity-builds/j_1/spec.json', SIGNER, 4200, now);
+  const put = await Sign.signedUrl('PUT', 'gs://hawkes-unity-test/unity-builds/j_1/artifact.tgz', SIGNER, 4200, now);
+  assert.deepEqual(checkSignedUrl(get, 'GET'), { path: '/hawkes-unity-test/unity-builds/j_1/spec.json', expires: 4200 });
+  assert.deepEqual(checkSignedUrl(put, 'PUT'), { path: '/hawkes-unity-test/unity-builds/j_1/artifact.tgz', expires: 4200 });
+  assert.match(get, /X-Goog-Date=20261031T120000Z/);
+  // A GET URL can't be used to write: its signature is over GET.
+  const asPut = get.replace('/spec.json', '/artifact.tgz');
+  assert.throws(() => checkSignedUrl(asPut, 'GET'));
+  assert.equal(await Sign.signedGetUrl('gs://b/k', SIGNER, 60, now), await Sign.signedUrl('GET', 'gs://b/k', SIGNER, 60, now));
+  assert.equal(C.customerUrlSeconds(40), 70 * 60, 'the build limit + 15 for the execution + 15 of margin');
+});
+
+test("signed URLs: only that customer's cache key and that job's output", async () => {
+  const keys: string[] = [];
+  const sign = async (m: 'GET' | 'PUT', k: string) => { keys.push(`${m} ${k}`); return `https://signed/${m}/${k}`; };
+  const urls = await C.customerSignedUrls({ bucket: 'hawkes-unity-test', prefix: 'unity-builds/j_9', cachePrefix: 'unity-cache/cust--usr_acme--acme--rocket-game', restore: ['build'], save: 'build', sign });
+  assert.equal(urls.bucket, 'hawkes-unity-test');
+  assert.deepEqual(Object.keys(urls.get).sort(), ['unity-builds/j_9/spec.json', 'unity-cache/cust--usr_acme--acme--rocket-game/build.json', 'unity-cache/cust--usr_acme--acme--rocket-game/build.tar.zst']);
+  assert.deepEqual(Object.keys(urls.put).sort(), ['unity-builds/j_9/artifact.tgz', 'unity-builds/j_9/result.json', 'unity-builds/j_9/unity.log', 'unity-cache/cust--usr_acme--acme--rocket-game/build.json', 'unity-cache/cust--usr_acme--acme--rocket-game/build.tar.zst']);
+  // No cache yet: nothing to read but the spec.
+  const fresh = await C.customerSignedUrls({ bucket: 'b', prefix: 'unity-builds/j_9', cachePrefix: 'unity-cache/cust--usr_acme--acme--rocket-game', restore: [], save: 'build', sign });
+  assert.deepEqual(Object.keys(fresh.get), ['unity-builds/j_9/spec.json']);
+  // Never J's caches, never another prefix.
+  await assert.rejects(() => C.customerSignedUrls({ bucket: 'b', prefix: 'unity-builds/j_9', cachePrefix: 'unity-cache/sickofitgame-unity', restore: ['main'], save: 'main', sign }), /customer's Library cache/);
+  await assert.rejects(() => C.customerSignedUrls({ bucket: 'b', prefix: 'unity-cache/x', cachePrefix: 'unity-cache/cust--a', restore: [], save: null, sign }), /build's prefix/);
+  await assert.rejects(() => C.customerSignedUrls({ bucket: 'b', prefix: 'unity-builds/j_9', cachePrefix: 'unity-cache/cust--a', restore: ['../main'], save: null, sign }), /cache key/);
+});
+
+test('the customer job: customerJob for the main job, "<job>-customer" for other versions, never one of J\'s', () => {
+  const gcp = { job: 'hawkes-unity-build', images: { '6000.3.7f1': 'hawkes-unity-build', '6000.0.40f1': 'hawkes-unity-6000-0' }, customerJob: 'hawkes-unity-build-customer' };
+  assert.equal(C.customerJobFor('hawkes-unity-build', gcp), 'hawkes-unity-build-customer');
+  assert.equal(C.customerJobFor('hawkes-unity-6000-0', gcp), 'hawkes-unity-6000-0-customer');
+  assert.throws(() => C.customerJobFor('hawkes-unity-build', { ...gcp, customerJob: 'hawkes-unity-6000-0' }), (e: any) => e.kind === 'config' && /own build jobs/.test(e.message));
+  assert.throws(() => C.customerJobFor('hawkes-unity-build', { ...gcp, customerJob: '' }), (e: any) => e.kind === 'config' && /customer-setup\.mjs/.test(e.message));
+  assert.equal(loadSettings().unityBuild.gcp.customerJob, 'hawkes-unity-build-customer', 'the default');
+});
+
+test('the execution gets only the token and signed URLs: its cache, its output, nothing else, expiring with the build', async () => {
+  const cache = 'unity-cache/cust--usr_acme--acme--rocket-game--Game';
+  const g = fakeCloud({
+    cacheObjects: [`${cache}/build.tar.zst`, `${cache}/build.json`, 'unity-cache/sickofitgame-unity/main.tar.zst'],
+    result: { ok: true, unity: '6000.3.7f1', cache: { restoredFrom: 'build' }, output: { object: 'unity-builds/j_iso1/artifact.tgz', bytes: 10, files: 1 } },
+  });
+  try {
+    const { ctx } = ctxFor('j_iso1', C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    // The job was checked first, then run.
+    const jobGet = g.calls.findIndex((c) => c.method === 'GET' && c.url.endsWith('/jobs/hawkes-unity-build-customer'));
+    const run = g.calls.findIndex((c) => c.url.endsWith(':run'));
+    assert.ok(jobGet >= 0 && jobGet < run);
+    const envs = JSON.parse(g.calls[run].body).overrides.containerOverrides[0].env as { name: string; value: string }[];
+    assert.deepEqual(envs.map((e) => e.name).sort(), ['HAWKES_GITHUB_TOKEN', 'HAWKES_SIGNED', 'HAWKES_SPEC']);
+    assert.equal(envs.find((e) => e.name === 'HAWKES_SPEC')!.value, 'gs://hawkes-unity-test/unity-builds/j_iso1/spec.json');
+    const urls = JSON.parse(envs.find((e) => e.name === 'HAWKES_SIGNED')!.value);
+    assert.deepEqual(Object.keys(urls).sort(), ['bucket', 'get', 'put']);
+    assert.equal(urls.bucket, 'hawkes-unity-test');
+    assert.deepEqual(Object.keys(urls.get).sort(), ['unity-builds/j_iso1/spec.json', `${cache}/build.json`, `${cache}/build.tar.zst`]);
+    assert.deepEqual(Object.keys(urls.put).sort(), ['unity-builds/j_iso1/artifact.tgz', 'unity-builds/j_iso1/result.json', 'unity-builds/j_iso1/unity.log', `${cache}/build.json`, `${cache}/build.tar.zst`]);
+    for (const [method, map] of [['GET', urls.get], ['PUT', urls.put]] as const) {
+      for (const [key, url] of Object.entries(map as Record<string, string>)) {
+        const c = checkSignedUrl(url, method);
+        assert.equal(c.path, `/hawkes-unity-test/${key}`);
+        assert.equal(c.expires, (40 + 30) * 60);
+      }
+    }
+    assert.ok(!JSON.stringify(urls).includes('sickofitgame'), "never J's caches");
+  } finally {
+    g.restore();
+  }
+});
+
+test('customer mode refuses to run without its job: off, missing, the wrong account, extra secrets, no signer', async () => {
+  const refused = async (jobId: string, opts: Parameters<typeof fakeCloud>[0], re: RegExp) => {
+    const g = fakeCloud(opts);
+    try {
+      const { ctx } = ctxFor(jobId, C.admitCustomer(good()));
+      await assert.rejects(() => runCustomerBuild(ctx), (e: any) => e.kind === 'config' && re.test(e.message));
+      assert.ok(!g.calls.some((c) => c.url.endsWith(':run')), 'no execution');
+      assert.ok(!g.writes.has(`unity-builds/${jobId}/spec.json`), 'nothing uploaded');
+      return g;
+    } finally {
+      g.restore();
+    }
+  };
+  try {
+    withGcp({ customerJob: '' });
+    const off = await refused('j_off', { result: {} }, /Customer builds are off.*customer-setup\.mjs/);
+    assert.ok(!off.calls.some((c) => c.url.startsWith('https://api.github.com/')), 'refused before GitHub is asked');
+  } finally {
+    fs.writeFileSync(SETTINGS, baseSettings);
+  }
+  await refused('j_missing', { result: {}, jobs: { 'hawkes-unity-build-customer': null } }, /isn't there.*customer-setup\.mjs/);
+  await refused('j_sa', { result: {}, jobs: { 'hawkes-unity-build-customer': customerJobResource({ serviceAccount: 'hawkes-unity-build@hawkes-test.iam.gserviceaccount.com' }) } }, /runs as hawkes-unity-build@/);
+  await refused('j_secret', { result: {}, jobs: { 'hawkes-unity-build-customer': customerJobResource({ containers: [{ env: [{ name: 'HAWKES_CUSTOMER_JOB', value: '1' }, { name: 'GITHUB_TOKEN', valueSource: { secretKeyRef: { secret: 'github-token' } } }] }] }) } }, /GITHUB_TOKEN/);
+  await refused('j_flag', { result: {}, jobs: { 'hawkes-unity-build-customer': customerJobResource({ containers: [{ env: [] }] }) } }, /HAWKES_CUSTOMER_JOB=1/);
+  Sign.setSigner(null);
+  try {
+    await refused('j_nosign', { result: {} }, /can't sign/);
+  } finally {
+    Sign.setSigner(SIGNER);
+  }
+});
+
+test("J's own builds are untouched: his job, only HAWKES_SPEC, no job check, no signed URLs", async () => {
+  const { runCloudBuild } = await import('../src/providers/builder/cloudrun.ts');
+  const g = fakeCloud({ result: { ok: true, output: { object: 'unity-builds/j_own/site.tgz', bytes: 0, changed: [], deleted: [] }, pushed: null, packages: {} } });
+  try {
+    await runCloudBuild('j_own', { project: 'YoobaLand/YoobaLand', site: 'YoobaLandGame', github: { repo: 'jgriffith3433/YoobaLand', commit: SHA, siteRepo: 'jgriffith3433/YoobaLandGame', branch: 'beta', ref: null, packages: {}, cacheBranch: 'beta', builds: null } } as any, { step: () => {}, log: () => {} });
+  } catch { /* the result's shape isn't what this test is about */ } finally {
+    g.restore();
+  }
+  const run = g.calls.find((c) => c.url.endsWith(':run'));
+  assert.ok(run, 'it ran');
+  assert.match(run!.url, /jobs\/hawkes-unity-build:run$/);
+  assert.deepEqual(JSON.parse(run!.body).overrides.containerOverrides[0].env.map((e: any) => e.name), ['HAWKES_SPEC']);
+  assert.ok(!g.calls.some((c) => c.method === 'GET' && /\/jobs\/[^/:]+$/.test(c.url)), 'no customer job check');
+});
+
+const { spawnSync } = await import('node:child_process');
+const hasJq = spawnSync('bash', ['-c', 'jq --version'], { encoding: 'utf8' }).status === 0;
+test('entrypoint.sh in customer mode: the bucket only through its signed URLs, never a metadata token', { skip: !hasJq && 'needs bash and jq' }, () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'server', 'unity-cloudrun', 'entrypoint.sh'), 'utf8');
+  const start = src.indexOf('# ------------------------------------------------------------ cloud storage');
+  const end = src.indexOf('# ------------------------------------------------------------ the license');
+  assert.ok(start > 0 && end > start);
+  const signedJson = JSON.stringify({ bucket: 'bkt', get: { 'unity-builds/j/spec.json': 'https://signed.example/get-spec' }, put: { 'unity-builds/j/result.json': 'https://signed.example/put-result' } });
+  // curl is a stand-in that prints what it was asked; the metadata server would show up as its URL.
+  const script = [
+    'curl() { echo "curl $*"; }',
+    `SIGNED_ONLY=true; SIGNED_JSON='${signedJson}'`,
+    src.slice(start, end),
+    'echo "--get"; gs_get bkt unity-builds/j/spec.json',
+    'echo "--put"; gs_put bkt unity-builds/j/result.json /tmp/x application/json',
+    'echo "--other"; gs_get bkt unity-cache/sickofitgame-unity/main.tar.zst || echo "refused get"',
+    'echo "--otherput"; gs_put bkt unity-cache/sickofitgame-unity/main.tar.zst - 2>/dev/null || echo "refused put"',
+    'echo "--bucket"; gs_get otherbucket unity-builds/j/spec.json || echo "refused bucket"',
+    'echo "--token"; token 2>/dev/null || echo "no token"',
+  ].join('\n');
+  const r = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+  const out = r.stdout;
+  assert.match(out, /--get\ncurl -fsS --retry 3 https:\/\/signed\.example\/get-spec\n/);
+  assert.match(out, /--put\ncurl -fsS --retry 2 -X PUT -T \/tmp\/x -H Content-Type: application\/json https:\/\/signed\.example\/put-result -o \/dev\/null\n/);
+  assert.match(out, /refused get/);
+  assert.match(out, /refused put/);
+  assert.match(out, /refused bucket/);
+  assert.match(out, /no token/);
+  assert.ok(!/metadata|Authorization/.test(out), 'no metadata server, no bearer token');
 });

@@ -8,6 +8,10 @@
 #   HAWKES_GITHUB_TOKEN (customer mode only, set per execution by Gen): the customer's short-lived GitHub token. In that
 #   mode Gen's own GITHUB_TOKEN and R2_BUILDS_TOKEN are dropped, and every secret leaves the environment before the
 #   customer's code (Unity, their editor scripts) runs: see "Customer mode" below and docs/unity-cloudrun.md.
+#   HAWKES_SIGNED (customer mode only, set per execution by Gen): JSON { bucket, get: { key: url }, put: { key: url } },
+#   a V4 signed URL for each object this build may read or write. HAWKES_CUSTOMER_JOB=1 (set on the customer job,
+#   whose service account has no access to anything): the bucket is reached ONLY through those URLs, never with a
+#   token from the metadata server, and only customer builds run.
 #   HAWKES_LICENSE_CHECK=1: activate, open a throwaway project, return the license, exit (no spec needed).
 #   HAWKES_PERSIST=1: the Library lives on the machine's own disk (the build VM), not in the bucket's cache.
 #
@@ -23,15 +27,19 @@ WORK="${HAWKES_WORK:-/work}"
 # A customer's project runs its own editor code in Unity. Before anything else, the secrets move from the environment
 # into files only this script reads (then deletes), and the script starts again without them, so no child process and
 # no /proc/<pid>/environ holds them. Gen's own GitHub and R2 tokens are dropped outright: a customer build never uses them.
-if [ -n "${HAWKES_GITHUB_TOKEN:-}" ] && [ -z "${HAWKES_SCRUBBED:-}" ]; then
+if { [ -n "${HAWKES_GITHUB_TOKEN:-}" ] || [ -n "${HAWKES_SIGNED:-}" ] || [ "${HAWKES_CUSTOMER_JOB:-}" = 1 ]; } && [ -z "${HAWKES_SCRUBBED:-}" ]; then
   SEC=$(mktemp -d /dev/shm/hawkes-sec.XXXXXX 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/hawkes-sec.XXXXXX")
   chmod 700 "$SEC"
-  ( umask 077; for v in HAWKES_GITHUB_TOKEN UNITY_EMAIL UNITY_PASSWORD UNITY_SERIAL; do [ -n "${!v:-}" ] && printf '%s' "${!v}" > "$SEC/$v"; done )
-  exec env -u HAWKES_GITHUB_TOKEN -u GITHUB_TOKEN -u R2_BUILDS_TOKEN -u UNITY_EMAIL -u UNITY_PASSWORD -u UNITY_SERIAL \
+  ( umask 077; for v in HAWKES_GITHUB_TOKEN HAWKES_SIGNED UNITY_EMAIL UNITY_PASSWORD UNITY_SERIAL; do [ -n "${!v:-}" ] && printf '%s' "${!v}" > "$SEC/$v"; done )
+  exec env -u HAWKES_GITHUB_TOKEN -u HAWKES_SIGNED -u GITHUB_TOKEN -u R2_BUILDS_TOKEN -u GCS_TOKEN -u UNITY_EMAIL -u UNITY_PASSWORD -u UNITY_SERIAL \
     HAWKES_SCRUBBED="$SEC" bash "${BASH_SOURCE[0]}" "$@"
 fi
 CUSTOMER_TOKEN=""
+SIGNED_JSON=""      # customer mode: the signed URLs (a shell variable, never exported)
+SIGNED_ONLY=false   # customer mode: the bucket only through SIGNED_JSON, never the metadata server
 if [ -n "${HAWKES_SCRUBBED:-}" ]; then
+  SIGNED_ONLY=true
+  [ -f "$HAWKES_SCRUBBED/HAWKES_SIGNED" ] && SIGNED_JSON=$(cat "$HAWKES_SCRUBBED/HAWKES_SIGNED")
   # Shell variables, not exported: the licensing client gets them as arguments, Unity never sees them.
   for v in UNITY_EMAIL UNITY_PASSWORD UNITY_SERIAL; do
     if [ -f "$HAWKES_SCRUBBED/$v" ]; then printf -v "$v" '%s' "$(cat "$HAWKES_SCRUBBED/$v")"; export -n "$v"; fi
@@ -51,6 +59,22 @@ log() { echo "[Hawkes] $*"; }
 # GitHub mode (fetch_repo, the website's branch checkout and push): next to this script.
 . "$(dirname "${BASH_SOURCE[0]}")/github.sh"
 
+# Customer mode: try to make the metadata server unreachable for everything after this (Unity and the customer's editor
+# scripts included). Best effort: it needs CAP_NET_ADMIN (iptables), which Cloud Run doesn't give a container as far as
+# we know, so the real guard is the customer job's service account, which has no roles at all. The hosts entry only
+# stops lookups by name (metadata.google.internal); the address itself stays reachable unless iptables worked.
+block_metadata() {
+  local how=""
+  if command -v iptables >/dev/null 2>&1 && iptables -I OUTPUT -d 169.254.169.254 -j REJECT 2>/dev/null; then how="iptables"; fi
+  if [ -w /etc/hosts ]; then printf '0.0.0.0 metadata.google.internal metadata\n' >> /etc/hosts && how="${how:+$how + }hosts"; fi
+  if curl -fsS -m 3 -o /dev/null -H 'Metadata-Flavor: Google' 'http://169.254.169.254/computeMetadata/v1/' 2>/dev/null; then
+    log "metadata server: still reachable (${how:-nothing could block it}); the customer job's account has no permissions"
+  else
+    log "metadata server: blocked (${how:-unreachable})"
+  fi
+}
+[ "$SIGNED_ONLY" = true ] && block_metadata
+
 # ------------------------------------------------------------ result state
 OK=false; STAGE=start; KIND=null; ERROR=""; EXIT_CODE=null; UNITY_VERSION=""
 RESTORED=""; RESTORED_BYTES=0; CLEAN=false; CACHE_REASON=""; SAVED=false; SAVED_KEY=""; SAVED_BYTES=0; SAVE_SKIPPED=""
@@ -60,17 +84,40 @@ stage() { local now; now=$(date +%s); [ -n "${STAGE_T:-}" ] && SECS[$STAGE]=$(( 
 die() { KIND="$1"; ERROR="$2"; log "FAILED ($1): $2"; exit 0; }
 
 # ------------------------------------------------------------ cloud storage
+# J's builds: a token for the job's own service account from the metadata server (or GCS_TOKEN).
+# Customer builds (SIGNED_ONLY): never a token; each object through its own signed URL from HAWKES_SIGNED, and an object
+# without one isn't reachable at all (the customer job's account has no access to the bucket anyway).
 token() {
+  if [ "$SIGNED_ONLY" = true ]; then echo "[Hawkes] customer build: no Google token, only signed URLs" >&2; return 1; fi
   if [ -n "${GCS_TOKEN:-}" ]; then echo "$GCS_TOKEN"; return; fi
   curl -fsS -H 'Metadata-Flavor: Google' \
     'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' | jq -r .access_token
 }
 uri() { printf '%s' "$1" | jq -sRr @uri; }
+# signed_url <get|put> <bucket> <key>: that object's signed URL, or nothing (not this build's to touch).
+signed_url() {
+  [ -n "$SIGNED_JSON" ] || return 1
+  [ "$2" = "$(jq -r '.bucket // empty' <<<"$SIGNED_JSON")" ] || return 1
+  local u; u=$(jq -r --arg m "$1" --arg k "$3" '.[$m][$k] // empty' <<<"$SIGNED_JSON")
+  [ -n "$u" ] || return 1
+  printf '%s' "$u"
+}
 # gs_get <bucket> <key>: the object on stdout (fails on 404).
-gs_get() { curl -fsS --retry 3 -H "Authorization: Bearer $(token)" "https://storage.googleapis.com/storage/v1/b/$1/o/$(uri "$2")?alt=media"; }
-gs_exists() { curl -fsS -o /dev/null -H "Authorization: Bearer $(token)" "https://storage.googleapis.com/storage/v1/b/$1/o/$(uri "$2")"; }
+gs_get() {
+  if [ "$SIGNED_ONLY" = true ]; then local u; u=$(signed_url get "$1" "$2") || return 1; curl -fsS --retry 3 "$u"; return; fi
+  curl -fsS --retry 3 -H "Authorization: Bearer $(token)" "https://storage.googleapis.com/storage/v1/b/$1/o/$(uri "$2")?alt=media"
+}
+gs_exists() {
+  if [ "$SIGNED_ONLY" = true ]; then local u; u=$(signed_url get "$1" "$2") || return 1; curl -fsS -o /dev/null -r 0-0 "$u"; return; fi
+  curl -fsS -o /dev/null -H "Authorization: Bearer $(token)" "https://storage.googleapis.com/storage/v1/b/$1/o/$(uri "$2")"
+}
 # gs_put <bucket> <key> <file|-> [type]: XML API PUT (stdin is streamed with chunked transfer encoding).
 gs_put() {
+  if [ "$SIGNED_ONLY" = true ]; then
+    local u; u=$(signed_url put "$1" "$2") || { echo "[Hawkes] customer build: no signed URL to write $2" >&2; return 1; }
+    curl -fsS --retry 2 -X PUT -T "$3" -H "Content-Type: ${4:-application/octet-stream}" "$u" -o /dev/null
+    return
+  fi
   curl -fsS --retry 2 -X PUT -T "$3" -H "Authorization: Bearer $(token)" -H "Content-Type: ${4:-application/octet-stream}" \
     "https://storage.googleapis.com/$1/$2" -o /dev/null
 }
@@ -225,9 +272,12 @@ CUSTOMER=false
 if [ "$(jq -r '.customer != null' "$S")" = true ]; then
   # Customer mode: their own repo with their own token (never Gen's GitHub secret, never J's package repos).
   CUSTOMER=true
+  [ "${HAWKES_CUSTOMER_JOB:-}" = 1 ] && [ "$SIGNED_ONLY" = true ] || die config "customer builds run only on the customer job (HAWKES_CUSTOMER_JOB=1, signed URLs only): tools/unity-cloudrun/customer-setup.mjs"
   [ -n "$CUSTOMER_TOKEN" ] || die source "no GitHub token came with this customer build"
   AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CUSTOMER_TOKEN" | base64 -w0)"
 else
+  # The customer job runs customer builds only (it has no GitHub secret and no bucket access for anything else).
+  [ "${HAWKES_CUSTOMER_JOB:-}" = 1 ] && die config "this is the customer build job: it runs only customer builds"
   [ -n "${GITHUB_TOKEN:-}" ] || die source "GITHUB_TOKEN (secret github-token) is empty: the build can't fetch the private repos"
   AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
 fi

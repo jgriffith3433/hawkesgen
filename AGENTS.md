@@ -170,8 +170,10 @@ chosen one.
   container (never main). Studio uses it for build tags (`git tag build-x && git push origin build-x` in a Unity source
   repo). docs/unity-cloudrun.md, "GitHub mode".
 - **Customer mode** (`github` with the customer's own `token`, `out: "artifact"`; `src/providers/builder/customer.ts`):
-  the one way a `user` key may run `unity.build`. Their repo at one commit on Cloud Run (the job of its Unity version,
-  `settings.unityBuild.gcp.images`), the output back as a `.tar.gz` asset; the token stays in memory only. docs/unity-cloudrun.md, "Customer mode".
+  the one way a `user` key may run `unity.build`. Their repo at one commit on Cloud Run (the customer twin of its Unity version's job,
+  `settings.unityBuild.gcp.images`), the output back as a `.tar.gz` asset; the token stays in memory only. Isolated: only on the customer job
+  (`gcp.customerJob`, account `unity-customer@` with no roles, checked before each build), the bucket only through
+  per-execution V4 signed URLs (`HAWKES_SIGNED`); setup `tools/unity-cloudrun/customer-setup.mjs`. docs/unity-cloudrun.md, "Customer mode".
 
 ## The app (hawkesgen.ai `/`)
 

@@ -6,9 +6,10 @@
 # WebGL module on Ubuntu. Changing Unity = a new tag here, a new image, and settings.unityBuild.gcp.unity.
 FROM unityci/editor:ubuntu-6000.3.7f1-webgl-3.2.2@sha256:de43b9ae511b64c73e3df033d5ad4a95c130b3f47936ef5cba358142d6880d2e
 
-# git + LFS (Sick Of It keeps assets in LFS), jq for the spec, zstd for the Library cache, curl for Cloud Storage.
+# git + LFS (Sick Of It keeps assets in LFS), jq for the spec, zstd for the Library cache, curl for Cloud Storage;
+# iptables for customer builds' best-effort block of the metadata server (entrypoint.sh block_metadata).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git git-lfs jq zstd curl ca-certificates coreutils findutils tar gzip \
+ && apt-get install -y --no-install-recommends git git-lfs jq zstd curl ca-certificates coreutils findutils tar gzip iptables \
  && git lfs install --system \
  && rm -rf /var/lib/apt/lists/*
 
