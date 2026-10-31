@@ -63,9 +63,19 @@ log() { echo "[Hawkes] $*"; }
 # scripts included). Best effort: it needs CAP_NET_ADMIN (iptables), which Cloud Run doesn't give a container as far as
 # we know, so the real guard is the customer job's service account, which has no roles at all. The hosts entry only
 # stops lookups by name (metadata.google.internal); the address itself stays reachable unless iptables worked.
+# Only its web port: 169.254.169.254 is also Cloud Run's DNS resolver, and blocking the whole address (gen2 does allow
+# iptables) left Unity unable to look up its license server (2026-10-31: "Resource temporarily unavailable
+# (core.cloud.unity3d.com:443)"). If lookups still fail after the rule, it comes out again.
 block_metadata() {
   local how=""
-  if command -v iptables >/dev/null 2>&1 && iptables -I OUTPUT -d 169.254.169.254 -j REJECT 2>/dev/null; then how="iptables"; fi
+  if command -v iptables >/dev/null 2>&1 && iptables -I OUTPUT -d 169.254.169.254 -p tcp --dport 80 -j REJECT 2>/dev/null; then
+    how="iptables"
+    if ! getent hosts core.cloud.unity3d.com >/dev/null 2>&1; then
+      iptables -D OUTPUT -d 169.254.169.254 -p tcp --dport 80 -j REJECT 2>/dev/null
+      how=""
+      log "metadata server: the iptables rule broke name lookups, so it was taken out again"
+    fi
+  fi
   if [ -w /etc/hosts ]; then printf '0.0.0.0 metadata.google.internal metadata\n' >> /etc/hosts && how="${how:+$how + }hosts"; fi
   if curl -fsS -m 3 -o /dev/null -H 'Metadata-Flavor: Google' 'http://169.254.169.254/computeMetadata/v1/' 2>/dev/null; then
     log "metadata server: still reachable (${how:-nothing could block it}); the customer job's account has no permissions"
