@@ -1,0 +1,52 @@
+# Builds and rolls out one of Gen's side services on Cloud Run with the repo's own scripts (the service-deploy part of
+# tools/playtest-cloudrun/deploy-cpu.ps1 and tools/cpu-cloudrun/deploy.ps1). No IAM, bucket or secret creation (no --setup).
+# As gen-deployer (keyless). production = REGION_LIVE from main; beta = REGION_BETA from beta.
+# gen-deployer needs roles/iam.serviceAccountUser on the service's runtime account (gen-playtest@, gen-cpu@): J's step in HANDOFF.md.
+#   gh workflow run ops-service-deploy.yml --repo jgriffith3433/hawkesgen --ref main -f service=playtest-cpu -f lane=production
+name: ops-service-deploy
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        type: choice
+        options: [playtest-cpu, cpu]
+      lane:
+        type: choice
+        options: [beta, production]
+        default: beta
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-service-${{ inputs.service }}-${{ inputs.lane }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    name: Build and deploy a side service
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: ${{ inputs.lane }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-gen
+          service_account: gen-deployer@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build and deploy
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          SERVICE: ${{ inputs.service }}
+        run: |
+          if [ "${{ inputs.lane }}" = beta ]; then REGION="${{ vars.REGION_BETA }}"; else REGION="${{ vars.REGION_LIVE }}"; fi
+          case "$SERVICE" in
+            playtest-cpu)
+              node tools/playtest-cloudrun/build.mjs --variant cpu --project "$PROJECT" --region "$REGION" --apply
+              node tools/playtest-cloudrun/deploy.mjs --variant cpu --project "$PROJECT" --region "$REGION" --max-instances 4 --tabs 1 --apply ;;
+            cpu)
+              node tools/cpu-cloudrun/build.mjs --project "$PROJECT" --region "$REGION" --apply
+              node tools/cpu-cloudrun/deploy.mjs --project "$PROJECT" --region "$REGION" --apply ;;
+          esac
