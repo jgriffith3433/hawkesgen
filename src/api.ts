@@ -318,6 +318,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
   // Dashboard and customer-facing SaaS web app (/cdn/ is the CDN's origin, below).
   if (!route.startsWith('/v1/') && !route.startsWith('/cdn/')) {
+    // The admin dashboard: the owner's and admins' alone, every file of it (src/adminpage.ts).
+    const adminPage = await import('./adminpage.ts');
+    const adminFile = adminPage.isAdminRoute(route);
+    if (adminFile && !adminPage.isAdminViewer(req)) {
+      if (!adminPage.isAdminPage(route)) return send(res, 404, { error: 'Not found' });
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private, no-store', 'X-Robots-Tag': 'noindex' });
+      return void res.end(adminPage.ADMIN_SIGNIN);
+    }
     const publicSaas = isPublicSaas(req);
     let rel: string;
     if (route === '/legal' || route === '/terms' || route === '/privacy' || route === '/refunds') {
@@ -342,7 +350,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     const file = path.join(paths.dashboard, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (file.startsWith(paths.dashboard) && fs.existsSync(file) && fs.statSync(file).isFile()) {
-      res.writeHead(200, { 'Content-Type': STATIC[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      // The admin dashboard's files are never kept by a cache in front of Gen (they're one admin's answer).
+      res.writeHead(200, { 'Content-Type': STATIC[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': adminFile ? 'private, no-store' : 'no-cache' });
       return void fs.createReadStream(file).pipe(res);
     }
     return send(res, 404, { error: 'Not found' });
