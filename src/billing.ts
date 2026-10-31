@@ -327,6 +327,17 @@ export function quoteJobCredits(
   const params = applied.params ?? {};
   const itemCount = Math.max(1, Math.round(Number(spec.count ?? params.count ?? 1)));
 
+  // A tool that prices itself (make.checked: its loop's worst case). Its children run on Gen's key, so each is priced at
+  // its work with the margin, not a standalone job's floor (a cheap preview stays cheap); the call keeps its main tool's floor.
+  const own = tool.quote?.(params, { project: spec.project, child: (t, p) => childCredits(t, p, spec.project), getTool });
+  if (own) {
+    const credits = Math.max(1, Math.ceil(own.credits), own.tool ? toolFloorCredits(own.tool) : 0) * itemCount;
+    return {
+      tool: tool.id, credits, usdEquivalent: credits / 100, margin: COMMERCIAL_MARGIN, rawCostUsd: Math.round((credits / 100 / COMMERCIAL_MARGIN) * 10000) / 10000,
+      breakdown: own.breakdown.map((b) => ({ label: b.label, tool: own.tool ?? tool.id, count: itemCount, gpuSeconds: 0, apiCost: 0, rawUsd: 0, floorCredits: 0, credits: b.credits * itemCount, basis: 'worst case of the making loop' })),
+    };
+  }
+
   // Playtests are priced by what they run on, not the GPU estimate (plan 7; provisional).
   const pt = playtestCost(tool.id, params) ?? buildCost(tool.id, params);
   if (pt) {
@@ -380,6 +391,11 @@ export function quoteJobCredits(
     rawCostUsd: Math.round(totalRawUsd * 10000) / 10000,
     breakdown,
   };
+}
+
+/** One child job of a pipeline tool, in credits: its work with the margin, without a standalone job's floor. */
+export function childCredits(toolId: string, params: Record<string, any>, project = 'sandbox'): number {
+  return Math.max(1, Math.ceil(quoteJobCredits(toolId, params, project).rawCostUsd * COMMERCIAL_MARGIN * 100));
 }
 
 export function reserveJobCredits(userId: string, jobId: string, credits: number, detail: string): CreditLedgerEntry {

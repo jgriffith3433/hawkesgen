@@ -119,5 +119,8 @@ export type Tool = {
   admit?(call: { params: Record<string, any>; client: { id: string; role: string; projects: string[] }; project: string; customer: boolean }): Record<string, any>;
   /** Hands a call to another tool at submit (audio.voice -> the open-model tool). Returns the tool id to run, or null to stay. Both tools take the same params. */
   route?(params: Record<string, any>): string | null;
+  /** Prices the call itself instead of the estimate (make.checked: the whole loop's worst case, capped by its budget).
+   *  `child` prices one child job; null falls back to the estimate. */
+  quote?(params: Record<string, any>, q: { project: string; child: (tool: string, params: Record<string, any>) => number; getTool: (id: string) => Tool | null }): { credits: number; breakdown: { label: string; credits: number }[]; tool?: string } | null;
   run(ctx: RunContext): Promise<void>;
 };

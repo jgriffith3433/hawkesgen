@@ -53,7 +53,11 @@ import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
+<<<<<<< HEAD
 import { handleBench } from './bench/routes.ts';
+=======
+import { handleMake } from './make/routes.ts';
+>>>>>>> origin/claude/worlds-make-823927
 import { handleNetBridge } from './netbridge.ts';
 import { handleIdentity } from './identityroutes.ts';
 import {
@@ -1189,6 +1193,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (handleAnalytics(client, route, method, q, res, send, url.search, route === '/v1/analytics/marks' && method === 'POST' ? await readJson(req) : undefined)) return;
     // Gen Bench and the quality checks (src/bench/routes.ts, docs/bench.md): admins only.
     if (await handleBench(client, route, method, () => readJson(req), res, send)) return;
+
+    // The making loop: feedback, quotes, routing, the learning's proposals, the owner's knobs (src/make/routes.ts, docs/make.md).
+    if (await handleMake(client, route, method, q, res, send, () => readJson(req))) return;
 
     // ----------------------------------------------------------- templates
     if (route === '/v1/templates' && method === 'GET') {

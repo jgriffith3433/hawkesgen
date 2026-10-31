@@ -18,6 +18,7 @@ import { ROOT } from './config.ts';
 import { TOOLS, getTool, describeTool } from './tools/index.ts';
 import { getWorkflow } from './workflows/registry.ts';
 import { nodeSettings } from './workflows/tool.ts';
+import { withMeasured } from './make/feedback.ts';
 
 export type Notes = { role?: string; inputs?: Record<string, string>; settings?: Record<string, string>; iterate?: string[]; pairsWith?: string[]; measured?: boolean };
 
@@ -33,7 +34,8 @@ export function notes(): Record<string, Notes> {
       delete raw._about;
       cache = { mtime, notes: raw };
     }
-    return cache.notes;
+    // With the measured notes the owner approved from the making loop's learning (src/make/feedback.ts).
+    return withMeasured(cache.notes);
   } catch {
     return {};
   }

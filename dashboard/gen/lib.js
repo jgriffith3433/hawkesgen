@@ -33,6 +33,13 @@ export async function api(path, { method, body } = {}) {
   return data;
 }
 
+/** Tells the making loop's learning what the person thought of a take (src/make/feedback.ts): pick, discard, redo,
+ *  rating or complaint. Never in the way: it fails silently. */
+export function sendFeedback(kind, asset, extra = {}) {
+  if (!asset) return;
+  api('/v1/make/feedback', { body: { kind, asset, source: 'app', ...extra } }).catch(() => {});
+}
+
 let toastTimer = 0;
 export function toast(msg, { action, onAction, ms = 4500 } = {}) {
   const t = $('#toast');
