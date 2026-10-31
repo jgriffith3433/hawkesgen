@@ -184,6 +184,18 @@ test('routes: /admin is the owner\'s; accounts get gifts, adjustments and can be
     await OWNER(`/v1/admin/accounts/${id}/disable`, 'POST', {});
     assert.ok([401, 403].includes((await A('/v1/director/shots')).status), 'a disabled account is refused');
     await OWNER(`/v1/admin/accounts/${id}/enable`, 'POST', {});
+    // Deleting an account for good (J, 2026-10-30): the email typed confirms it; what it made goes with it.
+    const bId = (await (await OWNER('/v1/admin/accounts?q=dir-b')).json()).items[0].id;
+    const bShot = await (await B('/v1/director/shots', 'POST', { title: 'Gone soon' })).json();
+    const c = signupUser({ email: 'dir-c@example.com', password: 'secret-123', name: 'C' });
+    assert.equal((await as(c.sessionToken)(`/v1/admin/accounts/${bId}`, 'DELETE', { confirm: 'dir-b@example.com' })).status, 403, 'only the owner');
+    assert.equal((await OWNER(`/v1/admin/accounts/${bId}`, 'DELETE', { confirm: 'someone@else.com' })).status, 400, 'the wrong email deletes nothing');
+    const gone = await (await OWNER(`/v1/admin/accounts/${bId}`, 'DELETE', { confirm: 'DIR-B@example.com' })).json();
+    assert.equal(gone.deleted, bId);
+    assert.equal(gone.removed.account, 1);
+    assert.equal((await OWNER(`/v1/admin/accounts/${bId}`)).status, 404);
+    assert.ok([401, 403].includes((await B('/v1/director/shots')).status), 'its session is gone');
+    assert.equal((await OWNER(`/v1/director/shots/${bShot.id}`)).status, 404, 'and what it made');
   } finally {
     server.close();
   }

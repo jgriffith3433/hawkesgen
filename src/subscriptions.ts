@@ -147,3 +147,8 @@ export async function billingPortal(user: UserRow, origin: string) {
   const s = await stripe('billing_portal/sessions', new URLSearchParams({ customer: user.stripe_customer_id, return_url: `${origin}/#create` }));
   return { url: s.url as string };
 }
+
+/** Ends a plan in Stripe now (an account being deleted: nothing more is charged). */
+export async function cancelSubscriptionNow(stripeSubscriptionId: string) {
+  await stripe(`subscriptions/${encodeURIComponent(stripeSubscriptionId)}`, undefined, 'DELETE');
+}

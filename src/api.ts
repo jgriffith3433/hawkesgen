@@ -601,6 +601,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (route === '/v1/admin/accounts' && method === 'GET') return send(res, 200, { ...acc.listGenAccounts({ q: q('q') ?? '', limit: Number(q('limit') ?? 100), offset: Number(q('offset') ?? 0) }), overview: acc.accountsOverview() });
       const am = /^\/v1\/admin\/accounts\/(u_[0-9a-f]+)(?:\/(gift|credits|disable|enable))?$/.exec(route);
       if (am && !am[2] && method === 'GET') return send(res, 200, acc.genAccount(am[1]));
+      // Deleting an account for good: owner only, with the account's email typed as the confirmation (accounts.ts).
+      if (am && !am[2] && method === 'DELETE') { requireRole(client, 'owner'); return send(res, 200, await acc.deleteAccount(am[1], String((await readJson(req)).confirm ?? ''), by)); }
       if (am && am[2] && method === 'POST') {
         const b = await readJson(req);
         if (am[2] === 'gift') return send(res, 200, acc.giftCredits(am[1], Number(b.credits), String(b.note ?? '')));

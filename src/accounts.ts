@@ -75,3 +75,61 @@ export function setDisabled(userId: string, disabled: boolean, note: string, by:
   if (disabled) db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
   return genAccount(userId);
 }
+
+/**
+ * Deletes a Gen account for good (J, 2026-10-30: "on the admin portal I can delete accounts"). `confirm` must be the
+ * account's email. In order: a paid plan is ended in Stripe now (if that fails nothing is deleted, so nobody is billed for
+ * an account that's gone); its running and waiting jobs are cancelled; what it made (scenes, shots, library entries and
+ * their versions, files' records, voices, jobs) and its sign-in links, editor connections, own AI keys and flags are
+ * removed; then the account itself (its sessions, credit ledger, plans and games go with it). Files are stored once by
+ * content and may be shared, so the bytes stay where they are; nothing points at them from this account any more. Usage
+ * rows stay (the costs, under the project id alone). Admins can't be deleted here.
+ */
+export async function deleteAccount(userId: string, confirm: string, by: string) {
+  const u = getUserById(userId);
+  if (!u) throw new GenError(`No account ${userId}`, { status: 404 });
+  if (isGenAdmin(u)) throw new GenError('An admin account can\'t be deleted here', { status: 400 });
+  if (String(confirm ?? '').trim().toLowerCase() !== u.email.toLowerCase()) throw new GenError(`Type the account's email (${u.email}) to delete it`, { status: 400 });
+  const sub = getUserSubscription(u.id);
+  if (sub?.stripeSubscriptionId && sub.status !== 'canceled') {
+    const { cancelSubscriptionNow } = await import('./subscriptions.ts');
+    try { await cancelSubscriptionNow(sub.stripeSubscriptionId); }
+    catch (e: any) { throw new GenError(`Their plan couldn't be ended in Stripe (${e.message}), so nothing was deleted. End it in Stripe, then delete again.`, { status: 502 }); }
+  }
+  const p = u.project;
+  const { cancel } = await import('./jobs.ts');
+  for (const j of db.prepare(`SELECT id FROM jobs WHERE project = ? AND status IN ('queued', 'running')`).all(p) as { id: string }[]) { try { cancel(j.id); } catch { /* already ending */ } }
+  const { genAccountOrg } = await import('./orgsecrets.ts');
+  const removed: Record<string, number> = {};
+  const run = (name: string, sql: string, ...args: unknown[]) => {
+    try { removed[name] = Number(db.prepare(sql).run(...(args as any[])).changes); } catch { /* a table this Gen doesn't have */ }
+  };
+  db.exec('BEGIN');
+  try {
+    run('versions', 'DELETE FROM versions WHERE entity IN (SELECT id FROM entities WHERE project = ?)', p);
+    run('entities', 'DELETE FROM entities WHERE project = ?', p);
+    run('levels', 'DELETE FROM asset_lods WHERE asset IN (SELECT id FROM assets WHERE project = ?)', p);
+    run('levelState', 'DELETE FROM asset_lod_state WHERE asset IN (SELECT id FROM assets WHERE project = ?)', p);
+    run('levelLinks', 'DELETE FROM asset_lod_links WHERE asset IN (SELECT id FROM assets WHERE project = ?)', p);
+    run('files', 'DELETE FROM assets WHERE project = ?', p);
+    run('uploads', 'DELETE FROM blob_owners WHERE project = ?', p);
+    run('voices', 'DELETE FROM audio_voices WHERE project = ?', p);
+    run('scenes', 'DELETE FROM scenes WHERE project = ?', p);
+    run('sequences', 'DELETE FROM stage_sequences WHERE project = ?', p);
+    run('jobs', 'DELETE FROM jobs WHERE project = ?', p);
+    run('aiKeys', 'DELETE FROM org_secrets WHERE org = ?', genAccountOrg(p));
+    run('editorTokens', 'DELETE FROM oauth_tokens WHERE connection_id IN (SELECT id FROM oauth_connections WHERE user_id = ?)', u.id);
+    run('editors', 'DELETE FROM oauth_connections WHERE user_id = ?', u.id);
+    run('codes', 'DELETE FROM oauth_codes WHERE user_id = ?', u.id);
+    run('google', 'DELETE FROM user_google WHERE user_id = ?', u.id);
+    run('flags', 'DELETE FROM user_flags WHERE user_id = ?', u.id);
+    // The account itself never fails quietly: if it can't go, nothing above does either.
+    removed.account = Number(db.prepare('DELETE FROM users WHERE id = ?').run(u.id).changes);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  console.log(`[accounts] ${by} deleted ${u.id} (${u.email}): ${JSON.stringify(removed)}`);
+  return { deleted: u.id, email: u.email, removed, planEnded: Boolean(sub?.stripeSubscriptionId && sub.status !== 'canceled') };
+}

@@ -1026,11 +1026,22 @@ async function showAccount(id) {
     <div class="card"><h3>Add or remove credits</h3><div class="row"><input id="cd" type="number" step="1" placeholder="+100 or -50" style="width:110px"><input id="cnote" style="flex:1" placeholder="Why"><button id="cgo">Apply</button></div></div>
     <div class="card"><h3>Ledger</h3>${d.ledger.length ? `<table><thead><tr><th>When</th><th>What</th><th class="num">Change</th><th class="num">Balance</th></tr></thead><tbody>${d.ledger.map((l) => `<tr><td>${esc(ago(l.created))}</td><td>${esc(kinds[l.kind] ?? l.kind)} <span class="muted small">${esc(oneLine(l.detail))}</span></td><td class="num" style="color:${l.delta < 0 ? 'var(--bad)' : 'var(--ok)'}">${l.delta > 0 ? '+' : ''}${l.delta}</td><td class="num">${l.balance_after}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">Nothing yet.</div>'}</div>
     <div class="card"><h3>Recent jobs</h3>${d.jobs.length ? `<table><thead><tr><th>When</th><th>Tool</th><th>Status</th></tr></thead><tbody>${d.jobs.map((j) => `<tr><td>${esc(ago(j.created))}</td><td>${esc(j.tool)}</td><td>${statusCell(j)}${j.error ? `<div class="muted small">${esc(oneLine(j.error))}</div>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No jobs yet.</div>'}</div>
-    <div class="row spread">${a.admin ? '<span class="muted small">Admin account</span>' : `<button class="${a.disabled ? '' : 'danger'}" id="dis">${a.disabled ? 'Enable this account' : 'Disable this account'}</button>`}<button id="aclose">Close</button></div>`);
+    <div class="row spread">${a.admin ? '<span class="muted small">Admin account</span>' : `<span class="row"><button class="${a.disabled ? '' : 'danger'}" id="dis">${a.disabled ? 'Enable this account' : 'Disable this account'}</button><button class="danger" id="del">Delete this account</button></span>`}<button id="aclose">Close</button></div>`);
   const after = () => { showAccount(id).catch(fail); if (current === 'accounts') render.accounts().catch(() => {}); };
   $('#ggo', b).onclick = () => post(`/admin/accounts/${id}/gift`, { credits: Number($('#gc', b).value), note: $('#gn', b).value }).then(() => { toast('Gift sent'); after(); }).catch(fail);
   $('#cgo', b).onclick = () => post(`/admin/accounts/${id}/credits`, { delta: Number($('#cd', b).value), note: $('#cnote', b).value }).then(() => { toast('Credits changed'); after(); }).catch(fail);
   $('#dis', b)?.addEventListener('click', () => { const off = !a.disabled; if (off && !confirm(`Disable ${a.email}? They're signed out and can't sign in until you enable them.`)) return; post(`/admin/accounts/${id}/${off ? 'disable' : 'enable'}`, {}).then(after).catch(fail); });
+  // Deleting for good (accounts.ts deleteAccount): its plan is ended in Stripe first; typing the email confirms.
+  $('#del', b)?.addEventListener('click', async () => {
+    const typed = prompt(`Delete ${a.email} for good? Their plan is ended in Stripe, their running jobs are stopped, and everything they made is removed. This can't be undone.\n\nType their email to confirm:`);
+    if (typed == null) return;
+    try {
+      const r = await api(`/admin/accounts/${id}`, { method: 'DELETE', body: JSON.stringify({ confirm: typed }) });
+      $('#modal').close();
+      toast(`Deleted ${r.email}${r.planEnded ? ' (their plan was ended)' : ''}`);
+      if (current === 'accounts') render.accounts().catch(() => {});
+    } catch (err) { fail(err); }
+  });
   $('#aclose', b).onclick = () => $('#modal').close();
   labelCells();
 }
