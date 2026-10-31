@@ -358,10 +358,83 @@ def graph_models(graph):
     return found
 
 
+# ------------------------------------------------------------------ disk
+# A provider's worker (RunPod, Modal) has one container disk and no models mount: every model a job needs is downloaded
+# onto it, and before 2026-10-30 nothing ever left, so as jobs moved between families the disk filled ("[Errno 28] No
+# space left on device", J). Before anything is downloaded: leftovers of earlier runs go, then the least recently used
+# downloaded models until MIN_FREE is free (a model is downloaded again when a job needs it).
+MIN_FREE = float(os.environ.get("HAWKES_MIN_FREE_GB", "12")) * 1e9
+SCRATCH = ("input/hawkesgen", "output", "temp")
+
+
+def free_bytes():
+    return shutil.disk_usage(COMFY_DIR).free
+
+
+def tidy_scratch(max_age=600):
+    """Inputs, outputs and previews older than max_age seconds: leftovers of finished or failed runs."""
+    now = time.time()
+    for sub in SCRATCH:
+        root = os.path.join(COMFY_DIR, sub)
+        for d, _, files in os.walk(root):
+            for f in files:
+                p = os.path.join(d, f)
+                try:
+                    if now - os.path.getmtime(p) > max_age:
+                        os.remove(p)
+                except OSError:
+                    pass
+
+
+def make_room(keep=(), need=None, on_step=None):
+    """Frees disk for what comes next: old scratch first, then downloaded models (never symlinks, never `keep`), the least
+    recently used first, until `need` bytes are free. Returns the bytes it freed."""
+    need = MIN_FREE if need is None else need
+    if free_bytes() >= need:
+        return 0
+    tidy_scratch()
+    freed = 0
+    if free_bytes() >= need:
+        return freed
+    keep = {os.path.abspath(k) for k in keep}
+    models = []
+    for d, _, files in os.walk(os.path.join(COMFY_DIR, "models")):
+        for f in files:
+            p = os.path.join(d, f)
+            if os.path.islink(p) or os.path.abspath(p) in keep or not f.lower().endswith(MODEL_EXT):
+                continue
+            try:
+                st = os.stat(p)
+                models.append((max(st.st_atime, st.st_mtime), st.st_size, p))
+            except OSError:
+                pass
+    for _, size, p in sorted(models):
+        if free_bytes() >= need:
+            break
+        try:
+            os.remove(p)
+            freed += size
+            if on_step:
+                on_step(f"made room: removed {os.path.basename(p)} ({size // 1_000_000} MB)")
+        except OSError:
+            pass
+    if freed:
+        log(f"made room: {freed / 1e9:.1f} GB of models removed, {free_bytes() / 1e9:.1f} GB free")
+    return freed
+
+
 def place_models(entries, on_step=None, preload=False, store=GcsStore, bucket=None):
+    # The models this job uses count as just used (the least recently used go first when room is needed).
+    for e in entries:
+        try:
+            os.utime(model_dest(e))
+        except OSError:
+            pass
     todo = [e for e in entries if not os.path.exists(model_dest(e))]
     if not todo:
         return
+    if MODEL_LOAD != "mount" and not (not preload and mounted()):
+        make_room(keep=[model_dest(e) for e in entries], on_step=on_step)
     t = time.time()
     total = [0]
 
@@ -710,7 +783,8 @@ class Run:
         if req.get("models"):
             self.step(f"loading {len(req['models'])} more model(s)")
             place_models([f"{m['dir']}/{m['file']}" for m in req["models"]], self.step, store=self.store, bucket=self.bucket)
-        # Inputs go straight into ComfyUI's input folder under the names the graph uses.
+        # Inputs go straight into ComfyUI's input folder under the names the graph uses (room made first).
+        make_room(on_step=self.step)
         written = []
         for name, uri in (req.get("files") or {}).items():
             dest = os.path.normpath(os.path.join(COMFY_DIR, "input", name))
@@ -728,33 +802,37 @@ class Run:
             place_models(more, self.step, store=self.store, bucket=self.bucket)
         graph = fill_defaults(req["graph"])
         self.step("queued on the GPU")
+        files = []
         try:
-            files = run_graph(graph, req.get("extra"), self)
-        except Lost:
-            # Once more, like Gen does on the fleet: the inputs are still on this instance's disk.
-            self.step("ComfyUI restarted (out of memory?); restarting it and running the graph once more")
-            restart_comfy()
-            files = run_graph(graph, req.get("extra"), self)
-        out = []
-        for i, f in enumerate(files):
-            src = os.path.join(COMFY_DIR, "output", f["subfolder"], f["filename"])
-            with open(src, "rb") as fh:
-                data = fh.read()
-            uri = f"{self.out}{i:02d}-{f['filename']}"
-            self.step(f"saving {f['filename']} ({len(data) // 1024} KB)")
-            self.store.write(uri, data)
-            out.append({**f, "uri": uri, "bytes": len(data)})
-            # The instance's disk is its memory: nothing stays behind.
             try:
-                os.remove(src)
-            except OSError:
-                pass
-        for p in written:
-            try:
-                os.remove(p)
-            except OSError:
-                pass
-        return {"t": "done", "files": out}
+                files = run_graph(graph, req.get("extra"), self)
+            except Lost:
+                # Once more, like Gen does on the fleet: the inputs are still on this instance's disk.
+                self.step("ComfyUI restarted (out of memory?); restarting it and running the graph once more")
+                restart_comfy()
+                files = run_graph(graph, req.get("extra"), self)
+            out = []
+            for i, f in enumerate(files):
+                src = os.path.join(COMFY_DIR, "output", f["subfolder"], f["filename"])
+                with open(src, "rb") as fh:
+                    data = fh.read()
+                uri = f"{self.out}{i:02d}-{f['filename']}"
+                self.step(f"saving {f['filename']} ({len(data) // 1024} KB)")
+                self.store.write(uri, data)
+                out.append({**f, "uri": uri, "bytes": len(data)})
+            return {"t": "done", "files": out}
+        finally:
+            # The instance's disk is its memory: nothing of this run stays behind, done or failed.
+            for f in files:
+                try:
+                    os.remove(os.path.join(COMFY_DIR, "output", f["subfolder"], f["filename"]))
+                except OSError:
+                    pass
+            for p in written:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
 
 
 def restart_comfy():

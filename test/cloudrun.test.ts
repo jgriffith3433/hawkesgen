@@ -355,6 +355,42 @@ print(json.dumps({"inputs": g["1"]["inputs"], "files": files, "models": worker.g
   assert.deepEqual(out.models, ['loras/x.safetensors'], 'only what the instance lacks and the mount has');
 });
 
+test("worker.py makes room: old run leftovers go, then the least recently used models, never the job's own", (t) => {
+  const py = ['python3', 'python', 'py'].find((p) => spawnSync(p, ['--version']).status === 0);
+  if (!py) return t.skip('no Python here');
+  const dir = path.join(ROOT, 'server', 'cloudrun');
+  const comfy = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-room-'));
+  const put = (rel: string, body: string, ageS: number) => {
+    const p = path.join(comfy, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, body);
+    const t0 = Date.now() / 1000 - ageS;
+    fs.utimesSync(p, t0, t0);
+  };
+  put('input/hawkesgen/old.png', 'x', 7200);
+  put('input/hawkesgen/fresh.png', 'x', 10);
+  put('models/vae/oldest.safetensors', 'xx', 9000);
+  put('models/vae/older.safetensors', 'xx', 8000);
+  put('models/vae/needed.safetensors', 'xx', 9500);
+  const code = `
+import json, os, sys
+sys.path.insert(0, ${JSON.stringify(dir)})
+import worker
+start = {p: os.path.getsize(p) for p in [os.path.join(worker.COMFY_DIR, 'models', 'vae', f) for f in ('oldest.safetensors', 'older.safetensors', 'needed.safetensors')]}
+# The disk, standing in: what's free is what has been removed.
+worker.free_bytes = lambda: sum(s for p, s in start.items() if not os.path.exists(p))
+freed = worker.make_room(keep=[os.path.join(worker.COMFY_DIR, 'models', 'vae', 'needed.safetensors')], need=2)
+left = sorted(os.path.relpath(os.path.join(d, f), worker.COMFY_DIR).replace(os.sep, '/') for d, _, fs in os.walk(worker.COMFY_DIR) for f in fs)
+print(json.dumps({"freed": freed, "left": left}))
+`;
+  const r = spawnSync(py, ['-c', code], { encoding: 'utf8', env: { ...process.env, COMFY_DIR: comfy } });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout.trim().split('\n').pop()!);
+  assert.equal(out.freed, 2);
+  assert.deepEqual(out.left, ['input/hawkesgen/fresh.png', 'models/vae/needed.safetensors', 'models/vae/older.safetensors'],
+    'the old input went; the oldest model went; the one the job needs stayed even though it is older still');
+});
+
 test('worker.py runs an open audio model for a hawkes_audio request: run.py in its venv, the takes uploaded', (t) => {
   if (process.platform === 'win32') return t.skip('the fake model venv is a shell script');
   const py = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0);
