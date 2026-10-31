@@ -65,6 +65,8 @@ installPlaytest({
     t.scene('Studio');
     t.progress(0.1);
     // Setup shortcut (named): a fresh video scene to play in, so the account's own scenes are never touched.
+    // The workspace opens its own first tab on load; wait for it so the bot's scene is made after, not beside, it.
+    await until(() => activeScene(), 10000);
     made = await newScene('video', { title: `Playtest ${new Date().toISOString().slice(0, 16)}` });
     const opened = await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
     if (!opened) { t.note('the new scene did not open'); t.finish('stuck'); return; }
