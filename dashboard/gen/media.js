@@ -24,6 +24,12 @@ export function initMedia() {
   bus.on('signedIn', loadMedia);
   bus.on('ready', loadMedia);
   bus.on('jobDone', () => loadMedia());
+  // New files from anywhere (the AI in another tab, a chain, another device): Gen's own job stream says when one of
+  // this account's jobs finishes (J, 2026-10-30: Media sometimes needed a reload to show new things).
+  bus.on('signedIn', followJobs);
+  bus.on('ready', followJobs);
+  document.addEventListener('visibilitychange', () => { followJobs(); if (!document.hidden) loadMediaSoon(); });
+  followJobs();
   // Tiles say which files the scene in front uses (redrawn when it changes, at most every second).
   bus.on('progressText', () => { clearTimeout(M.pt); M.pt = setTimeout(drawMedia, 300); });
   let usedT = 0;
@@ -39,8 +45,30 @@ export function showPane(name) {
   if (name === 'scenes') import('./scenes.js').then((s) => s.loadList()).catch(() => {});
 }
 
+/**
+ * Gen's job stream (GET /v1/events, this account's jobs only) while the page is on screen: a job that finishes
+ * reloads Media. Closed while the page is hidden, so an open tab in the background never keeps Gen awake.
+ */
+let stream = null;
+function followJobs() {
+  const want = Boolean(state.user) && !document.hidden;
+  if (!want) { stream?.close(); stream = null; return; }
+  if (stream) return;
+  stream = new EventSource('/v1/events');
+  stream.addEventListener('job', (e) => {
+    let j = null;
+    try { j = JSON.parse(e.data); } catch { return; }
+    if (j?.status === 'done') loadMediaSoon();
+  });
+}
+let soonT = 0;
+const loadMediaSoon = () => { clearTimeout(soonT); soonT = setTimeout(loadMedia, 700); };
+
+/** The newest request wins: an older answer that arrives late never replaces a newer list. */
+let loadSeq = 0;
 export async function loadMedia() {
   const grid = $('#mediaGrid');
+  const seq = ++loadSeq;
   if (!state.user) {
     grid.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Your images, clips and sounds live here.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadMedia, 'login') }, 'Sign in')));
     return;
@@ -50,8 +78,9 @@ export async function loadMedia() {
     if (M.kind) q.set('kind', M.kind);
     if (M.q) q.set('q', M.q);
     const r = await api(`/v1/assets?${q}`);
+    if (seq !== loadSeq) return;
     M.items = (r.items ?? []).filter((a) => ['image', 'video', 'audio', 'mesh', 'file'].includes(a.kind));
-  } catch { M.items = []; }
+  } catch { if (seq !== loadSeq) return; /* a failed reload keeps what's shown */ }
   drawMedia();
 }
 

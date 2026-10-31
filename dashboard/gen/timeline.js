@@ -53,8 +53,10 @@ export function initTimeline() {
     const go = (t) => (lender ? lender.seek(Math.min(lender.length(), t)) : seek(t));
     if (!lender && isPlaying()) pause();
     go(t0);
-    const move = (ev) => go(Math.max(0, tOf(ev.clientX - r.left)));
-    const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+    // Past the visible part, the timeline pans along and the playhead follows (J, 2026-10-30).
+    const pan = edgePan(go);
+    const move = (ev) => { go(timeAt(ev.clientX)); pan.move(ev.clientX); };
+    const up = () => { pan.stop(); removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
   });
@@ -165,22 +167,53 @@ export async function dropAt(it, x, y) {
 }
 
 function rangeDrag(e, t0) {
-  const r = T.canvas.getBoundingClientRect();
   let moved = false;
-  const move = (ev) => {
-    const t1 = Math.max(0, tOf(ev.clientX - r.left));
+  const to = (t1) => {
     if (!moved && Math.abs(t1 - t0) * T.z < 4) return;
     moved = true;
     P.selection.range = { start: Math.min(t0, t1), end: Math.max(t0, t1) };
     drawRange();
   };
+  const pan = edgePan(to);
+  const move = (ev) => { to(timeAt(ev.clientX)); pan.move(ev.clientX); };
   const up = () => {
+    pan.stop();
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', up);
     if (moved) bus.emit('selection');
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+}
+
+/** The time under a screen x (measured now: the timeline may have scrolled since the drag began). */
+const timeAt = (clientX) => Math.max(0, tOf(clientX - T.canvas.getBoundingClientRect().left));
+/**
+ * While a drag holds the pointer near or past the left or right edge of the visible timeline, it pans: a steady pace,
+ * a little faster the further out (capped, so it never races off), and `onTime` gets the time under the pointer as it
+ * goes. move(x) on every pointer move, stop() when the drag ends.
+ */
+function edgePan(onTime) {
+  const EDGE = 32, MIN = 160, MAX = 700; // px from the edge where it starts; px a second at the edge and at most
+  let x = null, raf = 0, last = 0;
+  const step = (now) => {
+    raf = 0;
+    if (x == null || !T.scroll) return;
+    const v = T.scroll.getBoundingClientRect();
+    const out = x < v.left + EDGE ? x - (v.left + EDGE) : x > v.right - EDGE ? x - (v.right - EDGE) : 0;
+    if (!out) { last = 0; return; }
+    const dt = last ? Math.min(50, now - last) / 1000 : 1 / 60;
+    last = now;
+    const speed = Math.min(MAX, MIN + Math.abs(out) * 4);
+    const before = T.scroll.scrollLeft;
+    T.scroll.scrollLeft = Math.max(0, before + Math.sign(out) * speed * dt);
+    if (T.scroll.scrollLeft !== before) { onTime(timeAt(x)); placeEmpty(); }
+    raf = requestAnimationFrame(step);
+  };
+  return {
+    move(cx) { x = cx; if (!raf) raf = requestAnimationFrame(step); },
+    stop() { x = null; last = 0; if (raf) cancelAnimationFrame(raf); raf = 0; },
+  };
 }
 
 export function zoomTo(z, at = ph(), px = null) {
