@@ -37,7 +37,11 @@ import modal
 
 image = modal.Image.from_registry(${JSON.stringify(image)}${registrySecret ? `, secret=modal.Secret.from_name(${JSON.stringify(registrySecret)})` : ''}).env({
     "PORT": "8080", "STORAGE": "broker", "MODEL_LOAD": "none", "HAWKES_SERVICE": ${JSON.stringify(app)},
-})
+    # A Modal container sees the host's memory (343 GB), not its own limit, so the entrypoint's rule would let ComfyUI
+    # pin ~300 GB and starve the container (the runner stopped heartbeating at startup, 2026-10-30): never pin here.
+    "COMFY_FLAGS": "--disable-pinned-memory",
+}).entrypoint([])  # Modal runs an image's ENTRYPOINT with its runner as arguments; ours execs the worker instead, so the
+                   # runner never started ("Runner heartbeat timeout"). The function below starts the worker itself.
 app = modal.App(${JSON.stringify(app)})
 
 

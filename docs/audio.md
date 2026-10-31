@@ -34,8 +34,7 @@ through the same queue, broker, billing and resume:
   loudnorm (Gen's image) made a 2 s effect quieter, and resampled every take to 192 kHz.
 - The transcriber decodes with ffmpeg: PyAV 15 dropped an argument faster-whisper still passes. When it fails anyway, the
   takes come back unchecked (`verifySkipped` says why), not wrong.
-- **Until Modal runs the current image**, beta's `settings.gpu.familyOrder` sends `audio:qwen3-tts` to RunPod only (a job that
-  lands on an old image moves on by itself, but Modal's cold start costs minutes first). Remove the entry once Modal is redeployed.
+- **Modal** runs the same image too (2026-10-31): a voice line there took 64 s from a warm container, $0.05, word for word.
 
 Every name that callers use today keeps working: `audio.voice`, `audio.sfx`, `audio.dialogue`, `audio.voice-design`,
 `audio.voice-save`, `audio.voice-list`, `audio.voice-delete`, `audio.voice-change`, `audio.music`. Their ElevenLabs params,

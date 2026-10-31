@@ -193,7 +193,12 @@ don't count, so a Windows checkout names the tag GitHub's build pushes). Check i
 (`docker manifest inspect`): a missing tag leaves every new worker unhealthy and RunPod holds requests until they time out.
 The first start on a host pulls about 6 GB, minutes: Gen waits up to 12 minutes past its usual wait for headers
 (`run.ts COLD_START_MS`), and RunPod's 400 "failed to assign worker" (no GPU of its types free) waits like a busy service.
-Modal's app file (`.data/modal/modal_app.py`) is rewritten by `modal.mjs --image ...`; deploying it needs the modal CLI.
+**A new image on Modal:** `node tools/gpu-providers/modal.mjs --image <image>` rewrites `.data/modal/modal_app.py`, then
+`uvx --from modal modal deploy .data/modal/modal_app.py` with `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` from Gen's `.env` in the
+environment (the CLI reads them: no `modal setup`). Two things the app must keep (2026-10-31; before them Modal never ran a
+job): `.entrypoint([])` (Modal runs an image's ENTRYPOINT with its runner as arguments, ours execs the worker, so the runner
+never started: "Runner heartbeat timeout") and `COMFY_FLAGS=--disable-pinned-memory` (a container sees the host's 343 GB, so
+the entrypoint's rule let ComfyUI pin ~300 GB). Cold, a container answers `/ready` in about 25 s.
 
 It is the Cloud Run GPU image (`server/cloudrun/`, built by `tools/cloudrun/build.mjs` in Cloud Build). It holds ComfyUI
 and its custom nodes, no models and no secrets. Models come per request through the broker, or from a network volume
