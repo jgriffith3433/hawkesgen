@@ -101,6 +101,8 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   if (env) for (const [k, v] of Object.entries(env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(k) || /^(HAWKES_|UNITY_|GITHUB_|R2_|GCS_|GOOGLE_|CLOUD_RUN|LD_|BASH|ENV$|PATH$|HOME$)/.test(k)) throw bad(`env ${k}: a plain name that isn't one of the build's own (HAWKES_, UNITY_, GITHUB_, ...)`);
     if (typeof v !== 'string' || v.length > 1000) throw bad(`env ${k} must be a string (at most 1000 characters)`);
+    // No control characters: the container reads env NUL-separated, but a newline or NUL is never a real setting.
+    if (/[\u0000-\u001f\u007f]/.test(v)) throw bad(`env ${k} has a control character (a newline?): one plain line only`);
   }
   if (Object.keys(env ?? {}).length > 32) throw bad('env takes at most 32 variables');
   const stored: Record<string, unknown> = { repo, commit, tokenRef: hold(token) };

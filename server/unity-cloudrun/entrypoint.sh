@@ -37,15 +37,16 @@ fi
 CUSTOMER_TOKEN=""
 SIGNED_JSON=""      # customer mode: the signed URLs (a shell variable, never exported)
 SIGNED_ONLY=false   # customer mode: the bucket only through SIGNED_JSON, never the metadata server
+CRED_DIR=""         # customer mode: Unity's account, in files until the license is activated, never in this shell
 if [ -n "${HAWKES_SCRUBBED:-}" ]; then
   SIGNED_ONLY=true
   [ -f "$HAWKES_SCRUBBED/HAWKES_SIGNED" ] && SIGNED_JSON=$(cat "$HAWKES_SCRUBBED/HAWKES_SIGNED")
-  # Shell variables, not exported: the licensing client gets them as arguments, Unity never sees them.
-  for v in UNITY_EMAIL UNITY_PASSWORD UNITY_SERIAL; do
-    if [ -f "$HAWKES_SCRUBBED/$v" ]; then printf -v "$v" '%s' "$(cat "$HAWKES_SCRUBBED/$v")"; export -n "$v"; fi
-  done
   [ -f "$HAWKES_SCRUBBED/HAWKES_GITHUB_TOKEN" ] && CUSTOMER_TOKEN=$(cat "$HAWKES_SCRUBBED/HAWKES_GITHUB_TOKEN")
-  rm -rf "$HAWKES_SCRUBBED"
+  rm -f "$HAWKES_SCRUBBED/HAWKES_SIGNED" "$HAWKES_SCRUBBED/HAWKES_GITHUB_TOKEN"
+  # The Unity account stays in its 0700 folder only until activation (activate_now), which reads it in a subshell that
+  # exits; the folder is deleted before any of the customer's code runs. The customer's editor scripts run as root in
+  # this container, so nothing of J's account may be left in this shell's memory (2026-10-31 review).
+  CRED_DIR="$HAWKES_SCRUBBED"
   export -n HAWKES_SCRUBBED
 fi
 P="$WORK/Projects"
@@ -192,6 +193,20 @@ activate() {
   fi
   return 0
 }
+# activate, with the Unity account read from CRED_DIR in a subshell (customer mode) and CRED_DIR deleted after, whatever
+# happened. J's builds (no CRED_DIR) activate as before. Prints activate's reasons; sets LICENSE_MODE.
+activate_now() {
+  [ -n "$CRED_DIR" ] || { activate; return; }
+  local ok=0
+  ( for v in UNITY_EMAIL UNITY_PASSWORD UNITY_SERIAL; do [ -f "$CRED_DIR/$v" ] && printf -v "$v" '%s' "$(cat "$CRED_DIR/$v")"; done
+    activate && printf '%s' "$LICENSE_MODE" > "$WORK/.license-mode" ) || ok=1
+  rm -rf "$CRED_DIR"; CRED_DIR=""
+  LICENSE_MODE=$(cat "$WORK/.license-mode" 2>/dev/null); rm -f "$WORK/.license-mode"
+  # A serial needs the password again to be returned: customer jobs use a Personal seat (returned without it).
+  [ "$LICENSE_MODE" = serial ] && echo "(a serial license in customer mode can't be returned without the account; use Personal)"
+  return $ok
+}
+
 license_return() {
   case "$LICENSE_MODE" in
     personal)
@@ -209,7 +224,7 @@ license_return() {
 # License check only (the pilot's first step: gcloud run jobs execute <job> --update-env-vars HAWKES_LICENSE_CHECK=1 --wait).
 # Activates, opens a throwaway project in the editor, returns the license. Exit 0 = licensed.
 if [ "${HAWKES_LICENSE_CHECK:-}" = 1 ]; then
-  if activate > "$WORK/license.why"; then
+  if activate_now > "$WORK/license.why"; then
     log "license: activated ($LICENSE_MODE)"
     "$UNITY" -batchmode -nographics -quit -createProject "$WORK/license-check" -logFile "$WORK/check.log" >/dev/null 2>&1
     if grep -Eiq "$LICENSE_FAIL_RE" "$WORK/check.log"; then
@@ -273,7 +288,7 @@ trap 'die timeout "the container was stopped (SIGTERM)"' TERM
 
 # ------------------------------------------------------------ 1. license (first: it fails fast)
 stage license
-activate > "$WORK/license.why" || die license "$(cat "$WORK/license.why")"
+activate_now > "$WORK/license.why" || die license "$(cat "$WORK/license.why")"
 log "license: $LICENSE_MODE"
 
 # ------------------------------------------------------------ 2. sources at exact commits
@@ -364,10 +379,14 @@ FP_BEFORE=$(lib_fp)
 stage unity
 snap() { (cd "$SITE_DIR" && find . -type f -not -path './.git/*' -printf '%P\t%s\t%T@\n' | sort); }
 [ -n "$SITE" ] && snap > "$WORK/site-before.txt"
-while IFS= read -r kv; do
-  k=${kv%%=*}; v=${kv#*=}
-  [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$k=$v"
-done < <(jq -r '.env | to_entries[] | "\(.key)=\(.value)"' "$S")
+# The spec's env goes to Unity's process only (env "${UENV[@]}" below), never into this script: a value could otherwise
+# set TIMEOUT_MIN, LICENSE_MODE or another variable the script reads later. NUL-separated, so a newline in a value
+# can't start another variable (2026-10-31 review).
+UENV=()
+while IFS= read -r -d '' kv; do
+  k=${kv%%=*}
+  [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && UENV+=("$kv")
+done < <(jq -j '.env // {} | to_entries[] | "\(.key)=\(.value)\u0000"' "$S")
 export HAWKES_CLOUD_BUILD=1 HAWKES_PROJECT_PATH="$PROJ" HAWKES_COMMIT="${HAWKES_COMMIT:-$PROJECT_COMMIT}"
 [ -n "$SITE" ] && export WEBSITE_PATH="$SITE_DIR" HAWKES_SITE_PATH="$SITE_DIR"
 if [ "$CUSTOMER" = true ]; then
@@ -391,8 +410,15 @@ mapfile -t extra < <(jq -r '.args[]?' "$S")
 args+=("${extra[@]}")
 log "Unity $UNITY_VERSION ${TARGET:-WebGL}${METHOD:+ $METHOD}${TESTS:+ tests $TESTS} (limit ${TIMEOUT_MIN} min)"
 cd "$PROJ" || die source "no project folder"
-timeout --signal=TERM --kill-after=60 "${TIMEOUT_MIN}m" "$UNITY" "${args[@]}" 2>&1 | tee "$OUT/unity.log"
-EXIT_CODE=${PIPESTATUS[0]}
+# In the background with wait: bash runs a trap only after a foreground command ends, so a cancel (SIGTERM, then
+# SIGKILL ~10 s later) used to kill the container before the license was returned. Now the TERM trap stops Unity and
+# exits through finish, which returns it (2026-10-31 review).
+env "${UENV[@]}" timeout --signal=TERM --kill-after=60 "${TIMEOUT_MIN}m" "$UNITY" "${args[@]}" > >(tee "$OUT/unity.log") 2>&1 &
+UNITY_PID=$!
+trap 'kill -TERM "$UNITY_PID" 2>/dev/null; die timeout "the container was stopped (SIGTERM)"' TERM
+wait "$UNITY_PID"
+EXIT_CODE=$?
+trap 'die timeout "the container was stopped (SIGTERM)"' TERM
 log "Unity exited with code $EXIT_CODE"
 
 if [ -n "$TESTS" ] && [ -f "$OUT/results.xml" ]; then

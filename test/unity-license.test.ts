@@ -89,3 +89,11 @@ test('an editor that still says unlicensed fails the check (and returns the seat
   assert.match(r.out, /FAILED when opening a project/);
   assert.deepEqual(r.calls, ['--activate-ulf', '--return-ulf']);
 });
+
+test("a customer job: the account is read only to activate, the license is still returned, and the password is never printed", { skip: !hasBash }, () => {
+  const r = run('ok', { HAWKES_CUSTOMER_JOB: '1' });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /license: activated \(personal\)/);
+  assert.deepEqual(r.calls, ['--activate-ulf', '--return-ulf'], 'returned without the account (Personal)');
+  assert.doesNotMatch(r.out, /s3cret-pw|build@example\.com/);
+});
