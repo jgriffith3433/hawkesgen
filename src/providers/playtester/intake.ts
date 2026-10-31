@@ -183,7 +183,7 @@ export function parseBuild(build: unknown, url: unknown, { customer, tokenRef }:
   if (tokenRef) out.tokenRef = tokenRef;
   else if (g.token !== undefined && g.token !== null && g.token !== '') {
     const token = String(g.token);
-    if (!/^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,1024}$/.test(token)) throw new GenError('build.github.token: a GitHub token (ghp_…, github_pat_…)');
+    if (!/^(gh[pousr]_|github_pat_)[A-Za-z0-9_.=+/-]{20,1024}$/.test(token)) throw new GenError('build.github.token: a GitHub token (ghp_…, github_pat_…)');
     out.tokenRef = holdToken(token);
   }
   if (out.run && !out.tokenRef) throw new GenError('build.github.run: Actions artifacts need a token (build.github.token) even for public repos');

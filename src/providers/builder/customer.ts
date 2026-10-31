@@ -30,10 +30,10 @@ const config = (message: string) => new GenError(message, { status: 400, kind: '
 
 const SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
-/** A GitHub token: installation tokens (ghs_), user-to-server (ghu_), classic and fine-grained PATs. GitHub's newer
- *  tokens are longer and may carry underscores, so only the prefix and the character set are checked (a customer
- *  Studio's real installation token was refused by the old 255-letter rule, 2026-10-31). */
-export const TOKEN_RE = /^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,1024}$/;
+/** A GitHub token: installation tokens (ghs_), user-to-server (ghu_), classic and fine-grained PATs. Only the prefix,
+ *  a sane length and no spaces or quotes are checked: GitHub's newer installation tokens are 380+ characters with more
+ *  than letters and digits (a customer Studio's real one was refused twice, 2026-10-31); GitHub decides if it's valid. */
+export const TOKEN_RE = /^(gh[pousr]_|github_pat_)[A-Za-z0-9_.=+/-]{20,1024}$/;
 const TOKEN_REF_RE = /^tok_[0-9a-f]{24}$/;
 const PATH_RE = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[A-Za-z0-9 _.\/-]{1,200}$/;
 const METHOD_RE = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/;

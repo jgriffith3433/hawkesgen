@@ -455,6 +455,8 @@ test('the fallback regions are cleaned: valid, unique, never the main region', (
 test("GitHub's longer tokens pass the check; a bad one is named by its shape, never echoed", async () => {
   const C2 = await import('../src/providers/builder/customer.ts');
   assert.ok(C2.TOKEN_RE.test(`ghs_${'a1B_'.repeat(90)}`), 'a long installation token with underscores');
+  assert.ok(C2.TOKEN_RE.test(`ghs_${'aZ9-x.Q'.repeat(54)}`), "GitHub's 380-character installation tokens, dots and dashes included");
+  assert.ok(!C2.TOKEN_RE.test('ghs_abcdefghijklmnopqrstuvwxyz "quoted"'), 'no spaces or quotes');
   assert.ok(C2.TOKEN_RE.test('github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz'));
   assert.ok(!C2.TOKEN_RE.test('Bearer ghs_abcdefghijklmnopqrstuvwxyz'));
   assert.ok(!C2.TOKEN_RE.test('ghs_short'));
