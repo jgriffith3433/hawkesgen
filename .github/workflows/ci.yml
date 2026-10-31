@@ -57,7 +57,7 @@ jobs:
           [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/gen-cloudrun/deploy.ps1 for this lane first"; exit 1; }
           echo "prev=$prev" >> "$GITHUB_ENV"
           tag=$(node -e "console.log(require('./.data/cloudrun/gen-image.json').tag)")
-          gcloud run services update "$SERVICE" --image "$tag" --region "$RUN_REGION" --project "$PROJECT" --format=none
+          gcloud run services update "$SERVICE" --image "$tag" --update-env-vars "HAWKESGEN_COMMIT=$GITHUB_SHA" --region "$RUN_REGION" --project "$PROJECT" --format=none
       - name: Health check (back to the previous revision if it fails)
         run: |
           for i in $(seq 1 18); do

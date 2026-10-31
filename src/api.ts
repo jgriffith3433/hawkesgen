@@ -400,7 +400,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === '/v1/health') {
       return send(res, 200, {
-        ok: true, name: 'hawkesgen', version: VERSION, lane: process.env.HAWKESGEN_LANE || 'live',
+        // commit: what this deploy runs (CI sets it), for Hawkes Studio's beta and go-live checks (its versionPath).
+        ok: true, name: 'hawkesgen', version: VERSION, commit: process.env.HAWKESGEN_COMMIT || null, lane: process.env.HAWKESGEN_LANE || 'live',
         providers: {
           aws: (() => { try { fleet.awsConfig(); return true; } catch { return false; } })(),
           elevenlabs: eleven.configured() && !eleven.billingState().blocked,
@@ -472,6 +473,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     // Continue with Google (users.ts googleSignin): the app's sign-in. The client id is the one the admin dashboard uses.
     if (route === '/v1/users/google' && method === 'GET') return send(res, 200, { clientId: googleClientIdAny(), passwords: passwordsAllowed() });
+    // Hawkes Studio's playtests signed in (src/testsignin.ts): beta only, a token signed with the project's secret.
+    if (route === '/v1/users/test-session' && method === 'POST') {
+      const ts = await import('./testsignin.ts');
+      const project = ts.checkTestToken(await readJson(req));
+      const result = googleSignin(ts.testAccountOf(project));
+      setSessionCookie(res, req, result.sessionToken);
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+    }
     if (route === '/v1/users/google' && method === 'POST') {
       const { credential } = await readJson(req);
       let who;
@@ -597,6 +606,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       }
       if (route === '/v1/admin/ai/key' && (method === 'PUT' || method === 'POST')) return send(res, 200, house.setHouseKey(String((await readJson(req)).key ?? ''), by));
       if (route === '/v1/admin/ai/key' && method === 'DELETE') return send(res, 200, house.clearHouseKey());
+      // The secret Hawkes Studio's test sign-ins are signed with (src/testsignin.ts; Studio's project page shows it).
+      if (route === '/v1/admin/test-signin' && method === 'GET') return send(res, 200, (await import('./testsignin.ts')).testSignInStatus());
+      if (route === '/v1/admin/test-signin' && (method === 'PUT' || method === 'POST')) return send(res, 200, (await import('./testsignin.ts')).setTestSignInSecret((await readJson(req)).secret));
+      // The app's 🐞 script: a Studio project's report line (src/studioreport.ts).
+      if (route === '/v1/admin/report-script' && method === 'GET') return send(res, 200, { script: (await import('./studioreport.ts')).reportScript() });
+      if (route === '/v1/admin/report-script' && (method === 'PUT' || method === 'POST')) return send(res, 200, (await import('./studioreport.ts')).setReportScript((await readJson(req)).script));
+      if (route === '/v1/admin/test-signin' && method === 'DELETE') return send(res, 200, (await import('./testsignin.ts')).setTestSignInSecret(''));
       const acc = await import('./accounts.ts');
       if (route === '/v1/admin/accounts' && method === 'GET') return send(res, 200, { ...acc.listGenAccounts({ q: q('q') ?? '', limit: Number(q('limit') ?? 100), offset: Number(q('offset') ?? 0) }), overview: acc.accountsOverview() });
       const am = /^\/v1\/admin\/accounts\/(u_[0-9a-f]+)(?:\/(gift|credits|disable|enable))?$/.exec(route);
