@@ -244,3 +244,24 @@ export const bus = {
   on(ev, fn) { if (!subs.has(ev)) subs.set(ev, new Set()); subs.get(ev).add(fn); return () => subs.get(ev).delete(fn); },
   emit(ev, data) { for (const fn of subs.get(ev) ?? []) { try { fn(data); } catch (e) { console.error(ev, e); } } },
 };
+
+/**
+ * Redraws `box` with `draw()` and gives the person back the field they were typing in (by its data-field), with the
+ * caret, the selection and the scroll (J, 2026-10-30: typing a character's look, the autosave redrew the sheet and the
+ * cursor was gone).
+ */
+export function keepingFocus(box, draw) {
+  const a = document.activeElement;
+  const key = a && box.contains(a) ? a.dataset?.field : null;
+  const sel = key && typeof a.selectionStart === 'number' ? [a.selectionStart, a.selectionEnd, a.selectionDirection] : null;
+  const inner = key ? a.scrollTop : 0;
+  const scroll = box.scrollTop;
+  draw();
+  box.scrollTop = scroll;
+  if (!key) return;
+  const n = box.querySelector(`[data-field="${CSS.escape(key)}"]`);
+  if (!n) return;
+  n.focus({ preventScroll: true });
+  if (sel) { try { n.setSelectionRange(...sel); } catch { /* not a text field */ } }
+  n.scrollTop = inner;
+}

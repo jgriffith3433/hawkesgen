@@ -4,7 +4,7 @@
 // that from here, in every shot (src/director.ts castFromCharacters). "Make the 3D model" runs Gen's way from a front
 // picture to a model (cutout, a checked 4-view sheet, mesh.views3d, optionally rigged); "Stage them" opens a new stage.
 
-import { $, h, api, toast, fileUrl, bus, icon, plainError } from './lib.js';
+import { $, h, api, toast, fileUrl, bus, icon, plainError, keepingFocus } from './lib.js';
 import { runJob, quote, credits } from './media.js';
 import { libraryPicker, hasTool, toolReady } from './studio.js';
 import { registerEditor, newScene, setRender, refreshBar } from './scenes.js';
@@ -119,7 +119,7 @@ function draw() {
   const set = (fn) => D.change(fn);
   const face = mainPic();
   const text = (label, v, fn, rows = 0, ph = '') => {
-    const el = rows ? h('textarea', { rows: String(rows), placeholder: ph }, v) : h('input', { type: 'text', value: v, placeholder: ph });
+    const el = rows ? h('textarea', { rows: String(rows), placeholder: ph, 'data-field': label }, v) : h('input', { type: 'text', value: v, placeholder: ph, 'data-field': label });
     el.addEventListener('focus', () => D.change(() => {}, { redraw: false }));
     el.addEventListener('input', () => D.change(() => fn(el.value), { history: false, redraw: false }));
     el.addEventListener('change', () => draw());
@@ -128,7 +128,8 @@ function draw() {
   const voice = h('select', { onchange: (e) => set((x) => { x.voice = e.target.value || null; }) }, h('option', { value: '' }, 'No voice yet'), ...C.voices.map((v) => h('option', { value: v.id, selected: v.id === d.voice }, `${v.name}${v.about ? ` · ${v.about.split(',').slice(0, 2).join(',')}` : ''}`)));
   const preview = C.voices.find((v) => v.id === d.voice)?.preview;
   const model = d.model?.asset ? modelViewer(d.model.asset) : h('div', { class: 'chr-model empty' }, d.model?.pending ? h('div', { class: 'working' }, 'Making the 3D model…') : h('p', { class: 'muted small' }, d.model?.failed ? `The model failed: ${d.model.failed}` : 'No 3D model yet.'));
-  box.replaceChildren(h('div', { class: 'chr-sheet' },
+  // Whatever redraws the sheet (a save Gen tidied, a picture or model finishing), the field being typed in stays.
+  keepingFocus(box, () => box.replaceChildren(h('div', { class: 'chr-sheet' },
     h('div', { class: 'chr-left' },
       h('div', { class: 'chr-face' }, face ? h('img', { src: fileUrl(face.asset), alt: d.title }) : h('div', { class: 'chr-face-empty' }, icon('person', 'ico big'), h('p', { class: 'muted small' }, 'No picture yet'))),
       h('div', { class: 'chr-pics' }, ...d.pictures.map((p) => h('div', { class: `chr-pic${p.pending ? ' pending' : ''}`, title: p.failed ?? '' },
@@ -138,10 +139,10 @@ function draw() {
         h('button', { class: 'chr-add', title: 'A picture from Media', onclick: () => libraryPicker('image', (a) => { set((x) => { x.pictures.push({ role: pic('front') ? 'reference' : 'front', asset: a.id }); }); showFace(); }) }, icon('plus'))),
       h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: makePictures, disabled: !hasTool('image.generate') }, icon('sparkle'), 'Make their pictures'))),
     h('div', { class: 'chr-right' },
-      h('input', { class: 'chr-name', value: d.title, placeholder: 'Their name', onchange: (e) => { set((x) => { x.title = e.target.value.trim() || x.title; }); } }),
+      h('input', { class: 'chr-name', value: d.title, placeholder: 'Their name', 'data-field': 'name', onchange: (e) => { set((x) => { x.title = e.target.value.trim() || x.title; }); } }),
       text('How they look', d.description, (v) => { D.doc.description = v; }, 4, 'Face, build, hair, clothes, colors, era: every tool paints them from these words.'),
       h('div', { class: 'row chr-row' },
-        h('label', { class: 'field' }, 'Height', h('span', { class: 'row' }, (() => { const i = h('input', { type: 'number', class: 'num', min: '0.1', max: '30', step: '0.05', value: String(d.height) }); i.addEventListener('change', () => set((x) => { x.height = Number(i.value) || x.height; })); return i; })(), h('span', { class: 'muted small' }, 'm'))),
+        h('label', { class: 'field' }, 'Height', h('span', { class: 'row' }, (() => { const i = h('input', { type: 'number', class: 'num', min: '0.1', max: '30', step: '0.05', value: String(d.height), 'data-field': 'height' }); i.addEventListener('change', () => set((x) => { x.height = Number(i.value) || x.height; })); return i; })(), h('span', { class: 'muted small' }, 'm'))),
         h('label', { class: 'field' }, 'Stand-in color', h('input', { type: 'color', value: d.color, onchange: (e) => set((x) => { x.color = e.target.value; }) })),
         h('label', { class: 'field chr-voice' }, 'Voice', h('span', { class: 'row' }, voice, preview ? h('button', { class: 'icon-btn', title: 'Hear it', onclick: () => { C.preview?.pause(); C.preview = new Audio(preview); C.preview.play().catch(() => {}); } }, icon('play')) : ''))),
       h('div', { class: 'field' }, h('span', {}, '3D model'), model,
@@ -153,5 +154,5 @@ function draw() {
         d.clips.length ? h('p', { class: 'muted small' }, `Clips: ${d.clips.map((c) => c.name).join(', ')}`) : ''),
       text('Notes', d.notes, (v) => { D.doc.notes = v; }, 3, 'Anything to remember: backstory, how they move, what they never wear.'),
       h('div', { class: 'row' }, h('button', { class: 'primary small', onclick: () => stageThem() }, icon('cube'), 'Stage them'),
-        h('span', { class: 'muted small' }, 'Or drag them from Scenes onto any stage: every shot they\'re in uses this sheet.')))));
+        h('span', { class: 'muted small' }, 'Or drag them from Scenes onto any stage: every shot they\'re in uses this sheet.'))))));
 }

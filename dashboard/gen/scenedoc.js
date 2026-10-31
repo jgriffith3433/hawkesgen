@@ -62,7 +62,8 @@ export function sceneDoc({ onChange }) {
       S.version = r.version;
       S.scene = { ...S.scene, version: r.version, title: r.title, uses: r.uses };
       // The server's ids for new elements (and its tidying) without losing edits made while saving.
-      if (snap() === sent) { S.doc = r.doc; onChange?.(); }
+      // A redraw only when the server changed something (new ids, tidying): a plain save redraws nothing.
+      if (snap() === sent) { const tidied = JSON.stringify(r.doc) !== sent; S.doc = r.doc; if (tidied) onChange?.(); }
       S.dirty = snap() !== JSON.stringify(r.doc);
       bus.emit('save', S.dirty ? 'dirty' : 'saved');
       bus.emit('sceneTitle', { id: S.scene.id, title: r.title });
