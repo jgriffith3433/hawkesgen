@@ -28,6 +28,11 @@ database and library stayed on AWS.
     logs "stays down" and stops.
   - Nothing the claim imports opens a database (an empty one would make `restore -if-db-not-exists` skip). Test
     `test/cloud-lease.test.ts`. In the logs a clean deploy reads `[lease] {..."how":"released","generation":{...}}`.
+  - **The first deploy with the lease can't hand over:** the running revision has no lease, so the new one claims
+    `"how":"first"` while the old one keeps writing until Cloud Run stops it (gen-beta, 2026-10-31: about 40 s of a job's
+    log lines on the old copy). Do live's first one while the queue is idle. Every deploy after that hands over
+    (verified on gen-beta 00029 and 00030: released, the exact generations restored, the old instance "stays down" and
+    is gone within half a minute).
 - **State files** beside them (`settings.json`, Cloud Run image refs, small caches) are pulled before Gen reads them and
   pushed when they change and when Cloud Run stops the instance (`src/cloudhost.ts`; `gs://<project>-gen-state/state/`).
 - **Library files** live in `gs://<project>-gen-library` (`HAWKESGEN_LIBRARY_STORE=gcs`): every new file is backed up
