@@ -335,6 +335,18 @@ export function audible(trackIdOrTrack) {
 }
 
 // ------------------------------------------------------------------ saving and syncing
+// Two tabs on one scene (J, 2026-10-30: the AI changed it in one tab, the other saved its older copy over it and got
+// "changed somewhere else"): every save and every newer copy taken is told to this browser's other tabs at once, and a
+// tab with nothing unsaved takes the newer copy quietly before it can save over it.
+const tabsChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('hawkes-gen-scenes') : null;
+const announce = () => { if (P.id) { try { tabsChannel?.postMessage({ id: P.id, version: P.version }); } catch { /* closed */ } } };
+tabsChannel?.addEventListener('message', async ({ data }) => {
+  if (!data || data.id !== P.id || !(data.version > P.version) || P.dirty || P.saving) return;
+  try {
+    const p = await api(`/v1/editor/projects/${P.id}`);
+    if (p.id === P.id && p.version > P.version && !P.dirty && !P.saving) take(p);
+  } catch { /* the 8 s sync tries again */ }
+});
 let saveTimer = 0;
 export function scheduleSave() {
   P.dirty = true;
@@ -354,12 +366,13 @@ export async function save() {
     P.version = r.version;
     P.dirty = snap() !== sent;
     bus.emit('save', P.dirty ? 'dirty' : 'saved');
+    announce();
   } catch (err) {
     if (err.status === 409 && err.data?.project) {
       // Changed elsewhere (the AI, MCP, another tab): theirs wins; the person's last change can be undone back.
       remember();
       take(err.data.project);
-      toast('This scene changed somewhere else. You have the newest version (undo brings yours back).');
+      toast('This scene was changed in another tab or by the AI, so you have the newest version now. Undo brings back what you just did.');
     } else {
       bus.emit('save', 'error');
     }
@@ -378,6 +391,7 @@ export function take(project) {
   changed({ save: false });
   bus.emit('project', project);
   bus.emit('save', 'saved');
+  announce();
 }
 
 /** Signed out: what was built here last time (kept in this browser), else a new video. */
