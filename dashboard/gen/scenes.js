@@ -369,3 +369,6 @@ export async function setRender(id, asset, kind) {
 
 /** A scene's render, fetched fresh (for placing it, or for "update"). */
 export async function renderOf(id) { return (await api(`/v1/scenes/${id}`)).doc.render ?? null; }
+
+/** The open tabs (the 🐞 report's context, report.js). */
+export const openTabs = () => W.tabs.map(({ id, kind, title }) => ({ id, kind, title }));

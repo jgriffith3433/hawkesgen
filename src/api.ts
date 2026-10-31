@@ -318,6 +318,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
   // Dashboard and customer-facing SaaS web app (/cdn/ is the CDN's origin, below).
   if (!route.startsWith('/v1/') && !route.startsWith('/cdn/')) {
+    // The 🐞 button's widget and posts on the beta lane: Studio's (src/studioreport.ts).
+    const reports = await import('./studioreport.ts');
+    if (await reports.toStudio(req, res, route)) return;
     // The admin dashboard: the owner's and admins' alone, every file of it (src/adminpage.ts).
     const adminPage = await import('./adminpage.ts');
     const adminFile = adminPage.isAdminRoute(route);
@@ -350,6 +353,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     const file = path.join(paths.dashboard, path.normalize(rel).replace(/^(\.\.[/\\])+/, ''));
     if (file.startsWith(paths.dashboard) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+      // The app's page on the beta lane carries the 🐞 button.
+      if (rel === 'gen/index.html' && reports.reportsOn()) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+        return void res.end(reports.withReportButton(fs.readFileSync(file, 'utf8'), VERSION));
+      }
       // The admin dashboard's files are never kept by a cache in front of Gen (they're one admin's answer).
       res.writeHead(200, { 'Content-Type': STATIC[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': adminFile ? 'private, no-store' : 'no-cache' });
       return void fs.createReadStream(file).pipe(res);

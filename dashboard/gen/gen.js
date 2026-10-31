@@ -24,6 +24,7 @@ import { openPalette } from './palette.js';
 import './character.js';
 import { dropTarget } from './dragdrop.js';
 import { initAccount, loadMe, state } from './account.js';
+import './report.js';
 
 // Icons in the markup: <span class="ico-wrap" data-icon="name">.
 for (const el of $$('.ico-wrap[data-icon]')) el.innerHTML = ICON[el.dataset.icon] ?? '';
