@@ -250,6 +250,21 @@ Builds are jobs: `unity.build` with `{ project, site, method }`.
 
 The Unity log line `Licensing::Module Error: Access token is unavailable` is benign: successful builds log it too. It used to be reported as a license failure; `finishBuild` in `builder.ts` now blames the license only for hard license errors and otherwise reports the real last error.
 
+## The making loop (docs/make.md)
+
+`make.checked` is a tool like any other (`POST /v1/jobs`); these routes are around it.
+
+| Route | What |
+|---|---|
+| `POST /v1/make/feedback` | `{kind: pick\|discard\|redo\|rating\|complaint, asset \| job \| tool, rating?, note?, source?}`: recorded against the recipe that made it (uploads are skipped). Your own assets only |
+| `GET /v1/make/feedback` | Admin. `?tool=&project=&limit=` |
+| `POST /v1/make/quote` | A make.checked request (its params, plus `project`): the loop's worst case in credits, with the parts |
+| `POST /v1/make/route` | `{intent, inputs?, refs?, params?, allowPaid?}`: the tool it would use, the fallbacks, what was skipped and why, the preview params |
+| `GET /v1/make/proposals` | Owner. What the learning proposes (`?status=open\|approved\|rejected`) |
+| `POST /v1/make/proposals/summarize` | Owner. Look at the feedback now (`{days?}`, default 60) |
+| `POST /v1/make/proposals/:id` | Owner. `{approve: true\|false, write?}`: approving applies it at once; `write` also edits `knowledge/` for a commit |
+| `GET`/`PUT /v1/make/settings` | Owner. `{defaultBudget, maxRetries, thresholds, allowPaid, checkCredits, compareCredits}` |
+
 ## Analytics (docs/analytics.md)
 
 | Route | What |

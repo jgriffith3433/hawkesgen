@@ -1,0 +1,73 @@
+{
+  "_about": "Which tool makes what (src/make/routing.ts, docs/make.md). Per intent, rules in order: the first whose `when` matches gives the tool order (first choice, then fallbacks); tools this Gen lacks, that are offline, that are paid when the request doesn't allow paid models, or whose required inputs the request can't fill are skipped. `when` keys: depth (a 3D stage depth video, inputs.control), people {min,max}, dialogue (a spoken line, inputs.audio), sound (needs its own sound), seconds {min,max}, refs (identity references given), lora (a character's trained LoRA, params.lora). Per tool: kind (what assess judges), prompt (the param the brief goes in), refs (the inputs identity references fill, in order), preview (params of the cheap version, merged over the final's), steps / strength / negative (the params a fix may change), paid (a partner model billed per call), inputs (a tool input filled from a request input of another name). Starting rules, not measured: approved proposals from the learning loop (POST /v1/make/proposals/:id) change this file.",
+
+  "defaults": {
+    "thresholds": { "identity": 0.15, "checklist": 0.85, "style": 0.7 },
+    "previews": 2,
+    "heroCandidates": 3,
+    "maxRetries": 2
+  },
+
+  "tools": {
+    "image.generate": { "kind": "image", "prompt": "prompt", "preview": { "width": 512, "height": 512 }, "steps": "steps" },
+    "image.edit": { "kind": "image", "prompt": "prompt", "refs": ["images"], "preview": { "width": 512, "height": 512 }, "steps": "steps", "negative": "negative" },
+    "image.character": { "kind": "image", "prompt": "prompt", "preview": { "width": 512, "height": 512 }, "steps": "steps", "strength": "strength" },
+    "image.control": { "kind": "image", "prompt": "prompt", "preview": { "steps": 6 }, "steps": "steps" },
+    "image.viewsheet": { "kind": "image", "prompt": "look", "refs": ["image"], "preview": { "cell": 512, "retries": 0 } },
+    "image.panorama": { "kind": "image", "prompt": "prompt", "preview": { "width": 1024, "height": 512 }, "negative": "negative" },
+    "mesh.views3d": { "kind": "mesh", "prompt": null, "refs": ["image"], "preview": { "texture_resolution": 1024, "steps": 8 }, "steps": "steps" },
+
+    "video.perform": { "kind": "video", "prompt": "prompt", "refs": ["image"], "preview": { "width": 640, "height": 352, "seconds": 4 }, "negative": "negative" },
+    "video.lipsync": { "kind": "video", "prompt": "prompt", "refs": ["image"], "preview": { "width": 640, "height": 352, "seconds": 4 }, "negative": "negative" },
+    "video.talk": { "kind": "video", "prompt": "prompt", "refs": ["image"], "preview": { "width": 416, "height": 240, "frames": 41 }, "steps": "steps" },
+    "video.control": { "kind": "video", "prompt": "prompt", "refs": ["image"], "preview": { "width": 640, "height": 352, "seconds": 3 }, "strength": "strength", "negative": "negative" },
+    "video.control-wan": { "kind": "video", "prompt": "prompt", "refs": ["image"], "preview": { "width": 416, "height": 240, "frames": 33 }, "steps": "steps", "negative": "negative" },
+    "video.scene": { "kind": "video", "prompt": "prompt", "refs": ["image", "image2", "image3"], "preview": { "megapixels": 0.2, "seconds": 3, "enable_lightning_lora": true } },
+    "video.seedance": { "kind": "video", "prompt": "prompt", "refs": ["image", "image2"], "preview": { "resolution": "480p", "seconds": 4 }, "paid": true },
+    "video.extend": { "kind": "video", "prompt": "prompt", "preview": { "megapixels": 0.2, "seconds": 3, "enable_lightning_lora": true }, "steps": "steps" },
+    "video.replace": { "kind": "video", "prompt": "prompt", "refs": ["image"], "preview": { "width": 448, "height": 256, "steps": 20 }, "steps": "steps", "negative": "negative" },
+    "video.i2v": { "kind": "video", "prompt": "prompt", "refs": ["start"], "inputs": { "start": "image" }, "preview": { "width": 416, "height": 416, "frames": 33 }, "steps": "steps", "negative": "negative" },
+
+    "audio.voice": { "kind": "audio", "prompt": "text", "preview": null },
+    "audio.sfx": { "kind": "audio", "prompt": "text", "preview": null },
+    "audio.music": { "kind": "audio", "prompt": "prompt", "preview": { "seconds": 15 }, "steps": "steps" }
+  },
+
+  "intents": {
+    "image": [
+      { "when": { "lora": true }, "tools": ["image.character", "image.edit", "image.generate"], "why": "a character with a trained look: their LoRA keeps them on-model" },
+      { "when": { "refs": true }, "tools": ["image.edit", "image.generate"], "why": "references given: an edit keeps who's in them" },
+      { "tools": ["image.generate"], "why": "a picture from words" }
+    ],
+    "character-sheet": [{ "tools": ["image.viewsheet"], "why": "the sheet from a front view" }],
+    "first-frame": [
+      { "when": { "refs": true }, "tools": ["image.edit", "image.control"], "why": "the cast's references painted into the frame" },
+      { "tools": ["image.control", "image.generate"], "why": "the stage frame painted in the look" }
+    ],
+    "texture": [{ "tools": ["image.generate"], "why": "a tile from words" }],
+    "skybox": [{ "tools": ["image.panorama"], "why": "a 360 panorama" }],
+    "prop-3d": [{ "tools": ["mesh.views3d"], "why": "a model from several views" }],
+    "character-3d": [{ "tools": ["mesh.views3d"], "why": "a model from several views" }],
+
+    "shot-action": [
+      { "when": { "depth": true }, "tools": ["video.control", "video.control-wan"], "why": "staged on the 3D stage: follow its depth exactly" },
+      { "when": { "people": { "min": 2 }, "refs": true }, "tools": ["video.scene", "video.seedance"], "why": "two or more people from their references" },
+      { "tools": ["video.i2v", "video.extend"], "why": "motion from the first frame" }
+    ],
+    "shot-dialogue": [
+      { "when": { "dialogue": true, "people": { "max": 1 } }, "tools": ["video.perform", "video.lipsync", "video.talk"], "why": "one speaker: a performance driven by the line" },
+      { "when": { "dialogue": true, "people": { "min": 2 } }, "tools": ["video.talk", "video.scene", "video.seedance"], "why": "two speakers in one frame" },
+      { "tools": ["video.perform", "video.lipsync", "video.talk"], "why": "a close-up with a line" }
+    ],
+    "shot-two-people": [
+      { "when": { "refs": true }, "tools": ["video.scene", "video.seedance"], "why": "two people sharing a scene from their references" },
+      { "when": { "depth": true }, "tools": ["video.control", "video.control-wan"], "why": "no references: follow the stage" }
+    ],
+    "shot-continue": [{ "tools": ["video.extend", "video.i2v"], "why": "carry the shot on from its last frame" }],
+    "shot-recast": [{ "tools": ["video.replace"], "why": "the same performance, another person" }],
+
+    "voice": [{ "tools": ["audio.voice"], "why": "a spoken line" }],
+    "sfx": [{ "tools": ["audio.sfx"], "why": "a sound effect" }],
+    "music": [{ "tools": ["audio.music"], "why": "a score" }]
+  }
+}

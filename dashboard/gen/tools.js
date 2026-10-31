@@ -3,7 +3,7 @@
 // volume, mute, text), and a video scene's Export (video.compose for a plain cut; a layered timeline renders in the
 // browser: editor.js renderInBrowser).
 
-import { $, $$, h, api, toast, fmt, bus, icon, mediaInfo, uploadCanvas, plainError } from './lib.js';
+import { $, $$, h, api, toast, fmt, bus, icon, mediaInfo, uploadCanvas, plainError, sendFeedback } from './lib.js';
 import { P, byId, selectedClips, clipLength, clipEnd, onTrack, setClip, remember, changed, docLength, splitAt, deleteSelected, duplicateSelected, mainTrack, trackOf, audible, isVisual } from './project.js';
 import { currentSource, showSource, closeSource, startPainter, stopPainter, pause } from './player.js';
 import { runJob, quote, credits, waitJob, placeAsset, showPane, assetKindLabel } from './media.js';
@@ -147,7 +147,7 @@ async function details(t) {
   sheet(t.title || 'Details', body, rec?.params && tool ? {
     runLabel: 'Make another',
     quoteOf: () => ({ tool, params: { ...rec.params, seed: undefined } }),
-    run: () => { runJob({ tool, params: { ...rec.params, ...(rec.params.seed != null ? { seed: Math.floor(Math.random() * 2 ** 31) } : {}) }, inputs: recipeInputs(rec.inputs), label: `Again: ${t.title ?? tool}` }); toast('Making another. It shows in Media.'); },
+    run: () => { runJob({ tool, params: { ...rec.params, ...(rec.params.seed != null ? { seed: Math.floor(Math.random() * 2 ** 31) } : {}) }, inputs: recipeInputs(rec.inputs), label: `Again: ${t.title ?? tool}` }); toast('Making another. It shows in Media.'); sendFeedback('redo', t.asset); },
   } : { runLabel: 'Close', run: () => {} });
 }
 

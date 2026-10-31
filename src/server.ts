@@ -52,6 +52,8 @@ server.listen(PORT, HOST, () => {
     void refresh();
     setInterval(refresh, 6 * 3600 * 1000).unref();
   });
+  // The making loop's learning: library picks and discards as feedback, and the daily summary (src/make/feedback.ts).
+  void import('./make/feedback.ts').then((m) => m.startMakeLearning()).catch((e) => console.warn(`[make] ${e.message}`));
   // On Cloud Run there are no machines of ours to watch or images to build (src/cloudhost.ts).
   if (process.env.K_SERVICE) return;
   // The Machines tab's history: running machines measured every minute (EC2 Describe and one SSH command each).

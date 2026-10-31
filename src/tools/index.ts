@@ -28,6 +28,7 @@ import { assetLodTool } from '../lod.ts';
 import { imageRepaintTool, imageExpandTool } from './edit.ts';
 import { videoFrameTool, videoStillTool, mediaNormalizeTool } from './media.ts';
 import { videoChangeTool, audioRevoiceTool } from './chain.ts';
+import { makeCheckedTool } from '../make/tool.ts';
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
@@ -40,6 +41,7 @@ const BUILT_IN: Tool[] = [
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
   assetLodTool,
   imageRepaintTool, imageExpandTool, videoFrameTool, videoStillTool, mediaNormalizeTool, videoChangeTool, audioRevoiceTool,
+  makeCheckedTool,
   ...AUDIO_OPEN_TOOLS,
 ];
 
