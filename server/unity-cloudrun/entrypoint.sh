@@ -390,8 +390,10 @@ done < <(jq -j '.env // {} | to_entries[] | "\(.key)=\(.value)\u0000"' "$S")
 export HAWKES_CLOUD_BUILD=1 HAWKES_PROJECT_PATH="$PROJ" HAWKES_COMMIT="${HAWKES_COMMIT:-$PROJECT_COMMIT}"
 [ -n "$SITE" ] && export WEBSITE_PATH="$SITE_DIR" HAWKES_SITE_PATH="$SITE_DIR"
 if [ "$CUSTOMER" = true ]; then
-  # The build goes into HAWKES_OUT; that folder (whatever is in it afterwards) is the output.
-  export HAWKES_OUT="$WORK/artifact"
+  # The build goes into HAWKES_OUT; that folder (whatever is in it afterwards) is the output. Unity names a WebGL
+  # build's files after this folder, so it's the project's own name (YoobaLand.data, not artifact.data).
+  out_name=$(basename "$PROJ" | tr -c 'A-Za-z0-9_-' '_' | sed 's/_*$//'); [ -n "$out_name" ] || out_name=Build
+  export HAWKES_OUT="$WORK/out/$out_name"
   rm -rf "$HAWKES_OUT"; mkdir -p "$HAWKES_OUT"
   if [ "$(j .customer.defaultMethod)" = true ]; then
     # No method of their own: Gen's HawkesBuild.Build (every enabled scene to WebGL), in its own Editor-only assembly.
