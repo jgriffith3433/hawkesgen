@@ -190,6 +190,7 @@ export async function openAccount(section) {
   $('#aiKeysTitle').hidden = !own && !state.ai?.anthropic?.set && !state.ai?.claudeSubscription?.set && section !== 'ai';
   $('#aiKeysTitle').open = section === 'ai' || !state.ai?.house?.ready;
   drawAiKeys($('#aiKeys'));
+  import('./memory.js').then((m) => m.drawMemory($('#aiMemory')));
   $('#accountDialog').showModal();
   if (section === 'ai') $('#aiKeys').scrollIntoView({ block: 'center' });
   if (section === 'credits') $('#acctPacksTitle').scrollIntoView({ block: 'start' });

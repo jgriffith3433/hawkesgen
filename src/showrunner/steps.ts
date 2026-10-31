@@ -87,8 +87,9 @@ export function compileSteps(plan: Plan, o: { style?: string; negative?: string;
   }
   if (plan.kind === 'character' || plan.kind === 'world' || !plan.shots.length) return steps;
 
-  const story = add(S('story', `Story: ${plan.title}`, worldDep, { write: 'story' }));
-  const shots = add(S('shots', `${plan.shots.length} shots on the stage`, [story, ...steps.filter((s) => s.write === 'character').map((s) => s.id)], { write: 'shots' }));
+  const shots = add(S('shots', `${plan.shots.length} shots on the stage`, [...worldDep, ...steps.filter((s) => s.write === 'character' || s.write === 'place').map((s) => s.id)], { write: 'shots' }));
+  // The story is filed after the stage shots, so its shot list can name them.
+  const story = add(S('story', `Story: ${plan.title}`, [shots], { write: 'story' }));
 
   const filmed: string[] = [];
   const voiced: string[] = [];

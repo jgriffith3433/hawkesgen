@@ -6,6 +6,9 @@
 // (director.js) the same pane is the AI director: it talks about the shot and changes it. Image and audio scenes are
 // timelines too, so their AI is the AI editor told which kind it's in. For a character it's the character AI
 // (src/sceneai.ts): it changes the sheet and makes what it needs, and asks before spending more than the auto limit.
+// Every message goes to the showrunner's one entry (/v1/showrunner/turn, src/showrunner/): small edits reach the scene's
+// own AI as before (same answer, same cost), and a whole production ("a 60-second teaser about...") comes back as the
+// approval card (showrunner.js). Each answer says which role gave it (showrunner, editor, director, art director, sound).
 
 import { $, h, api, toast, fmt, bus, icon, plainError, friendly } from './lib.js';
 import { P, selectedClips, remember, take, save, docLength, clipLength, changed } from './project.js';
@@ -13,6 +16,7 @@ import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './
 import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions, directorShotId } from './director.js';
 import { activeKind, activeScene, activeEditor } from './scenes.js';
 import { pickedMedia, clearPicked } from './media.js';
+import { card as productionCard } from './showrunner.js';
 
 /** What's picked in Media, added to any AI's selection (J, 2026-10-30: "use this" with a Media tile picked). */
 const withMedia = (sel = {}) => { const m = pickedMedia(); return m.length ? { ...sel, media: m } : sel; };
@@ -24,7 +28,24 @@ function mediaChip() {
   return h('span', { class: 'ctx-chip' }, icon('image'), words, h('button', { class: 'icon-btn small', title: 'Unpick them', onclick: () => clearPicked() }, icon('close')));
 }
 
-const A = { id: null, messages: [], busy: false, queue: [] };
+const A = { id: null, messages: [], busy: false, queue: [], changing: null };
+const SR = '/v1/showrunner/turn';
+const ROLE_WORDS = { showrunner: 'Showrunner', editor: 'Editor', director: 'Director', 'art director': 'Art director', sound: 'Sound' };
+/** "Change" on a plan's card: the next message changes that plan. */
+function planRef() {
+  const id = A.changing;
+  A.changing = null;
+  $('#aiInput').placeholder = A.placeholder ?? $('#aiInput').placeholder;
+  return id ? { production: id } : {};
+}
+function changePlan(p) {
+  A.changing = p.id;
+  A.placeholder ??= $('#aiInput').placeholder;
+  $('#aiInput').placeholder = 'What should change in the plan?';
+  $('#aiInput').focus();
+}
+/** The answer's words, as a message: a production comes with its card. */
+const answer = (r, extra = {}) => ({ role: 'assistant', text: r.say || (r.production ? 'Here is the plan.' : 'Done.'), aiRole: r.role ?? null, ...(r.production ? { production: r.production } : {}), ...extra });
 const KEY = (id) => `hg.ai.${id}`;
 
 export function initAi() {
@@ -171,7 +192,8 @@ function drawMessages() {
 }
 function msgEl(m) {
   if (m.role === 'user') return h('div', { class: 'msg user' }, m.text, m.context ? h('div', { class: 'msg-ctx' }, m.context) : '');
-  const el = h('div', { class: `msg ai${m.error ? ' err' : ''}${m.pending ? ' pending' : ''}` }, m.text);
+  const el = h('div', { class: `msg ai${m.error ? ' err' : ''}${m.pending ? ' pending' : ''}` }, m.aiRole ? h('div', { class: 'msg-role' }, ROLE_WORDS[m.aiRole] ?? m.aiRole) : '', m.text);
+  if (m.production) el.append(productionCard(m.production, { onChange: changePlan }));
   if (m.results?.length) el.append(h('ul', { class: 'msg-ops' }, ...m.results.map((r) => h('li', { class: r.ok ? 'ok' : 'bad' }, r.ok ? '✓ ' : '✗ ', describe(r), r.error ? ` (${r.error})` : ''))));
   if (m.proposed && !m.proposedDone) {
     const list = m.proposed.ops ?? m.proposed.jobs ?? [];
@@ -253,16 +275,22 @@ async function send() {
     // The scene as it was before this turn: "Undo this" puts exactly it back (the editor's own undo stack is cleared when
     // a tab opens again, and steps back one edit at a time; J, 2026-10-30: the chat's Undo didn't undo the AI's changes).
     const before = JSON.stringify(P.doc);
-    const r = await api(`/v1/editor/projects/${id}/assistant`, {
-      body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: selectionForAi(), doc: P.doc, version: P.version },
+    const r = await api(SR, {
+      body: { scene: id, messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: selectionForAi(), doc: P.doc, version: P.version, ...planRef() },
     });
     list.splice(list.indexOf(thinking), 1);
+    if (r.production) {
+      list.push(answer(r));
+      if (r.aiCredits || r.started) refreshCredits();
+      if (!here()) answeredElsewhere(asked);
+      return;
+    }
     const changedDoc = here() && r.project.version !== P.version;
     if (changedDoc) { remember(); take(r.project); }
     const results = (r.results ?? []).map((x, i) => ({ ...x, label: labelOf(r, i) }));
     // Whether the AI changed the scene (in front or not): then it can be undone from here.
     const changedThere = Boolean(r.project?.doc) && JSON.stringify(r.project.doc) !== before;
-    list.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), results, proposed: r.proposed ?? null, ...(changedThere ? { undoable: true, undo: { before, version: r.project.version } } : {}) });
+    list.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), aiRole: r.role ?? null, results, proposed: r.proposed ?? null, ...(changedThere ? { undoable: true, undo: { before, version: r.project.version } } : {}) });
     keepUndos(list);
     if (r.aiCredits || results.some((x) => x.op === 'generate' && x.ok)) refreshCredits();
     if (!here()) answeredElsewhere(asked);
@@ -327,9 +355,10 @@ async function sendDirector(text) {
   A.busy = true;
   drawBusy();
   try {
-    const r = await askDirector(list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), withMedia());
+    const r = await askDirector(list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), withMedia(), SR, planRef());
     list.splice(list.indexOf(thinking), 1);
-    list.push({ role: 'assistant', text: r.say || 'Done.' });
+    list.push(answer(r));
+    if (r.aiCredits || r.started) refreshCredits();
     if (!r.here) answeredElsewhere(asked);
   } catch (err) {
     list.splice(list.indexOf(thinking), 1);
@@ -360,11 +389,16 @@ async function sendScene(text) {
   drawBusy();
   try {
     await ed.save?.();
-    const r = await api(`/v1/scenes/${t.id}/assistant`, { body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: withMedia(ed.ai?.selection?.() ?? {}) } });
+    const r = await api(SR, { body: { scene: t.id, messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: withMedia(ed.ai?.selection?.() ?? {}), ...planRef() } });
     list.splice(list.indexOf(thinking), 1);
+    if (r.production) {
+      list.push(answer(r));
+      if (r.aiCredits || r.started) refreshCredits();
+      return;
+    }
     if (here()) ed.take?.(r.scene);
     const results = [...(r.started ?? []).map((x) => ({ op: 'generate', ok: true, label: x.tool })), ...(r.errors ?? []).map((e) => ({ op: 'generate', ok: false, error: e }))];
-    list.push({ role: 'assistant', text: r.say || 'Done.', results, proposed: r.proposed ?? null, scene: t.id });
+    list.push({ role: 'assistant', text: r.say || 'Done.', aiRole: r.role ?? null, results, proposed: r.proposed ?? null, scene: t.id });
     if (r.aiCredits || r.started?.length) refreshCredits();
     if (!here()) answeredElsewhere(t);
   } catch (err) {

@@ -302,7 +302,7 @@ function onMade(p: Production, s: Step) {
     }
     if (s.id.startsWith('view:') && s.key && p.out.places[s.key]) {
       const pl = getScene(p.out.places[s.key], can);
-      saveScene(pl, { ...pl.doc, pictures: [...(Array.isArray(pl.doc.pictures) ? pl.doc.pictures : []), { role: 'view', asset: s.asset }], views: [...(Array.isArray(pl.doc.views) ? pl.doc.views : []), { asset: s.asset }] });
+      saveScene(pl, { ...pl.doc, views: [...(Array.isArray(pl.doc.views) ? pl.doc.views : []), { name: 'Wide view', asset: s.asset }] });
     }
     if (!p.parent && (s.id.startsWith('shot:') || s.id.startsWith('retake:')) && s.shot && p.out.shots[s.shot] && s.asset) setRender(getScene(p.out.shots[s.shot], can), { asset: s.asset, kind: 'video' });
   } catch (e: any) {
@@ -317,7 +317,7 @@ async function write(p: Production, s: Step) {
   switch (s.write) {
     case 'world': {
       const w = plan.world!;
-      const doc = { title: w.title, tone: w.tone, look: { style: w.style, negative: w.negative, palette: w.palette, board: [], grade: null }, canon: w.canon, rules: w.canon };
+      const doc = { title: w.title, logline: plan.logline, tone: w.tone, look: { style: w.style, negative: w.negative, palette: w.palette, board: [], grade: null }, rules: w.canon };
       // The world kind is gen-worlds' (src/worldkinds.ts); without it the world stays in this record.
       p.out.world = hasKind('world') ? createScene(p.project, 'world' as any, doc).id : null;
       if (!p.out.world) p.out.notes.push('Worlds are not on this Gen yet: the world is kept with the production.');
@@ -334,7 +334,20 @@ async function write(p: Production, s: Step) {
       return;
     }
     case 'story': {
-      const doc = { title: plan.title, level: plan.kind === 'show' ? 'episode' : plan.kind === 'trailer' ? 'trailer' : 'short', logline: plan.logline, beats: plan.beats, script: plan.script, shots: plan.shots, ...(worldId ? { world: worldId } : {}) };
+      // The story kind's shape (gen-worlds, src/worldkinds.ts): a script scene per beat with its lines, and the shot list
+      // naming the scenes this production made (characters, places, stage shots).
+      const charId = (k: string) => plan.characters.find((c) => c.key === k)?.id ?? p.out.characters[k] ?? null;
+      const placeId = (k: string | null) => (k ? plan.places.find((x) => x.key === k)?.id ?? p.out.places[k] ?? null : null);
+      const script = plan.beats.map((b) => ({
+        id: `sc_${b.key}`, heading: b.text.slice(0, 160), place: placeId(plan.shots.find((x) => x.beat === b.key)?.place ?? null),
+        action: plan.script.filter((x) => x.beat === b.key).map((x) => x.text).join('\n'),
+        lines: plan.shots.filter((x) => x.beat === b.key).flatMap((x) => x.lines.map((l) => ({ who: charId(l.who), name: plan.characters.find((c) => c.key === l.who)?.name ?? '', text: l.text, ...(l.direction ? { how: l.direction } : {}) }))),
+      }));
+      const doc = {
+        title: plan.title, level: plan.kind === 'show' ? 'episode' : 'story', logline: plan.logline, beats: plan.beats.map((b) => ({ text: b.text })), script,
+        shots: plan.shots.map((x) => ({ id: `st_${x.key}`, scene: plan.beats.some((b) => b.key === x.beat) ? `sc_${x.beat}` : null, title: x.key, what: x.action, framing: x.framing, place: placeId(x.place), cast: x.cast.map(charId).filter(Boolean), stage: p.out.shots[x.key] ?? null })),
+        ...(worldId ? { world: worldId } : {}),
+      };
       // The story kind is gen-worlds'; without it the story (its doc shape) is kept here and filed once the kind lands.
       if (hasKind('story')) p.out.story = createScene(p.project, 'story' as any, doc).id;
       else p.out.storyDoc = doc;
