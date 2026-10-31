@@ -451,3 +451,11 @@ test('the fallback regions are cleaned: valid, unique, never the main region', (
   }
   assert.deepEqual(loadSettings().unityBuild.gcp.regions, ['us-central1'], 'the default');
 });
+
+test("GitHub's longer tokens pass the check; a bad one is named by its shape, never echoed", async () => {
+  const C2 = await import('../src/providers/builder/customer.ts');
+  assert.ok(C2.TOKEN_RE.test(`ghs_${'a1B_'.repeat(90)}`), 'a long installation token with underscores');
+  assert.ok(C2.TOKEN_RE.test('github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz'));
+  assert.ok(!C2.TOKEN_RE.test('Bearer ghs_abcdefghijklmnopqrstuvwxyz'));
+  assert.ok(!C2.TOKEN_RE.test('ghs_short'));
+});

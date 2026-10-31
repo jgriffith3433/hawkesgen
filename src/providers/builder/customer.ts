@@ -30,8 +30,10 @@ const config = (message: string) => new GenError(message, { status: 400, kind: '
 
 const SLUG_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
-/** A GitHub token: installation tokens (ghs_), user-to-server (ghu_), classic and fine-grained PATs. */
-const TOKEN_RE = /^(gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})$/;
+/** A GitHub token: installation tokens (ghs_), user-to-server (ghu_), classic and fine-grained PATs. GitHub's newer
+ *  tokens are longer and may carry underscores, so only the prefix and the character set are checked (a customer
+ *  Studio's real installation token was refused by the old 255-letter rule, 2026-10-31). */
+export const TOKEN_RE = /^(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,1024}$/;
 const TOKEN_REF_RE = /^tok_[0-9a-f]{24}$/;
 const PATH_RE = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[A-Za-z0-9 _.\/-]{1,200}$/;
 const METHOD_RE = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/;
@@ -88,7 +90,7 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   if (!SLUG_RE.test(repo)) throw bad(`github.repo must be "owner/name" (got "${repo.slice(0, 100)}")`);
   if (!SHA_RE.test(commit)) throw bad('github.commit must be the full commit sha, 40 hex characters');
   // Never echo the token back, even a malformed one.
-  if (!TOKEN_RE.test(token)) throw bad('github.token must be a GitHub token (a short-lived installation token, ghs_…)');
+  if (!TOKEN_RE.test(token)) throw bad(`github.token must be a GitHub token (a short-lived installation token, ghs_…); got ${token.length} characters starting "${/^[a-z_]{1,4}/.exec(token)?.[0] ?? ''}"`);
   const ref = g.ref === undefined || g.ref === null || g.ref === '' ? null : String(g.ref).trim();
   if (ref !== null && !REF_RE.test(ref)) throw bad(`github.ref "${ref.slice(0, 120)}" has characters a ref can't`);
   const path = p.path === undefined || p.path === null || p.path === '' ? null : normalPath(String(p.path));
