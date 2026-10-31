@@ -91,6 +91,18 @@ export const retry = new Retry({ onSuccess: () => queue.pump() });
 let lastFailure: any = null;
 let account: { at: number; value: any } = { at: 0, value: null };
 
+/** submitJob, with a refusal written to the log (who, which tool, why): a customer's refused job otherwise left no
+ *  trace (2026-10-31: a customer Studio's Unity build was refused with a 400 nobody could read). Refusals never carry
+ *  a token (customer.ts never echoes one). */
+async function submitLogged(client: Client, spec: JobSpec) {
+  try {
+    return await submitJob(client, spec);
+  } catch (e: any) {
+    if (e?.status && e.status < 500) console.warn(`[jobs] refused ${String((spec as any)?.tool ?? '?').slice(0, 60)} for ${client.id} (${(client.projects ?? []).slice(0, 2).join(', ')}): ${e.status} ${String(e.message ?? e).slice(0, 300)}`);
+    throw e;
+  }
+}
+
 function send(res: ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -1253,13 +1265,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       const specs: JobSpec[] = Array.isArray(body.jobs) ? body.jobs : [body];
       const made: Job[] = [];
-      for (const s of specs) made.push(await submitJob(client, s));
+      for (const s of specs) made.push(await submitLogged(client, s));
       return send(res, 200, { jobs: made.map(summary).map((j) => publicJob(j, isCustomer(client))) });
     }
     if (route === '/v1/run' && method === 'POST') {
       // Submit and wait (up to timeout seconds, default 10 minutes). Handy for scripts and quick tools.
       const body = await readJson(req);
-      const job = await submitJob(client, body);
+      const job = await submitLogged(client, body);
       const until = Date.now() + Math.max(1, Math.min(3600, Number(body.timeout) || 600)) * 1000;
       const final = await new Promise<any>((resolve) => {
         const check = () => {
