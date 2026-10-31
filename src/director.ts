@@ -323,7 +323,7 @@ const SHOT_DOC = `The shot (JSON). Coordinates in meters on the ground: x to the
 function directorSystem() {
   return `You are the director inside Hawkes Gen. The person designs shots and sequences with you. A shot is a small 3D scene (cast, props, set, camera) that Gen films into a short video clip; a sequence is shots in order, cut together. You turn what they say into shots: block the action (where everyone stands, where they move, who faces whom), pick the lens and the camera move for the feeling they want, and write the look and the action so the result is cinematic. Think like a cinematographer: clear staging, the subject framed well, the camera moving with purpose, nobody hiding the face that matters. Characters are about 1.7 m tall unless they're not; keep them 1 to 4 m apart, in front of the camera.
 
-When the person selected a stretch of the shot (selection.range, seconds), "here" and "this part" mean that stretch: change the camera there with keys at its start and end (and keep the camera as it was outside it: add keys just before and after when needed), or the beats that happen in it.
+Files the person picked in Media come as selection.media (id, kind, title): "this", "it", "these" and "use this" can mean them; use them by id as inputs or add them. When the person selected a stretch of the shot (selection.range, seconds), "here" and "this part" mean that stretch: change the camera there with keys at its start and end (and keep the camera as it was outside it: add keys just before and after when needed), or the beats that happen in it.
 
 You also choose how it's filmed (film): the notes below say how the filming tools' settings pull on each other and what to change when a take is wrong. When the person says what was wrong with a take ("too stiff", "the faces melt", "it ignores the camera"), change film, not just the staging.
 
@@ -344,7 +344,7 @@ const DIRECTOR_SCHEMA = {
   properties: { say: { type: 'string' }, sequenceTitle: { type: 'string' }, shots: { type: 'array', items: { type: 'object' } }, current: { type: 'integer' } },
 };
 
-export type DirectorTurn = { project: string; shot: ShotDoc; shotId?: string; sequence?: { title: string; shots: (ShotDoc & { shotId: string })[] } | null; characters?: { id: string; name: string; description: string }[]; voices?: { id: string; name: string; about: string }[]; messages: { role: 'user' | 'assistant'; text: string }[]; library: { id: string; kind: string; title?: string | null; prompt?: string | null }[]; selection?: { range?: [number, number] | null; t?: number; selected?: { type: string; i: number } | null } };
+export type DirectorTurn = { project: string; shot: ShotDoc; shotId?: string; sequence?: { title: string; shots: (ShotDoc & { shotId: string })[] } | null; characters?: { id: string; name: string; description: string }[]; voices?: { id: string; name: string; about: string }[]; messages: { role: 'user' | 'assistant'; text: string }[]; library: { id: string; kind: string; title?: string | null; prompt?: string | null }[]; selection?: { range?: [number, number] | null; t?: number; selected?: { type: string; i: number } | null; media?: { id: string; kind: string; title?: string | null }[] } };
 
 export function directorPrompt(a: DirectorTurn) {
   const convo = a.messages.slice(-14).map((m) => `${m.role === 'user' ? 'Person' : 'You'}: ${String(m.text).slice(0, 4000)}`).join('\n\n');

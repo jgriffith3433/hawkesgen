@@ -12,6 +12,17 @@ import { P, selectedClips, remember, take, save, docLength, clipLength, changed 
 import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './account.js';
 import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions, directorShotId } from './director.js';
 import { activeKind, activeScene, activeEditor } from './scenes.js';
+import { pickedMedia, clearPicked } from './media.js';
+
+/** What's picked in Media, added to any AI's selection (J, 2026-10-30: "use this" with a Media tile picked). */
+const withMedia = (sel = {}) => { const m = pickedMedia(); return m.length ? { ...sel, media: m } : sel; };
+/** The chip that says what's picked in Media, with its ×. */
+function mediaChip() {
+  const m = pickedMedia();
+  if (!m.length) return '';
+  const words = m.length === 1 ? `Media: ${m[0].title}`.slice(0, 40) : `${m.length} from Media`;
+  return h('span', { class: 'ctx-chip' }, icon('image'), words, h('button', { class: 'icon-btn small', title: 'Unpick them', onclick: () => clearPicked() }, icon('close')));
+}
 
 const A = { id: null, messages: [], busy: false, queue: [] };
 const KEY = (id) => `hg.ai.${id}`;
@@ -21,6 +32,7 @@ export function initAi() {
   $('#aiInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
   $('#aiInput').addEventListener('input', () => { const t = $('#aiInput'); t.style.height = 'auto'; t.style.height = `${Math.min(160, t.scrollHeight)}px`; });
   bus.on('selection', drawContext);
+  bus.on('mediaPick', drawContext);
   bus.on('doc', drawContext);
   bus.on('time', () => { if (!P.selection.clips.size && !P.selection.range) drawContext(); });
   // A new scene in front brings its own conversation; the same scene taken again (a save, a sync, the AI's own edit)
@@ -67,7 +79,7 @@ export function selectionForAi() {
   if (P.selection.range) sel.range = { start: Math.round(P.selection.range.start * 100) / 100, end: Math.round(P.selection.range.end * 100) / 100 };
   if (P.selection.mask) sel.mask = P.selection.mask;
   if (P.selection.track) sel.track = P.selection.track;
-  return sel;
+  return withMedia(sel);
 }
 const SCENE_TIPS = {
   image: ['Make a moody movie poster of this', 'Relight everything for golden hour', 'Add a bold title at the top', 'Remove the background of this layer'],
@@ -79,13 +91,13 @@ function drawContext() {
   const box = $('#aiContext');
   if (other()) {
     const t = activeScene();
-    box.replaceChildren(h('span', { class: 'ctx-chip' }, icon(activeEditor()?.icon ?? 'sparkle'), `${t?.title ?? ''}`.slice(0, 48)));
+    box.replaceChildren(h('span', { class: 'ctx-chip' }, icon(activeEditor()?.icon ?? 'sparkle'), `${t?.title ?? ''}`.slice(0, 48)), mediaChip());
     $('#aiSuggest').replaceChildren(...(SCENE_TIPS[activeKind()] ?? []).map((x) => h('button', { type: 'button', class: 'chip', onclick: () => { $('#aiInput').value = x; send(); } }, x)));
     return;
   }
   if (directorOpen()) {
     const sh = currentShot();
-    box.replaceChildren(h('span', { class: 'ctx-chip' }, icon('film'), `Shot: ${sh?.doc.title ?? ''}`.slice(0, 48)));
+    box.replaceChildren(h('span', { class: 'ctx-chip' }, icon('film'), `Shot: ${sh?.doc.title ?? ''}`.slice(0, 48)), mediaChip());
     $('#aiSuggest').replaceChildren(...directorSuggestions().map((x) => h('button', { type: 'button', class: 'chip', onclick: () => { $('#aiInput').value = x; send(); } }, x)));
     return;
   }
@@ -96,7 +108,8 @@ function drawContext() {
   if (P.selection.range) parts.push(`${fmt(P.selection.range.start)}–${fmt(P.selection.range.end)}`);
   if (!parts.length) parts.push(`Playhead ${fmt(P.playhead)}`);
   box.replaceChildren(h('span', { class: 'ctx-chip' }, icon('frame'), parts.join(' · ')),
-    (clips.length || P.selection.range) ? h('button', { class: 'icon-btn small', title: 'Clear the selection', onclick: () => { P.selection.clips.clear(); P.selection.range = null; bus.emit('selection'); } }, icon('close')) : '');
+    (clips.length || P.selection.range) ? h('button', { class: 'icon-btn small', title: 'Clear the selection', onclick: () => { P.selection.clips.clear(); P.selection.range = null; bus.emit('selection'); } }, icon('close')) : '',
+    mediaChip());
   drawSuggestions(clips);
 }
 function drawSuggestions(clips) {
@@ -314,7 +327,7 @@ async function sendDirector(text) {
   A.busy = true;
   drawBusy();
   try {
-    const r = await askDirector(list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })));
+    const r = await askDirector(list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), withMedia());
     list.splice(list.indexOf(thinking), 1);
     list.push({ role: 'assistant', text: r.say || 'Done.' });
     if (!r.here) answeredElsewhere(asked);
@@ -347,7 +360,7 @@ async function sendScene(text) {
   drawBusy();
   try {
     await ed.save?.();
-    const r = await api(`/v1/scenes/${t.id}/assistant`, { body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: ed.ai?.selection?.() ?? {} } });
+    const r = await api(`/v1/scenes/${t.id}/assistant`, { body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: withMedia(ed.ai?.selection?.() ?? {}) } });
     list.splice(list.indexOf(thinking), 1);
     if (here()) ed.take?.(r.scene);
     const results = [...(r.started ?? []).map((x) => ({ op: 'generate', ok: true, label: x.tool })), ...(r.errors ?? []).map((e) => ({ op: 'generate', ok: false, error: e }))];

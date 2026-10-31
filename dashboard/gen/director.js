@@ -176,10 +176,10 @@ async function flushSave() {
 }
 
 // ------------------------------------------------------------------ the AI director (ai.js sends here while open)
-export async function askDirector(messages) {
+export async function askDirector(messages, extra = {}) {
   await flushSave();
   const id = D.shot.id;
-  const selection = { t: Math.round(D.t * 100) / 100, range: D.range, selected: D.sel };
+  const selection = { t: Math.round(D.t * 100) / 100, range: D.range, selected: D.sel, ...extra };
   const r = await api(`/v1/director/shots/${id}/assistant`, { body: { messages, doc: D.shot.doc, selection } });
   // Only into the shot it was asked about: if another tab is in front now, the answer stays saved with its own shot.
   const here = D.open && D.shot?.id === id;

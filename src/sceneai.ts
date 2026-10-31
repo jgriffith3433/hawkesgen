@@ -74,7 +74,7 @@ export function scenePrompt(a: SceneTurnInput) {
   const craft = toolCraft(relevantTools(last));
   return {
     system: system(a.scene.kind),
-    prompt: `The ${a.scene.kind} scene now:\n${JSON.stringify(a.scene.doc)}\n\nThe person's selection: ${JSON.stringify(a.selection ?? {})}\n\nTheir other scenes (a scene id can be placed where the scene says):\n${JSON.stringify(a.scenes.slice(0, 40))}\n\nRecent files in their library:\n${JSON.stringify(a.library.slice(0, 40))}\n\nVoices:\n${JSON.stringify(a.voices.slice(0, 30).map((v) => ({ id: v.id, name: v.name, about: v.about })))}\n\n${craft ? `How the tools this likely needs work:\n${craft}\n\n` : ''}The conversation (the last line is what to do now):\n${convo}`,
+    prompt: `The ${a.scene.kind} scene now:\n${JSON.stringify(a.scene.doc)}\n\nThe person's selection (files they picked in Media come as selection.media, with id, kind and title: "this", "it" and "use this" can mean them; use them by id): ${JSON.stringify(a.selection ?? {})}\n\nTheir other scenes (a scene id can be placed where the scene says):\n${JSON.stringify(a.scenes.slice(0, 40))}\n\nRecent files in their library:\n${JSON.stringify(a.library.slice(0, 40))}\n\nVoices:\n${JSON.stringify(a.voices.slice(0, 30).map((v) => ({ id: v.id, name: v.name, about: v.about })))}\n\n${craft ? `How the tools this likely needs work:\n${craft}\n\n` : ''}The conversation (the last line is what to do now):\n${convo}`,
     schema: SCHEMA, maxTokens: 8000, effort: 'medium',
   };
 }

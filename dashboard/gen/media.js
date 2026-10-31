@@ -8,7 +8,20 @@ import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
 import { touchDrag } from './dragdrop.js';
 
-const M = { kind: '', q: '', items: [], inflight: new Map() };
+// picked: the tiles the person picked, by asset id with what the AI is told about each (J, 2026-10-30: they were
+// dropped whenever Media refreshed, and the AI didn't know about them).
+const M = { kind: '', q: '', items: [], inflight: new Map(), picked: new Map() };
+/** What's picked in Media, for the AI's selection (id, kind, title), oldest pick first. */
+export const pickedMedia = () => [...M.picked.values()];
+/** Drops the picks (the chip's ×, Escape in Media). */
+export function clearPicked() { if (!M.picked.size) return; M.picked.clear(); $('#mediaGrid .tile.sel').forEach((x) => x.classList.remove('sel')); bus.emit('mediaPick'); }
+function pickTile(a, el, add) {
+  const lite = { id: a.id, kind: a.kind, title: String(a.title || a.recipe?.params?.prompt || a.kind).slice(0, 120) };
+  if (add) { if (M.picked.has(a.id)) M.picked.delete(a.id); else M.picked.set(a.id, lite); }
+  else { M.picked.clear(); M.picked.set(a.id, lite); }
+  $('#mediaGrid .tile').forEach((x) => x.classList.toggle('sel', M.picked.has(x.dataset.asset)));
+  bus.emit('mediaPick');
+}
 
 export function initMedia() {
   $$('#paneTabs button').forEach((b) => b.addEventListener('click', () => showPane(b.dataset.pane)));
@@ -111,17 +124,18 @@ function tileFor(a) {
     : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
   const d = durationOf(a);
   const used = P.active && P.doc.clips.some((c) => c.asset === a.id);
-  const el = h('div', { class: `tile kind-${a.kind}${used ? ' used' : ''}`, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
+  const el = h('div', { class: `tile kind-${a.kind}${used ? ' used' : ''}${M.picked.has(a.id) ? ' sel' : ''}`, 'data-asset': a.id, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
 ` : ''}Double-click to look at it; drag it onto a track` },
     media,
     d ? h('span', { class: 'badge' }, fmt(d, 0)) : '',
     used ? h('span', { class: 'badge used', title: 'It\'s in the scene in front' }, 'In use') : '',
     h('div', { class: 'tile-cap' }, a.title || prompt || a.kind),
     onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(a)); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
-  // One click picks a tile (the "+" adds it); a double-click looks at it in the center (J, 2026-10-30).
-  el.addEventListener('click', () => { $$('#mediaGrid .tile.sel').forEach((x) => x.classList.remove('sel')); el.classList.add('sel'); });
+  // One click picks a tile (Ctrl or Cmd adds to the picks; the "+" adds it to the timeline); a double-click looks at it in
+  // the center (J, 2026-10-30). Picks are kept by id, so a refresh keeps them, and the AI is told about them.
+  el.addEventListener('click', (e) => pickTile(a, el, e.ctrlKey || e.metaKey));
   el.addEventListener('dblclick', () => openAsset(a));
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(a); });
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(a); if (e.key === 'Escape') clearPicked(); });
   el.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('application/x-hg-asset', JSON.stringify(assetLite(a)));
     e.dataTransfer.effectAllowed = 'copy';
