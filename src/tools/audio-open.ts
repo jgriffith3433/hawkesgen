@@ -369,7 +369,7 @@ export const sfxOpenTool: Tool = {
     duration: { type: 'number', min: 0.5, max: 30, description: 'Seconds (empty: the model decides).' },
     loop: { type: 'boolean', default: false },
     influence: { type: 'number', min: 0, max: 1, default: 0.55, description: 'ElevenLabs only.', advanced: true },
-    model: { type: 'string', default: 'eleven_text_to_sound_v2', advanced: true, description: 'ElevenLabs model (ignored by the open path).' },
+    model: { type: 'string', default: 'eleven_text_to_sound_v3', advanced: true, description: 'ElevenLabs model (ignored by the open path).' },
     format: { type: 'string', default: 'mp3_44100_128', advanced: true },
     count: { type: 'integer', min: 1, max: 4, default: 1, description: 'Takes.' },
     ...voiceOpenParams,

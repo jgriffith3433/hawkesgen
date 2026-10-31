@@ -189,7 +189,7 @@ export async function isolateVoice({ audio, name = 'mix.mp3', type = 'audio/mpeg
   return r.buffer;
 }
 
-export async function soundEffect({ text, duration, loop = false, influence = 0.55, model = 'eleven_text_to_sound_v2', format = 'mp3_44100_128' }: { text: string; duration?: number; loop?: boolean; influence?: number; model?: string; format?: string }, signal?: AbortSignal) {
+export async function soundEffect({ text, duration, loop = false, influence = 0.55, model = 'eleven_text_to_sound_v3', format = 'mp3_44100_128' }: { text: string; duration?: number; loop?: boolean; influence?: number; model?: string; format?: string }, signal?: AbortSignal) {
   const body: Record<string, unknown> = { text, model_id: model, prompt_influence: Math.max(0, Math.min(1, influence)), loop };
   if (duration) body.duration_seconds = Math.max(0.5, Math.min(30, duration));
   const r = await callRetry(`https://api.elevenlabs.io/v1/sound-generation?output_format=${encodeURIComponent(format)}`, { method: 'POST', body }, signal);
