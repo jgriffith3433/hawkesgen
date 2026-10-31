@@ -54,6 +54,7 @@ import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import { handleNetBridge } from './netbridge.ts';
+import { handleWorlds } from './worldroutes.ts';
 import {
   authenticateRequest,
   isPublicSaas,
@@ -649,6 +650,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       throw new GenError(`No admin route ${method} ${route}`, { status: 404 });
     }
 
+    // Worlds (src/worldroutes.ts): /v1/worlds, /v1/stories and the world kinds' AI.
+    if (await handleWorlds({ req, res, route, method, client, send, readJson })) return;
+
     // --------------------------------------------------------------- scenes (src/scenes.ts): every kind, plug and play
     if (route === '/v1/scenes' || route.startsWith('/v1/scenes/')) {
       const sc = await import('./scenes.ts');
@@ -673,7 +677,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (route === '/v1/scenes' && method === 'POST') {
         const b = await readJson(req);
         const kind = String(b.kind ?? '');
-        if (!sc.KIND_IDS.includes(kind as any)) throw new GenError('kind: video, stage, image, audio or character', { status: 400 });
+        if (!sc.KIND_IDS.includes(kind as any)) throw new GenError(`kind: ${sc.KIND_IDS.join(', ')}`, { status: 400 });
         const project = projectOf(b.project);
         const k = sc.kindOf(kind);
         const doc = b.doc ?? k.blank(typeof b.title === 'string' && b.title.trim() ? b.title.trim() : 'Untitled');
