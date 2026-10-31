@@ -212,7 +212,7 @@ export const listShots = (project: string, limit = 60) => listScenes(project, 's
 export function createShot(project: string, doc?: unknown): ShotRow {
   const d = normalizeShot(doc ?? newShot());
   castFromCharacters(d, project);
-  return createScene(project, 'stage', d, 'sh');
+  return createScene(project, 'stage', { ...d, world: (doc as any)?.world }, 'sh');
 }
 
 export function getShot(id: string, canSee: (project: string) => boolean): ShotRow {
@@ -226,7 +226,7 @@ export function saveShot(s: ShotRow, doc: unknown, version?: number): ShotRow {
   const d = normalizeShot(doc);
   castFromCharacters(d, s.project);
   try {
-    return saveScene(s, d, version) as ShotRow;
+    return saveScene(s, { ...d, world: (doc as any)?.world }, version) as ShotRow;
   } catch (e: any) {
     if (e.status === 409) e.shot = e.scene;
     throw e;

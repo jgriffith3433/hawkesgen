@@ -8,7 +8,7 @@
 // The AI marks elements to make with `gen` (src/sceneai.ts), which become `pending` when the jobs are submitted.
 
 import crypto from 'node:crypto';
-import { registerKind, sceneRef } from './scenes.ts';
+import { registerKind, sceneRef, kindOf } from './scenes.ts';
 import { keptRender } from './editor.ts';
 import type { getJob } from './jobs.ts';
 import { normalizeLock, normalizeLora, type Lock, type LoraState } from './identity.ts';
@@ -135,5 +135,5 @@ registerKind('character', {
 /** Every element of a scene that can hold a file (for the AI's `gen` marks and `el:` inputs). */
 export function fileElements(kind: string, doc: any): any[] {
   if (kind === 'character') return [...doc.pictures, ...(doc.model ? [doc.model] : [])];
-  return [];
+  return kindOf(kind).elements?.(doc) ?? [];
 }

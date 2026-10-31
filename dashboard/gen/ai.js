@@ -52,7 +52,7 @@ export function initAi() {
 
 function load(id) { try { return JSON.parse(localStorage.getItem(KEY(id)) || '[]'); } catch { return []; } }
 // The image, audio and character scenes' conversations, one per scene.
-const OTHER = new Set(['character']);
+const OTHER = new Set(['character', 'world', 'place', 'prop', 'story']);
 const other = () => OTHER.has(activeKind());
 const SC = { id: null, messages: [] };
 function loadSceneMessages() {
@@ -63,7 +63,7 @@ function loadSceneMessages() {
 }
 /** The conversation on show: the project's, the open shot's while directing, or the image, audio or character scene's. */
 const msgs = () => (directorOpen() ? directorMessages() : other() ? SC.messages : A.messages);
-const HEADS = { video: 'AI editor', stage: 'AI director', image: 'Image AI', audio: 'Audio AI', character: 'Character AI' };
+const HEADS = { video: 'AI editor', stage: 'AI director', image: 'Image AI', audio: 'Audio AI', character: 'Character AI', world: 'World AI', place: 'Place AI', prop: 'Prop AI', story: 'Story AI' };
 function drawHead() { $('.ai-head b').textContent = directorOpen() ? 'AI director' : HEADS[activeKind()] ?? 'AI'; }
 function keep() {
   if (directorOpen()) return keepDirectorMessages();
@@ -85,6 +85,10 @@ const SCENE_TIPS = {
   image: ['Make a moody movie poster of this', 'Relight everything for golden hour', 'Add a bold title at the top', 'Remove the background of this layer'],
   audio: ['Make a calm lo-fi bed under everything', 'Add rain ambience on its own track', 'Duck the music under the voice', 'Write and voice a 10-second intro'],
   character: ['Make them a battle-worn space pilot', 'Make their pictures', 'Give them a voice that fits', 'Make their 3D model'],
+  world: ['Give this world a look', 'Add three characters and two places', 'Write its rules', 'Start a story here'],
+  place: ['Make its pack', 'Show it at night', 'Show it in a storm', 'Give it a sound'],
+  prop: ['Make its sheet', 'Make it older and worn', 'Make its 3D model'],
+  story: ['Write the beats', 'Write the script', 'Write the shot list', 'Check it against the rules of the world'],
 };
 function drawContext() {
   drawTips();
@@ -153,7 +157,7 @@ function drawMessages() {
     return;
   }
   if (!msgs().length && other()) {
-    const words = { image: ['What should it look like?', 'Layers, text, light, mood: say it and the AI builds it, using every image tool Gen has.'], audio: ['What should it sound like?', 'Music, voices, effects, the mix: say it and the AI lays it out on the tracks.'], character: ['Who are they?', 'Describe them: the AI writes their look, picks a voice, and makes their pictures and 3D model.'] }[activeKind()];
+    const words = { image: ['What should it look like?', 'Layers, text, light, mood: say it and the AI builds it, using every image tool Gen has.'], audio: ['What should it sound like?', 'Music, voices, effects, the mix: say it and the AI lays it out on the tracks.'], character: ['Who are they?', 'Describe them: the AI writes their look, picks a voice, and makes their pictures and 3D model.'], world: ['What is this world?', 'Say it in a sentence: the AI writes its rules and its look, and brings in its first characters, places and a story.'], place: ['What is this place?', 'Describe it: the AI makes its panorama, its views and its sound.'], prop: ['What is it?', 'Describe it: the AI makes its sheet, and its 3D model when you want one.'], story: ['What happens?', 'The AI writes it top down: the logline, the beats, the script, then the shot list, keeping track of who wears and holds what.'] }[activeKind()];
     list.replaceChildren(h('div', { class: 'ai-hello' }, icon(activeEditor()?.icon ?? 'sparkle', 'ico big'), h('h3', {}, words[0]), h('p', { class: 'muted' }, words[1])));
     return;
   }

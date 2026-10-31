@@ -184,10 +184,13 @@ export async function placeAsset(a, { track, start, place } = {}) {
  * Runs one tool for the person. `place`: { replace: clipId } swaps that clip's file when done; { track, start } puts a
  * waiting clip on the timeline now; nothing: the result goes to Media. Returns the finished job (or throws).
  */
-export function runJob({ tool, params = {}, inputs = {}, label, place, onStart } = {}) {
+/** The scene in front (scenes.js): a job made from it inherits its world's look (src/worlds.ts) unless labels.world is "off". */
+let frontScene = null;
+bus.on('sceneActive', (t) => { frontScene = t?.id ?? null; });
+export function runJob({ tool, params = {}, inputs = {}, label, place, onStart, labels = {} } = {}) {
   return new Promise((resolve, reject) => needSignIn(async () => {
     try {
-      const r = await api('/v1/jobs', { body: { project: state.user.project, tool, params, inputs, labels: { title: label ?? tool, ...(P.id ? { editor: P.id } : {}) } } });
+      const r = await api('/v1/jobs', { body: { project: state.user.project, tool, params, inputs, labels: { title: label ?? tool, ...(P.id ? { editor: P.id } : {}), ...(frontScene ? { scene: frontScene } : {}), ...labels } } });
       const job = r.jobs[0];
       onStart?.(job.id);
       if (place?.replace) {

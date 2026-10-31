@@ -258,11 +258,13 @@ function toolForm(t, prefill, prefillNodes) {
   const tl = TIMELINE[t.id];
   const toTl = tl ? h('input', { type: 'checkbox', checked: Boolean(tl.on) }) : null;
   const q = h('span', { class: 'quote' });
+  // A job made in a world takes the world's look (src/worlds.ts); this leaves it out for this one job.
+  const worldLook = h('input', { type: 'checkbox', checked: true });
   const run = h('button', { class: 'primary small' }, icon('sparkle'), 'Run');
   const result = h('div', { class: 'tool-result' });
   const form = h('form', { class: 'gen-card tool-form' }, ...head(CURATED.get(t.id)?.label ?? t.title ?? t.id, CURATED.get(t.id)?.about ?? t.description, t.ready),
     ...slots.map((s) => s.el), ...main, ...extras,
-    adv.length ? h('details', { class: 'more' }, h('summary', {}, 'More settings'), ...adv) : '',
+    h('details', { class: 'more' }, h('summary', {}, 'More settings'), ...adv, h('label', { class: 'check', title: 'When the scene in front belongs to a world, its style line, palette and style board are added' }, worldLook, "Use the world's look")),
     craft.el,
     h('div', { class: 'gen-foot' }, toTl ? h('label', { class: 'check' }, toTl, 'Add to timeline') : '', q, run), result);
 
@@ -291,7 +293,7 @@ function toolForm(t, prefill, prefillNodes) {
     const label = String(spec.params.prompt ?? spec.params.text ?? spec.params.description ?? CURATED.get(t.id)?.label ?? t.title).slice(0, 80);
     const into = trackOf(P.selection.track) && !trackOf(P.selection.track).locked ? P.selection.track : tl.track;
     const place = toTl?.checked ? { track: into, start: tl.start ?? (isMagnetic(into) ? undefined : P.playhead), seconds: tl.seconds ?? spec.params.seconds ?? spec.params.duration ?? (hasFrames ? Number(secondsSel.value) : 5) } : null;
-    go({ ...spec, label, place }, form, result);
+    go({ ...spec, label, place, ...(worldLook.checked ? {} : { labels: { world: 'off' } }) }, form, result);
   });
   return form;
 }

@@ -6,6 +6,8 @@ import { h, icon, toast } from './lib.js';
 import { newScene, activeKind } from './scenes.js';
 
 export const STARTERS = [
+  { kind: 'world', icon: 'layers', title: 'Start a world', about: 'A sentence or a mood board: the AI builds the world, its people, places and a story',
+    start: () => import('./world.js').then((w) => w.startWorld()) },
   { kind: 'video', icon: 'film', title: 'Trailer', about: 'A 15-second trailer with music and a title',
     prompt: 'Make a 15-second trailer: pick a strong idea, make 4 short shots that build, add music that fits and a title at the start.' },
   { kind: 'video', icon: 'image', title: 'Slideshow', about: 'Your latest pictures, moving gently, with music',
@@ -28,6 +30,7 @@ export const STARTERS = [
 
 /** Makes the starter's scene and asks its AI to build it. */
 export async function startFrom(s) {
+  if (s.start) return s.start();
   try {
     await newScene(s.kind, { title: s.title });
     // The scene has mounted; give the AI pane a beat to switch to it, then ask.
@@ -43,5 +46,6 @@ export function starterItems(close) {
 
 /** Ideas for the scene in front (the empty center): asking its AI right here, no new scene. */
 export function ideasHere() {
-  return STARTERS.filter((s) => s.kind === activeKind()).map((s) => h('button', { class: 'chip small', title: s.about, onclick: () => import('./ai.js').then((a) => a.askAi(s.prompt)) }, s.title));
+  // Starting a world is offered everywhere: it's the way in to everything else.
+  return STARTERS.filter((s) => s.kind === activeKind() || s.start).map((s) => h('button', { class: 'chip small', title: s.about, onclick: () => (s.start ? s.start() : import('./ai.js').then((a) => a.askAi(s.prompt))) }, s.title));
 }

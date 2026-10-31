@@ -32,6 +32,10 @@ export const KINDS = [
   { kind: 'image', label: 'Image', icon: 'image', about: 'A picture in layers: the frame at the playhead' },
   { kind: 'audio', label: 'Audio', icon: 'music', about: 'Tracks of music, voices and sound, mixed down' },
   { kind: 'character', label: 'Character', icon: 'person', about: 'A person or creature to cast: look, voice, 3D model' },
+  { kind: 'world', label: 'World', icon: 'layers', about: 'A world: its look, rules, people, places and stories' },
+  { kind: 'place', label: 'Place', icon: 'sun', about: 'A location: a 360° view, key views, its sound' },
+  { kind: 'prop', label: 'Prop', icon: 'cube', about: 'An object that looks the same in every shot' },
+  { kind: 'story', label: 'Story', icon: 'text', about: 'A story, series or episode, written top down into shots' },
 ];
 export const kindInfo = (k) => KINDS.find((x) => x.kind === k) ?? KINDS[0];
 export function registerEditor(ed) { EDITORS[ed.kind] = ed; }
@@ -169,8 +173,8 @@ async function activate(id) {
   try { await W.switching; } finally { W.switching = null; }
 }
 
-/** A kind with nothing timed (a character) still keeps the timeline on screen, saying so. */
-const NO_LANES = { length: () => 10, playhead: () => 0, seek() {}, lanes: () => [], move() {}, empty: 'A character has no timeline of their own: drag them onto a stage, where their moves and lines are timed.' };
+/** A kind with nothing timed (a character, a world) still keeps the timeline on screen, saying so. */
+const NO_LANES = { length: () => 10, playhead: () => 0, seek() {}, lanes: () => [], move() {}, get empty() { return { world: 'A world has no timeline of its own: drag its characters and places onto a stage, where they are timed.', place: 'A place has no timeline of its own: use it in a shot, or drop its views on a video.', prop: 'A prop has no timeline of its own: drop it into a shot of a story.', story: 'A story is timed shot by shot: make a shot, and its stage has the timeline.' }[activeKind()] ?? 'A character has no timeline of their own: drag them onto a stage, where their moves and lines are timed.'; } };
 
 async function closeTab(id, { quiet = false } = {}) {
   const i = W.tabs.findIndex((x) => x.id === id);
@@ -323,7 +327,7 @@ export function readDrag(e) {
 function drawList() {
   const box = $('#scenesList');
   if (!box) return;
-  if (!state.user) { box.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Your scenes live here: videos, 3D stages, images, audio and characters.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadList, 'login') }, 'Sign in'))); return; }
+  if (!state.user) { box.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Your scenes live here: worlds, videos, 3D stages, images, audio, characters, places, props and stories.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadList, 'login') }, 'Sign in'))); return; }
   const q = $('#scenesSearch').value.trim().toLowerCase();
   const items = W.list.filter((s) => (!W.filter || s.kind === W.filter) && (!q || s.title.toLowerCase().includes(q)));
   if (!items.length) { box.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, q || W.filter ? 'Nothing matches.' : 'No scenes yet.'), h('button', { class: 'ghost small', onclick: (e) => newSceneMenu(e.currentTarget) }, icon('plus'), 'New scene'))); return; }

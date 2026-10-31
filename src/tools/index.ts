@@ -28,11 +28,8 @@ import { assetLodTool } from '../lod.ts';
 import { imageRepaintTool, imageExpandTool } from './edit.ts';
 import { videoFrameTool, videoStillTool, mediaNormalizeTool } from './media.ts';
 import { videoChangeTool, audioRevoiceTool } from './chain.ts';
-<<<<<<< HEAD
 import { QUALITY_TOOLS } from './quality.ts';
-=======
 import { makeCheckedTool } from '../make/tool.ts';
->>>>>>> origin/claude/worlds-make-823927
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
