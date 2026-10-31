@@ -47,3 +47,12 @@ test("a Studio token signs in the project's own test account, on beta only, once
     server.close();
   }
 });
+
+test("the app's 🐞 line: a Studio project's report script, at a Studio's root or under its org", async () => {
+  const R = await import('../src/studioreport.ts');
+  const key = `rk_${'b'.repeat(32)}`;
+  for (const s of [`https://studio-beta.hawkesgen.ai/r/hawkesgen-app.js?k=${key}`, `https://studio.hawkesgen.ai/o/acme-1a2b/r/gen-app.js?k=${key}`]) assert.equal(R.setReportScript(s).script, s);
+  assert.throws(() => R.setReportScript('https://evil.example.com/x.js'), /not a Studio project report script/);
+  assert.throws(() => R.setReportScript(`https://studio.hawkesgen.ai/r/gen-app.js?k=${key}" onload="x`), /not a Studio project report script/);
+  assert.equal(R.setReportScript('').script, null);
+});

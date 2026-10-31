@@ -28,7 +28,7 @@ const SCRIPT_FILE = () => path.join(DATA_DIR, 'report-script.json');
 export const reportScript = (): string | null => { try { return String(JSON.parse(fs.readFileSync(SCRIPT_FILE(), 'utf8')).script ?? '') || null; } catch { return null; } };
 export function setReportScript(value: unknown) {
   const s = String(value ?? '').trim();
-  if (s && !/^https:\/\/[\w.-]+(?::\d+)?\/[^\s"'<>]*\/r\/[a-z][a-z0-9-]{1,39}\.js\?k=rk_[\w-]{20,}$/.test(s)) throw new GenError('That is not a Studio project report script (https://…/r/<project>.js?k=rk_…)', { status: 400 });
+  if (s && !/^https:\/\/[\w.-]+(?::\d+)?\/(?:[^\s"'<>]*\/)?r\/[a-z][a-z0-9-]{1,39}\.js\?k=rk_[\w-]{20,}$/.test(s)) throw new GenError('That is not a Studio project report script (https://…/r/<project>.js?k=rk_…)', { status: 400 });
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (s) fs.writeFileSync(SCRIPT_FILE(), JSON.stringify({ script: s, at: Date.now() }));
   else fs.rmSync(SCRIPT_FILE(), { force: true });
