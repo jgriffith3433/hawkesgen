@@ -225,7 +225,11 @@ again in the next of `gcp.regions` that has the job (a start the region refuses 
 follows it, so the log, cancel and the deadline use the new execution. A follow resumed after a restart doesn't move it
 (the customer's token lives only in the process that started it). Every region needs the same jobs: `deploy-job.mjs
 --region <r> --apply` and `customer-setup.mjs --region <r> --apply` (same image, same bucket; us-central1 has both
-since 2026-10-31). Adding a Unity version means its job in every region.
+since 2026-10-31). Adding a Unity version means its job in every region. **Check and align them with one command:**
+`node tools/unity-cloudrun/regions.mjs [--lane live|beta]` reads the running Gen's own regions and lists each region's
+jobs and images (exit 1 when they differ); `--image <image> --apply` runs deploy-job and customer-setup in every one
+(2026-10-31: live Gen's main region was us-west1, set up long before by hand, with no customer job). A customer build
+only runs where its customer job is there and checks out, skipping the rest.
 
 The tool params `backend` (auto/builder/cloudrun/vm), `cache` (a cache name) and `clean` (no cache) override per job.
 `unity.test` with an `fbx` input always runs on the build server (the FBX is placed in the project folder here).
