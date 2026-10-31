@@ -233,6 +233,9 @@ test('errors: over the time limit is flagged (the queue sends it to the fleet), 
   await assert.rejects(cloudComfyRun({ id: 'j_f' }, svc() as any, hooks() as any, missing.deps as any).runGraph({} as any), /models-sync/);
   const denied = fakeCloud(() => ({ status: 403 }));
   await assert.rejects(cloudComfyRun({ id: 'j_g' }, svc() as any, hooks() as any, denied.deps as any).runGraph({} as any), /run.invoker/);
+  // A worker whose disk is full can't take the job: the provider cools down and the job goes to the next one (2026-10-30).
+  const full = fakeCloud(() => [{ t: 'error', message: '[Errno 28] No space left on device', seconds: 2 }]);
+  await assert.rejects(cloudComfyRun({ id: 'j_h' }, svc() as any, hooks() as any, full.deps as any).runGraph({} as any), (e: any) => e.unavailable === true && e.diskFull === true && /ran out of disk/.test(e.message));
 });
 
 test('cancelling writes the cancel marker the instance watches for', async () => {

@@ -144,6 +144,10 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     if (m.missingModels?.length) {
       throw new GenError(`${m.message}\n${svc.name} doesn't have ${m.missingModels.join(', ')}: copy it into the models bucket (node tools/cloudrun/models-sync.mjs --apply) and add it to the service in server/cloudrun/services.json.`);
     }
+    // The worker's disk is full (a provider's container disk, models and voices filling it): that worker can't take the
+    // job, so the provider cools down and the job goes to the next one in its order, as when no GPU is free (J,
+    // 2026-10-30: audio failed on "runpod: [Errno 28] No space left on device").
+    if (/No space left on device|Errno 28|ENOSPC/i.test(String(m.message ?? ''))) throw unavailable(`${svc.name}: the ${where} worker ran out of disk`, { diskFull: true });
     throw Object.assign(new Error(`${svc.name}: ${m.message}`), { lost: !!m.lost, overLimit: !!m.overLimit });
   };
 
