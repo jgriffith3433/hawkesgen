@@ -129,6 +129,9 @@ a key, the way the rest of Gen does (see Roadmap 5).
 
 ## Roadmap
 
+**The app's roadmap (2026-10-31): `docs/worlds-roadmap.md`.** AI-built worlds, shows and universes whose outputs are
+consistent and checked, with advanced settings hidden. The list below is the older service roadmap.
+
 1. ~~**Sick Of It audio:** move the C# ElevenLabs sound generator to `audio.sfx` through `com.hawkes.gen`.~~ Done
    (Oct 2026): `audio.sfx`, `audio.voice`, plus the new `audio.voice-design` / `audio.voice-save`.
 2. **PH Origins:**
