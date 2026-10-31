@@ -216,8 +216,16 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
 | `concurrency` | 2 | Cloud Run builds at once (their own queue lane, `builder-cloud`; VM builds `builder-vm` and the Windows box one at a time) |
 | `vmAt` | 0.85 | A Cloud Run build peaking over this share of its memory moves its project to `vm` (0: never) |
-| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off) |
+| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off), `regions` (`["us-central1"]`: more regions with the same jobs, below) |
 | `vm` | | `zone` (us-east4-a), `machineType` (n2-standard-8), `pricePerHour` (0.10, for usage) |
+
+**When a region is full** (J, 2026-10-31: a build waited for Google's "unknown quota capacity" in us-east4 with our quota
+unused): an execution that hasn't started after 3 minutes and says it's waiting for capacity is cancelled and started
+again in the next of `gcp.regions` that has the job (a start the region refuses moves on at once too). The job record
+follows it, so the log, cancel and the deadline use the new execution. A follow resumed after a restart doesn't move it
+(the customer's token lives only in the process that started it). Every region needs the same jobs: `deploy-job.mjs
+--region <r> --apply` and `customer-setup.mjs --region <r> --apply` (same image, same bucket; us-central1 has both
+since 2026-10-31). Adding a Unity version means its job in every region.
 
 The tool params `backend` (auto/builder/cloudrun/vm), `cache` (a cache name) and `clean` (no cache) override per job.
 `unity.test` with an `fbx` input always runs on the build server (the FBX is placed in the project folder here).

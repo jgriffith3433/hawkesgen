@@ -441,3 +441,13 @@ test('entrypoint.sh in customer mode: the bucket only through its signed URLs, n
   assert.match(out, /no token/);
   assert.ok(!/metadata|Authorization/.test(out), 'no metadata server, no bearer token');
 });
+
+test('the fallback regions are cleaned: valid, unique, never the main region', () => {
+  withGcp({ regions: ['us-west1', 'us-east4', 'nope!', 'us-west1'] });
+  try {
+    assert.deepEqual(loadSettings().unityBuild.gcp.regions, ['us-west1']);
+  } finally {
+    withGcp({});
+  }
+  assert.deepEqual(loadSettings().unityBuild.gcp.regions, ['us-central1'], 'the default');
+});

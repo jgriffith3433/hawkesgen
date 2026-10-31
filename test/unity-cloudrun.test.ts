@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 
 const cache = await import('../src/providers/builder/cache.ts');
 const gcp = await import('../src/providers/builder/gcp.ts');
-const { cloudRunCost } = await import('../src/providers/builder/cloudrun.ts');
+const { cloudRunCost, regionsOf } = await import('../src/providers/builder/cloudrun.ts');
 const { unityBackendOf, SETTINGS_DEFAULTS } = await import('../src/config.ts');
 
 test('cache names are safe and repos are the project path', () => {
@@ -198,4 +198,14 @@ test('"vm" is a backend per project; a license failure names the two secrets', (
   assert.equal(unityBackendOf({ project: 'sickofitgame-unity' }, u), 'vm');
   assert.equal(unityBackendOf({ project: 'breakingthrough' }, u), 'cloudrun');
   assert.match(licenseMessage('Unity refused the email or password'), /unity-email and unity-password/);
+});
+
+test('a full region hands the build on: waiting for capacity, the regions in order', () => {
+  const waiting = gcp.executionState({ conditions: [{ type: 'Completed', state: 'CONDITION_PENDING', message: 'Waiting for unknown quota capacity to start execution. Unable to create 16 cpu and memory for "x" because there are already 0 in this region.' }] });
+  assert.equal(waiting.waitingForCapacity, true);
+  assert.equal(gcp.executionState({ runningCount: 1, startTime: '2026-10-31T10:00:00Z' }).waitingForCapacity, false);
+  assert.equal(gcp.executionState({ conditions: [{ type: 'Completed', message: 'Task failed' }] }).waitingForCapacity, false);
+  assert.equal(gcp.regionOfExecution('projects/p/locations/us-central1/jobs/j/executions/j-abc'), 'us-central1');
+  assert.deepEqual(regionsOf({ gcp: { region: 'us-east4', regions: ['us-central1', 'us-east4', 'us-west1'] } }), ['us-east4', 'us-central1', 'us-west1']);
+  assert.deepEqual(SETTINGS_DEFAULTS.unityBuild.gcp.regions, ['us-central1']);
 });

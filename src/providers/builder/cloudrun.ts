@@ -21,7 +21,7 @@ import {
   type BuildSpec, type BuildHooks, UNITY_EXCLUDE, SITE_EXCLUDE, standIn, unityVersionOf, localPackages, repoOf, walk, localGit,
   progressOf, LICENSE_RE, HARD_LICENSE_RE, applyPulledSite, proc, TAR, mb, localFile,
 } from './builder.ts';
-import { gcsWrite, gcsRead, gcsDownload, gcsList, gcsDelete, runJob, getExecution, cancelExecution, executionLogs, type CloudRunTarget } from './gcp.ts';
+import { gcsWrite, gcsRead, gcsDownload, gcsList, gcsDelete, runJob, getExecution, cancelExecution, executionLogs, jobExists, regionOfExecution, type CloudRunTarget } from './gcp.ts';
 import {
   cacheKeys, cacheRepo, cacheStateOf, recordBuild, shouldRunClean, failureKind, parseCloudResult, forgetCache, stubFolderOf,
   siteInputKeep, STUB, type CloudResult,
@@ -283,6 +283,31 @@ export function progressFollower(hooks: BuildHooks) {
 }
 
 /** Builds on Cloud Run; resolves to the same shape as builder.ts runBuild. */
+/** How long a build waits for a machine in one region before trying the next. */
+const CAPACITY_WAIT_MS = 3 * 60_000;
+
+/** The build's regions in order: the main one, then settings.unityBuild.gcp.regions. */
+export const regionsOf = (cfg: { gcp: { region: string; regions?: string[] } }) => [cfg.gcp.region, ...(cfg.gcp.regions ?? []).filter((r) => r !== cfg.gcp.region)];
+
+/** Starts the execution in the first region from `from` that has the job (customer jobs checked there too); a region
+ *  whose job is missing, or that refuses the start (quota, unavailable), is skipped with a log line. */
+async function startInRegion(regions: string[], from: number, target: CloudRunTarget, envs: Record<string, string>, timeoutMinutes: number, customer: boolean, hooks: BuildHooks): Promise<{ name: string }> {
+  let last: unknown = null;
+  for (let i = from; i < regions.length; i++) {
+    const t = { ...target, region: regions[i] };
+    try {
+      if (i > 0 && !(await jobExists(t))) { hooks.log(`(${regions[i]} has no ${t.job} job; skipped)`); continue; }
+      if (customer && i > 0) await checkCustomerJob(t);
+      return { name: await runJob(t, envs, (timeoutMinutes + 15) * 60) };
+    } catch (e: any) {
+      last = e;
+      if (i === regions.length - 1) break;
+      hooks.log(`(${regions[i]} couldn't start the build: ${e.message}; trying ${regions[i + 1]})`);
+    }
+  }
+  throw last ?? fail(`None of the build regions (${regions.slice(from).join(', ')}) has the job ${target.job}.`, 'config');
+}
+
 export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: BuildHooks, opts: BuildOptions = {}) {
   const t0 = Date.now();
   const cfg = cloudConfig();
@@ -291,12 +316,15 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   const tmp = fs.mkdtempSync(path.join(paths.tmp, 'cloudbuild-'));
 
   let job = await loadJob(jobId, cfg.gcp.bucket);
+  // The env the build was started with, kept in memory only (a customer's token is in it) so a full region can hand it on.
+  let startEnvs: Record<string, string> | null = null;
+  const baseTarget = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
   if (job) {
     hooks.log(`the cloud build was already started (${job.execution.split('/').pop()}); following it`);
   } else {
     let p: Prepared;
     // Customer mode: only on the customer job (its account reaches nothing), checked before anything is uploaded.
-    const target = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
+    const target = baseTarget;
     let sign: Signer | null = null;
     try {
       if (spec.customer) {
@@ -318,10 +346,11 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
       envs.HAWKES_GITHUB_TOKEN = spec.customer.token;
       envs.HAWKES_SIGNED = JSON.stringify(await customerSigned(cfg, p, sign!));
     }
-    const execution = await runJob(target, envs, (cfg.timeoutMinutes + 15) * 60);
-    job = { execution, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
+    startEnvs = envs;
+    const execution = await startInRegion(regionsOf(cfg), 0, target, envs, cfg.timeoutMinutes, !!spec.customer, hooks);
+    job = { execution: execution.name, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
     await saveJob(jobId, job, cfg.gcp.bucket);
-    hooks.log(`cloud build started: ${execution.split('/').pop()} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
+    hooks.log(`cloud build started: ${execution.name.split('/').pop()} in ${regionOfExecution(execution.name)} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
   }
 
   // Follow the execution and its log.
@@ -345,6 +374,26 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
       hooks.log(`(couldn't read the cloud build's log: ${e.message}; retrying)`);
     }
     if (state.done) break;
+    // No machine free in this region: hand the build to the next region that has the job (only while this process has
+    // the env it started with; a resumed follow just waits).
+    if (state.waitingForCapacity && startEnvs && Date.now() - job.started > CAPACITY_WAIT_MS) {
+      const regions = regionsOf(cfg);
+      const at = regions.indexOf(regionOfExecution(job.execution));
+      if (at >= 0 && at < regions.length - 1) {
+        try {
+          const next = await startInRegion(regions, at + 1, baseTarget, startEnvs, cfg.timeoutMinutes, !!spec.customer, hooks);
+          await cancelExecution(job.execution);
+          hooks.log(`${regionOfExecution(job.execution)} had no machine free for ${Math.round((Date.now() - job.started) / 60_000)} min: moved the build to ${regionOfExecution(next.name)} (${next.name.split('/').pop()})`);
+          job = { ...job, execution: next.name, started: Date.now() };
+          await saveJob(jobId, job, cfg.gcp.bucket);
+          state = await getExecution(job.execution);
+          continue;
+        } catch (e: any) {
+          hooks.log(`(no other region could take the build: ${e.message}; waiting here)`);
+          startEnvs = null;
+        }
+      }
+    }
     if (Date.now() > deadline) {
       await cancelExecution(job.execution);
       fs.rmSync(jobFile(jobId), { force: true });

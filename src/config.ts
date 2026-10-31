@@ -174,8 +174,10 @@ export type Settings = {
      * `customerJob`: the Cloud Run job customer builds run on instead of `job` (its service account, unity-customer, has no
      * access to the bucket: docs/unity-cloudrun.md, "Customer mode"); every other version's customer job is its job's name
      * plus "-customer". Empty: customer builds are refused. tools/unity-cloudrun/customer-setup.mjs makes them.
+     * `regions`: more regions with the same jobs, tried in order when `region` has no machine free (J, 2026-10-31: Google
+     * left a build waiting for "unknown quota capacity" in us-east4). A region without the job is skipped.
      */
-    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string };
+    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[] };
     /** The build VMs: one per project, named hawkes-unity-<project>, made by tools/unity-cloudrun/vm.mjs. */
     vm: { zone: string; machineType: string; pricePerHour: number };
   };
@@ -308,7 +310,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
-    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer' },
+    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'] },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
@@ -561,6 +563,9 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
         .filter(([k, v]) => /^\d{4}\.\d+\.\d+[abfp]\d+$/.test(k) && typeof v === 'string' && /^[a-z][a-z0-9-]{0,48}$/.test(v))) as Record<string, string>,
       // '' turns customer builds off; anything else must be a job name.
       customerJob: g.customerJob === '' ? '' : word(g.customerJob, /^[a-z][a-z0-9-]{0,48}$/, d.gcp.customerJob),
+      regions: Array.isArray(g.regions)
+        ? [...new Set(g.regions.filter((r: unknown): r is string => typeof r === 'string' && /^[a-z]+-[a-z]+\d+$/.test(r)))].filter((r) => r !== word(g.region, /^[a-z]+-[a-z]+\d+$/, d.gcp.region)).slice(0, 5)
+        : d.gcp.regions,
     },
   };
 }

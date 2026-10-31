@@ -181,7 +181,7 @@ export function executionNameOf(op: any): string | null {
   return null;
 }
 
-export type ExecutionState = { done: boolean; succeeded: boolean; cancelled: boolean; running: boolean; message: string; started?: string; completed?: string; logUri?: string };
+export type ExecutionState = { done: boolean; succeeded: boolean; cancelled: boolean; running: boolean; message: string; started?: string; completed?: string; logUri?: string; waitingForCapacity: boolean };
 
 /** What an execution resource says (exported for the test). */
 export function executionState(e: any): ExecutionState {
@@ -192,8 +192,18 @@ export function executionState(e: any): ExecutionState {
     done, succeeded: done && Number(e?.succeededCount ?? 0) > 0, cancelled: Number(e?.cancelledCount ?? 0) > 0,
     running: Number(e?.runningCount ?? 0) > 0, message: String(failedTask?.message ?? completed?.message ?? ''),
     started: e?.startTime, completed: e?.completionTime, logUri: e?.logUri,
+    // Not started because the region has no machine free ("Waiting for unknown quota capacity ..."), on any condition.
+    waitingForCapacity: !done && !e?.startTime && (e?.conditions ?? []).some((c: any) => /waiting for .*(quota|capacity)/i.test(String(c?.message ?? ''))),
   };
 }
+
+/** Whether the job is there in that region (a fallback region may not have it). */
+export async function jobExists(t: CloudRunTarget) {
+  return Boolean(await gapi(`${runBase(t)}/jobs/${t.job}`, { missingOk: true }));
+}
+
+/** The region in an execution's full name (projects/p/locations/<region>/jobs/j/executions/e). */
+export const regionOfExecution = (name: string) => /\/locations\/([^/]+)\//.exec(name)?.[1] ?? '';
 
 export async function getExecution(name: string) {
   return executionState(await gapi(`https://run.googleapis.com/v2/${name}`));
