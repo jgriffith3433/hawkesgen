@@ -198,7 +198,7 @@ export function shotToStage(story: Scene, shotId: string, canSee: (p: string) =>
   const doc = {
     title: `${story.title}: ${shot.title || `shot ${i + 1}`}`.slice(0, 120),
     ...(world ? { world } : {}),
-    look: [place ? `${place.title}: ${place.doc.description}` : '', state.time ? `Time of day: ${state.time}.` : '', wearing].filter(Boolean).join(' ').slice(0, 2000),
+    look: [place ? `${place.title}: ${String(place.doc.description ?? '').trim().replace(/[.\s]*$/, '')}.` : '', state.time ? `Time of day: ${state.time}.` : '', wearing ? `${wearing}.` : ''].filter(Boolean).join(' ').slice(0, 2000),
     action: shot.what,
     cast: cast.map((c, n) => ({ character: c.id, name: c.title, position: [(n - (cast.length - 1) / 2) * 1.4, 0], facing: 0 })),
     lines: lines.map((l: any) => { const x = { ...l, at }; at += Math.max(1.5, l.text.split(/\s+/).length / 2.6); return x; }),
