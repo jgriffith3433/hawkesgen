@@ -13,6 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
     U2NET_HOME=/opt/u2net \
+    HAWKESGEN_FACE_MODELS=/opt/insightface \
     HAWKES_PYTHON=/opt/venv/bin/python \
     HAWKESGEN_DATA_DIR=/tmp/gen \
     PORT=8080
@@ -25,6 +26,9 @@ RUN python -m venv /opt/venv && /opt/venv/bin/pip install --upgrade pip && /opt/
 # The segmentation models in the image: no download when an instance starts (image.cutout's modes birefnet, isnet, union).
 RUN /opt/venv/bin/python -c "from rembg import new_session; [new_session(m) for m in ('birefnet-general', 'isnet-general-use')]" \
     && chmod -R a+rX /opt/u2net
+# quality.identity's face models (insightface buffalo_l: detection and ArcFace), where post/quality/identity.py looks.
+RUN /opt/venv/bin/python -c "import io, os, urllib.request, zipfile; d = '/opt/insightface/models/buffalo_l'; os.makedirs(d, exist_ok=True); z = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip').read())); [open(os.path.join(d, os.path.basename(n)), 'wb').write(z.read(n)) for n in z.namelist() if n.endswith(('det_10g.onnx', 'w600k_r50.onnx'))]" \
+    && chmod -R a+rX /opt/insightface
 
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules

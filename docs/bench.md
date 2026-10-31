@@ -42,7 +42,7 @@ Python needs: `numpy`, `onnxruntime`, `opencv-python-headless`, `pillow` (and op
 
 **As tools** (`src/tools/quality.ts`, `quality-identity.ts`; cards in `knowledge/tools.json`):
 - `quality.identity` (local, free): inputs `file`, `refs`. In the CPU suite (`src/cpu/suite.ts`, area `quality`), so
-  `settings.cpu` can send it to gen-cpu. **The service image needs `opencv-python-headless` and the face models**; the
+  `settings.cpu` can send it to gen-cpu once its image is rebuilt (it now installs OpenCV and the face models); the
   build context now carries `post/quality/*.py` (`tools/cpu-cloudrun/lib.mjs`). Not deployed (J's).
 - `quality.checklist` (anthropic lane): inputs `file`, `refs`; params `brief`, `questions`.
 - `quality.assess` (anthropic lane): inputs `file`, `identityRefs`, `styleRefs`; params `brief`, `style`, `questions`,
@@ -123,8 +123,12 @@ cast, the baselines, and "Mock run" / "Real run…" (owner only: shows the estim
 
 ## Verified (2026-10-31, on J's PC, no GPU)
 
-- `npm run typecheck` and `npm test` pass (the new `test/quality.test.ts`, `test/bench.test.ts`, and a case in
-  `test/tenancy.test.ts`).
+- `npm run typecheck` passes. `npm test`: the new `test/quality.test.ts` (11), `test/bench.test.ts` (9) and the new
+  case in `test/tenancy.test.ts` pass, and so does the rest except two Blender script tests (`blender.character script`,
+  `film shot`). Those skip without Python; this worktree has a `.venv` (made for the face check), so they ran here and
+  failed inside Blender 5.0.1's own mp4 writing on this PC ("Error opening output files"). No Blender file is changed.
+  (A first full run had 8 more failures, all timeouts from load: my live checks ran alongside, and another session's
+  `npm ci` emptied the shared `node_modules` mid-run. Those files pass when run again.)
 - **Identity on real photos**, insightface's own sample pictures (a face cut from its group photo as the reference):
   an altered copy of that face (mirrored, smaller, darker, washed out, JPEG 60) **0.060**; the same face found among the
   six in the group photo **0.022** (the best match is taken); a different person **1.04**. The package and the
@@ -149,9 +153,9 @@ cast, the baselines, and "Mock run" / "Real run…" (owner only: shows the estim
   the clips, not the cut. Score the export once a server-side render exists (Phase 5, `video.compose`).
 - **3D and sound by looking:** the checklist skips them. Next: render a GLB's turntable (the LOD previews or
   `blender.character preview`) and judge those frames; transcribe voice lines (`src/audio/verify.ts` word error rate).
-- **The CPU service image:** add `opencv-python-headless` to `server/cpu-cloudrun/requirements.txt` and bake the face
-  models (`python post/quality/identity.py` once at build with any two pictures, or copy `~/.insightface`) before
-  sending `quality.identity` there. Until then keep it local (the default).
+- **The CPU service image** now installs `opencv-python-headless` and bakes the two face models
+  (`server/cpu-cloudrun/Dockerfile`, `HAWKESGEN_FACE_MODELS=/opt/insightface`), and its context carries
+  `post/quality/*.py`. Not built or deployed (J's): until it is, keep `quality.identity` local (the default).
 - **Calibration:** the thresholds (0.15, 0.85, 0.7) come from the roadmap; tune them against J's ratings once there are
   enough (the agreement table says when).
 - **A schedule:** run the mock on every change (cheap) and a real run weekly, once J approves the spend.
