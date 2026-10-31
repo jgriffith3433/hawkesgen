@@ -213,7 +213,7 @@ test('a customer build: the project and version from GitHub, the token only on t
     assert.equal(s.method, C.DEFAULT_METHOD);
     assert.deepEqual(s.customer, { repo: 'acme/rocket-game', commit: SHA, ref: 'refs/heads/main', path: 'Game', defaultMethod: true, out: 'artifact' });
     assert.equal(s.github, null);
-    assert.match(s.cache.prefix, /^unity-cache\/cust--usr_acme--acme--rocket-game--Game$/);
+    assert.match(s.cache.prefix, /^unity-cache\/cust--usr_acme--acme--rocket-game--Game-[0-9a-f]{10}$/, 'a readable name with a hash of the full one');
     // The execution of that version's job carries the token as an env override, and nothing else does.
     const run = g.calls.find((c) => c.url.endsWith(':run'))!;
     assert.match(run.url, /jobs\/hawkes-unity-build-customer:run$/, "the customer job, never J's");
@@ -302,7 +302,7 @@ test('signed URLs: V4 shape, GET and PUT signed as such, the expiry asked for', 
   const asPut = get.replace('/spec.json', '/artifact.tgz');
   assert.throws(() => checkSignedUrl(asPut, 'GET'));
   assert.equal(await Sign.signedGetUrl('gs://b/k', SIGNER, 60, now), await Sign.signedUrl('GET', 'gs://b/k', SIGNER, 60, now));
-  assert.equal(C.customerUrlSeconds(40), 70 * 60, 'the build limit + 15 for the execution + 15 of margin');
+  assert.equal(C.customerUrlSeconds(40), 90 * 60, 'the build limit + 15 for the execution + 15 of margin + 20 for region moves');
 });
 
 test("signed URLs: only that customer's cache key and that job's output", async () => {
@@ -331,7 +331,7 @@ test('the customer job: customerJob for the main job, "<job>-customer" for other
 });
 
 test('the execution gets only the token and signed URLs: its cache, its output, nothing else, expiring with the build', async () => {
-  const cache = 'unity-cache/cust--usr_acme--acme--rocket-game--Game';
+  const cache = `unity-cache/${C.customerCacheRepo('usr_acme', 'acme/rocket-game', 'Game')}`;
   const g = fakeCloud({
     cacheObjects: [`${cache}/build.tar.zst`, `${cache}/build.json`, 'unity-cache/sickofitgame-unity/main.tar.zst'],
     result: { ok: true, unity: '6000.3.7f1', cache: { restoredFrom: 'build' }, output: { object: 'unity-builds/j_iso1/artifact.tgz', bytes: 10, files: 1 } },
@@ -355,7 +355,7 @@ test('the execution gets only the token and signed URLs: its cache, its output, 
       for (const [key, url] of Object.entries(map as Record<string, string>)) {
         const c = checkSignedUrl(url, method);
         assert.equal(c.path, `/hawkes-unity-test/${key}`);
-        assert.equal(c.expires, (40 + 30) * 60);
+        assert.equal(c.expires, (40 + 50) * 60);
       }
     }
     assert.ok(!JSON.stringify(urls).includes('sickofitgame'), "never J's caches");
@@ -460,4 +460,16 @@ test("GitHub's longer tokens pass the check; a bad one is named by its shape, ne
   assert.ok(C2.TOKEN_RE.test('github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz'));
   assert.ok(!C2.TOKEN_RE.test('Bearer ghs_abcdefghijklmnopqrstuvwxyz'));
   assert.ok(!C2.TOKEN_RE.test('ghs_short'));
+});
+
+test("credits: a build that failed on the project itself or ran a while before a cancel keeps its charge; Gen's own failures are refunded", async () => {
+  const { keepsCharge } = await import('../src/jobs.ts');
+  const now = 1_000_000_000;
+  const u = (started: number | null = now - 10 * 60_000) => ({ tool: 'unity.build', started });
+  assert.equal(keepsCharge(u(), { kind: 'build' }, false, now), true, 'a compile error');
+  assert.equal(keepsCharge(u(), { kind: 'timeout' }, false, now), true, 'its time limit');
+  for (const kind of ['license', 'builder', 'gcp', 'config', 'source', 'capacity']) assert.equal(keepsCharge(u(), { kind }, false, now), false, kind);
+  assert.equal(keepsCharge(u(now - 30_000), null, true, now), false, 'cancelled in its first two minutes');
+  assert.equal(keepsCharge(u(), null, true, now), true, 'cancelled after running a while');
+  assert.equal(keepsCharge({ tool: 'image.generate', started: now - 60 * 60_000 }, { kind: 'build' }, false, now), false, 'other tools refund as before');
 });

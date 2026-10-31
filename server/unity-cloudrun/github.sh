@@ -38,6 +38,11 @@ fetch_repo() {
     fi
     git fetch -q --depth 1 --filter=blob:none origin "$commit" || exit 2
     git checkout -q -f --detach FETCH_HEAD || exit 3
+    # Submodules (a shared package, art in its own repo), while the token is still on: the build has the whole project
+    # (2026-10-31 review). The token must reach those repos too; one it can't is said and the build carries on.
+    if [ -f .gitmodules ]; then
+      git submodule update --init --recursive --depth 1 -q 2>"$WORK/submodules.log" || log "some submodules couldn't be fetched (the GitHub token must reach their repos): $(tail -n 2 "$WORK/submodules.log" | tr '\n' ' ')"
+    fi
     # Keep a persistent Library (VM mode) and Unity's own folders; drop anything else left from an older build.
     git clean -q -fd -e Library -e Temp -e Logs -e UserSettings >/dev/null 2>&1
     gh_auth_off

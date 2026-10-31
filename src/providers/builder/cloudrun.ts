@@ -395,15 +395,28 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
       const at = regions.indexOf(regionOfExecution(job.execution));
       if (at >= 0 && at < regions.length - 1) {
         try {
-          const next = await startInRegion(regions, at + 1, baseTarget, startEnvs, cfg.timeoutMinutes, !!spec.customer, hooks);
+          // Cancelled first, and only moved when it really never started: a machine that came free meanwhile keeps the
+          // build here (two executions of one build would share its output and cache, and take two license seats).
           await cancelExecution(job.execution);
+          const now = await getExecution(job.execution).catch(() => state);
+          if (now.started || now.running) { hooks.log(`${regionOfExecution(job.execution)} found a machine just as the build was moving; it stays there`); state = now; continue; }
+          const next = await startInRegion(regions, at + 1, baseTarget, startEnvs, cfg.timeoutMinutes, !!spec.customer, hooks);
           hooks.log(`${regionOfExecution(job.execution)} had no machine free for ${Math.round((Date.now() - job.started) / 60_000)} min: moved the build to ${regionOfExecution(next.name)} (${next.name.split('/').pop()})`);
           job = { ...job, execution: next.name, started: Date.now() };
           await saveJob(jobId, job, cfg.gcp.bucket);
           state = await getExecution(job.execution);
           continue;
         } catch (e: any) {
-          hooks.log(`(no other region could take the build: ${e.message}; waiting here)`);
+          // The old execution was already cancelled: start it again where it was, so the build never just stops.
+          hooks.log(`(no other region could take the build: ${e.message}; starting it again in ${regions[at]})`);
+          try {
+            const again = await startInRegion(regions, at, baseTarget, startEnvs, cfg.timeoutMinutes, !!spec.customer, hooks);
+            job = { ...job, execution: again.name, started: Date.now() };
+            await saveJob(jobId, job, cfg.gcp.bucket);
+            state = await getExecution(job.execution);
+          } catch (e2: any) {
+            hooks.log(`(couldn't start it again: ${e2.message})`);
+          }
           startEnvs = null;
         }
       }
@@ -423,6 +436,8 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     }
   }
   fs.rmSync(jobFile(jobId), { force: true });
+  // The bucket's note too: a Gen restarted after this would follow a finished execution whose artifact is gone.
+  await gcsDelete(cfg.gcp.bucket, jobKey(jobId)).catch(() => {});
   const ran = state.started && state.completed ? (Date.parse(state.completed) - Date.parse(state.started)) / 1000 : (Date.now() - job.started) / 1000;
   const oom = /memory limit|out of memory|OOM/i.test(state.message);
   const r = await finishBuildResult(jobId, spec, hooks, {

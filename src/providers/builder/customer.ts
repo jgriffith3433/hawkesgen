@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 // Customer mode of the Unity cloud build (docs/unity-cloudrun.md, "Customer mode"; hawkesstudio docs/builds.md, "unity ->
 // Hawkes Gen"): a customer's Studio (a Gen key with role "user") builds ITS OWN Unity project from GitHub on Gen's Cloud
 // Run build job and gets the output back as a library asset (a .tar.gz of the build folder).
@@ -228,7 +229,10 @@ function safeContent(text: string): string {
 
 /** The Library cache of a customer's project: its own per Gen project and repo, never shared with J's or another's. */
 export function customerCacheRepo(owner: string, repo: string, path: string) {
-  return cacheName(`cust--${owner}--${repo.replace('/', '--')}${path && path !== '.' ? `--${path}` : ''}`);
+  // The full name hashed onto a readable prefix: names were cut to 64 characters, so two projects of one customer could
+  // share (and overwrite) one Library cache (2026-10-31 review).
+  const full = `cust--${owner}--${repo.replace('/', '--')}${path && path !== '.' ? `--${path}` : ''}`;
+  return cacheName(`${cacheName(full).slice(0, 52)}-${crypto.createHash('sha256').update(full).digest('hex').slice(0, 10)}`);
 }
 
 
@@ -291,7 +295,9 @@ export async function checkCustomerJob(t: CloudRunTarget, get: (url: string) => 
 export type SignedUrls = { bucket: string; get: Record<string, string>; put: Record<string, string> };
 
 /** How long a customer build's URLs live: the build's limit, the execution's 15 minutes of setup, 15 more of margin. */
-export const customerUrlSeconds = (timeoutMinutes: number) => (timeoutMinutes + 30) * 60;
+/** The build limit + 15 for the execution + 15 of margin + 20 for region moves (each waits up to 3 minutes for a machine
+ *  before starting again elsewhere; links signed at prepare time must outlast them: 2026-10-31 review). */
+export const customerUrlSeconds = (timeoutMinutes: number) => (timeoutMinutes + 50) * 60;
 
 const BUILD_PREFIX_RE = /^unity-builds\/[A-Za-z0-9_-]+$/;
 const CUST_CACHE_RE = /^unity-cache\/cust--[A-Za-z0-9_.-]+$/;

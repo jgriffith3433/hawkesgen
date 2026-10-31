@@ -438,6 +438,17 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
   return job;
 }
 
+/**
+ * Whether a failed or cancelled job keeps what it was charged: a Unity build that ran and failed on the project itself
+ * (a compile error, its output, its time limit) or was cancelled after running more than 2 minutes used the machine;
+ * failures that are Gen's (the machine, the license, capacity, a token or the queue) are refunded (2026-10-31 review).
+ */
+export function keepsCharge(job: { tool: string; started?: number | null }, e: { kind?: string } | null, cancelled: boolean, now = Date.now()) {
+  if (job.tool !== 'unity.build') return false;
+  if (cancelled) return Boolean(job.started) && now - Number(job.started) > 2 * 60_000;
+  return ['build', 'output', 'timeout'].includes(String(e?.kind ?? ''));
+}
+
 /** A failed or cancelled job's credits back: a Gen account's reservation, and a customer Studio's charge. */
 function refundJob(jobId: string, reason: string) {
   refundJobCredits(jobId, reason);
@@ -1135,7 +1146,8 @@ class Queue {
       }
       Object.assign(job, { status: cancelled ? 'cancelled' : 'failed', finished: Date.now(), error: cancelled ? null : e.message, detail: cancelled ? 'cancelled' : e.message });
       job.log.push(`error: ${e.message}`);
-      refundJob(job.id, cancelled ? 'Job cancelled' : `Job failed: ${e.message}`);
+      if (keepsCharge(job, e, cancelled)) job.log.push(`credits kept: ${cancelled ? 'cancelled after the build had run for a while' : `the build itself failed (${e.kind})`}`);
+      else refundJob(job.id, cancelled ? 'Job cancelled' : `Job failed: ${e.message}`);
     } finally {
       if (ep && job.gpu_seconds) {
         const cost = (job.gpu_seconds / 3600) * ep.price;
