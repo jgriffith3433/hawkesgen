@@ -27,6 +27,7 @@ import {
   siteInputKeep, STUB, type CloudResult,
 } from './cache.ts';
 import { githubRepos, githubSite, buildCommitMessage, R2_BUILDS } from './github.ts';
+import { customerCacheRepo, DEFAULT_METHOD } from './customer.ts';
 
 const fail = (message: string, kind = 'builder') => new GenError(message, { status: 409, kind });
 
@@ -151,6 +152,11 @@ async function saveJob(jobId: string, j: CloudJob, bucket?: string) {
   if (bucket) await gcsWrite(bucket, jobKey(jobId), Buffer.from(JSON.stringify(j)), 'application/json').catch(() => {});
 }
 
+/** Whether this job's cloud build was already started (noted here or in the bucket): it is followed, not started again. */
+export async function cloudBuildStarted(jobId: string) {
+  return Boolean(await loadJob(jobId, cloudConfig().gcp.bucket));
+}
+
 // ------------------------------------------------------------------ build
 
 export type BuildOptions = { cache?: string; clean?: boolean };
@@ -158,6 +164,12 @@ export type BuildOptions = { cache?: string; clean?: boolean };
 /** The checks every backend makes first; returns the spec with its stand-ins resolved and the Unity version. */
 export function checkBuild(spec: BuildSpec, cfg: ReturnType<typeof cloudConfig>, where: string) {
   const target = spec.target ?? 'WebGL';
+  if (spec.customer) {
+    // Customer mode: Gen read the project's Unity version from GitHub and picked the job of that image (customer.ts).
+    if (target !== 'WebGL') throw fail(`Builds ${where} make WebGL only (the image has the WebGL module); target "${target}" can't be built in the cloud.`, 'config');
+    if (spec.projectDir || spec.siteDir || spec.site || spec.tests || spec.github) throw fail('a customer build takes only its repo, commit, path and method: the output comes back as an asset.');
+    return { spec, unity: spec.customer.version, target };
+  }
   if (spec.github) {
     // Nothing here to read: the container checks ProjectSettings/ProjectVersion.txt against the image itself.
     if (target !== 'WebGL') throw fail(`Builds ${where} make WebGL only (the image has the WebGL module); ${target} needs the build server.`, 'config');
@@ -179,16 +191,20 @@ export type Prepared = { prefix: string; specUri: string; repo: string; saveKey:
 /** Works out the commits, uploads the inputs and writes spec.json; the same for Cloud Run and the build VM. */
 export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string, target: string, hooks: BuildHooks, opts: BuildOptions, cfg: ReturnType<typeof cloudConfig>, tmp: string): Promise<Prepared> {
   const bucket = cfg.gcp.bucket;
-  const repo = cacheRepo(spec.project);
+  const cust = spec.customer;
+  // A customer's Library cache is its own (per Gen project and repo): never J's, never another customer's.
+  const repo = cust ? customerCacheRepo(cust.owner, cust.repo, cust.path) : cacheRepo(spec.project);
   hooks.step('working out the commits to build');
   const gh = spec.github;
   // GitHub mode: the commit asked for, nothing uncommitted, no website from here (the container checks out its branch).
-  const src = gh ? { repos: githubRepos(gh, spec.project), overlay: [] as { key: string; file: string; size: number }[], deletes: [] as string[], projectBranch: gh.cacheBranch } : sourcesOf(spec);
+  // Customer mode: the whole repo at that commit (a project may use packages beside it), nothing from here.
+  const src = cust ? { repos: [{ slug: cust.repo, top: 'src', commit: cust.commit, branch: null, sparse: [] }] as RepoSpec[], overlay: [] as { key: string; file: string; size: number }[], deletes: [] as string[], projectBranch: null as string | null }
+    : gh ? { repos: githubRepos(gh, spec.project), overlay: [] as { key: string; file: string; size: number }[], deletes: [] as string[], projectBranch: gh.cacheBranch } : sourcesOf(spec);
   if (gh) hooks.log(`GitHub mode${gh.ref ? ` (${gh.ref})` : ''}: the build is pushed to ${gh.siteRepo} ${gh.branch}; packages ${Object.entries(gh.packages).map(([k, v]) => `${k}@${v}`).join(', ')}`);
   const overlayBytes = src.overlay.reduce((n, f) => n + f.size, 0);
   if (overlayBytes > OVERLAY_MAX) throw fail(`${src.overlay.length} uncommitted files (${mb(overlayBytes)}) differ from GitHub: commit and push them, or use the build server.`, 'source');
   for (const r of src.repos) hooks.log(`${r.slug} at ${r.commit.slice(0, 12)}${r.branch ? ` (${r.branch})` : ''}${r.sparse.length ? `: ${r.sparse.join(', ')}` : ''}`);
-  const keys = cacheKeys({ branch: src.projectBranch, explicit: opts.cache });
+  const keys = cust ? cacheKeys({ explicit: 'build' }) : cacheKeys({ branch: src.projectBranch, explicit: opts.cache });
   const stateKey = keys.save ?? keys.restore[0];
   const decision = shouldRunClean(cacheStateOf(repo, stateKey), opts.clean);
   if (decision.clean) hooks.log(`clean build: ${decision.reason}`);
@@ -217,12 +233,14 @@ export async function prepareBuild(jobId: string, spec: BuildSpec, unity: string
   }
   const body = {
     v: 1, job: jobId, unity, target, project: spec.project, site: spec.site ?? null,
-    method: spec.method ?? null, tests: spec.tests ?? null, testFilter: spec.testFilter ?? null,
+    method: cust ? spec.method ?? DEFAULT_METHOD : spec.method ?? null, tests: spec.tests ?? null, testFilter: spec.testFilter ?? null,
     args: spec.args ?? [], env: spec.env ?? {},
     repos: src.repos, overlay, deletes: src.deletes, siteInput: siteIn,
     cache: { bucket, prefix: `unity-cache/${repo}`, restore: decision.clean ? [] : keys.restore, save: keys.save, clean: decision.clean, reason: decision.reason, exclude: CACHE_EXCLUDE },
     out: { bucket, prefix },
     timeoutMinutes: cfg.timeoutMinutes,
+    // Customer mode (customer.ts): no token here; it goes to the execution as HAWKES_GITHUB_TOKEN only.
+    customer: cust ? { repo: cust.repo, commit: cust.commit, ref: cust.ref, path: cust.path, defaultMethod: !spec.method, out: 'artifact' } : null,
     github: gh ? { owner: gh.repo.split('/')[0], site: githubSite(gh, spec.site!), packages: gh.packages, ref: gh.ref, message: buildCommitMessage(gh, spec.project), builds: gh.builds ? { game: gh.builds, ...R2_BUILDS, ...(loadSettings().unityBuild as any).r2 } : null } : null,
   };
   await gcsWrite(bucket, `${prefix}/spec.json`, Buffer.from(JSON.stringify(body, null, 2)), 'application/json');
@@ -269,7 +287,10 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     }
     hooks.step('starting the cloud build');
     // The execution may run 15 minutes past the build's own limit (fetch, cache, upload); Gen cancels it after that.
-    const execution = await runJob(cfg.target, { HAWKES_SPEC: p.specUri }, (cfg.timeoutMinutes + 15) * 60);
+    // Customer mode: the job of the project's Unity version, and the customer's token for this execution only.
+    const target = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
+    const envs: Record<string, string> = { HAWKES_SPEC: p.specUri, ...(spec.customer ? { HAWKES_GITHUB_TOKEN: spec.customer.token } : {}) };
+    const execution = await runJob(target, envs, (cfg.timeoutMinutes + 15) * 60);
     job = { execution, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
     await saveJob(jobId, job, cfg.gcp.bucket);
     hooks.log(`cloud build started: ${execution.split('/').pop()} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
@@ -321,7 +342,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   // Too big for Cloud Run: the next build of this project goes to its build VM (vm.ts), and the job says so.
   const limit = cfg.gcp.memoryGiB * 1024 ** 3;
   const peak = (r.cloud as { memoryPeakBytes?: number | null } | undefined)?.memoryPeakBytes ?? null;
-  const move = shouldMoveToVm({ peakBytes: peak, limitBytes: limit, oom: oom && !r.ok, at: cfg.vmAt });
+  const move = !spec.customer && shouldMoveToVm({ peakBytes: peak, limitBytes: limit, oom: oom && !r.ok, at: cfg.vmAt });
   if (move) {
     const moved = markProjectForVm(spec.project);
     const msg = `${spec.project} ${move === 'oom' ? 'ran out of memory on Cloud Run' : `peaked at ${mb(peak!)} of Cloud Run's ${cfg.gcp.memoryGiB} GiB (over ${Math.round(cfg.vmAt * 100)}%)`}: ${moved ? 'its next build runs on its build VM (settings.unityBuild.projects); make the VM first if it isn\'t there: node tools/unity-cloudrun/vm.mjs --folder <project> --apply' : 'it already builds on its VM'}.`;
@@ -396,6 +417,22 @@ export async function finishBuildResult(jobId: string, spec: BuildSpec, hooks: B
     const lastLine = errors[0] ?? lines.filter((l) => l.trim() && !/Licensing::/i.test(l)).slice(-1)[0]?.trim();
     const error = result.error ? `${result.error}${lastLine && !result.error.includes(lastLine) ? `: ${lastLine}` : ''}` : `Unity exited with code ${result.exitCode}${lastLine ? `: ${lastLine}` : ''}`;
     return { ...base, exitCode: result.exitCode, ok: false, error, kind, errors, cloud };
+  }
+
+  // Customer mode: the output folder came back as one .tar.gz; the tool keeps it as a library asset.
+  if (spec.customer) {
+    const out = result.output;
+    if (!out || out.object !== `${job.prefix}/artifact.tgz`) {
+      recordBuild(job.repo, job.stateKey, { ok: false, failure: 'other', at, job: jobId, kind: 'output', clean: job.clean }, o.cleanAfter);
+      return { ...base, exitCode: result.exitCode, ok: false, error: 'The build finished but sent back no output.', kind: 'output', errors: [] as string[], cloud };
+    }
+    hooks.step('downloading the build');
+    const file = path.join(tmp, 'artifact.tgz');
+    await gcsDownload(bucket, out.object, file);
+    hooks.log(`build output: ${out.files ?? 0} files, ${mb(fs.statSync(file).size)} packed`);
+    recordBuild(job.repo, job.stateKey, { ok: true, at, job: jobId, restored: result.cache.restoredFrom, clean: job.clean }, o.cleanAfter);
+    await gcsDelete(bucket, out.object).catch(() => {});
+    return { ...base, exitCode: result.exitCode ?? 0, ok: true, error: null, kind: null, errors: [] as string[], artifact: { file, bytes: fs.statSync(file).size, files: out.files ?? 0, rawBytes: out.bytes }, unity: result.unity, cloud };
   }
 
   // GitHub mode: the container committed and pushed the build itself; nothing to lay down here.

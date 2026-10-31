@@ -13,6 +13,7 @@ import { applyPreset } from './presets.ts';
 import { getUserById, type UserRow } from './users.ts';
 import { id, GenError } from './util.ts';
 import { subscriptionEvent } from './subscriptions.ts';
+import { isCustomerMode } from './providers/builder/customer.ts';
 
 const STRIPE_CONFIG_FILE = path.join(DATA_DIR, 'stripe.json');
 
@@ -224,6 +225,29 @@ export function isInternalOnlyTool(toolId: string): boolean {
   return INTERNAL_ONLY_TOOLS.has(toolId);
 }
 
+/**
+ * Whether a customer key (role user) may run this internal-only tool with these params: unity.build in customer mode
+ * only (github with the customer's own token, out "artifact": providers/builder/customer.ts). Never Gen's own repos or
+ * secrets, never a push.
+ */
+export function customerMayRun(toolId: string, params: Record<string, any> | undefined): boolean {
+  return toolId === 'unity.build' && isCustomerMode(params);
+}
+
+/**
+ * A customer's Unity cloud build, flat (credits; 1 credit = $0.01). Our cost is Cloud Run at 8 vCPU / 32 GiB, about
+ * $0.0125 a minute: an incremental build of 10 minutes is about $0.13, a clean import of 40 about $0.50. 100 credits
+ * ($1.00) covers a 40-minute build at 2x and breaks even at 80 minutes (past the default limit). Provisional, like the
+ * playtest prices: measure, then move to per-minute settling.
+ */
+export const UNITY_BUILD_CREDITS = 100;
+
+/** unity.build in customer mode is priced flat; anything else is not this function's. */
+export function buildCost(toolId: string, params: Record<string, any>): { usd: number; floor: number; basis: string } | null {
+  if (toolId !== 'unity.build' || !isCustomerMode(params)) return null;
+  return { usd: UNITY_BUILD_CREDITS / 100 / COMMERCIAL_MARGIN, floor: UNITY_BUILD_CREDITS, basis: `Unity cloud build, flat ${UNITY_BUILD_CREDITS} credits (provisional)` };
+}
+
 export function listCreditPacks(): CreditPack[] {
   return CREDIT_PACKS;
 }
@@ -304,7 +328,7 @@ export function quoteJobCredits(
   const itemCount = Math.max(1, Math.round(Number(spec.count ?? params.count ?? 1)));
 
   // Playtests are priced by what they run on, not the GPU estimate (plan 7; provisional).
-  const pt = playtestCost(tool.id, params);
+  const pt = playtestCost(tool.id, params) ?? buildCost(tool.id, params);
   if (pt) {
     const rawUsd = pt.usd * itemCount;
     const credits = Math.max(1, pt.floor * itemCount, Math.ceil(rawUsd * COMMERCIAL_MARGIN * 100));

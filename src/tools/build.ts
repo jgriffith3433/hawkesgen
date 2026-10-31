@@ -5,7 +5,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
-import { runCloudBuild, type BuildOptions } from '../providers/builder/cloudrun.ts';
+import { runCloudBuild, cloudConfig, cloudBuildStarted, type BuildOptions } from '../providers/builder/cloudrun.ts';
+import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, probeProject, unityImages, jobForVersion } from '../providers/builder/customer.ts';
+import { dropToken } from '../providers/playtester/intake.ts';
+import type { RunContext } from './types.ts';
 import { runVmBuild } from '../providers/builder/vm.ts';
 import { githubBuildOf } from '../providers/builder/github.ts';
 import { paths, loadSettings, unityBackendOf, type UnityBackend } from '../config.ts';
@@ -49,15 +52,19 @@ export const unityBuild: Tool = {
     'folder), then downloads the new build into the website folder here (or into siteDir, a scratch copy of it). ' +
     'Nothing is committed or pushed, except in GitHub mode (the github param: cloud only, the source and website from ' +
     'GitHub, the build committed to the website repo beta branch and pushed, never main). Starts the ' +
-    'server if it is stopped; it powers itself off when idle.',
+    'server if it is stopped; it powers itself off when idle. Customer mode (any key; docs/unity-cloudrun.md): github ' +
+    '{ repo, commit, token, ref? } with out "artifact" builds that repo\'s Unity project on Cloud Run (WebGL) and returns ' +
+    'the output folder as a .tar.gz library asset (result.artifact).',
   provider: 'builder',
   output: 'file',
   inputs: {},
   params: {
-    project: { type: 'string', required: true, description: 'The Unity project folder under C:\\Projects', example: 'sickofitgame-unity' },
+    project: { type: 'string', description: 'The Unity project folder under C:\\Projects (required except in customer mode)', example: 'sickofitgame-unity' },
     site: { type: 'string', description: 'The website folder the build writes into (pulled back afterwards)', example: 'sickofitgamewebsite' },
     method: { type: 'string', description: 'The static method to run (-executeMethod): the project\'s batch deploy', example: 'YoobaWebBuild.FullDeploy' },
-    target: { type: 'enum', values: ['WebGL', 'StandaloneWindows64', 'Android'], default: 'WebGL' },
+    target: { type: 'string', default: 'WebGL', description: 'WebGL, StandaloneWindows64 or Android (the build server); customer mode: "web" only (WebGL)' },
+    path: { type: 'string', description: 'Customer mode: the Unity project folder in the repo (default: the folder with ProjectSettings/ProjectVersion.txt)', example: 'Game' },
+    out: { type: 'enum', values: ['artifact'], description: 'Customer mode: "artifact" returns the build output as a .tar.gz library asset (result.artifact)' },
     projectDir: { type: 'string', description: 'A folder under C:\\Projects to build in place of the project (an agent change\'s worktree); the server still builds it as the project, with its Library', advanced: true },
     siteDir: { type: 'string', description: 'A folder under C:\\Projects that gets the build instead of the website folder (a scratch copy of it), so the real site is untouched', advanced: true },
     env: { type: 'json', description: 'Environment variables for the build (e.g. {"BUILD_VERSION": "12"})', advanced: true },
@@ -65,10 +72,18 @@ export const unityBuild: Tool = {
     backend: { type: 'enum', values: ['auto', 'builder', 'cloudrun', 'vm'], default: 'auto', description: 'Where to build: auto uses settings.unityBuild.backend', advanced: true },
     cache: { type: 'string', description: 'Cloud builds: the Library cache to restore and save (default: the branch, beta or main; other branches restore beta and save nothing)', advanced: true },
     clean: { type: 'boolean', default: false, description: 'Cloud builds: build without the Library cache (a full import); a success saves a fresh cache', advanced: true },
-    github: { type: 'json', description: 'GitHub mode (cloud only, docs/unity-cloudrun.md): {"repo": "owner/source", "commit": "<sha>", "siteRepo": "owner/website", "branch": "beta", "ref": "build-..."}. The container fetches that commit, builds, and commits Game/v<n> plus the loader to the website repo branch (beta; never main) and pushes it. Nothing is laid down here', advanced: true },
+    github: { type: 'json', description: 'GitHub mode (cloud only, docs/unity-cloudrun.md): {"repo": "owner/source", "commit": "<sha>", "siteRepo": "owner/website", "branch": "beta", "ref": "build-..."}. The container fetches that commit, builds, and commits Game/v<n> plus the loader to the website repo branch (beta; never main) and pushes it. Nothing is laid down here. Customer mode: {"repo": "owner/name", "commit": "<sha>", "token": "<short-lived GitHub token>", "ref": "..."} with out "artifact" (the token is held in memory for the job only, never stored)', advanced: true },
+  },
+  admit({ params }) {
+    if (isCustomerMode(params)) return admitCustomer(params);
+    if (!params.project) throw new GenError('project is required (the Unity project folder), or customer mode: github { repo, commit, token } with out "artifact"', { status: 400, kind: 'params' });
+    if (params.out) throw new GenError('out "artifact" is customer mode: it needs github { repo, commit, token }', { status: 400, kind: 'params' });
+    if (!['WebGL', 'StandaloneWindows64', 'Android'].includes(String(params.target ?? 'WebGL'))) throw new GenError('target must be one of WebGL, StandaloneWindows64, Android', { status: 400, kind: 'params' });
+    return params;
   },
   async run(ctx) {
     const p = ctx.params;
+    if (isCustomerMode(p)) return runCustomerBuild(ctx);
     const github = p.github ? githubBuildOf(p.github, String(p.project), p.site || undefined) : undefined;
     const backend = github ? githubBackend(p.backend, buildBackend(p.backend, p.project)) : buildBackend(p.backend, p.project);
     if (github) ctx.log(`GitHub mode: ${github.repo}@${github.commit.slice(0, 12)}${github.ref ? ` (${github.ref})` : ''} -> ${github.siteRepo} ${github.branch}, on ${backend}`);
@@ -100,6 +115,62 @@ export const unityBuild: Tool = {
     }
   },
 };
+
+/** Fetch for asking GitHub where the project is (the tests stub it). */
+export const ghFetch = { fetch: (...a: Parameters<typeof fetch>) => fetch(...a) };
+
+/**
+ * Customer mode (docs/unity-cloudrun.md, "Customer mode"): ask GitHub (the customer's token) for the project and its
+ * Unity version, fail fast on a version without an image, build on that version's Cloud Run job, keep the output as a
+ * .tar.gz asset of the job's project. The token is dropped from the vault when the job ends.
+ */
+export async function runCustomerBuild(ctx: RunContext) {
+  const b = customerBuildOf(ctx.params);
+  const cfg = cloudConfig();
+  try {
+    // A build already running (Gen restarted, or another instance took the job over) is followed, not asked about again.
+    const started = await cloudBuildStarted(ctx.job.id);
+    let probe = { path: b.path ?? '.', version: '' };
+    let job = '';
+    let token = '';
+    if (!started) {
+      token = customerToken(b);
+      ctx.step('reading the project from GitHub');
+      probe = await probeProject(b, token, ghFetch.fetch as typeof fetch);
+      job = jobForVersion(probe.version, unityImages(cfg.gcp));
+      ctx.log(`customer build: ${b.repo}@${b.commit.slice(0, 12)}${b.ref ? ` (${b.ref})` : ''}, project ${probe.path === '.' ? 'at the repo root' : probe.path}, Unity ${probe.version}${b.method ? `, ${b.method}` : ', every enabled scene'}`);
+    }
+    const r: any = await runCloudBuild(ctx.job.id, {
+      project: probe.path === '.' ? 'src' : `src/${probe.path}`, method: b.method ?? undefined, target: 'WebGL',
+      env: ctx.params.env && typeof ctx.params.env === 'object' ? ctx.params.env : undefined,
+      customer: { repo: b.repo, commit: b.commit, ref: b.ref, path: probe.path, owner: ctx.job.project, version: probe.version, job, token },
+    }, { step: ctx.step, log: ctx.log, signal: ctx.signal });
+    token = '';
+    try {
+      ctx.usage({ provider: 'gcp-cloudrun', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${b.repo} ${b.commit.slice(0, 7)}` });
+      await ctx.emit({ data: r.log, ext: 'log', mime: 'text/plain', title: `Unity log (${b.repo})` });
+      let artifact: { asset: string; url: string; bytes: number; files: number } | null = null;
+      if (r.ok && r.artifact) {
+        await ctx.emit({ data: fs.readFileSync(r.artifact.file), ext: 'tar.gz', mime: 'application/gzip', title: `WebGL build (${b.repo} ${b.commit.slice(0, 7)})`, meta: { repo: b.repo, commit: b.commit, unity: r.unity ?? probe.version, files: r.artifact.files } });
+        const asset = ctx.outputs[ctx.outputs.length - 1] as { asset?: string };
+        artifact = { asset: String(asset.asset), url: `/v1/assets/${asset.asset}/file`, bytes: r.artifact.bytes, files: r.artifact.files };
+      }
+      ctx.result({
+        ok: r.ok, exitCode: r.exitCode, seconds: r.seconds, cost: Math.round(r.cost * 1000) / 1000,
+        unity: r.unity ?? probe.version, artifact,
+        github: { repo: b.repo, commit: b.commit, ref: b.ref, path: probe.path },
+        method: b.method, target: 'web', errors: r.errors ?? [], logTail: r.ok ? undefined : r.logTail,
+        backend: 'cloudrun', ...(r.cloud ? { cloud: r.cloud } : {}),
+      });
+      if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });
+      ctx.log(`built in ${Math.round(r.seconds / 60)} min: ${artifact?.files ?? 0} files, about $${r.cost.toFixed(2)}`);
+    } finally {
+      fs.rmSync(r.tmp, { recursive: true, force: true });
+    }
+  } finally {
+    dropToken(b.tokenRef);
+  }
+}
 
 /** Totals and failures from an NUnit 3 results file (what Unity's -runTests writes). */
 export function parseNUnit(xml: string) {

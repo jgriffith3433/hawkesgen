@@ -169,6 +169,9 @@ chosen one.
   the source at one commit and the website's `beta` from GitHub, the build committed and pushed to that beta by the
   container (never main). Studio uses it for build tags (`git tag build-x && git push origin build-x` in a Unity source
   repo). docs/unity-cloudrun.md, "GitHub mode".
+- **Customer mode** (`github` with the customer's own `token`, `out: "artifact"`; `src/providers/builder/customer.ts`):
+  the one way a `user` key may run `unity.build`. Their repo at one commit on Cloud Run (the job of its Unity version,
+  `settings.unityBuild.gcp.images`), the output back as a `.tar.gz` asset; the token stays in memory only. docs/unity-cloudrun.md, "Customer mode".
 
 ## The app (hawkesgen.ai `/`)
 

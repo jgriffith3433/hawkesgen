@@ -17,7 +17,8 @@ RUN apt-get update \
 RUN curl -fsSL https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.gz | tar -xz -C /opt \
  && ln -s /opt/node-v22.11.0-linux-x64/bin/node /usr/local/bin/node && node --version
 
-COPY entrypoint.sh github.sh r2.mjs /hawkes/
+# HawkesBuild.cs: the default build method of customer builds (copied into the checkout only when they name none).
+COPY entrypoint.sh github.sh r2.mjs HawkesBuild.cs /hawkes/
 RUN chmod 755 /hawkes/entrypoint.sh /hawkes/github.sh
 
 ENV HAWKES_WORK=/work \

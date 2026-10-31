@@ -163,7 +163,12 @@ export type Settings = {
     backend: UnityBackend; timeoutMinutes: number; cleanAfterFailures: number; concurrency: number; vmAt: number;
     /** A backend per project ("sickofitgame-unity": "vm") over `backend`: a Library too big for Cloud Run builds where it fits. */
     projects: Record<string, UnityBackend>;
-    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number };
+    /**
+     * `images`: the Unity versions customer builds may use, each with the Cloud Run job that runs that version's image
+     * ({ "6000.3.7f1": "hawkes-unity-build" }; an execution can't change a job's image, so a version is a job). Empty:
+     * `unity` on `job` only. Adding a version = an image (tools/unity-cloudrun/build-image.mjs), a job, and a line here.
+     */
+    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string> };
     /** The build VMs: one per project, named hawkes-unity-<project>, made by tools/unity-cloudrun/vm.mjs. */
     vm: { zone: string; machineType: string; pricePerHour: number };
   };
@@ -295,7 +300,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
-    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32 },
+    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {} },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
@@ -543,6 +548,8 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
       unity: word(g.unity, /^\d{4}\.\d+\.\d+[abfp]\d+$/, d.gcp.unity),
       cpu: [4, 8].includes(Number(g.cpu)) ? Number(g.cpu) : d.gcp.cpu,
       memoryGiB: n(g.memoryGiB, 4, 32, d.gcp.memoryGiB),
+      images: Object.fromEntries(Object.entries(g.images && typeof g.images === 'object' ? g.images : {})
+        .filter(([k, v]) => /^\d{4}\.\d+\.\d+[abfp]\d+$/.test(k) && typeof v === 'string' && /^[a-z][a-z0-9-]{0,48}$/.test(v))) as Record<string, string>,
     },
   };
 }

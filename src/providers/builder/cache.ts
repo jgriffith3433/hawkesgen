@@ -115,7 +115,8 @@ export type CloudResult = {
   v: number; ok: boolean; stage: string; kind: string | null; error: string | null; exitCode: number | null;
   seconds: Record<string, number>; unity: string | null;
   cache: { restoredFrom: string | null; restoredBytes: number; clean: boolean; reason: string; saved: boolean; savedKey: string | null; savedBytes: number; skipped: string | null };
-  output: { object: string; bytes: number; changed: CloudSiteFile[]; deleted: string[] } | null;
+  /** `files`: customer mode's file count in the output .tar.gz (object). */
+  output: { object: string; bytes: number; changed: CloudSiteFile[]; deleted: string[]; files?: number } | null;
   results: string | null; log: string | null; memoryPeakBytes: number | null; errors: string[];
   /** GitHub mode: what the container pushed to the website repo (github.ts); null otherwise or when nothing changed. */
   pushed: CloudPush | null;
@@ -149,6 +150,7 @@ export function parseCloudResult(raw: string | Buffer): CloudResult {
     object: String(o.object), bytes: num(o.bytes),
     changed: (Array.isArray(o.changed) ? o.changed : []).map((f: any) => ({ path: safeRel(f?.path), size: num(f?.size) })).filter((f: any) => f.path) as CloudSiteFile[],
     deleted: (Array.isArray(o.deleted) ? o.deleted : []).map(safeRel).filter(Boolean) as string[],
+    ...(o.files !== undefined ? { files: num(o.files) } : {}),
   } : null;
   return {
     v: num(j.v, 1), ok: j.ok, stage: String(j.stage ?? (j.ok ? 'done' : 'unknown')), kind: str(j.kind), error: str(j.error),

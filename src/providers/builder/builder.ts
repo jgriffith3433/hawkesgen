@@ -777,6 +777,12 @@ export type BuildSpec = {
    * and the container pushes the build to the website repo's branch (beta) itself. Nothing is laid down here.
    */
   github?: import('./github.ts').GitHubBuild;
+  /**
+   * Customer mode (Cloud Run only, customer.ts): a customer's own repo at one commit, built with their short-lived token
+   * (here in memory only: never written to spec.json), the output folder back as a .tar.gz. `project` is then the
+   * folder in the container ("src" or "src/<path>"); `owner` is the Gen project the job belongs to (its own cache).
+   */
+  customer?: { repo: string; commit: string; ref: string | null; path: string; owner: string; version: string; job: string; token: string };
 };
 
 export type BuildHooks = { step(s: string): void; log(s: string): void; signal?: AbortSignal };

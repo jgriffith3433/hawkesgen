@@ -46,7 +46,7 @@ import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
 import { id as newId, sha256File, GenError, run } from './util.ts';
 import { getUserForClient } from './users.ts';
-import { quoteJobCredits, reserveJobCredits, refundJobCredits, isInternalOnlyTool } from './billing.ts';
+import { quoteJobCredits, reserveJobCredits, refundJobCredits, isInternalOnlyTool, customerMayRun } from './billing.ts';
 
 import { events } from './bus.ts';
 
@@ -248,8 +248,9 @@ export function submit(client: Client, spec0: JobSpec): Job {
   if (!tool) throw new GenError(`Unknown tool: ${spec.tool}`, { status: 404 });
   const requested = tool.id;
   if (client.role === 'user') {
-    if (isInternalOnlyTool(tool.id)) {
-      throw new GenError(`Tool ${tool.id} is internal-only and not available for user accounts`, { status: 403 });
+    // unity.build is open to customers in customer mode only (their own repo and token, the output as an asset).
+    if (isInternalOnlyTool(tool.id) && !customerMayRun(tool.id, spec.params)) {
+      throw new GenError(`Tool ${tool.id} is internal-only and not available for user accounts${tool.id === 'unity.build' ? ' (except customer mode: github { repo, commit, token } with out "artifact")' : ''}`, { status: 403 });
     }
     if (tool.id === 'asset.make' && Array.isArray((spec.params as any)?.steps)) {
       for (const st of (spec.params as any).steps) {

@@ -100,6 +100,55 @@ git tag build-2026-10-28 && git push origin build-2026-10-28     # in sickofitga
   with main untouched, a branch that moved, a website without beta, main refused, the packages, the token). Those need
   `bash`, `git` and `jq`.
 
+## Customer mode: a customer's own project, the build back as an asset
+
+For customers' Studios (hawkesstudio `docs/builds.md`, "unity -> Hawkes Gen"): any Gen key, role `user` included, may
+submit `unity.build` in this mode, and only in this mode (`billing.ts customerMayRun`; everything else about the tool
+stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts runCustomerBuild`.
+
+```jsonc
+{ "tool": "unity.build", "project": "<the key's Gen project>", "params": {
+  "github": { "repo": "owner/name", "commit": "<40-hex sha>", "token": "<short-lived GitHub installation token>", "ref": "refs/heads/main" },
+  "path": "Game",            // optional: the Unity project folder in the repo; default: the shallowest folder with ProjectSettings/ProjectVersion.txt
+  "method": "Acme.Build.Web", // optional -executeMethod; default HawkesGenCloud.HawkesBuild.Build (below)
+  "target": "web",            // WebGL; anything else fails with kind "config"
+  "out": "artifact",
+  "env": { "BUILD_ID": "7" }  // optional, plain names (not HAWKES_, UNITY_, GITHUB_, ...)
+} }
+```
+
+- **The token** goes into the in-memory token vault at submit (`intake.ts holdToken`, 12 hours); the job's params, its
+  row, the library recipe and spec.json keep only its `tok_` reference (`test/unity-customer.test.ts` checks every one).
+  It is handed to the one Cloud Run execution as the env override `HAWKES_GITHUB_TOKEN`, used there only as the git
+  `http.extraheader` of the fetch, and dropped from the vault when the job ends. Gen restarted before the build started:
+  the job fails saying to submit again. Gen's own GitHub secret is never used: the container drops `GITHUB_TOKEN` and
+  `R2_BUILDS_TOKEN` in this mode.
+- **Before anything starts**, Gen asks GitHub (with that token) for the project folder (the tree, when `path` is not
+  given) and its `ProjectVersion.txt`. A version without an image fails at once, kind `config`, naming the project's
+  version and the supported ones. **The supported versions are `gcp.images`** (`{ "<version>": "<Cloud Run job>" }`; a
+  job execution can't change its image, so each version is its own job running its own image). Empty: `gcp.unity` on
+  `gcp.job`. Adding a version: build an image with that GameCI editor tag (`tools/unity-cloudrun/build-image.mjs`), make
+  a job from it like `hawkes-unity-build` (same secrets, service account, size), add the line.
+- **The container** fetches the whole repo at the commit into `Projects/src` (no sparse checkout, no package rewrite,
+  never J's package repos), checks the version again, and builds into `HAWKES_OUT`. With no `method` it adds
+  `HawkesBuild.cs` (in the image) as `Assets/HawkesGenCloud/Editor/` with an Editor-only asmdef: every enabled scene in
+  EditorBuildSettings to WebGL, compression off (static hosts can't send `Content-Encoding`). With a method, the output
+  is whatever `HAWKES_OUT` holds afterwards; empty fails (kind `output`). The folder goes up as `artifact.tgz`.
+- **Secrets and the customer's code:** the customer's editor scripts run inside Unity, so in this mode the entrypoint
+  first moves every secret out of the environment (into files it reads and deletes, then it starts itself again with a
+  clean environment): Unity's process sees no `UNITY_*`, no tokens. **Still open:** the job's service account (Cloud
+  Storage through the metadata server) is reachable from inside the build. Before outside customers use this, give
+  customer builds their own job with a service account that can write only `unity-builds/` and its own caches.
+- **Library cache:** its own per Gen project and repo (`unity-cache/cust--<project>--<owner>--<repo>[--<path>]`, key
+  `build`), never J's or another customer's.
+- **Result:** `{ ok, exitCode, seconds, cost, unity, artifact: { asset, url, bytes, files }, github: { repo, commit,
+  ref, path }, method, target: "web", errors, logTail?, backend: "cloudrun", cloud }`. `artifact.asset` is a library
+  asset of the job's project (a `.tar.gz` of the build folder; `url` is `/v1/assets/<id>/file` on Gen); the Unity log
+  is the job's first output.
+- **Price:** flat `UNITY_BUILD_CREDITS` = 100 credits ($1.00; Cloud Run at 8 vCPU / 32 GiB is about $0.0125 a minute),
+  reserved at submit and refunded when the build fails. Provisional.
+- Always Cloud Run (`backend` is set to `cloudrun`; the queue's `builder-cloud` lane), never the build server or a VM.
+
 ## Settings
 
 `settings.unityBuild` (POST `/v1/settings`, owner):
@@ -112,7 +161,7 @@ git tag build-2026-10-28 && git push origin build-2026-10-28     # in sickofitga
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
 | `concurrency` | 2 | Cloud Run builds at once (their own queue lane, `builder-cloud`; VM builds `builder-vm` and the Windows box one at a time) |
 | `vmAt` | 0.85 | A Cloud Run build peaking over this share of its memory moves its project to `vm` (0: never) |
-| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32 |
+| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`) |
 | `vm` | | `zone` (us-east4-a), `machineType` (n2-standard-8), `pricePerHour` (0.10, for usage) |
 
 The tool params `backend` (auto/builder/cloudrun/vm), `cache` (a cache name) and `clean` (no cache) override per job.

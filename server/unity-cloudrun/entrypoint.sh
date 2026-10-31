@@ -5,6 +5,9 @@
 #   Secrets (Secret Manager, as env): UNITY_EMAIL + UNITY_PASSWORD (a Unity Personal account, activated through the
 #   Unity Licensing Client each build and returned after), optionally UNITY_SERIAL (a Plus/Pro seat instead);
 #   GITHUB_TOKEN (Contents: read on the repos).
+#   HAWKES_GITHUB_TOKEN (customer mode only, set per execution by Gen): the customer's short-lived GitHub token. In that
+#   mode Gen's own GITHUB_TOKEN and R2_BUILDS_TOKEN are dropped, and every secret leaves the environment before the
+#   customer's code (Unity, their editor scripts) runs: see "Customer mode" below and docs/unity-cloudrun.md.
 #   HAWKES_LICENSE_CHECK=1: activate, open a throwaway project, return the license, exit (no spec needed).
 #   HAWKES_PERSIST=1: the Library lives on the machine's own disk (the build VM), not in the bucket's cache.
 #
@@ -15,6 +18,28 @@
 set -uo pipefail
 
 WORK="${HAWKES_WORK:-/work}"
+
+# ------------------------------------------------------------ customer mode: secrets out of the environment
+# A customer's project runs its own editor code in Unity. Before anything else, the secrets move from the environment
+# into files only this script reads (then deletes), and the script starts again without them, so no child process and
+# no /proc/<pid>/environ holds them. Gen's own GitHub and R2 tokens are dropped outright: a customer build never uses them.
+if [ -n "${HAWKES_GITHUB_TOKEN:-}" ] && [ -z "${HAWKES_SCRUBBED:-}" ]; then
+  SEC=$(mktemp -d /dev/shm/hawkes-sec.XXXXXX 2>/dev/null || mktemp -d "${TMPDIR:-/tmp}/hawkes-sec.XXXXXX")
+  chmod 700 "$SEC"
+  ( umask 077; for v in HAWKES_GITHUB_TOKEN UNITY_EMAIL UNITY_PASSWORD UNITY_SERIAL; do [ -n "${!v:-}" ] && printf '%s' "${!v}" > "$SEC/$v"; done )
+  exec env -u HAWKES_GITHUB_TOKEN -u GITHUB_TOKEN -u R2_BUILDS_TOKEN -u UNITY_EMAIL -u UNITY_PASSWORD -u UNITY_SERIAL \
+    HAWKES_SCRUBBED="$SEC" bash "${BASH_SOURCE[0]}" "$@"
+fi
+CUSTOMER_TOKEN=""
+if [ -n "${HAWKES_SCRUBBED:-}" ]; then
+  # Shell variables, not exported: the licensing client gets them as arguments, Unity never sees them.
+  for v in UNITY_EMAIL UNITY_PASSWORD UNITY_SERIAL; do
+    if [ -f "$HAWKES_SCRUBBED/$v" ]; then printf -v "$v" '%s' "$(cat "$HAWKES_SCRUBBED/$v")"; export -n "$v"; fi
+  done
+  [ -f "$HAWKES_SCRUBBED/HAWKES_GITHUB_TOKEN" ] && CUSTOMER_TOKEN=$(cat "$HAWKES_SCRUBBED/HAWKES_GITHUB_TOKEN")
+  rm -rf "$HAWKES_SCRUBBED"
+  export -n HAWKES_SCRUBBED
+fi
 P="$WORK/Projects"
 OUT="$WORK/out"
 UNITY="${UNITY_BIN:-unity-editor}"
@@ -196,8 +221,16 @@ log "license: $LICENSE_MODE"
 
 # ------------------------------------------------------------ 2. sources at exact commits
 stage source
-[ -n "${GITHUB_TOKEN:-}" ] || die source "GITHUB_TOKEN (secret github-token) is empty: the build can't fetch the private repos"
-AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+CUSTOMER=false
+if [ "$(jq -r '.customer != null' "$S")" = true ]; then
+  # Customer mode: their own repo with their own token (never Gen's GitHub secret, never J's package repos).
+  CUSTOMER=true
+  [ -n "$CUSTOMER_TOKEN" ] || die source "no GitHub token came with this customer build"
+  AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CUSTOMER_TOKEN" | base64 -w0)"
+else
+  [ -n "${GITHUB_TOKEN:-}" ] || die source "GITHUB_TOKEN (secret github-token) is empty: the build can't fetch the private repos"
+  AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+fi
 export GIT_TERMINAL_PROMPT=0
 PROJECT_COMMIT=""; PROJECT_TOP=""
 n=$(jq '.repos | length' "$S")
@@ -211,6 +244,13 @@ done
 OVERLAY=$(j .overlay)
 if [ -n "$OVERLAY" ]; then gs_get "$OUT_BUCKET" "$OVERLAY" | tar -xz -C "$P" || die source "couldn't unpack the uncommitted edits"; log "uncommitted edits applied"; fi
 while IFS= read -r rel; do [ -n "$rel" ] && rm -f -- "$P/$rel"; done < <(jq -r '.deletes[]?' "$S")
+if [ "$CUSTOMER" = true ]; then
+  # The token's work is done: nothing after this point can read it.
+  AUTH=""; CUSTOMER_TOKEN=""
+  [ -f "$PROJ/ProjectSettings/ProjectVersion.txt" ] || die config "$(j .customer.repo) at ${PROJECT_COMMIT:0:12} has no Unity project at $(j .customer.path) (no ProjectSettings/ProjectVersion.txt)"
+  pv=$(sed -nE 's/^m_EditorVersion: *([^ ]+).*/\1/p' "$PROJ/ProjectSettings/ProjectVersion.txt" | tr -d '\r' | head -1)
+  [ "$pv" = "$UNITY_VERSION" ] || die config "the project uses Unity $pv, but this build image has $UNITY_VERSION"
+fi
 [ -f "$PROJ/ProjectSettings/ProjectVersion.txt" ] || die source "$PROJECT has no ProjectSettings/ProjectVersion.txt after the checkout"
 GITHUB_MODE=false
 if [ "$(jq -r '.github != null' "$S")" = true ]; then
@@ -220,10 +260,13 @@ if [ "$(jq -r '.github != null' "$S")" = true ]; then
   [ "$pv" = "$UNITY_VERSION" ] || die config "$PROJECT at ${PROJECT_COMMIT:0:12} uses Unity $pv, but the build image has $UNITY_VERSION"
   github_packages "$PROJ" "${PROJECT_TOP:-}"
 fi
-# Local file: packages name C:/Projects/... (J's PC, forward slashes); here they are under $P.
-for f in "$PROJ/Packages/manifest.json" "$PROJ/Packages/packages-lock.json"; do
-  [ -f "$f" ] && sed -i -E "s#file:[A-Za-z]:/Projects/#file:$P/#g" "$f"
-done
+# Local file: packages name C:/Projects/... (J's PC, forward slashes); here they are under $P. A customer's project is
+# left as it is (no rewrite, no package repos fetched); a manifest without any is fine.
+if [ "$CUSTOMER" != true ]; then
+  for f in "$PROJ/Packages/manifest.json" "$PROJ/Packages/packages-lock.json"; do
+    [ -f "$f" ] && sed -i -E "s#file:[A-Za-z]:/Projects/#file:$P/#g" "$f"
+  done
+fi
 SITE_IN=$(j .siteInput)
 if [ -n "$SITE" ] && [ "$GITHUB_MODE" = true ]; then
   github_site "$SITE"
@@ -267,6 +310,19 @@ while IFS= read -r kv; do
 done < <(jq -r '.env | to_entries[] | "\(.key)=\(.value)"' "$S")
 export HAWKES_CLOUD_BUILD=1 HAWKES_PROJECT_PATH="$PROJ" HAWKES_COMMIT="${HAWKES_COMMIT:-$PROJECT_COMMIT}"
 [ -n "$SITE" ] && export WEBSITE_PATH="$SITE_DIR" HAWKES_SITE_PATH="$SITE_DIR"
+if [ "$CUSTOMER" = true ]; then
+  # The build goes into HAWKES_OUT; that folder (whatever is in it afterwards) is the output.
+  export HAWKES_OUT="$WORK/artifact"
+  rm -rf "$HAWKES_OUT"; mkdir -p "$HAWKES_OUT"
+  if [ "$(j .customer.defaultMethod)" = true ]; then
+    # No method of their own: Gen's HawkesBuild.Build (every enabled scene to WebGL), in its own Editor-only assembly.
+    hb="$PROJ/Assets/HawkesGenCloud/Editor"
+    mkdir -p "$hb" || die source "couldn't add the build script"
+    cp "${HAWKES_BUILD_CS:-$(dirname "${BASH_SOURCE[0]}")/HawkesBuild.cs}" "$hb/HawkesBuild.cs" || die source "couldn't add the build script"
+    printf '{ "name": "HawkesGenCloud.Editor", "includePlatforms": ["Editor"], "autoReferenced": false }\n' > "$hb/HawkesGenCloud.Editor.asmdef"
+    log "added HawkesGenCloud.HawkesBuild.Build (every enabled scene to WebGL)"
+  fi
+fi
 args=(-batchmode -nographics -projectPath "$PROJ" -buildTarget "${TARGET:-WebGL}" -logFile -)
 [ -n "$TESTS" ] || args+=(-quit)
 [ -n "$METHOD" ] && args+=(-executeMethod "$METHOD")
@@ -291,8 +347,19 @@ elif [ "$EXIT_CODE" != 0 ]; then
   die build "Unity exited with code $EXIT_CODE"
 fi
 
-# ------------------------------------------------------------ 5. website changes
+# ------------------------------------------------------------ 5. website changes (customer mode: the output folder)
 stage output
+if [ "$CUSTOMER" = true ]; then
+  files=$(find "$HAWKES_OUT" -type f | wc -l)
+  [ "$files" -gt 0 ] || die output "the build wrote nothing to HAWKES_OUT: a build method of your own must build into the folder in env HAWKES_OUT"
+  raw=$(du -sb "$HAWKES_OUT" | cut -f1)
+  key="$OUT_PREFIX/artifact.tgz"
+  log "packing the build: $files files ($(( raw / 1048576 )) MB)"
+  tar -czf "$OUT/artifact.tgz" -C "$HAWKES_OUT" . || die output "couldn't pack the build"
+  gs_put "$OUT_BUCKET" "$key" "$OUT/artifact.tgz" application/gzip || die output "couldn't upload the build"
+  rm -f "$OUT/artifact.tgz"
+  OUTPUT_JSON=$(jq -nc --arg object "$key" --argjson bytes "$raw" --argjson files "$files" '{ object: $object, bytes: $bytes, files: $files, changed: [], deleted: [] }')
+fi
 if [ -n "$SITE" ] && [ -z "$TESTS" ]; then
   snap > "$WORK/site-after.txt"
   # Changed: new or different (size or time); never the stubs. Deleted: gone (a gone stub = its whole Game/v<n>).
