@@ -14,6 +14,7 @@ import { getAsset } from '../library.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
+import { SELF_TOKEN, SELF_URL } from '../auth.ts';
 import { shotFrames } from './blender.ts';
 import { GATE_SYSTEM, STILL_SHARES, VERDICT_SCHEMA, runGate, type RenderOut, type Verdict } from '../film/gate.ts';
 import { lintShot, type Shot } from '../film/shot.ts';
@@ -95,7 +96,7 @@ export const filmGateTool: Tool = {
     const seconds = (frames - 1) / p.fps;
     const cw = 640;
     const ch = Math.max(2, Math.round((cw * p.height) / p.width / 2) * 2);
-    const gen = new HawkesGen({ url: `http://127.0.0.1:${process.env.HAWKESGEN_PORT || 8790}`, project: ctx.job.project });
+    const gen = new HawkesGen({ url: SELF_URL(), key: SELF_TOKEN, project: ctx.job.project });
     const sheets: string[] = [];
 
     const render = async (s: Shot, attempt: number): Promise<RenderOut> => {

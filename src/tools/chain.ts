@@ -16,6 +16,7 @@ import { probe, cfrRate, rotationOf, frameArgs, type ProbeInfo } from './media.t
 import { analyze, ff } from '../audio/post.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
+import { SELF_TOKEN, SELF_URL } from '../auth.ts';
 
 export type ChildSpec = { tool: string; params: Record<string, unknown>; inputs: Record<string, unknown> };
 
@@ -82,7 +83,7 @@ export function _setChainClient(f: ((ctx: RunContext) => Gen) | null) {
   clientFor = f;
 }
 function genClient(ctx: RunContext): Gen {
-  return clientFor ? clientFor(ctx) : new HawkesGen({ url: `http://127.0.0.1:${process.env.HAWKESGEN_PORT || 8790}`, project: ctx.job.project });
+  return clientFor ? clientFor(ctx) : new HawkesGen({ url: SELF_URL(), key: SELF_TOKEN, project: ctx.job.project });
 }
 
 /** Runs one child job and waits for it. `name` keys it, so a resumed parent picks the same child up again. */

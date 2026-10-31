@@ -16,6 +16,7 @@ import { ask, usageOf } from '../providers/anthropic.ts';
 import { videoFrames } from './pipeline.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
+import { SELF_TOKEN, SELF_URL } from '../auth.ts';
 
 const SCHEMA = {
   type: 'object', additionalProperties: false, required: ['best', 'reason', 'ranking'],
@@ -50,7 +51,7 @@ export const libraryJudgeTool: Tool = {
     retire: { type: 'boolean', default: false, description: 'Move the takes that lost to old' },
   },
   async run(ctx) {
-    const gen = new HawkesGen({ url: `http://127.0.0.1:${process.env.HAWKESGEN_PORT || 8790}`, project: ctx.job.project });
+    const gen = new HawkesGen({ url: SELF_URL(), key: SELF_TOKEN, project: ctx.job.project });
     const entityId = String(ctx.params.entity);
     const slot = String(ctx.params.slot);
     const e = await gen.entity(entityId);

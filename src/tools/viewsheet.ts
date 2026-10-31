@@ -13,6 +13,7 @@ import { planSheet } from './sheet.ts';
 import { imageSize } from './threed.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
+import { SELF_TOKEN, SELF_URL } from '../auth.ts';
 
 export const VIEWS = ['front', 'back', 'left', 'right'] as const;
 type View = (typeof VIEWS)[number];
@@ -180,7 +181,7 @@ export const viewSheetTool: Tool = {
     const seen = JSON.parse(await ctx.python('prep.py', ['inspect', original]));
     if (seen.mask) throw new GenError('the front view is a black and white mask, not a picture of the object: pass the cutout (the output of image.remove-background titled cutout, "$prev:cutout" in a recipe)');
 
-    const gen = new HawkesGen({ url: `http://127.0.0.1:${process.env.HAWKESGEN_PORT || 8790}`, project: ctx.job.project });
+    const gen = new HawkesGen({ url: SELF_URL(), key: SELF_TOKEN, project: ctx.job.project });
     const supplied: Partial<Record<View, string>> = {};
     for (const v of MADE) if (ctx.inputs[v]) supplied[v] = ctx.inputs[v];
     const files: Record<string, string> = { front, ...supplied };

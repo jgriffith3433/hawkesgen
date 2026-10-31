@@ -13,7 +13,7 @@
 import crypto from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { db, parseRow, J } from './db.ts';
-import { loadSettings } from './config.ts';
+import { loadSettings, PORT } from './config.ts';
 import { id, sha256, GenError } from './util.ts';
 import { DASH_COOKIE, sessionEmail } from './dashauth.ts';
 import { orgProjects, verifyPlatformToken } from './platform.ts';
@@ -25,6 +25,16 @@ export type Client = {
 };
 
 export const LOCAL_OWNER: Client = { id: 'local', name: 'This machine', role: 'owner', projects: ['*'] };
+
+/**
+ * Gen calling itself (asset.make's steps, chains, the judge, the view sheet, film plans): a token made when this process
+ * starts, kept in memory only, and taken only from this machine. Those tools used to rely on "this machine is the
+ * owner" (localOpen), which is never true on Cloud Run, so there every chain failed with "Send an API key" (J,
+ * 2026-10-30: making a character's 3D model).
+ */
+export const SELF_TOKEN = `hgself_${crypto.randomBytes(24).toString('base64url')}`;
+/** Gen's own client for jobs its tools start (selfGen in tools). */
+export const SELF_URL = () => `http://127.0.0.1:${PORT}`;
 
 export function createClient(name: string, role: Client['role'] = 'user', projects: string[] = ['*']) {
   if (!['owner', 'admin', 'user'].includes(role)) throw new GenError(`Unknown role: ${role}`);
@@ -70,6 +80,7 @@ export function dashboardClient(key: string): Client | null {
 export function authenticate(req: IncomingMessage): Client | null {
   const header = String(req.headers.authorization ?? '');
   const sent = header.startsWith('Bearer ') ? header.slice(7).trim() : String(req.headers['x-hawkesgen-key'] ?? '').trim();
+  if (sent && sent === SELF_TOKEN && isLoopback(req.socket.remoteAddress)) return LOCAL_OWNER;
   const fromCookie = sent ? '' : cookieKey(req);
   if (fromCookie && !dashboardClient(fromCookie)) return null;
   // Signed in with Google (dashauth.ts): the owner, while the email is on settings.dashboard.googleEmails.

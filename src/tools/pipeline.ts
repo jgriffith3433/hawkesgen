@@ -27,6 +27,7 @@ import { getAsset } from '../library.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
+import { SELF_TOKEN, SELF_URL } from '../auth.ts';
 
 type StepSpec = { tool?: string; preset?: string; params?: Record<string, unknown>; inputs?: Record<string, unknown>; save?: string };
 
@@ -89,7 +90,7 @@ export const assetMakeTool: Tool = {
       if (!s.tool && !s.preset) throw new GenError(`step ${i + 1} needs a tool or a preset`);
       if (s.tool === 'asset.make') throw new GenError('A step of asset.make cannot be asset.make');
     }
-    const gen = new HawkesGen({ url: `http://127.0.0.1:${process.env.HAWKESGEN_PORT || 8790}`, project: ctx.job.project });
+    const gen = new HawkesGen({ url: SELF_URL(), key: SELF_TOKEN, project: ctx.job.project });
     const inputFiles: string[] = ctx.inputs.files ?? [];
     const made: { job: string; outputs: any[]; result?: any }[] = [];
     const chain: any[] = [];
