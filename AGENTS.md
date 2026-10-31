@@ -538,6 +538,25 @@ case there whenever you add a route or an input kind.
   - Usage is recorded as `anthropic-byok` or `claude-subscription` (not ours to bill).
   - Customers' playtest reviews default to Sonnet and may only review their own project's playtests.
 
+- **Customers' Studios pay from their Studio balance** (`src/orgcredits.ts`, `test/orgcredits.test.ts`; hawkesstudio
+  `docs/studio-customers.md` "Billing"). A cell's key (role user, projects `org_<hex>` and `org_<hex>.*`, made by
+  Studio's control plane) has no Gen account, so its jobs are charged to its org's credits in Studio's control plane,
+  one bank for every path: `createJob` (via `submitJob` / `rerunJob`, which every HTTP route uses: `/v1/jobs`, `/v1/run`,
+  reruns, entity make, the director, upload normalizing, and `/mcp`, which calls `/v1/jobs` with the caller's key) prices
+  the job with `quoteJobCredits` and calls `POST <control>/api/cells/gen/charge {genOrg, credits, job, tool}` before the
+  job exists. 402 refuses it (kind `credits`, the control plane's own "This studio is out of credits: ..."); unreachable
+  or any other answer refuses it too (fail closed, 503). A job that fails or is cancelled is refunded
+  (`/api/cells/gen/refund {genOrg, job}`, once; misses retried every 2 minutes from `org_charges`). A job handed back by
+  `reuse` or the same `key` never reaches createJob: free. Owner and admin keys, Gen itself (chains' steps), Gen app
+  accounts, the portal's keys, platform tokens and `settings.platform.freeOrgs` are never charged. The synchronous
+  `submit`/`rerun` (scenes' and the editor's AI) refuse such a key while this is on (403 kind `credits`), so nothing is
+  free. A charged job carries the label `orgCredits`. **Turning it on, per lane:** the control plane's key (Studio:
+  `GET /api/cells/gen-key`, platform admin only) goes in the secret `<service>-org-credits-key` (`gen-org-credits-key`,
+  `gen-beta-org-credits-key`), mounted as `HAWKESGEN_ORG_CREDITS_KEY` by `tools/gen-cloudrun/deploy.mjs` once it exists
+  (locally: `.env`); the URL in `settings.orgCredits.url` (`POST /v1/settings {"orgCredits":{"url":"https://studio.hawkesgen.ai"}}`,
+  beta: studio-beta's) or `HAWKESGEN_ORG_CREDITS_URL`. Both set: `/v1/health` says `orgCredits: true`, and cells stop
+  charging on their own side. The key is never logged or returned.
+
 ## Playtests
 
 `playtest.run` opens a page in Chromium (headless, but on the real GPU through ANGLE/D3D11) and plays it through the

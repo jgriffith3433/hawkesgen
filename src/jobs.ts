@@ -47,6 +47,7 @@ import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placemen
 import { id as newId, sha256File, GenError, run } from './util.ts';
 import { getUserForClient } from './users.ts';
 import { quoteJobCredits, reserveJobCredits, refundJobCredits, isInternalOnlyTool, customerMayRun } from './billing.ts';
+import { billedOrg, orgCreditsOn, chargeOrg, refundOrgCharge, startOrgChargeSettler, type OrgCharge } from './orgcredits.ts';
 
 import { events } from './bus.ts';
 
@@ -224,7 +225,25 @@ function resolveInputs(client: Client, tool: Tool, raw: Record<string, unknown> 
   return out;
 }
 
+type Pending = { tool: Tool; s: JobInit };
+type JobInit = { project: string; params: Record<string, any>; inputs: Record<string, any>; labels?: Record<string, unknown>; key?: string; priority?: number };
+
+/**
+ * Submits a job (presets, slots, clips, keys and reuse applied). Synchronous: a customer's Studio key whose jobs its
+ * Studio balance pays for (src/orgcredits.ts) is refused here when Gen charges orgs; HTTP routes use submitJob.
+ */
 export function submit(client: Client, spec0: JobSpec): Job {
+  const p = prepareSubmit(client, spec0);
+  return 'id' in p ? p : createJob(client, p.tool, p.s);
+}
+
+/** submit, charging a customer Studio's balance first when its key's jobs are billed there (every HTTP route). */
+export async function submitJob(client: Client, spec0: JobSpec): Promise<Job> {
+  const p = prepareSubmit(client, spec0);
+  return 'id' in p ? p : createJobCharged(client, p.tool, p.s);
+}
+
+function prepareSubmit(client: Client, spec0: JobSpec): Job | Pending {
   const project0 = fixedProject(client) ?? String(spec0.project ?? '').trim();
   // A preset (the project's art direction) fills in the tool, params and inputs.
   const applied = applyPreset({ ...spec0, project: project0 }, (id) => getTool(id)?.params ?? null);
@@ -291,7 +310,7 @@ export function submit(client: Client, spec0: JobSpec): Job {
       return found;
     }
   }
-  return createJob(client, tool, { project, params, inputs, labels: spec.labels, key: spec.key, priority: spec.priority });
+  return { tool, s: { project, params, inputs, labels: spec.labels, key: spec.key, priority: spec.priority } };
 }
 
 const sha256Sync = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -358,16 +377,43 @@ export function boostLabel(label: string, value: string, priority: number, minut
   return { label, value: v, priority: p, until: p > 0 ? until : null, queued: queued.length };
 }
 
-function createJob(client: Client, tool: Tool, s: { project: string; params: Record<string, any>; inputs: Record<string, any>; labels?: Record<string, unknown>; key?: string; priority?: number }): Job {
+/**
+ * The org whose Studio balance pays for this job, when Gen charges orgs (src/orgcredits.ts): a customer Studio's cell
+ * key with no Gen account. Null for everyone else (owner and admin keys, Gen itself, accounts, the portal, tokens).
+ */
+function chargedOrg(client: Client, project: string): string | null {
+  if (client.role !== 'user' || !orgCreditsOn()) return null;
+  return billedOrg(client, project, Boolean(getUserForClient(client)));
+}
+
+/** createJob after charging the org's Studio balance (402 kind 'credits' when short, refused when unreachable). */
+async function createJobCharged(client: Client, tool: Tool, s: JobInit): Promise<Job> {
+  const org = chargedOrg(client, s.project);
+  if (!org) return createJob(client, tool, s);
+  checkSubmit(client, tool.id);
+  const id = newId('j', 6);
+  const quote = quoteJobCredits({ project: s.project, tool: tool.id, params: s.params });
+  const charge = await chargeOrg(org, id, quote.credits, tool.id);
+  try { return createJob(client, tool, s, { id, charge }); } catch (e) {
+    await refundOrgCharge(id, 'The job was not made');
+    throw e;
+  }
+}
+
+function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: string; charge: OrgCharge }): Job {
   // A platform token's caller: its scopes, and billing (src/platform.ts).
   checkSubmit(client, tool.id);
+  // Every job a customer Studio's key makes is paid from its balance: a path that can't charge first refuses.
+  if (!charged && chargedOrg(client, s.project)) {
+    throw new GenError("This studio's credits can't be charged on this path; submit the job through POST /v1/jobs (or the MCP).", { status: 403, kind: 'credits' });
+  }
   const { project, params, inputs } = s;
   // No priority asked for: a boost on one of its labels sets it (boostLabel). Customers' keys (role user) can lower
   // their own jobs but never raise them or ride an admin's boost: priority is the scheduler's business.
   const spec = { ...s, priority: client.role === 'user' ? Math.min(0, Number(s.priority) || 0) : s.priority ?? boostFor(s.labels) };
   const family = tool.provider === 'comfy' ? (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null : null;
   const job: Job = {
-    id: newId('j', 6), key: spec.key ? String(spec.key) : null, client: client.id, project, tool: tool.id, params, inputs,
+    id: charged?.id ?? newId('j', 6), key: spec.key ? String(spec.key) : null, client: client.id, project, tool: tool.id, params, inputs,
     labels: spec.labels ?? {}, priority: Math.max(-10, Math.min(10, Math.round(Number(spec.priority) || 0))), status: 'queued', detail: 'queued',
     log: [], outputs: [], result: null, error: null, server: null, family, gpu_seconds: 0, cost: 0, graphs: [], resumed: 0, created: Date.now(), started: null, finished: null,
   };
@@ -379,6 +425,8 @@ function createJob(client: Client, tool: Tool, s: { project: string; params: Rec
       job.labels = { ...job.labels, reservedCredits: quote.credits };
     }
   }
+  // Paid from a customer Studio's balance (src/orgcredits.ts): the cell sees it and doesn't charge again.
+  if (charged?.charge.credits) job.labels = { ...job.labels, orgCredits: charged.charge.credits };
   db.prepare(`INSERT INTO jobs (id, key, client, project, tool, params, inputs, labels, priority, status, detail, log, outputs, result, error, server, family, gpu_seconds, cost, graphs, resumed, created)
               VALUES (:id, :key, :client, :project, :tool, :params, :inputs, :labels, :priority, :status, :detail, :log, :outputs, :result, :error, :server, :family, :gpu_seconds, :cost, :graphs, :resumed, :created)`).run({
     id: job.id, key: job.key, client: job.client, project: job.project, tool: job.tool, params: J(params), inputs: J(inputs), labels: J(job.labels),
@@ -390,13 +438,20 @@ function createJob(client: Client, tool: Tool, s: { project: string; params: Rec
   return job;
 }
 
+/** A failed or cancelled job's credits back: a Gen account's reservation, and a customer Studio's charge. */
+function refundJob(jobId: string, reason: string) {
+  refundJobCredits(jobId, reason);
+  void refundOrgCharge(jobId, reason);
+}
+startOrgChargeSettler((id) => (db.prepare('SELECT status FROM jobs WHERE id = ?').get(id) as { status: string } | undefined)?.status ?? null);
+
 export function cancel(jobId: string) {
   const j = getJob(jobId);
   if (!j) throw new GenError('No such job', { status: 404 });
   if (j.status === 'queued') {
     Object.assign(j, { status: 'cancelled', detail: 'cancelled before it started', finished: Date.now() });
     save(j, ['status', 'detail', 'finished']);
-    refundJobCredits(j.id, 'Job cancelled before starting');
+    refundJob(j.id, 'Job cancelled before starting');
   } else if (j.status === 'running') {
     const ab = queue.aborts.get(j.id);
     if (ab) {
@@ -404,7 +459,7 @@ export function cancel(jobId: string) {
     } else {
       Object.assign(j, { status: 'cancelled', detail: 'cancelled', finished: Date.now() });
       save(j, ['status', 'detail', 'finished']);
-      refundJobCredits(j.id, 'Job cancelled');
+      refundJob(j.id, 'Job cancelled');
     }
   }
   return getJob(jobId);
@@ -416,7 +471,7 @@ export function failJob(jobId: string, errorMessage = 'Job failed') {
   Object.assign(j, { status: 'failed', error: errorMessage, detail: errorMessage, finished: Date.now() });
   j.log.push(`error: ${errorMessage}`);
   save(j, ['status', 'error', 'detail', 'finished', 'log']);
-  refundJobCredits(j.id, `Job failed: ${errorMessage}`);
+  refundJob(j.id, `Job failed: ${errorMessage}`);
   return getJob(jobId);
 }
 
@@ -425,7 +480,17 @@ export function failJob(jobId: string, errorMessage = 'Job failed') {
  * retake with a note in the prompt); inputs: inputs to swap (asset:/blob: refs, e.g. an upscale of the new take);
  * labels: more labels; priority: else the original's (or a boost on its labels).
  */
-export function rerun(client: Client, jobId: string, { sameSeed = false, params: over, inputs: swap, labels, priority }: { sameSeed?: boolean; params?: Record<string, unknown>; inputs?: Record<string, unknown>; labels?: Record<string, unknown>; priority?: number } = {}) {
+type RerunOpts = { sameSeed?: boolean; params?: Record<string, unknown>; inputs?: Record<string, unknown>; labels?: Record<string, unknown>; priority?: number };
+export function rerun(client: Client, jobId: string, o: RerunOpts = {}) {
+  const p = prepareRerun(client, jobId, o);
+  return createJob(client, p.tool, p.s);
+}
+/** rerun, charging a customer Studio's balance first (POST /v1/jobs/:id/rerun). */
+export async function rerunJob(client: Client, jobId: string, o: RerunOpts = {}) {
+  const p = prepareRerun(client, jobId, o);
+  return createJobCharged(client, p.tool, p.s);
+}
+function prepareRerun(client: Client, jobId: string, { sameSeed = false, params: over, inputs: swap, labels, priority }: RerunOpts): Pending {
   const j = getJob(jobId);
   if (!j) throw new GenError('No such job', { status: 404 });
   const tool = getTool(j.tool);
@@ -443,7 +508,7 @@ export function rerun(client: Client, jobId: string, { sameSeed = false, params:
     inputs[k] = spec.multiple ? (Array.isArray(v) ? v : [v]).map((x) => resolveInput(client, x)) : resolveInput(client, v);
   }
   const lab = { ...j.labels, ...(labels ?? {}), rerunOf: j.id };
-  return createJob(client, tool, { project: j.project, params, inputs, labels: lab, priority: priority ?? Math.max(j.priority, boostFor(lab)) });
+  return { tool, s: { project: j.project, params, inputs, labels: lab, priority: priority ?? Math.max(j.priority, boostFor(lab)) } };
 }
 
 export function clearFinished(project?: string) {
@@ -1070,7 +1135,7 @@ class Queue {
       }
       Object.assign(job, { status: cancelled ? 'cancelled' : 'failed', finished: Date.now(), error: cancelled ? null : e.message, detail: cancelled ? 'cancelled' : e.message });
       job.log.push(`error: ${e.message}`);
-      refundJobCredits(job.id, cancelled ? 'Job cancelled' : `Job failed: ${e.message}`);
+      refundJob(job.id, cancelled ? 'Job cancelled' : `Job failed: ${e.message}`);
     } finally {
       if (ep && job.gpu_seconds) {
         const cost = (job.gpu_seconds / 3600) * ep.price;

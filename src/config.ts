@@ -101,6 +101,10 @@ export type Settings = {
    *  beta.hawkesgames.com on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
    *  (design partners, J's own). */
   platform: { issuer: string; freeOrgs: string[] };
+  /** Customers' Studios' credits (src/orgcredits.ts): `url` the Studio control plane that holds each org's balance
+   *  (https://studio.hawkesgen.ai; empty: HAWKESGEN_ORG_CREDITS_URL, else off). Its key is the secret
+   *  HAWKESGEN_ORG_CREDITS_KEY (.env, Secret Manager on the cloud lanes), never a setting. */
+  orgCredits: { url: string };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number; lod: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
@@ -293,6 +297,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   lod: { projects: ['usr_*', 'ubeta_*'] },
   queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'] },
   platform: { issuer: '', freeOrgs: [] },
+  orgCredits: { url: '' },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
   brain: 'claude',
   model: '',
@@ -490,6 +495,7 @@ function clean(s: Settings): Settings {
       issuer: typeof s.platform?.issuer === 'string' && /^https?:\/\/[^\s]+$/.test(s.platform.issuer) ? s.platform.issuer : '',
       freeOrgs: Array.isArray(s.platform?.freeOrgs) ? s.platform!.freeOrgs.map(String).filter((o) => /^org_[0-9a-f]{8,32}$/.test(o)).slice(0, 200) : [],
     },
+    orgCredits: { url: typeof s.orgCredits?.url === 'string' && /^https?:\/\/[^\s]+$/.test(s.orgCredits.url) ? s.orgCredits.url.replace(/\/+$/, '') : '' },
     claude: {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),

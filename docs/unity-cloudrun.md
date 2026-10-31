@@ -199,7 +199,9 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   asset of the job's project (a `.tar.gz` of the build folder; `url` is `/v1/assets/<id>/file` on Gen); the Unity log
   is the job's first output.
 - **Price:** flat `UNITY_BUILD_CREDITS` = 100 credits ($1.00; Cloud Run at 8 vCPU / 32 GiB is about $0.0125 a minute),
-  reserved at submit and refunded when the build fails. Provisional.
+  reserved at submit and refunded when the build fails. Provisional. A Gen app account pays from its own credits; a
+  customer's Studio cell key (`org_<hex>`, no Gen account) pays from its Studio balance through the control plane, like
+  every other job of that key (AGENTS.md, "Customers' Studios pay from their Studio balance"; `src/orgcredits.ts`).
 - Always Cloud Run (`backend` is set to `cloudrun`; the queue's `builder-cloud` lane), never the build server or a VM.
 
 ## Settings

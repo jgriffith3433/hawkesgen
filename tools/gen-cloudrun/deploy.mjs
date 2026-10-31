@@ -123,6 +123,13 @@ mounted.push(`HAWKESGEN_OWNER_KEY=${ownerSecret}:latest`);
 const secretsKeyName = `${service}-secrets-key`;
 if (!gcloudQuery(['secrets', 'versions', 'access', 'latest', `--secret=${secretsKeyName}`, P])) putSecret(secretsKeyName, crypto.randomBytes(32).toString('base64'));
 mounted.push(`HAWKESGEN_SECRETS_KEY=${secretsKeyName}:latest`);
+// The key Gen charges customers' Studios with (src/orgcredits.ts, AGENTS.md "Customers' Studios pay from their Studio balance"): J puts the value Studio's
+// control plane prints into the secret `<service>-org-credits-key`; mounted only once it exists (never made here).
+const orgCreditsKeyName = `${service}-org-credits-key`;
+if (gcloudQuery(['secrets', 'versions', 'access', 'latest', `--secret=${orgCreditsKeyName}`, P])) {
+  gcloud(['secrets', 'add-iam-policy-binding', orgCreditsKeyName, P, `--member=serviceAccount:${sa}`, '--role=roles/secretmanager.secretAccessor', '--format=none'], { retries: 9 });
+  mounted.push(`HAWKESGEN_ORG_CREDITS_KEY=${orgCreditsKeyName}:latest`);
+} else console.log(`  ${orgCreditsKeyName}: not made yet, so customers' Studios are charged on their own side (AGENTS.md)`);
 
 console.log('\n# The service');
 const envVars = [

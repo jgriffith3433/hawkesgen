@@ -9,6 +9,7 @@ import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { primePlatform } from './platform.ts';
 import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { publicJob, publicText } from './publictext.ts';
+import { orgCreditsOn } from './orgcredits.ts';
 import { DASH_COOKIE, DASH_DAYS, googleClientId, googleClientIdAny, checkGoogleToken, signSession, verifyGoogle } from './dashauth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
 import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workflows/registry.ts';
@@ -18,7 +19,7 @@ import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
-import { submit, getJob, listJobs, cancel, rerun, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec } from './jobs.ts';
+import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec, type Job } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
@@ -222,7 +223,7 @@ async function uploadNormalize(client: Client, project: string, asset: { id: str
   const out: Record<string, unknown> = { needsNormalize: true, normalizeReasons: check.reasons };
   if (/^(0|false|off|no)$/i.test(flag ?? '')) return out;
   try {
-    const job = submit(client, { tool: 'media.normalize', project, inputs: { file: `asset:${asset.id}` }, labels: { normalizeOf: asset.id }, key: `normalize:${asset.id}` });
+    const job = await submitJob(client, { tool: 'media.normalize', project, inputs: { file: `asset:${asset.id}` }, labels: { normalizeOf: asset.id }, key: `normalize:${asset.id}` });
     out.normalizeJob = job.id;
   } catch (e) {
     out.normalizeError = e instanceof Error ? e.message : String(e);
@@ -412,6 +413,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           python: fs.existsSync(path.join(paths.post, '..', '.venv')),
         },
         elevenlabsBilling: eleven.billingState(),
+        // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
+        orgCredits: orgCreditsOn(),
         queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),
         // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
         // (the deploy script waits for these only; everything else resumes after a restart).
@@ -804,7 +807,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
           const { recipe, files } = dr.blenderRecipe(sh.doc);
           const params = { steps: recipe.steps, candidates: recipe.candidates, pickAt: recipe.pickAt, pick: recipe.pick };
           if (q('quote') === '1') return send(res, 200, { quote: quoteJobCredits({ project: sh.project, tool: 'asset.make', params } as any), notes: recipe.notes });
-          const job = submit(client, { project: sh.project, tool: 'asset.make', params, inputs: { files }, labels: { by: client.name, director: sh.id, title: `Shot: ${sh.doc.title}` } } as JobSpec);
+          const job = await submitJob(client, { project: sh.project, tool: 'asset.make', params, inputs: { files }, labels: { by: client.name, director: sh.id, title: `Shot: ${sh.doc.title}` } } as JobSpec);
           return send(res, 200, { job: summary(job), notes: recipe.notes });
         }
       }
@@ -1249,12 +1252,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/jobs' && method === 'POST') {
       const body = await readJson(req);
       const specs: JobSpec[] = Array.isArray(body.jobs) ? body.jobs : [body];
-      return send(res, 200, { jobs: specs.map((s) => submit(client, s)).map(summary).map((j) => publicJob(j, isCustomer(client))) });
+      const made: Job[] = [];
+      for (const s of specs) made.push(await submitJob(client, s));
+      return send(res, 200, { jobs: made.map(summary).map((j) => publicJob(j, isCustomer(client))) });
     }
     if (route === '/v1/run' && method === 'POST') {
       // Submit and wait (up to timeout seconds, default 10 minutes). Handy for scripts and quick tools.
       const body = await readJson(req);
-      const job = submit(client, body);
+      const job = await submitJob(client, body);
       const until = Date.now() + Math.max(1, Math.min(3600, Number(body.timeout) || 600)) * 1000;
       const final = await new Promise<any>((resolve) => {
         const check = () => {
@@ -1312,7 +1317,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const b = await readJson(req);
         // Changing priority is the scheduler's business: admins and up (Studio), like boosts.
         if (b.priority !== undefined) requireRole(client, 'admin');
-        return send(res, 200, rerun(client, j.id, { sameSeed: b.sameSeed === true, params: b.params, inputs: b.inputs, labels: b.labels, priority: b.priority === undefined ? undefined : Number(b.priority) }));
+        return send(res, 200, await rerunJob(client, j.id, { sameSeed: b.sameSeed === true, params: b.params, inputs: b.inputs, labels: b.labels, priority: b.priority === undefined ? undefined : Number(b.priority) }));
       }
       // A playtest's live state (every step, the players, problems, the timeline); null after the run (the job has the result).
       if (m[2] === 'live' && method === 'GET') return send(res, 200, { job: j.id, status: j.status, detail: isCustomer(client) ? publicText(j.detail ?? null) : j.detail ?? null, live: liveSnapshot(j.id, { full: true }) });
@@ -1403,7 +1408,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const spec = action === 'make'
           ? lib.slotJobSpec(client, { entity: entityId, slot, make: b.make, feedback: b.feedback, count: b.count, params: b.params, note: b.note })
           : lib.reviseJobSpec(client, { entity: entityId, slot, feedback: b.feedback, version: b.version, count: b.count, references: b.references });
-        const job = submit(client, { ...spec, labels: { ...spec.labels, by: client.name }, priority: b.priority, reuse: b.reuse ?? false } as JobSpec);
+        const job = await submitJob(client, { ...spec, labels: { ...spec.labels, by: client.name }, priority: b.priority, reuse: b.reuse ?? false } as JobSpec);
         return send(res, 200, job);
       }
     }
