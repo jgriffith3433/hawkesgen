@@ -138,17 +138,23 @@ function withLods<T extends { items: any[] }>(list: T): T {
   return { ...list, items: list.items.map((a) => ({ ...a, inS3: storage.inS3(a.sha256), ...cdnField(a.sha256), ...(lods[a.id] ? { lods: lods[a.id] } : {}) })) };
 }
 
+/** Responses over this many bytes go out chunked on Cloud Run: it refuses a response with a Content-Length over 32 MiB
+ *  ("Response size was too large", 2026-10-31: a 41 MB Unity build couldn't be downloaded), but streams chunked ones. */
+const CHUNK_OVER = 30 * 1024 * 1024;
+const onCloudRun = () => Boolean(process.env.K_SERVICE);
+
 function serveFile(req: IncomingMessage, res: ServerResponse, file: string, mime = mimeOf(file), extra: Record<string, string> = {}) {
   const stat = fs.statSync(file);
+  const length = (n: number) => (onCloudRun() && n > CHUNK_OVER ? {} : { 'Content-Length': n });
   const range = /bytes=(\d*)-(\d*)/.exec(String(req.headers.range ?? ''));
   if (range) {
     const start = range[1] ? Number(range[1]) : 0;
     const end = range[2] ? Math.min(Number(range[2]), stat.size - 1) : stat.size - 1;
-    res.writeHead(206, { 'Content-Type': mime, 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1, ...extra });
+    res.writeHead(206, { 'Content-Type': mime, 'Content-Range': `bytes ${start}-${end}/${stat.size}`, 'Accept-Ranges': 'bytes', ...length(end - start + 1), ...extra });
     fs.createReadStream(file, { start, end }).pipe(res);
     return;
   }
-  res.writeHead(200, { 'Content-Type': mime, 'Content-Length': stat.size, 'Accept-Ranges': 'bytes', ...extra });
+  res.writeHead(200, { 'Content-Type': mime, ...length(stat.size), 'Accept-Ranges': 'bytes', ...extra });
   fs.createReadStream(file).pipe(res);
 }
 
