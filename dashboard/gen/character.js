@@ -3,6 +3,9 @@
 // references) and their 3D model (with its animation clips). A stage's cast member who plays this character takes all of
 // that from here, in every shot (src/director.ts castFromCharacters). "Make the 3D model" runs Gen's way from a front
 // picture to a model (cutout, a checked 4-view sheet, mesh.views3d, optionally rigged); "Stage them" opens a new stage.
+// Their look (docs/identity.md): "Make their look" makes the front picture, the sheet and the fixed description; "Lock
+// their look" approves it once, and every shot they're in then uses that sheet and those words. A character who recurs
+// is offered "Keep <name> consistent everywhere" (a LoRA, priced first).
 
 import { $, h, api, toast, fileUrl, bus, icon, plainError, keepingFocus } from './lib.js';
 import { runJob, quote, credits } from './media.js';
@@ -10,7 +13,7 @@ import { libraryPicker, hasTool, toolReady } from './studio.js';
 import { registerEditor, newScene, setRender, refreshBar } from './scenes.js';
 import { sceneDoc } from './scenedoc.js';
 
-const C = { voices: [], preview: null };
+const C = { voices: [], preview: null, look: null, lookBusy: '' };
 const D = sceneDoc({ onChange: () => { draw(); refreshBar(); } });
 const ROLES = [['front', 'Front'], ['portrait', 'Portrait'], ['cutout', 'Cutout'], ['sheet', 'View sheet'], ['turnaround', 'Turnaround'], ['reference', 'Reference']];
 const pic = (role) => D.doc?.pictures.find((p) => p.role === role && p.asset) ?? null;
@@ -21,8 +24,10 @@ registerEditor({
   async mount(scene) {
     $('#chrWrap')?.remove();
     $('#viewer').append(h('div', { id: 'chrWrap', class: 'chr-wrap' }));
+    C.look = null;
     D.take(scene);
     loadVoices();
+    loadLook();
   },
   async unmount() { await D.save(); D.stop(); C.preview?.pause(); $('#chrWrap')?.remove(); },
   undo: () => D.undo(), redo: () => D.redo(), canUndo: () => D.canUndo(), canRedo: () => D.canRedo(), save: () => D.save(),
@@ -44,6 +49,8 @@ registerEditor({
   take: (scene) => D.take(scene),
 });
 
+/** The identity pack and the LoRA offer, as Gen sees them (src/identityroutes.ts). */
+async function loadLook() { if (!D.scene) return; try { C.look = await api(`/v1/scenes/${D.scene.id}/identity`); draw(); } catch { /* */ } }
 async function loadVoices() { if (C.voices.length) return; try { C.voices = (await api('/v1/editor/voices')).voices ?? []; draw(); } catch { /* */ } }
 
 /** A picture or model dropped in: a picture is a reference (or the front, when there's none); a GLB is their model. */
@@ -70,7 +77,8 @@ function makePicture(role, tool, params, inputs = {}) {
     const out = outs.find((o) => o.title === 'cutout') ?? outs.find((o) => o.kind === 'image' && !/mask/i.test(o.title ?? '')) ?? outs[0];
     D.change((d) => { const p = d.pictures.find((x) => x.id === id); if (p && out) { p.asset = out.asset; delete p.pending; } }, { history: false });
     showFace();
-  }).catch((err) => D.change((d) => { const p = d.pictures.find((x) => x.id === id); if (p) { delete p.pending; p.failed = plainError(err.message); } }, { history: false }));
+    return out?.asset ?? null;
+  }).catch((err) => { D.change((d) => { const p = d.pictures.find((x) => x.id === id); if (p) { delete p.pending; p.failed = plainError(err.message); } }, { history: false }); return null; });
 }
 function makePictures() {
   const look = D.doc.description.trim();
@@ -78,6 +86,81 @@ function makePictures() {
   if (!pic('front')) makePicture('front', 'image.generate', { prompt: `${look}. Full body, front view, standing in an A-pose, arms slightly away from the body, plain light grey background, even studio light.`, width: 768, height: 1344, seed: Math.floor(Math.random() * 2 ** 31) });
   if (!pic('portrait')) makePicture('portrait', 'image.generate', { prompt: `${look}. Head and shoulders portrait, looking at the camera, soft studio light, plain background.`, width: 1024, height: 1024, seed: Math.floor(Math.random() * 2 ** 31) });
 }
+// ------------------------------------------------------------------ their look (the identity pack)
+/** Their front picture (when there's none), the sheet over it, then the fixed description; the person locks it after. */
+async function makeLook() {
+  if (!D.doc.description.trim() && !pic('front')) return toast('Describe how they look first.');
+  if (C.lookBusy) return;
+  const busy = (t) => { C.lookBusy = t; draw(); };
+  try {
+    busy('Making their pictures…');
+    await D.save();
+    const { plan } = await api(`/v1/scenes/${D.scene.id}/identity`);
+    for (const st of plan.steps) {
+      const front = pic('front');
+      const inputs = st.inputs?.images ? { images: [`asset:${front?.asset}`] } : {};
+      busy(st.role === 'front' ? 'Making their front picture…' : 'Making their sheet…');
+      const made = await makePicture(st.role, st.tool, { ...st.params, seed: Math.floor(Math.random() * 2 ** 31) }, inputs);
+      if (!made) throw new Error(st.role === 'front' ? 'Their front picture failed' : 'Their sheet failed');
+    }
+    busy('Writing how they look…');
+    await D.save();
+    const r = await api(`/v1/scenes/${D.scene.id}/identity/describe`, { body: {} });
+    D.take(r.scene, { keepHistory: true });
+    C.look = { ...(C.look ?? {}), pack: r.pack, lora: r.lora };
+    toast('Their look is ready: check it, then lock it.');
+  } catch (err) { toast(plainError(err.message)); } finally { busy(''); }
+}
+async function lockLook(on) {
+  try {
+    await D.save();
+    const r = await api(`/v1/scenes/${D.scene.id}/identity/${on ? 'lock' : 'unlock'}`, { body: {} });
+    D.take(r.scene, { keepHistory: true });
+    C.look = { ...(C.look ?? {}), pack: r.pack, lora: r.lora };
+    if (on) toast(`${D.doc.title}'s look is locked: every shot they're in uses it.`);
+  } catch (err) { toast(plainError(err.message)); }
+}
+/** "Keep <name> consistent everywhere": Gen learns their look (a LoRA), priced first. */
+async function keepConsistent() {
+  try {
+    await D.save();
+    const q = await api(`/v1/scenes/${D.scene.id}/identity/lora?quote=1`, { body: {} });
+    if (!confirm(`Keep ${D.doc.title} consistent everywhere${q.quote ? ` for ${credits(q.quote)}` : ''}? Gen studies ${q.images} pictures of them and learns their look (about half an hour). Every shot they're in then draws them from it.`)) return;
+    const r = await api(`/v1/scenes/${D.scene.id}/identity/lora`, { body: {} });
+    D.take(r.scene, { keepHistory: true });
+    C.look = { ...(C.look ?? {}), pack: r.pack, lora: r.lora };
+  } catch (err) { toast(plainError(err.message)); }
+}
+
+/** The look section: the sheet, the fixed words, Make / Lock / Unlock, and the LoRA's state or offer. */
+function lookSection(d) {
+  const lock = d.lock ?? null;
+  const locked = Boolean(lock?.at);
+  const sheet = lock?.sheet ?? [...d.pictures].reverse().find((p) => p.role === 'sheet' && p.asset)?.asset ?? null;
+  const offer = C.look?.lora ?? null;
+  const lora = d.lora ?? null;
+  const words = lock ? (() => {
+    const el = h('textarea', { rows: '4', 'data-field': 'fixed', readonly: locked, placeholder: 'How they look in every shot' }, lock.description);
+    el.addEventListener('input', () => D.change((x) => { x.lock.description = el.value; }, { history: false, redraw: false }));
+    el.addEventListener('change', () => draw());
+    return h('label', { class: 'field' }, locked ? 'How they look in every shot' : 'How they look in every shot (check it before locking)', el);
+  })() : '';
+  const learn = !locked ? '' : lora?.state === 'training' ? h('p', { class: 'chr-lora working small' }, 'Learning their look…')
+    : lora?.state === 'ready' ? h('p', { class: 'chr-lora small' }, 'Locked in: every shot draws them from what Gen learned.')
+      : lora?.state === 'failed' ? h('div', { class: 'row' }, h('span', { class: 'muted small' }, `Gen couldn't learn their look: ${plainError(lora.failed ?? '')}`), h('button', { class: 'ghost small', onclick: keepConsistent }, 'Try again'))
+        : offer?.eligible ? h('button', { class: 'primary small', onclick: keepConsistent }, icon('sparkle'), `Keep ${d.title} consistent everywhere`) : '';
+  return h('div', { class: `chr-look${locked ? ' locked' : ''}` },
+    h('div', { class: 'row chr-look-head' }, h('b', {}, 'Their look'), h('span', { class: 'muted small' }, locked ? 'Locked: every shot uses it' : lock ? 'Ready to lock' : 'Not made yet')),
+    sheet ? h('img', { class: 'chr-look-sheet', src: fileUrl(sheet), alt: `${d.title}'s sheet` }) : '',
+    words,
+    C.lookBusy ? h('p', { class: 'working small' }, C.lookBusy) : h('div', { class: 'row' },
+      !lock ? h('button', { class: 'primary small', onclick: makeLook, disabled: !hasTool('image.edit') }, icon('sparkle'), 'Make their look') : '',
+      lock && !locked ? h('button', { class: 'primary small', onclick: () => lockLook(true), disabled: !sheet }, 'Lock their look') : '',
+      lock && !locked ? h('button', { class: 'ghost small', onclick: makeLook }, 'Redo') : '',
+      locked ? h('button', { class: 'ghost small', onclick: () => lockLook(false) }, 'Unlock') : ''),
+    learn);
+}
+
 /** Gen's way to 3D: the front picture cut out, a checked 4-view sheet, mesh.views3d; rigged too when asked. */
 async function makeModel(rig) {
   const front = pic('cutout') ?? pic('front');
@@ -137,7 +220,8 @@ function draw() {
         h('select', { onchange: (e) => set((x) => { x.pictures.find((y) => y.id === p.id).role = e.target.value; }) }, ...ROLES.map(([v, l]) => h('option', { value: v, selected: v === p.role }, l))),
         h('button', { class: 'icon-btn small chr-x', title: 'Remove', onclick: () => set((x) => { x.pictures = x.pictures.filter((y) => y.id !== p.id); }) }, icon('close')))),
         h('button', { class: 'chr-add', title: 'A picture from Media', onclick: () => libraryPicker('image', (a) => { set((x) => { x.pictures.push({ role: pic('front') ? 'reference' : 'front', asset: a.id }); }); showFace(); }) }, icon('plus'))),
-      h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: makePictures, disabled: !hasTool('image.generate') }, icon('sparkle'), 'Make their pictures'))),
+      h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: makePictures, disabled: !hasTool('image.generate') }, icon('sparkle'), 'Make their pictures')),
+      lookSection(d)),
     h('div', { class: 'chr-right' },
       h('input', { class: 'chr-name', value: d.title, placeholder: 'Their name', 'data-field': 'name', onchange: (e) => { set((x) => { x.title = e.target.value.trim() || x.title; }); } }),
       text('How they look', d.description, (v) => { D.doc.description = v; }, 4, 'Face, build, hair, clothes, colors, era: every tool paints them from these words.'),

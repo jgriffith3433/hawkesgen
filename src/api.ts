@@ -54,6 +54,7 @@ import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import { handleNetBridge } from './netbridge.ts';
+import { handleIdentity } from './identityroutes.ts';
 import {
   authenticateRequest,
   isPublicSaas,
@@ -649,6 +650,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       throw new GenError(`No admin route ${method} ${route}`, { status: 404 });
     }
 
+    // A character's identity pack, and the director's prompts and first frames with the cast's packs (src/identityroutes.ts).
+    if (await handleIdentity(client, route, method, q, req, res, send, readJson)) return;
+
     // --------------------------------------------------------------- scenes (src/scenes.ts): every kind, plug and play
     if (route === '/v1/scenes' || route.startsWith('/v1/scenes/')) {
       const sc = await import('./scenes.ts');
@@ -822,14 +826,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (dm[2] === 'blender' && method === 'POST') {
           // Films the shot with Gen's Blender pipeline (cinemaPass) as one asset.make job. ?quote=1 prices it only.
           const sh = dr.getShot(id, canSee);
-          const { recipe, files } = dr.blenderRecipe(sh.doc);
-          const params = { steps: recipe.steps, candidates: recipe.candidates, pickAt: recipe.pickAt, pick: recipe.pick };
+          const { recipe, files } = dr.blenderRecipe(sh.doc, dr.shotPacks(sh.doc, sh.project));
+          const params = { steps: recipe.steps, candidates: recipe.candidates, pickAt: recipe.pickAt, pick: recipe.pick, ...(recipe.refs ? { refs: recipe.refs } : {}), ...(recipe.canon ? { canon: recipe.canon } : {}) };
           if (q('quote') === '1') return send(res, 200, { quote: quoteJobCredits({ project: sh.project, tool: 'asset.make', params } as any), notes: recipe.notes });
           const job = await submitJob(client, { project: sh.project, tool: 'asset.make', params, inputs: { files }, labels: { by: client.name, director: sh.id, title: `Shot: ${sh.doc.title}` } } as JobSpec);
           return send(res, 200, { job: summary(job), notes: recipe.notes });
         }
       }
-      if (route === '/v1/director/prompts' && method === 'POST') return send(res, 200, dr.filmPrompts(dr.normalizeShot((await readJson(req)).doc)));
       throw new GenError(`No director route ${method} ${route}`, { status: 404 });
     }
 
