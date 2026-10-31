@@ -67,7 +67,13 @@ export function initScenes() {
 }
 
 /** Signed in: the tabs left open last time (those that still exist), else the newest video, else a new one. */
-export async function startWorkspace() {
+export function startWorkspace() {
+  // One start at a time; opening or making a scene meanwhile (a playtest bot, a fast click) waits for it, so the
+  // start never overwrites that tab or makes a second empty scene beside it.
+  W.starting = (W.starting ?? Promise.resolve()).then(startOnce).finally(() => { W.starting = null; });
+  return W.starting;
+}
+async function startOnce() {
   await loadList();
   let saved = [];
   try { saved = JSON.parse(localStorage.getItem(tabsKey()) || '{}').tabs ?? []; } catch { /* */ }
@@ -95,6 +101,7 @@ function keepTabs() { try { localStorage.setItem(tabsKey(), JSON.stringify({ tab
 
 export async function openScene(id) {
   if (!state.user) return needSignIn(() => openScene(id), 'login');
+  if (W.starting) await W.starting.catch(() => {});
   let t = W.tabs.find((x) => x.id === id);
   if (!t) {
     const s = W.list.find((x) => x.id === id) ?? await api(`/v1/scenes/${id}`);
@@ -114,6 +121,7 @@ export function uniqueTitle(title) {
 }
 export async function newScene(kind, { title, doc, open = true } = {}) {
   if (!state.user) return needSignIn(() => newScene(kind, { title, doc, open }), 'login');
+  if (W.starting) await W.starting.catch(() => {});
   // A name that's taken gets a number ("Poster 2"), so the tabs and the Scenes list tell them apart.
   if (title) title = uniqueTitle(title);
   if (doc?.title) doc = { ...doc, title: uniqueTitle(doc.title) };

@@ -190,8 +190,9 @@ input.num { width: 70px; }
 .hint { font-size: 12.5px; }
 
 /* Tool sheets */
-.sheet-pop { flex: none; align-self: center; width: min(620px, calc(100% - 24px)); margin: 0 12px 12px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 9px; animation: rise .14s ease-out; max-height: 46%; overflow-y: auto; }
-.sheet-pop.wide { width: min(720px, calc(100% - 24px)); }
+/* A floating card in the corner of the center: it never resizes the preview or covers the transport. */
+.sheet-pop { position: absolute; top: 10px; right: 10px; z-index: 5; width: min(300px, calc(100% - 20px)); margin: 0; background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 9px; animation: rise .14s ease-out; max-height: calc(100% - 20px); overflow-y: auto; }
+.sheet-pop.wide { width: min(420px, calc(100% - 20px)); }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; }
 .sheet-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
@@ -392,7 +393,7 @@ input.num { width: 70px; }
   .tb { padding: 8px; }
   .aspect { position: static; }
   .timecode { min-width: 0; }
-  .sheet-pop { margin: 0 8px 8px; max-height: 55%; }
+  .sheet-pop { position: static; align-self: center; width: min(620px, calc(100% - 16px)); margin: 0 8px 8px; max-height: 55%; }
   .viewer { padding: 0; }
   .app.touch-dragging:not([data-m="edit"]) { grid-template-rows: 50px minmax(110px, 1fr) calc(var(--tlm) + 80px) min(var(--sheet), calc(100dvh - 50px - 58px - var(--tlm) - 190px)) 58px; }
   .media-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px; }
