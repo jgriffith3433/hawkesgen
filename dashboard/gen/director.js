@@ -178,14 +178,19 @@ async function flushSave() {
 // ------------------------------------------------------------------ the AI director (ai.js sends here while open)
 export async function askDirector(messages) {
   await flushSave();
+  const id = D.shot.id;
   const selection = { t: Math.round(D.t * 100) / 100, range: D.range, selected: D.sel };
-  const r = await api(`/v1/director/shots/${D.shot.id}/assistant`, { body: { messages, doc: D.shot.doc, selection } });
-  take(r.shot);
+  const r = await api(`/v1/director/shots/${id}/assistant`, { body: { messages, doc: D.shot.doc, selection } });
+  // Only into the shot it was asked about: if another tab is in front now, the answer stays saved with its own shot.
+  const here = D.open && D.shot?.id === id;
+  if (here) take(r.shot);
   if (r.aiCredits) refreshCredits();
-  return r;
+  return { ...r, shotId: id, here };
 }
 export const directorMessages = () => D.messages;
-export function keepDirectorMessages() { try { localStorage.setItem(`hg.director.ai.${D.shot.id}`, JSON.stringify(D.messages.slice(-40))); } catch { /* */ } }
+export function keepDirectorMessages(id = D.shot?.id, list = D.messages) { if (!id) return; try { localStorage.setItem(`hg.director.ai.${id}`, JSON.stringify(list.slice(-40))); } catch { /* */ } }
+/** The shot open on the stage now (null when another kind of tab is in front). */
+export const directorShotId = () => (D.open ? D.shot?.id ?? null : null);
 export function directorSuggestions() {
   const s = D.shot?.doc;
   if (!s?.cast.length) return ['Two knights face off in the rain, low angle, slow push-in', 'A lone astronaut walks toward a crashed ship at dusk', 'A chef plates a dish, close and warm, the camera orbits'];

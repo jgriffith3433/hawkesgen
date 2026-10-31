@@ -178,7 +178,7 @@ export const audioRevoiceTool: Tool = {
     voice: { type: 'string', description: 'Or a saved Gen voice id (gv_...).' },
     text: { type: 'text', description: 'What is said (skips the transcription).' },
     language: { type: 'string', description: 'Language code (en, es, ...).', advanced: true },
-    direction: { type: 'json', description: 'How to say it (see audio.voice).', advanced: true },
+    direction: { type: 'json', orString: true, description: 'How to say it (see audio.voice): a sentence or an object.', advanced: true },
     fit: { type: 'boolean', default: true, description: 'Fit the new line to the original\'s timing.' },
   },
   gpuSeconds: () => 60,

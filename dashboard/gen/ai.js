@@ -10,7 +10,7 @@
 import { $, h, api, toast, fmt, bus, icon, plainError, friendly } from './lib.js';
 import { P, selectedClips, remember, take, save, docLength, clipLength } from './project.js';
 import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './account.js';
-import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions } from './director.js';
+import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions, directorShotId } from './director.js';
 import { activeKind, activeScene, activeEditor } from './scenes.js';
 
 const A = { id: null, messages: [], busy: false, queue: [] };
@@ -219,62 +219,83 @@ async function send() {
   if (directorOpen()) return sendDirector(text);
   if (other()) return sendScene(text);
   if (!P.id) return toast('Your project is still opening.');
+  // The answer belongs to the scene it was asked in (J, 2026-10-30: an answer in another tab took over the preview of
+  // the one he was watching). Its conversation and id are held here; if he has moved on by the time it comes back, the
+  // change stays in that scene (saved on Gen: its tab shows it when opened) and nothing here is touched.
+  const id = P.id;
+  const asked = activeScene();
+  const list = A.messages;
+  const here = () => P.id === id && activeScene()?.id === asked?.id;
   const ctx = $('#aiContext .ctx-chip')?.textContent ?? '';
-  A.messages.push({ role: 'user', text, context: ctx });
+  list.push({ role: 'user', text, context: ctx });
   $('#aiInput').value = '';
   $('#aiInput').style.height = 'auto';
   const thinking = { role: 'assistant', text: 'Working on it…', pending: true };
-  A.messages.push(thinking);
+  list.push(thinking);
   drawMessages();
   A.busy = true;
   drawBusy();
   try {
     await save();
-    const r = await api(`/v1/editor/projects/${P.id}/assistant`, {
-      body: { messages: A.messages.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: selectionForAi(), doc: P.doc, version: P.version },
+    const r = await api(`/v1/editor/projects/${id}/assistant`, {
+      body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: selectionForAi(), doc: P.doc, version: P.version },
     });
-    A.messages.pop();
-    const changedDoc = r.project.version !== P.version;
+    list.splice(list.indexOf(thinking), 1);
+    const changedDoc = here() && r.project.version !== P.version;
     if (changedDoc) { remember(); take(r.project); }
     const results = (r.results ?? []).map((x, i) => ({ ...x, label: labelOf(r, i) }));
-    A.messages.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), results, proposed: r.proposed ?? null, undoable: changedDoc });
+    list.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), results, proposed: r.proposed ?? null, undoable: changedDoc });
     if (r.aiCredits || results.some((x) => x.op === 'generate' && x.ok)) refreshCredits();
+    if (!here()) answeredElsewhere(asked);
   } catch (err) {
-    A.messages.pop();
+    list.splice(list.indexOf(thinking), 1);
     if (err.status === 402) { await loadAi(); drawGate(); }
     const f = friendly(err);
-    A.messages.push({ role: 'assistant', text: f.fix ? f.text : `I couldn't do that: ${f.text}`, error: true });
+    list.push({ role: 'assistant', text: f.fix ? f.text : `I couldn't do that: ${f.text}`, error: true });
     if (f.fix === 'credits') import('./media.js').then((m) => m.showError(err));
     // An admin can fix an unavailable AI: Admin > AI takes a key or a Claude login.
     if (f.fix === 'ai' && state.admin) toast('The house AI has no working key or login.', { action: 'Open Admin > AI', onAction: () => open('/admin#ai', '_blank'), ms: 9000 });
+    if (!here()) answeredElsewhere(asked);
   } finally {
     A.busy = false;
     setTimeout(next, 0);
-    keep();
+    // Kept with the scene it belongs to, wherever the person is now.
+    try { localStorage.setItem(KEY(id), JSON.stringify(list.slice(-40))); } catch { /* */ }
+    if (here()) keep();
     drawMessages();
   }
 }
+/** An answer came back for a scene that isn't in front any more: say so, with a way there (nothing here changes). */
+function answeredElsewhere(scene) {
+  toast(`The AI answered in "${scene?.title ?? 'another scene'}".`, { action: 'Open it', onAction: () => import('./scenes.js').then((s) => s.openScene(scene.id)), ms: 8000 });
+}
 /** A turn with the AI director: the conversation about the open shot; the answer is the changed shot. */
 async function sendDirector(text) {
+  // Held with its shot: the answer goes to this shot's conversation even if another tab is in front by then.
   const list = directorMessages();
+  const id = directorShotId();
+  const asked = activeScene();
   list.push({ role: 'user', text });
   $('#aiInput').value = '';
   $('#aiInput').style.height = 'auto';
-  list.push({ role: 'assistant', text: 'Blocking the shot…', pending: true });
+  const thinking = { role: 'assistant', text: 'Blocking the shot…', pending: true };
+  list.push(thinking);
   drawMessages();
   A.busy = true;
   drawBusy();
   try {
     const r = await askDirector(list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })));
-    list.pop();
+    list.splice(list.indexOf(thinking), 1);
     list.push({ role: 'assistant', text: r.say || 'Done.' });
+    if (!r.here) answeredElsewhere(asked);
   } catch (err) {
-    list.pop();
+    list.splice(list.indexOf(thinking), 1);
     list.push({ role: 'assistant', text: `I couldn't do that: ${plainError(err.message)}`, error: true });
+    if (directorShotId() !== id) answeredElsewhere(asked);
   } finally {
     A.busy = false;
     setTimeout(next, 0);
-    keepDirectorMessages();
+    keepDirectorMessages(id, list);
     drawMessages();
   }
 }
@@ -283,29 +304,34 @@ async function sendScene(text) {
   const t = activeScene();
   const ed = activeEditor();
   if (!t || !ed) return;
+  // Held with its scene: the answer is applied only while that scene is in front (else it stays saved on Gen).
   const list = SC.messages;
+  const here = () => activeScene()?.id === t.id;
   list.push({ role: 'user', text });
   $('#aiInput').value = '';
   $('#aiInput').style.height = 'auto';
-  list.push({ role: 'assistant', text: 'Thinking…', pending: true });
+  const thinking = { role: 'assistant', text: 'Thinking…', pending: true };
+  list.push(thinking);
   drawMessages();
   A.busy = true;
   drawBusy();
   try {
     await ed.save?.();
     const r = await api(`/v1/scenes/${t.id}/assistant`, { body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: ed.ai?.selection?.() ?? {} } });
-    list.pop();
-    ed.take?.(r.scene);
+    list.splice(list.indexOf(thinking), 1);
+    if (here()) ed.take?.(r.scene);
     const results = [...(r.started ?? []).map((x) => ({ op: 'generate', ok: true, label: x.tool })), ...(r.errors ?? []).map((e) => ({ op: 'generate', ok: false, error: e }))];
     list.push({ role: 'assistant', text: r.say || 'Done.', results, proposed: r.proposed ?? null, scene: t.id });
     if (r.aiCredits || r.started?.length) refreshCredits();
+    if (!here()) answeredElsewhere(t);
   } catch (err) {
-    list.pop();
+    list.splice(list.indexOf(thinking), 1);
     list.push({ role: 'assistant', text: `I couldn't do that: ${plainError(err.message)}`, error: true });
+    if (!here()) answeredElsewhere(t);
   } finally {
     A.busy = false;
     setTimeout(next, 0);
-    keep();
+    try { localStorage.setItem(`hg.ai.scene.${t.id}`, JSON.stringify(list.slice(-40))); } catch { /* */ }
     drawMessages();
   }
 }

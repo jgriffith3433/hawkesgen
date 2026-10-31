@@ -10,7 +10,8 @@ export const providerParam: ParamSpec = {
 };
 
 export const directionParam: ParamSpec = {
-  type: 'json', example: { emotion: 'tired', delivery: 'almost whispering', pace: 'slow', intensity: 0.4 },
+  // A sentence is as good as an object (direction.ts): the AI editor writes "warm, unhurried" and was refused (2026-10-30).
+  type: 'json', orString: true, example: { emotion: 'tired', delivery: 'almost whispering', pace: 'slow', intensity: 0.4 },
   description: 'How to say it: a sentence ("tired, almost whispering"), or { emotion, delivery, pace: slow|normal|fast, style, intensity: 0..1, notes }. [tags] in the text count too. Each model maps it its own way (docs/audio.md "Direction"); what a model cannot do comes back in result.dropped. Open path only.',
 };
 

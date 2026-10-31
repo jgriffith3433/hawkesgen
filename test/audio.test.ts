@@ -451,3 +451,10 @@ test('the voice and sound tools run on any GPU provider (no SSH), sound effects 
   assert.ok(wf.manifest.models.every((m) => m.url.startsWith('https://huggingface.co/')));
   assert.equal(wf.graph['8'].class_type, 'SaveAudioAdvanced');
 });
+
+test("audio.voice takes its direction as a plain sentence too (the AI editor's 'warm, unhurried' was refused)", () => {
+  const v = validateParams(getTool('audio.voice')!, { text: 'Every story begins with a single moment.', voice: 'hv_morgan', direction: 'warm, unhurried, a little wonder' });
+  assert.equal(v.direction, 'warm, unhurried, a little wonder');
+  const o = validateParams(getTool('audio.voice')!, { text: 'Hi', voice: 'hv_morgan', direction: '{"pace":"slow"}' });
+  assert.deepEqual(o.direction, { pace: 'slow' }, 'JSON text is still read as an object');
+});
