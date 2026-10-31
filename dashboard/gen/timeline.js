@@ -31,8 +31,8 @@ const length = () => (lender ? lender.length() : docLength());
 export function initTimeline() {
   T.scroll = $('#tlScroll');
   T.canvas = $('#tlCanvas');
-  $('#zoomIn').addEventListener('click', () => zoomTo(T.z * 1.5));
-  $('#zoomOut').addEventListener('click', () => zoomTo(T.z / 1.5));
+  $('#zoomIn').addEventListener('click', () => zoomTo(T.z * 1.25));
+  $('#zoomOut').addEventListener('click', () => zoomTo(T.z / 1.25));
   $('#zoomFit').addEventListener('click', fit);
   $('#snapBtn').addEventListener('click', () => { T.snap = !T.snap; $('#snapBtn').classList.toggle('on', T.snap); });
   $('#snapBtn').classList.toggle('on', T.snap);
@@ -43,7 +43,11 @@ export function initTimeline() {
     e.preventDefault();
     const r = T.scroll.getBoundingClientRect();
     const at = tOf(e.clientX - r.left + T.scroll.scrollLeft);
-    zoomTo(T.z * (e.deltaY < 0 ? 1.15 : 1 / 1.15), at, e.clientX - r.left);
+    // By how far the wheel or trackpad moved, not per event (a trackpad sends dozens a second: J, 2026-10-30, "The zoom is
+    // too fast"): about 10% for a mouse notch, a little each for a trackpad's small steps, never more than 10% at once.
+    const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+    const factor = Math.min(1.1, Math.max(1 / 1.1, Math.exp(-px * 0.001)));
+    zoomTo(T.z * factor, at, e.clientX - r.left);
   }, { passive: false });
   // Ruler: click or drag to move the playhead; shift-drag selects a range.
   $('#tlRuler').addEventListener('pointerdown', (e) => {
