@@ -84,5 +84,29 @@
   "image.segment": { "role": "Masks of what you name (SAM 3): 'the car', 'every person'. Feeds repaint, change and composite." },
   "audio.music": { "role": "Music from a description (ACE-Step 1.5), with lyrics or instrumental.", "settings": { "prompt": "Genre, mood, instruments, tempo.", "lyrics": "Sections like [verse], [chorus]; blank for instrumental." } },
   "audio.voice": { "role": "A spoken line (ElevenLabs premade voices in the app). Feeds video.talk, lipsync and the timeline." },
-  "audio.sfx": { "role": "A sound effect from words, with a length; loop for ambiences." }
+  "audio.sfx": { "role": "A sound effect from words, with a length; loop for ambiences." },
+  "quality.identity": {
+    "role": "Is this the same person? ArcFace face distance (insightface buffalo_l, CPU) from the best-matching face in each checked frame to a character's references. The identity check of the making loop and Gen Bench.",
+    "inputs": { "file": "The picture or clip to check. Several faces in it are fine: the one that matches best is taken as the character.", "refs": "The character's sheet, front and portrait. A cutout or a full sheet both work; every face of about the same size on a sheet counts." },
+    "settings": { "frames": "Frames sampled from a clip (8). More frames find a face that drifts for a moment; the spread says how steady it is." },
+    "iterate": ["Measured on this PC, 2026-10-31 (docs/bench.md): an altered copy of the same face 0.06, the right face picked out of a group photo 0.02, a different person 1.04 (insightface's own sample photos). Target (Face Consistency Benchmark): real video about 0.08, pass under 0.15.", "distance null: no face found (too small, turned away, or a stylised face the detector misses). Check faces and refFaces in the result before trusting a pass.", "Over 0.15 on a picture: give the sheet as a reference to image.edit / image.control and paste the fixed description unchanged.", "A low mean but a high spread (over 0.05): the face drifts mid-clip; shorten the shot or lower the motion."],
+    "pairsWith": ["quality.assess", "image.viewsheet", "image.edit", "video.i2v"],
+    "measured": true
+  },
+  "quality.checklist": {
+    "role": "Does the output follow the brief? The brief becomes 4-8 concrete yes/no questions, a vision model answers each from the output (4 frames of a clip), and the score is the share answered yes (0.85 to pass).",
+    "inputs": { "file": "The output to check.", "refs": "Who or what should appear, so 'is it Maya' can be answered." },
+    "settings": { "brief": "Write what must be visible: who, what they hold, the setting, the time of day, the framing, any text.", "questions": "Your own questions when the brief's automatic ones miss what matters." },
+    "iterate": ["A question answered no: say that thing plainly and first in the prompt next try (quality.assess's fix does this).", "Questions that can't be seen (a sound, a smell, a thought) always come back no: keep briefs visual."],
+    "pairsWith": ["quality.assess"],
+    "measured": false
+  },
+  "quality.assess": {
+    "role": "Every check for one output: identity against the cast's references, the brief's questions, the obvious faults for its kind (hands, faces, text, blank frames and flicker, a model's geometry and triangle budget, a sound's silence and clipping) and the look. Pass or fail, and a fix for the next try. Run it on every take before a person sees it.",
+    "inputs": { "file": "The output to check.", "identityRefs": "The character's references (none: identity isn't checked).", "styleRefs": "The world's style board." },
+    "settings": { "brief": "What it should be, in words.", "style": "The look in words, with or instead of the style board.", "thresholds": "{ identity: 0.15, checklist: 0.85, style: 0.7 }. Raise them for a hero shot, never lower them to make a take pass." },
+    "iterate": ["Feed `fix` into the next try's prompt or settings: it names what failed and what usually fixes it.", "errors lists checks that couldn't run (no face models, the AI unavailable): they don't fail the take, they measured nothing."],
+    "pairsWith": ["quality.identity", "quality.checklist", "asset.make"],
+    "measured": false
+  }
 }

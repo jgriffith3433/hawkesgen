@@ -17,6 +17,7 @@
 //   hawkesgen storage metadata [--apply]              fix Content-Type and Cache-Control on objects already in S3 (dry run without --apply)
 //   hawkesgen lod [status|backfill [--project P] [--kind image|mesh] [--limit N] [--dry-run]]   levels of detail (src/lod.ts)
 //   hawkesgen usage [--days 30] [--by project]
+//   hawkesgen bench [status [run]|run [--mock] [--briefs a,b] [--label L] [--yes]]   Gen Bench (docs/bench.md; real runs show their price first)
 //   hawkesgen key <name> [--role user|admin|owner] [--projects a,b]
 //
 // Params are parsed as JSON when they look like it (numbers, true/false,
@@ -35,7 +36,7 @@ for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a.startsWith('--')) {
     const [k, v] = a.slice(2).split(/=(.*)/s);
-    const BOOL = new Set(['no-wait', 'yes', 'json', 'dry-run', 'apply']);
+    const BOOL = new Set(['no-wait', 'yes', 'json', 'dry-run', 'apply', 'mock']);
     const val = v ?? (!BOOL.has(k) && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : 'true');
     (flags[k] ??= []).push(val);
   } else pos.push(a);
@@ -303,6 +304,40 @@ async function main() {
       const st = r.status ?? r;
       console.log(`LOD v${st.version}: ${Object.entries(st.assets).map(([k, n]) => `${n} ${k}`).join(', ') || 'nothing yet'}; ${st.levels} levels (${mb(st.bytes)}), ${st.links} linked lows`);
       console.log(`asset.lod jobs: ${Object.entries(st.jobs).map(([k, n]) => `${n} ${k}`).join(', ') || 'none'}`);
+      return;
+    }
+    case 'bench': {
+      // Gen Bench (src/bench/): a mock run is free; a real run spends GPU and Claude, so its price is shown and confirmed.
+      const sub = rest[0] ?? 'status';
+      const pc = (v: number | null | undefined) => (v == null ? '  —' : `${Math.round(v * 100)}%`.padStart(4));
+      const line = (r: any) => {
+        const s = r.summary ?? {};
+        return `${r.id}  ${String(r.mode).padEnd(8)} ${String(r.status).padEnd(9)} ${String(s.outputs ?? 0).padStart(3)} out  pass ${pc(s.pass)}  brief ${pc(s.checklist)}  face ${s.identity == null ? '  —  ' : s.identity.toFixed(3)}  look ${pc(s.style)}  ${money(s.cost ?? 0)}  ${r.label}${r.detail ? `  (${r.detail})` : ''}`;
+      };
+      if (sub === 'run') {
+        const briefs = flag('briefs')?.split(',').map((x) => x.trim()).filter(Boolean);
+        const mock = flag('mock') === 'true';
+        let confirmCost: number | undefined;
+        if (!mock) {
+          const est = await gen.request('/bench/estimate', { method: 'POST', body: { briefs } });
+          console.log(`${est.briefs} briefs: about ${money(est.total)} (GPU ${money(est.gpu?.cost?.total ?? 0)}, Claude ${money(est.claude)})${est.unknown.length ? `; not priced: ${est.unknown.join(', ')}` : ''}`);
+          if (!(await confirm(`Run it for about ${money(est.total)}?`))) return;
+          confirmCost = est.total;
+        }
+        const r = await gen.request('/bench/runs', { method: 'POST', body: { mode: mock ? 'mock' : 'real', briefs, label: flag('label'), confirmCost } });
+        console.log(`started ${r.run.id} (${r.run.mode}): hawkesgen bench status ${r.run.id}`);
+        return;
+      }
+      if (rest[1]) {
+        const d = await gen.request(`/bench/runs/${rest[1]}`);
+        console.log(line(d.run));
+        for (const r of d.results) console.log(`  ${r.brief.padEnd(24)} ${String(r.status).padEnd(8)} ${r.pass == null ? '' : r.pass ? 'pass' : 'FAIL'}  ${r.report?.fix ?? r.error ?? ''}`.trimEnd());
+        return;
+      }
+      const o = await gen.request('/bench');
+      for (const r of o.runs.slice(0, 15)) console.log(line(r));
+      if (!o.runs.length) console.log('no runs yet: hawkesgen bench run --mock');
+      console.log(`agreement with your ratings (${o.rated} rated): ${o.agreement.map((a: any) => `${a.score} ${a.spearman ?? '—'}`).join(', ')}`);
       return;
     }
     case 'usage': {

@@ -318,6 +318,22 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 
 MCP: `hawkesgen_editor` (list, get, create), `hawkesgen_editor_apply`, `hawkesgen_editor_ask`.
 
+## Quality checks and Gen Bench (docs/bench.md)
+
+Admins only (customers get 403).
+
+| Route | What |
+|---|---|
+| `POST /v1/quality/assess` | `{brief, asset, kind?, identityRefs?: [asset], style?: {refs?: [asset], words?}, questions?, thresholds?}` → the QualityReport (`identity`, `checklist`, `faults`, `style`, `pass`, `fix`, `errors`) and `cost` |
+| `GET /v1/bench` | briefs, cast, runs with summaries, agreement with J's ratings |
+| `GET /v1/bench/runs/:id` | a run's results, the baseline's for the same briefs, Gen vs baseline |
+| `POST /v1/bench/estimate` | `{briefs?}` → a real run's price |
+| `POST /v1/bench/runs` | `{mode: mock \| real, briefs?, label?, confirmCost?}`; real is the owner's and needs `confirmCost` = the estimate (409 with the new one otherwise) |
+| `POST /v1/bench/runs/:id/cancel` | stop after the brief in hand |
+| `POST /v1/bench/baseline` | `{brief, asset, label}`: an output made elsewhere, scored like Gen's |
+| `POST /v1/bench/results/:id/rate` | `{rating: 1-5 \| null, note?}` |
+| `PUT /v1/bench/cast/:id` | `{assets: [ids]}`: a character's references |
+
 ## Other
 
 | Route | |

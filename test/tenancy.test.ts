@@ -216,3 +216,10 @@ test('share links: only the owner can make one; anyone with it sees the file, in
   assert.match(String(got.headers.get('content-disposition')), /^inline/);
   assert.equal((await fetch(base + sh.body.url.replace(/\.[\w-]+\//, '.forged/'))).status, 404);
 });
+
+test('Gen Bench and the quality door are the studio\'s: a customer gets 403', async () => {
+  for (const [route, body] of [['/v1/bench', undefined], ['/v1/bench/runs', { mode: 'mock' }], ['/v1/bench/baseline', { brief: 'poster', asset: 'a_1' }], ['/v1/quality/assess', { brief: 'x', asset: 'a_1' }]] as const) {
+    assert.equal((await call(own, route, { body, method: body ? 'POST' : 'GET' })).status, 403, route);
+    assert.equal((await call(portal, route, { body, method: body ? 'POST' : 'GET', project: 'usr_aaaa' })).status, 403, `${route} (portal key)`);
+  }
+});
