@@ -101,6 +101,7 @@ each job).
 | `src/providers/cloudrun/`, `src/providers/gcp/gcs.ts` | The Cloud Run GPU backend (docs/cloudrun.md): `services.ts` (the map, prices, `cloudRoute`), `run.ts` (`ctx.comfy` as one request per graph, run keys, manifest/heartbeat resume, cancel marker), the queue's `fillCloud` lane in `jobs.ts`; `gcs.ts` is Google credentials (ADC, `HAWKESGEN_GCP_IMPERSONATE`) and a small Cloud Storage client. Tools that work over SSH carry `server: 'ssh'` and never go there |
 | `src/providers/gpu/` | GPU providers (docs/gpu-providers.md): `route.ts` (`gpuCandidates`: the order, what is skipped and why; no order = `cloudRoute` exactly), `health.ts` (cooldowns, last errors, `awsRefused`), `auth.ts` (each provider's headers from env), `broker.ts` + `brokerRoute.ts` (`/v1/gpu/broker`: a run token for one run's files) and `sign.ts` (V4 signed URLs through IAM signBlob), `egress.ts` (the fleet from Cloud Run), `status.ts` (`GET /v1/gpu/providers`, the dashboard's Settings > GPU providers card). The queue's GPU lane in `jobs.ts` takes the first provider with room and requeues a job on the next when one is unavailable. Tests `test/gpu-providers.test.ts` |
 | `src/cpu/`, `src/providers/cloudrun/cpu.ts`, `server/cpu-cloudrun/` | The CPU suite on Cloud Run (docs/cpu-cloudrun.md): `suite.ts` (the tools, weights, what stays local; the service imports only pure modules, a test checks it), `worker.ts` (a tool's own `run()` against Cloud Storage, and `asset.lod`'s two commands), `server.ts` (the service's door), `cpu.ts` (`cpuRoute` by `settings.cpu`, `runCpuRemote` with resume, retry and fallback to here, `cpuExec` for `src/lod.ts`, `cpuStatus` for `GET /v1/cpu`); the queue's `local-cloud` lane and usage `gcp-cpu` in `jobs.ts`. Setup in `tools/cpu-cloudrun/` |
+| `src/quality/`, `src/bench/`, `post/quality/`, `src/tools/quality.ts`, `dashboard/bench.js` | **The quality checks and Gen Bench** (docs/bench.md): `assess()` (identity: insightface buffalo_l on the CPU, `post/quality/identity.py`; the brief as yes/no questions and their answers, the faults per kind, the look: Claude Sonnet through `ask()`; a pass and a `fix`), the tools `quality.identity` / `.checklist` / `.assess`, `HAWKESGEN_QUALITY_MOCK=1` / `withQualityMock`. The bench: 30 briefs (`src/bench/briefs.json`) through the app's real path, every output scored (`bench_runs`, `bench_results`, `bench_ratings`, `bench_cast`), mock runs offline, the market baseline, J's ratings and each score's agreement with them, the admin Bench tab, `/v1/bench/*`, `POST /v1/quality/assess`, `hawkesgen bench` |
 | `src/storage.ts` | The library's files in S3 (opt-in: `settings.storage.bucket`; `storage.provider: "gcs"` keeps them in Google Cloud Storage instead, `tools/storage-copy.mjs` copies S3 → GCS): every new file backed up by content in the background, `backfill` for older ones, and missing files restored on demand (a job's inputs, a download) or all at once (`hawkesgen storage restore`) |
 | `src/entities.ts`, `src/bus.ts` | The library's structure (docs/library.md): entities (`project/slug`), slots, versions (take, current, old, discarded), `slot:` references expanded at submit, slot recipes (request, entity data, or the project's `kinds` in presets), and filing a job's outputs into its slot. `bus.ts` is the event bus (`job`, `library`) behind `GET /v1/events` |
 | `src/library.ts`, `usage.ts`, `auth.ts`, `config.ts`, `db.ts` | Assets and recipes, costs, API keys and roles, settings and paths, SQLite (node:sqlite) |
@@ -656,6 +657,14 @@ returns a verdict, scores and findings.
   hour and storage). `docs/comfyui.md`, "The fleet image".
 - Servers adopted from DoD keep `flavor: dod` (auth user `dod`, `/dod/status.json`); new ones are
   `flavor: gen`. **Never terminate a server without J asking.**
+
+## Quality checks and Gen Bench
+
+Every AI-made output is meant to pass `src/quality` `assess()` before a person sees it (docs/worlds-roadmap.md principle
+2): face identity against the character's references, the brief's yes/no questions, the obvious faults for its kind and
+the look, with a `fix` for the next try. Gen Bench (docs/bench.md, the admin Bench tab) runs 30 fixed briefs through the
+app and scores them so a change to prompts, models or checks is measured, not believed. **Run a mock bench
+(`hawkesgen bench run --mock`, free) after changing the assistants or the checks.** Real runs are the owner's, priced first.
 
 ## Who uses it
 

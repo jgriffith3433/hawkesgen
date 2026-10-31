@@ -53,6 +53,7 @@ import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
+import { handleBench } from './bench/routes.ts';
 import { handleNetBridge } from './netbridge.ts';
 import {
   authenticateRequest,
@@ -220,7 +221,7 @@ export function isCustomer(c: Client) {
   const globs = loadSettings().queue.projects;
   return c.projects.length > 0 && c.projects.every((p) => p !== '*' && globs.some((g) => (g.endsWith('*') ? p.startsWith(g.slice(0, -1)) : p === g)));
 }
-const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune)(\/|$)/;
+const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
@@ -1183,6 +1184,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // ------------------------------------------------------------ analytics
     // Reading what players did (src/analytics/routes.ts, docs/analytics.md).
     if (handleAnalytics(client, route, method, q, res, send, url.search, route === '/v1/analytics/marks' && method === 'POST' ? await readJson(req) : undefined)) return;
+    // Gen Bench and the quality checks (src/bench/routes.ts, docs/bench.md): admins only.
+    if (await handleBench(client, route, method, () => readJson(req), res, send)) return;
 
     // ----------------------------------------------------------- templates
     if (route === '/v1/templates' && method === 'GET') {

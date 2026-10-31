@@ -1,6 +1,8 @@
 // Hawkes Gen dashboard: plain JS over the /v1 API. Live job updates come from
 // /v1/events (server-sent events).
 
+import { benchTab } from './bench.js';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const money = (n) => (n == null ? '—' : n < 0.01 && n > 0 ? `$${n.toFixed(4)}` : `$${Number(n).toFixed(2)}`);
@@ -1048,4 +1050,7 @@ async function showAccount(id) {
 
 // ---------------------------------------------------------------- start
 api('/tools').then((r) => { state.tools = r.tools; }).catch(() => {}).finally(() => { connect(); show(current); });
+// ---------------------------------------------------------------- bench: Gen Bench (dashboard/bench.js, docs/bench.md)
+render.bench = benchTab({ $, esc, ago, api, post, toast, fail, modal, mediaTag, me: () => api('/me') });
+
 setInterval(() => { if (['fleet', 'machines'].includes(current) && !$('#modal').open) render[current]().catch(() => {}); }, 15000);

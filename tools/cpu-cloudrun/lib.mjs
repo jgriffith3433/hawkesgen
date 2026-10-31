@@ -59,7 +59,11 @@ export function buildContext(root = ROOT) {
   const { files, packages } = sourceClosure(ENTRIES, root);
   const missing = packages.filter((p) => !NODE_PACKAGES.includes(p));
   if (missing.length) throw new Error(`the service imports ${missing.join(', ')}, which tools/cpu-cloudrun/lib.mjs NODE_PACKAGES doesn't install`);
-  const post = fs.readdirSync(path.join(root, 'post')).filter((f) => f.endsWith('.py')).sort().map((f) => `post/${f}`);
+  // post/quality/*.py too: quality.identity's face script.
+  const post = [
+    ...fs.readdirSync(path.join(root, 'post')).filter((f) => f.endsWith('.py')).sort().map((f) => `post/${f}`),
+    ...fs.readdirSync(path.join(root, 'post', 'quality')).filter((f) => f.endsWith('.py')).sort().map((f) => `post/quality/${f}`),
+  ];
   // Text with LF line ends: a Windows checkout (CRLF) and a Linux one give the same image and the same tag.
   const text = (file) => Buffer.from(fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n'));
   const out = {

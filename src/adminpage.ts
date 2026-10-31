@@ -9,7 +9,7 @@ import { authenticate, LOCAL_OWNER } from './auth.ts';
 import { authenticateRequest } from './users.ts';
 
 /** The dashboard's own files, wherever they're asked for (the favicon stays public: the app uses it). */
-const ROOT_FILES = new Set(['/index.html', '/app.js', '/style.css']);
+const ROOT_FILES = new Set(['/index.html', '/app.js', '/style.css', '/bench.js']);
 
 /** Whether a page route asks for the admin dashboard or one of its files. */
 export function isAdminRoute(route: string) {
