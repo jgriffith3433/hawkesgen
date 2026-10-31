@@ -8,7 +8,7 @@
 // (src/sceneai.ts): it changes the sheet and makes what it needs, and asks before spending more than the auto limit.
 
 import { $, h, api, toast, fmt, bus, icon, plainError, friendly } from './lib.js';
-import { P, selectedClips, remember, take, save, docLength, clipLength } from './project.js';
+import { P, selectedClips, remember, take, save, docLength, clipLength, changed } from './project.js';
 import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './account.js';
 import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions, directorShotId } from './director.js';
 import { activeKind, activeScene, activeEditor } from './scenes.js';
@@ -167,7 +167,7 @@ function msgEl(m) {
       h('ul', {}, ...list.map((o) => h('li', {}, o.label ?? o.params?.prompt ?? o.params?.text ?? o.tool))),
       h('div', { class: 'row' }, h('button', { class: 'primary small', onclick: () => runProposed(m) }, 'Make it'), h('button', { class: 'ghost small', onclick: () => { m.proposedDone = 'skipped'; keep(); drawMessages(); } }, 'Skip'))));
   } else if (m.proposedDone === 'ran') el.append(h('div', { class: 'muted small' }, 'Started.'));
-  if (m.undoable) el.append(h('button', { class: 'link small', onclick: () => { bus.emit('undo'); m.undoable = false; keep(); drawMessages(); } }, 'Undo this'));
+  if (m.undoable && m.undo) el.append(h('button', { class: 'link small', onclick: () => undoAi(m) }, 'Undo this'));
   return el;
 }
 const OP_WORDS = { add: 'Added a clip', generate: 'Making', trim: 'Trimmed', split: 'Split', move: 'Moved', delete: 'Deleted a clip', deleteRange: 'Cut a stretch out', set: 'Changed a clip', text: 'Added text', track: 'Changed the tracks', settings: 'Changed the scene' };
@@ -237,6 +237,9 @@ async function send() {
   drawBusy();
   try {
     await save();
+    // The scene as it was before this turn: "Undo this" puts exactly it back (the editor's own undo stack is cleared when
+    // a tab opens again, and steps back one edit at a time; J, 2026-10-30: the chat's Undo didn't undo the AI's changes).
+    const before = JSON.stringify(P.doc);
     const r = await api(`/v1/editor/projects/${id}/assistant`, {
       body: { messages: list.filter((m) => !m.pending && !m.error).map((m) => ({ role: m.role, text: m.text })), selection: selectionForAi(), doc: P.doc, version: P.version },
     });
@@ -244,7 +247,10 @@ async function send() {
     const changedDoc = here() && r.project.version !== P.version;
     if (changedDoc) { remember(); take(r.project); }
     const results = (r.results ?? []).map((x, i) => ({ ...x, label: labelOf(r, i) }));
-    list.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), results, proposed: r.proposed ?? null, undoable: changedDoc });
+    // Whether the AI changed the scene (in front or not): then it can be undone from here.
+    const changedThere = Boolean(r.project?.doc) && JSON.stringify(r.project.doc) !== before;
+    list.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), results, proposed: r.proposed ?? null, ...(changedThere ? { undoable: true, undo: { before, version: r.project.version } } : {}) });
+    keepUndos(list);
     if (r.aiCredits || results.some((x) => x.op === 'generate' && x.ok)) refreshCredits();
     if (!here()) answeredElsewhere(asked);
   } catch (err) {
@@ -264,6 +270,30 @@ async function send() {
     if (here()) keep();
     drawMessages();
   }
+}
+/** The newest AI changes keep what to go back to (a scene each, so only a few: the browser's storage is small). */
+const UNDOS = 3;
+function keepUndos(list) {
+  let n = 0;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (!m.undo) continue;
+    if (++n > UNDOS) { delete m.undo; m.undoable = false; }
+  }
+}
+/** "Undo this": the scene goes back to how it was before that AI turn (one undo step itself, so Ctrl+Z brings it back). */
+function undoAi(m) {
+  if (!m.undo || !P.id) return;
+  // Edited since (by hand, the AI again, or another tab): going back undoes those too, so ask.
+  if (P.version !== m.undo.version && !confirm('Undo what the AI did here? Changes made after it will be undone too.')) return;
+  remember();
+  P.doc = JSON.parse(m.undo.before);
+  changed();
+  delete m.undo;
+  m.undoable = false;
+  keep();
+  drawMessages();
+  toast('Undone. Ctrl+Z brings it back.');
 }
 /** An answer came back for a scene that isn't in front any more: say so, with a way there (nothing here changes). */
 function answeredElsewhere(scene) {
