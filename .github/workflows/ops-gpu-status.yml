@@ -1,0 +1,36 @@
+# Read-only: RunPod's serverless endpoints and each one's /health (workers, jobs in queue). The RunPod key is read from
+# Secret Manager as ops-reader (keyless) and masked. Gen's WIF provider trusts main and beta only: dispatch with --ref main.
+#   gh workflow run ops-gpu-status.yml --repo jgriffith3433/hawkesgen --ref main
+name: ops-gpu-status
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-gpu-status
+  cancel-in-progress: true
+jobs:
+  status:
+    name: GPU providers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-gen
+          service_account: ops-reader@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: RunPod
+        run: |
+          key=$(gcloud secrets versions access latest --secret=gen-runpod-api-key --project "${{ vars.GCP_PROJECT }}")
+          echo "::add-mask::$key"
+          eps=$(curl -s --max-time 30 -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
+            -d '{"query":"query { myself { endpoints { id name workersMin workersMax gpuIds } } }"}' https://api.runpod.io/graphql)
+          echo "$eps" | jq -e '.data.myself' >/dev/null || { echo "RunPod answered: $(echo "$eps" | jq -c '.errors // .' | head -c 300)"; exit 1; }
+          { echo "### RunPod endpoints"; echo '| id | name | workers min/max | gpus | health |'; echo '|---|---|---|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "$eps" | jq -r '.data.myself.endpoints[] | [.id, .name, "\(.workersMin)/\(.workersMax)", .gpuIds] | @tsv' | while IFS=$'\t' read -r id name w gpus; do
+            h=$(curl -s --max-time 20 -H "Authorization: Bearer $key" "https://api.runpod.ai/v2/$id/health" | jq -c '{jobs, workers}' 2>/dev/null || echo unreachable)
+            echo "| $id | $name | $w | $gpus | \`$h\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "$id $name $w $h"
+          done
