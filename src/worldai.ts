@@ -286,6 +286,11 @@ export function keepWorld(project: string, p: Partial<WorldProposal>, keep: { ch
 export function makeWorldPacks(project: string, worldId: string, canSee: (p: string) => boolean, deps: Omit<Deps, 'autoCredits'> & { confirm?: boolean; autoCredits?: number }) {
   const world = getScene(worldId, canSee, 'world');
   const scenes = [world, ...(world.doc.members as string[]).map((id) => { try { return getScene(id, canSee); } catch { return null; } }).filter((x): x is Scene => Boolean(x) && x!.project === project)];
+  return packScenes(scenes, deps);
+}
+
+/** The pack jobs for these scenes (what each is missing), priced; run when confirmed or under the auto limit. */
+export function packScenes(scenes: Scene[], deps: Omit<Deps, 'autoCredits'> & { confirm?: boolean; autoCredits?: number }) {
   const plans = scenes.map((s) => ({ s, plan: packPlan(s.kind, s.doc) })).filter((x) => x.plan && x.plan.jobs.length) as { s: Scene; plan: PackPlan }[];
   const credits = plans.reduce((n, x) => n + x.plan.jobs.reduce((m, j) => m + deps.quote(j.tool, j.params), 0), 0);
   if (!deps.confirm && credits > (deps.autoCredits ?? 0)) return { credits, jobs: plans.reduce((n, x) => n + x.plan.jobs.length, 0), started: [], errors: [] as string[], proposed: true };

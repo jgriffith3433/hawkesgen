@@ -7,6 +7,7 @@
 //   GET  /v1/worlds/:id/context                                       src/worlds.ts worldContext
 //   POST /v1/worlds/:id/canon {text}                                  the rules the text breaks
 //   POST /v1/worlds/:id/packs {confirm?}                              pictures for the world and every member missing them
+//   POST /v1/worlds/pack/:sceneId {confirm?}                          the same for one scene (a place, prop, character)
 //   POST /v1/stories/:id/shots/:shot/stage                            "Make this shot": a stage shot made from a story's
 //                                                                     shot, linked back
 //   POST /v1/scenes/:id/assistant|apply  for world, place, prop and story scenes (the others: src/api.ts)
@@ -128,6 +129,15 @@ export async function handleWorlds(c: Ctx): Promise<boolean> {
       send(res, 200, wai.makeWorldPacks(w.project, w.id, canSee, { submit: submitIn(w.project, w.id), quote: quoteIn(w.project), confirm: Boolean(b.confirm), autoCredits: Math.max(0, Number(b.autoCredits ?? 0)) }));
       return true;
     }
+  }
+
+  // ---------------------------------------------------------------- one scene's pack (a place, prop, character or world)
+  const pm = new RegExp(`^/v1/worlds/pack/(${SID})$`).exec(route);
+  if (pm && method === 'POST') {
+    const s = getScene(pm[1], canSee);
+    const b = await readJson(req);
+    send(res, 200, wai.packScenes([s], { submit: submitIn(s.project, s.id), quote: quoteIn(s.project), confirm: Boolean(b.confirm), autoCredits: Math.max(0, Number(b.autoCredits ?? 0)) }));
+    return true;
   }
 
   // ---------------------------------------------------------------- a story's shot to a stage

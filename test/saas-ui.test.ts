@@ -116,7 +116,7 @@ test('/ is the Gen app; the operator console is /admin (its files beside it); th
 
 test('the Gen app: every element its modules look up by id is on the page, and the editor tools are wired', async () => {
   const page = (await fetchRoute('/')).text;
-  const mods = ['gen', 'lib', 'project', 'player', 'timeline', 'media', 'tools', 'ai', 'account', 'studio', 'director', 'scenes', 'editor', 'dragdrop', 'character', 'scenedoc', 'landing', 'tour', 'palette', 'starters'];
+  const mods = ['gen', 'lib', 'project', 'player', 'timeline', 'media', 'tools', 'ai', 'account', 'studio', 'director', 'scenes', 'editor', 'dragdrop', 'character', 'scenedoc', 'landing', 'tour', 'palette', 'starters', 'world', 'place', 'prop', 'story', 'worldbits'];
   let js = '';
   for (const m of mods) {
     const r = await fetchRoute(`/gen/${m}.js`);
