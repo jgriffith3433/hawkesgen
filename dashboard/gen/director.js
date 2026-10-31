@@ -130,11 +130,15 @@ async function loadVoices() {
 /** Another shot (of the sequence): it opens in its own tab. */
 const openShot = (id) => openScene(id);
 function take(s) {
+  // A newer copy of the same shot (the AI's answer, another tab, a reload) keeps the playhead and what's selected while
+  // it still exists (J, 2026-10-30: selections were dropped whenever things refreshed); another shot starts fresh.
+  const same = D.shot?.id === s.id;
+  const keepSel = same && D.sel && (D.sel.type === 'cast' ? s.doc.cast : s.doc.props)?.[D.sel.i] ? D.sel : null;
   D.seq = s.sequenceInfo ?? null;
   D.shot = s;
   D.version = s.version;
-  D.t = 0;
-  D.sel = null;
+  D.t = same ? Math.min(D.t, s.doc.seconds ?? D.t) : 0;
+  D.sel = keepSel;
   drawPanel();
   bus.emit('sceneTitle', { id: s.id, title: s.doc.title });
   D.three?.rebuild();
@@ -271,8 +275,8 @@ function drawPanel() {
   keyNodes.el.addEventListener('input', () => { film.keyframeNodes = keyNodes.nodes() ?? {}; changed(); });
   const filmBox = [
     h('p', { class: 'muted small' }, 'How Gen films the stage. The defaults suit most shots; the AI director changes these when you say what was wrong with a take.'),
-    select('Video model', film.engine, [['ltx', 'LTX-2.3: 24 fps, with sound'], ['wan', 'Wan 2.2 Fun Control: 16 fps, no sound']], (v) => set((d) => { d.film.engine = v; d.film.nodes = {}; }, { panel: true })),
-    select('First frame', film.keyframe, [['image.control', 'Paint over the stage (keeps the layout)'], ['image.edit', 'Edit the stage frame (Qwen)']], (v) => set((d) => { d.film.keyframe = v; d.film.keyframeNodes = {}; }, { panel: true })),
+    select('Video model', film.engine, [['ltx', 'Smooth, with sound (24 fps)'], ['wan', 'Precise motion, no sound (16 fps)']], (v) => set((d) => { d.film.engine = v; d.film.nodes = {}; }, { panel: true })),
+    select('First frame', film.keyframe, [['image.control', 'Paint over the stage (keeps the layout)'], ['image.edit', 'Edit the stage frame']], (v) => set((d) => { d.film.keyframe = v; d.film.keyframeNodes = {}; }, { panel: true })),
     film.engine === 'ltx' ? sliderRow('Follows the stage', film.strength, { min: 0, max: 1, step: 0.05 }, (v) => set((d) => { d.film.strength = v; })) : '',
     film.engine === 'ltx' ? sliderRow('Keeps the first frame', film.imageStrength, { min: 0, max: 1, step: 0.05 }, (v) => set((d) => { d.film.imageStrength = v; })) : '',
     h('div', { class: 'field' }, h('span', { class: 'muted small' }, 'The video workflow'), videoNodes.el),

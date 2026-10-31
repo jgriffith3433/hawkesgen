@@ -43,10 +43,24 @@ export function toast(msg, { action, onAction, ms = 4500 } = {}) {
 }
 
 /** An error as a person should read it: no terminal colors or stack traces, one short line. */
+/**
+ * Words on screen never name what Gen is made of (J, 2026-10-30): providers, models, machines and tool ids become plain
+ * words (the server does the same to customers' jobs: src/publictext.ts). Used by every error and status shown here.
+ */
+export function plainWords(text) {
+  let t = String(text ?? '');
+  t = t.replace(/^\s*(?:runpod|modal|cloudrun(?::[\w.-]+)?|cloud run|fleet|gen-[\w-]+)\s*:\s*/i, '').replace(/\[Errno \d+\]\s*/g, '');
+  t = t.replace(/\b(?:runpod|modal|cloud ?run|aws|fleet|comfy ?ui)\s+(?=(?:gpus?|workers?|servers?|instances?|machines?|jobs?)\b)/gi, '');
+  t = t.replace(/No space left on device/gi, 'the server ran out of room');
+  t = t.replace(/\b(?:image|video|audio|mesh|asset|film|blender|motion|sprite|texture|llm|playtest|unity|splat|media|comfy|scene|character|lod)\.[a-z][\w-]*\b/g, 'a step');
+  t = t.replace(/\b(?:qwen[\w.-]*|wan ?2(?:\.\d)?|ltx[\w.-]*|hunyuan[\w.-]*|trellis[\w.-]*|z-image[\w-]*|flux[\w.-]*|stable ?audio(?: ?\d)?|ace-step[\w.-]*|eleven ?labs|birefnet|rembg|moge|infinite ?talk|chatterbox|voxcpm\d*|moss-tts|kimodo|blender|ksampler|safetensors)\b/gi, 'the model');
+  t = t.replace(/\b(?:runpod|cloud ?run|cloudrun(?::[\w.-]+)?|comfy ?ui|comfy|gen-gpu[\w-]*|gen-cpu[\w-]*)\b/gi, 'the server');
+  return t.replace(/\b(the (?:server|model))(?:\s+\1)+\b/gi, '$1').replace(/\s{2,}/g, ' ').trim();
+}
 export function plainError(msg) {
   const lines = String(msg ?? '').replace(/\u001b\[[0-9;]*m/g, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (lines.some((l) => /^Traceback|^\s*at |^File "/.test(l))) return 'Something went wrong on our side. Your credits were returned; please try again.';
-  const line = lines[0] ?? 'Something went wrong.';
+  const line = plainWords(lines[0] ?? 'Something went wrong.');
   return line.length > 220 ? `${line.slice(0, 217)}…` : line;
 }
 
@@ -78,7 +92,7 @@ export function jobStatusText(j) {
     if (/no (stopped |free )?server|launching new ones is off|offline|no gpu|unavailable/i.test(why)) return 'Waiting for a free server';
     return j.queue?.ahead ?? j.ahead ? `In line (${j.queue?.ahead ?? j.ahead} ahead)` : 'In line';
   }
-  return j.detail || 'Working';
+  return j.detail ? plainWords(j.detail) : 'Working';
 }
 
 /** 0:03.4, 1:02.0 */

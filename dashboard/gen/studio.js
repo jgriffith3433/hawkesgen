@@ -31,12 +31,12 @@ const GROUPS = [
     ['video.control', 'Depth / pose controlled video', 'A new video that follows a depth or pose video, in the look of a styled first frame.'], ['video.control-wan', 'Controlled video (Wan)', 'The same, with Wan Fun Control.'], ['video.scene', 'Scene from references', 'A scene built from character and set references.'],
     ['video.seedance', 'Scene from references (Seedance)', 'A scene from references on Seedance (paid model).'], ['video.kling', 'Character video (Kling)', 'A character video from references on Kling (paid model).'], ['video.change', 'Change something', 'Change one thing in a clip; the change follows the motion.'],
     ['video.upscale', 'Upscale', 'A sharper, 4× bigger clip.'], ['video.interpolate', 'Smooth motion', 'Add in-between frames for smoother motion.'], ['video.frame', 'Grab a frame', 'Save one frame of a clip as a picture.'], ['video.pose', 'Pose maps from a video', 'Pose maps from every frame of a clip.'],
-    ['video.matte', 'Cut to a matte', 'Cut a clip out using a matte video.'], ['video.composite', 'Layered VFX composite', 'Layer effects over a clip with a matte.'], ['video.review', 'Review a video', 'Claude watches and listens, then gives notes.'],
+    ['video.matte', 'Cut to a matte', 'Cut a clip out using a matte video.'], ['video.composite', 'Layered VFX composite', 'Layer effects over a clip with a matte.'], ['video.review', 'Review a video', 'The AI watches and listens, then gives notes.'],
   ] },
   { id: 'mesh', label: '3D & rigging', icon: 'cube', tools: [
     ['image.viewsheet', '4-view sheet for 3D', 'Front, back, left and right views of a character, checked for consistency. The first step to 3D.'], ['mesh.views3d', '4-view sheet → 3D model', 'A textured 3D model (GLB) from a 4-view sheet.'], ['mesh.textured', 'Image → textured 3D model', 'A textured 3D model from one picture of a prop.'],
     ['mesh.from-image', 'Image → 3D shape', 'An untextured 3D shape from one picture.'], ['mesh.from-views', 'Views → 3D model', 'A 3D model from several views.'], ['mesh.rig', 'Auto-rig a 3D model', 'Add a skeleton and skinning to a 3D model so it can move.'],
-    ['blender.render', '3D shot render', 'Render a 3D shot, with its depth, pose and edge videos for filming.'], ['blender.character', '3D character pipeline', 'Clean up, retarget, bake and export a 3D character.'], ['image.geometry', 'Depth and normals (MoGe)', 'Depth and normals from one picture.'], ['splat.build', 'Gaussian splat', 'A Gaussian splat scene from a picture.'],
+    ['blender.render', '3D shot render', 'Render a 3D shot, with its depth, pose and edge videos for filming.'], ['blender.character', '3D character pipeline', 'Clean up, retarget, bake and export a 3D character.'], ['image.geometry', 'Depth and normals', 'Depth and normals from one picture.'], ['splat.build', 'Gaussian splat', 'A Gaussian splat scene from a picture.'],
   ] },
   { id: 'motion', label: 'Animation', icon: 'person', tools: [
     ['motion.from-text', 'Text to 3D skeletal motion', 'A humanoid animation from words, on your rigged character.'], ['sprite.sheet', 'Sprite sheet from a clip', 'A clip or frames as a game sprite sheet.'], ['image.pose-detect', 'Detect a pose', 'Find the body pose in a picture.'],
@@ -337,7 +337,7 @@ function go(spec, form, result) {
 export function craftDrawer(id, prefill = null) {
   const changed = { ...(prefill ?? {}) };
   const body = h('div', { class: 'craft' }, h('div', { class: 'working' }, 'Loading'));
-  const el = h('details', { class: 'more craft-drawer' }, h('summary', {}, 'How it works · every setting', Object.keys(changed).length ? h('span', { class: 'badge-on' }, `${Object.keys(changed).length} changed`) : ''), body);
+  const el = h('details', { class: 'more craft-drawer' }, h('summary', {}, state.admin ? 'How it works · every setting' : 'How it works', Object.keys(changed).length ? h('span', { class: 'badge-on' }, `${Object.keys(changed).length} changed`) : ''), body);
   let loaded = false;
   el.addEventListener('toggle', async () => {
     if (!el.open || loaded) return;
@@ -372,10 +372,10 @@ function drawCraft(body, c, changed, drawer) {
     notes.length ? sec('The settings that matter', h('ul', {}, ...notes)) : '',
     c.iterate?.length ? sec('When it\'s not right', h('ul', {}, ...c.iterate.map((x) => h('li', {}, x)))) : '',
     c.pairsWith?.length ? sec('Goes well with', h('div', { class: 'chips' }, ...c.pairsWith.map((x) => h('button', { type: 'button', class: 'chip small', onclick: () => openTool(x) }, CURATED.get(x)?.label ?? x)))) : '',
-    c.models?.length ? sec('Models', h('ul', { class: 'mono small' }, ...c.models.map((m) => h('li', {}, `${m.dir}/${m.file}`)))) : '',
-    nodeRows.length ? sec(`Every node (${c.editable} settings you can change)`, h('p', { class: 'muted small' }, 'The ComfyUI graph this tool runs. Changed settings go with this job only.'), ...nodeRows,
+    state.admin && c.models?.length ? sec('Models', h('ul', { class: 'mono small' }, ...c.models.map((m) => h('li', {}, `${m.dir}/${m.file}`)))) : '',
+    state.admin && nodeRows.length ? sec(`Every node (${c.editable} settings you can change)`, h('p', { class: 'muted small' }, 'The graph this tool runs. Changed settings go with this job only.'), ...nodeRows,
       h('button', { type: 'button', class: 'link small', onclick: () => { for (const k of Object.keys(changed)) delete changed[k]; drawCraft(body, c, changed, drawer); mark(); } }, 'Reset every node setting')) : '',
-    c.source ? h('p', { class: 'muted small' }, `From: ${typeof c.source === 'string' ? c.source : c.source.template ?? c.source.name ?? 'an imported workflow'}`) : '',
+    state.admin && c.source ? h('p', { class: 'muted small' }, `From: ${typeof c.source === 'string' ? c.source : c.source.template ?? c.source.name ?? 'an imported workflow'}`) : '',
   );
 }
 

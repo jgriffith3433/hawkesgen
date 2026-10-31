@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { primePlatform } from './platform.ts';
 import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
+import { publicJob, publicText } from './publictext.ts';
 import { DASH_COOKIE, DASH_DAYS, googleClientId, googleClientIdAny, checkGoogleToken, signSession, verifyGoogle } from './dashauth.ts';
 import { TOOLS, getTool, describeTool, reloadTools } from './tools/index.ts';
 import { listWorkflows, getWorkflow, saveWorkflow, draftManifest } from './workflows/registry.ts';
@@ -1202,6 +1203,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const { toolCard } = await import('./knowledge.ts');
       const card = toolCard(m[1]);
       if (!card) throw new GenError(`No tool ${m[1]}`, { status: 404 });
+      // A customer reads the craft in plain words, without the models, the graph's nodes or where it came from (J,
+      // 2026-10-30: nothing that says what Gen is made of).
+      if (isCustomer(client)) {
+        const plain = (v: any): any => (typeof v === 'string' ? publicText(v) : Array.isArray(v) ? v.map(plain) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])) : v);
+        const { models: _m, nodes: _n, source: _s, ...rest } = card as any;
+        return send(res, 200, { ...plain(rest), id: (card as any).id, pairsWith: (card as any).pairsWith, nodes: [], models: [] });
+      }
       return send(res, 200, card);
     }
     if (route === '/v1/knowledge/map' && method === 'GET') {
@@ -1223,7 +1231,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/jobs' && method === 'POST') {
       const body = await readJson(req);
       const specs: JobSpec[] = Array.isArray(body.jobs) ? body.jobs : [body];
-      return send(res, 200, { jobs: specs.map((s) => submit(client, s)).map(summary) });
+      return send(res, 200, { jobs: specs.map((s) => submit(client, s)).map(summary).map((j) => publicJob(j, isCustomer(client))) });
     }
     if (route === '/v1/run' && method === 'POST') {
       // Submit and wait (up to timeout seconds, default 10 minutes). Handy for scripts and quick tools.
@@ -1244,12 +1252,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         events.on('job', onJob);
         check();
       });
-      return send(res, 200, final);
+      return send(res, 200, publicJob(final, isCustomer(client)));
     }
     if (route === '/v1/jobs' && method === 'GET') {
       if (q('project') && !canProject(client, q('project')!)) throw new GenError('No access to that project', { status: 403 });
       const projectFilter = fixedProject(client) ?? q('project');
-      return send(res, 200, { jobs: listJobs({ project: projectFilter, status: q('status'), tool: q('tool'), limit: Number(q('limit')) || 100, projects: client.projects }).map(summary) });
+      return send(res, 200, { jobs: listJobs({ project: projectFilter, status: q('status'), tool: q('tool'), limit: Number(q('limit')) || 100, projects: client.projects }).map(summary).map((j) => publicJob(j, isCustomer(client))) });
     }
     if (route === '/v1/jobs/timing' && method === 'GET') {
       const since = q('since') ? Number(q('since')) : Date.now() - (Number(q('days')) || 7) * 24 * 3600 * 1000;
@@ -1280,7 +1288,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
-      if (!m[2] && method === 'GET') return send(res, 200, { ...j, queue: queuePosition(j) });
+      if (!m[2] && method === 'GET') return send(res, 200, publicJob({ ...j, queue: queuePosition(j) }, isCustomer(client)));
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
       if (m[2] === 'rerun' && method === 'POST') {
         const b = await readJson(req);
@@ -1289,7 +1297,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         return send(res, 200, rerun(client, j.id, { sameSeed: b.sameSeed === true, params: b.params, inputs: b.inputs, labels: b.labels, priority: b.priority === undefined ? undefined : Number(b.priority) }));
       }
       // A playtest's live state (every step, the players, problems, the timeline); null after the run (the job has the result).
-      if (m[2] === 'live' && method === 'GET') return send(res, 200, { job: j.id, status: j.status, detail: j.detail ?? null, live: liveSnapshot(j.id, { full: true }) });
+      if (m[2] === 'live' && method === 'GET') return send(res, 200, { job: j.id, status: j.status, detail: isCustomer(client) ? publicText(j.detail ?? null) : j.detail ?? null, live: liveSnapshot(j.id, { full: true }) });
       // A player's newest frame once (frame), or a live MJPEG stream (live.mjpeg: multipart/x-mixed-replace, for an <img>).
       if ((m[2] === 'frame' || m[2] === 'live.mjpeg') && method === 'GET') return liveVideo(req, res, j.id, m[2], Number(q('player')) || 0, Number(q('fps')) || 8);
       // A playtest's screenshots, while it plays (tmp files) and after (the filed assets).
@@ -1301,7 +1309,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (!a || (!fs.existsSync(a.path) && !(await storage.ensureLocal(a)))) throw new GenError('No such screenshot', { status: 404 });
         return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=86400, immutable' });
       }
+      // A job's ComfyUI graphs are the studio's own (they say what Gen is made of): never a customer's.
       if (m[2]?.startsWith('graphs/') && method === 'GET') {
+        if (isCustomer(client)) throw new GenError('No such graph', { status: 404 });
         const name = m[2].slice(7);
         if (!j.graphs.includes(name)) throw new GenError('No such graph', { status: 404 });
         return serveFile(req, res, path.join(paths.graphs, name), 'application/json', { 'Content-Disposition': `attachment; filename="${name}"` });
@@ -1312,7 +1322,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/events' && method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write(': hello\n\n');
-      const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(j)}\n\n`);
+      const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(publicJob(j, isCustomer(client)))}\n\n`);
       // Library changes (src/entities.ts): an entity edited, a take filed, picked or discarded.
       const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
       events.on('job', onJob);
