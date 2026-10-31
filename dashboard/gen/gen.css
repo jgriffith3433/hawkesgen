@@ -954,3 +954,8 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
   .scene-tabs-wrap { min-width: 0; flex: 1; }
   .scene-tab { max-width: 130px; }
 }
+/* deliver.js: the deliverables under an export */
+.deliver { display: flex; flex-direction: column; gap: 9px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-2); }
+.deliver .row.wrap { flex-wrap: wrap; gap: 6px; }
+.deliver-files { display: flex; flex-direction: column; gap: 6px; }
+.deliver-file { gap: 8px; align-items: center; }

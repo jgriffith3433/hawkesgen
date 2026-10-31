@@ -30,6 +30,7 @@ import { videoFrameTool, videoStillTool, mediaNormalizeTool } from './media.ts';
 import { videoChangeTool, audioRevoiceTool } from './chain.ts';
 import { QUALITY_TOOLS } from './quality.ts';
 import { makeCheckedTool } from '../make/tool.ts';
+import { FINISHING_TOOLS } from './finishing.ts';
 
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
@@ -45,6 +46,7 @@ const BUILT_IN: Tool[] = [
   makeCheckedTool,
   ...AUDIO_OPEN_TOOLS,
   ...QUALITY_TOOLS,
+  ...FINISHING_TOOLS,
 ];
 
 export let TOOLS: Tool[] = [];
