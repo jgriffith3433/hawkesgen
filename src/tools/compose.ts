@@ -9,6 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { run, filterScriptArgs } from '../util.ts';
+import { gradeFilters } from '../finishing/grade.ts';
+import { resolveGrade } from '../finishing/world-grade.ts';
+import { genClient } from './chain.ts';
 
 export type Probe = { duration: number; video: boolean; audio: boolean; width?: number; height?: number; fps?: number };
 
@@ -74,7 +77,7 @@ export type Timeline = {
   fadeOut?: number;
 };
 
-export type ComposeOptions = { width: number; height: number; fps: number; fit: 'pad' | 'crop'; color: string; burn: boolean; captionsFile?: string };
+export type ComposeOptions = { width: number; height: number; fps: number; fit: 'pad' | 'crop'; color: string; burn: boolean; captionsFile?: string; /** The color grade's filters (src/finishing/grade.ts), applied to the whole cut before fades and captions. */ grade?: string[] };
 
 /** The transitions a clip can go into the next with (timeline name -> ffmpeg xfade). */
 export const TRANSITIONS: Record<string, string> = {
@@ -187,7 +190,7 @@ export function planCompose(tl: Timeline, clips: Probe[], audio: Probe[], o: Com
   }
   const fadeIn = Math.max(0, num(tl.fadeIn, 0));
   const fadeOut = Math.max(0, num(tl.fadeOut, 0));
-  const vpost: string[] = [];
+  const vpost: string[] = [...(o.grade ?? [])];
   if (fadeIn) vpost.push(`fade=t=in:st=0:d=${f3(fadeIn)}`);
   if (fadeOut) vpost.push(`fade=t=out:st=${f3(Math.max(0, total - fadeOut))}:d=${f3(fadeOut)}`);
 
@@ -355,6 +358,7 @@ export const composeTool: Tool = {
   inputs: {
     clips: { kind: 'video', required: true, multiple: true, max: 200, description: 'The shots. timeline.clips picks them by index (default: all, in order).' },
     audio: { kind: 'audio', multiple: true, max: 100, description: 'Music, voice lines, sound beds. timeline.audio places them by index.' },
+    lut: { kind: 'file', description: 'A .cube LUT: the grade for the whole cut.' },
   },
   params: {
     timeline: {
@@ -372,6 +376,11 @@ export const composeTool: Tool = {
     crf: { type: 'integer', min: 12, max: 35, default: 20, description: 'Quality (lower is better and bigger).', advanced: true },
     poster: { type: 'boolean', default: true, description: 'Also a PNG still for the player.' },
     posterAt: { type: 'number', min: 0, description: 'Seconds into the cut for the poster (default: the middle of the first clip).', advanced: true },
+    grade: { type: 'json', orString: true, description: 'One color grade for every shot: a preset (natural, warm, cool, filmic, noir, vivid, faded) or { params: { contrast, saturation, warmth, tint, lift, gamma, gain, brightness }, grain, vignette }. Default: the grade of the world (world), else none.' },
+    world: { type: 'string', description: 'The world (scene id) the cut belongs to: its grade.', advanced: true },
+    grain: { type: 'number', min: 0, max: 1, description: 'Film grain (0 to 1).', advanced: true },
+    vignette: { type: 'number', min: 0, max: 1, description: 'Vignette (0 to 1).', advanced: true },
+    finalPass: { type: 'enum', values: ['none', 'upscale'], default: 'none', description: 'After the cut: queue video.upscale on it (and image.restore on the poster). Restore and upscale the final cut only, never each take.', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;
@@ -386,7 +395,8 @@ export const composeTool: Tool = {
     const fps = Number(p.fps);
     const width = Math.round(Number(p.width) / 2) * 2;
     const height = Math.round(Number(p.height) / 2) * 2;
-    const plan = planCompose(tl, clips, audio, { width, height, fps, fit: p.fit, color: String(p.color).replace(/^#/, ''), burn });
+    const grade = resolveGrade(ctx);
+    const plan = planCompose(tl, clips, audio, { width, height, fps, fit: p.fit, color: String(p.color).replace(/^#/, ''), burn, grade: grade ? gradeFilters(grade) : [] });
     for (const n of plan.notes) ctx.log(n);
 
     const out = ctx.tmp('cut.mp4');
@@ -412,7 +422,8 @@ export const composeTool: Tool = {
     const result = {
       duration: Math.round(made.duration * 1000) / 1000, width: made.width, height: made.height, fps: made.fps,
       bytes: fs.statSync(out).size, codec: p.codec, clips: plan.clips, captions: plan.captions.length, notes: plan.notes,
-    };
+      ...(grade ? { grade } : {}),
+    } as Record<string, unknown>;
     const emits: { make: () => Promise<Buffer> | Buffer; ext: string; title: string; meta?: Record<string, unknown> }[] = [
       { make: () => fs.readFileSync(out), ext: '.mp4', title: 'cut', meta: { duration: result.duration, width: result.width, height: result.height, fps: result.fps } },
     ];
@@ -431,6 +442,15 @@ export const composeTool: Tool = {
     for (let i = ctx.done; i < emits.length; i++) {
       const e = emits[i];
       await ctx.emit({ data: await e.make(), ext: e.ext, title: e.title, meta: e.meta });
+    }
+    if (p.finalPass === 'upscale') {
+      // Queued, not waited for: the finished cut is ready now, the upscaled one follows as its own job.
+      const gen = genClient(ctx);
+      const up = await gen.submit('video.upscale', { params: {}, inputs: { video: out }, labels: { parent: ctx.job.id, step: 'final-upscale' }, key: `${ctx.job.id}:final-upscale`, reuse: true });
+      const poster = path.join(dir, 'poster.png');
+      const restore = p.poster && fs.existsSync(poster) ? await gen.submit('image.restore', { params: {}, inputs: { image: poster }, labels: { parent: ctx.job.id, step: 'final-restore' }, key: `${ctx.job.id}:final-restore`, reuse: true }) : null;
+      result.finalPass = { upscale: up.id, ...(restore ? { restore: restore.id } : {}) };
+      ctx.log(`final pass queued: video.upscale ${up.id}${restore ? `, image.restore ${restore.id}` : ''}`);
     }
     ctx.result(result);
   },

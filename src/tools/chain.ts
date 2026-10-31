@@ -75,19 +75,19 @@ export function fitFilter(fit: { tempo: number }, leadSeconds: number, total: nu
 
 // ------------------------------------------------------------------------------------------------ children
 
-type Gen = { submit: (tool: string, o: any) => Promise<any>; wait: (id: string, o: any) => Promise<any> };
+export type Gen = { submit: (tool: string, o: any) => Promise<any>; wait: (id: string, o: any) => Promise<any> };
 
 let clientFor: ((ctx: RunContext) => Gen) | null = null;
 /** Tests only: a fake Gen for the children (null puts the real one back). */
 export function _setChainClient(f: ((ctx: RunContext) => Gen) | null) {
   clientFor = f;
 }
-function genClient(ctx: RunContext): Gen {
+export function genClient(ctx: RunContext): Gen {
   return clientFor ? clientFor(ctx) : new HawkesGen({ url: SELF_URL(), key: SELF_TOKEN, project: ctx.job.project });
 }
 
 /** Runs one child job and waits for it. `name` keys it, so a resumed parent picks the same child up again. */
-async function child(ctx: RunContext, gen: Gen, name: string, spec: ChildSpec) {
+export async function child(ctx: RunContext, gen: Gen, name: string, spec: ChildSpec) {
   const job = await gen.submit(spec.tool, { params: spec.params, inputs: spec.inputs, labels: { parent: ctx.job.id, step: name }, key: `${ctx.job.id}:${name}`, reuse: true });
   ctx.log(`${name}: ${job.tool} (${job.id}${job.reused ? ', from the library' : ''})`);
   const done = job.status === 'done' ? job : await gen.wait(job.id, { throwOnFail: false, signal: ctx.signal, onUpdate: (j: any) => ctx.step(`${name}: ${j.detail}`) });
@@ -95,7 +95,7 @@ async function child(ctx: RunContext, gen: Gen, name: string, spec: ChildSpec) {
   return done;
 }
 
-const firstAsset = (job: any, kind?: string) => {
+export const firstAsset = (job: any, kind?: string) => {
   const o = (job.outputs ?? []).find((x: any) => !kind || x.kind === kind) ?? job.outputs?.[0];
   const a = o ? getAsset(o.asset) : null;
   if (!a) throw new GenError(`${job.tool} made nothing to pass on`);
