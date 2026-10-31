@@ -9,9 +9,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { run, filterScriptArgs } from '../util.ts';
-import { gradeFilters } from '../finishing/grade.ts';
-import { resolveGrade } from '../finishing/world-grade.ts';
-import { genClient } from './chain.ts';
+import { gradeFilters, parseGrade, GRADE_PRESETS, type Grade } from '../finishing/grade.ts';
+
+// compose also runs in the CPU service (docs/cpu-cloudrun.md), which carries no library or queue: what needs them (a
+// world's grade read at submit, queueing the final pass) is installed by src/tools/finishing.ts on the control server.
+type FinalPass = (ctx: Parameters<Tool['run']>[0], cut: string, poster: string | null) => Promise<Record<string, string>>;
+let finalPassHook: FinalPass | null = null;
+/** src/tools/finishing.ts: how the final pass is queued (null: not on this machine). */
+export function setFinalPass(f: FinalPass | null) { finalPassHook = f; }
+
+/** The grade a compose job asks for: a preset or settings (`grade`), a LUT input, grain and vignette. Pure. */
+export function composeGrade(p: Record<string, any>, lut?: string): Grade | null {
+  let g: Grade | null = typeof p.grade === 'string' && GRADE_PRESETS[p.grade] ? structuredClone(GRADE_PRESETS[p.grade]) : p.grade ? parseGrade(p.grade) : null;
+  if (lut) g = { ...(g ?? {}), lutFile: lut };
+  if (p.grain != null) g = { ...(g ?? {}), grain: Number(p.grain) };
+  if (p.vignette != null) g = { ...(g ?? {}), vignette: Number(p.vignette) };
+  return g;
+}
 
 export type Probe = { duration: number; video: boolean; audio: boolean; width?: number; height?: number; fps?: number };
 
@@ -377,7 +391,7 @@ export const composeTool: Tool = {
     poster: { type: 'boolean', default: true, description: 'Also a PNG still for the player.' },
     posterAt: { type: 'number', min: 0, description: 'Seconds into the cut for the poster (default: the middle of the first clip).', advanced: true },
     grade: { type: 'json', orString: true, description: 'One color grade for every shot: a preset (natural, warm, cool, filmic, noir, vivid, faded) or { params: { contrast, saturation, warmth, tint, lift, gamma, gain, brightness }, grain, vignette }. Default: the grade of the world (world), else none.' },
-    world: { type: 'string', description: 'The world (scene id) the cut belongs to: its grade.', advanced: true },
+    world: { type: 'string', description: 'The world (scene id) the cut belongs to: its grade becomes `grade` at submit when none is given (its LUT goes in as the lut input).', advanced: true },
     grain: { type: 'number', min: 0, max: 1, description: 'Film grain (0 to 1).', advanced: true },
     vignette: { type: 'number', min: 0, max: 1, description: 'Vignette (0 to 1).', advanced: true },
     finalPass: { type: 'enum', values: ['none', 'upscale'], default: 'none', description: 'After the cut: queue video.upscale on it (and image.restore on the poster). Restore and upscale the final cut only, never each take.', advanced: true },
@@ -395,7 +409,7 @@ export const composeTool: Tool = {
     const fps = Number(p.fps);
     const width = Math.round(Number(p.width) / 2) * 2;
     const height = Math.round(Number(p.height) / 2) * 2;
-    const grade = resolveGrade(ctx);
+    const grade = composeGrade(p, ctx.inputs.lut as string | undefined);
     const plan = planCompose(tl, clips, audio, { width, height, fps, fit: p.fit, color: String(p.color).replace(/^#/, ''), burn, grade: grade ? gradeFilters(grade) : [] });
     for (const n of plan.notes) ctx.log(n);
 
@@ -445,12 +459,9 @@ export const composeTool: Tool = {
     }
     if (p.finalPass === 'upscale') {
       // Queued, not waited for: the finished cut is ready now, the upscaled one follows as its own job.
-      const gen = genClient(ctx);
-      const up = await gen.submit('video.upscale', { params: {}, inputs: { video: out }, labels: { parent: ctx.job.id, step: 'final-upscale' }, key: `${ctx.job.id}:final-upscale`, reuse: true });
       const poster = path.join(dir, 'poster.png');
-      const restore = p.poster && fs.existsSync(poster) ? await gen.submit('image.restore', { params: {}, inputs: { image: poster }, labels: { parent: ctx.job.id, step: 'final-restore' }, key: `${ctx.job.id}:final-restore`, reuse: true }) : null;
-      result.finalPass = { upscale: up.id, ...(restore ? { restore: restore.id } : {}) };
-      ctx.log(`final pass queued: video.upscale ${up.id}${restore ? `, image.restore ${restore.id}` : ''}`);
+      if (finalPassHook) result.finalPass = await finalPassHook(ctx, out, p.poster && fs.existsSync(poster) ? poster : null);
+      else { result.finalPass = { skipped: 'the final pass is queued by Gen itself, not here' }; ctx.log('final pass: not queued on this machine'); }
     }
     ctx.result(result);
   },

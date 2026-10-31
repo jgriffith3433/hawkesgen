@@ -30,3 +30,16 @@ export function resolveGrade(ctx: RunContext): Grade | null {
   return g;
 }
 
+/**
+ * At submit (video.compose's admit): a job naming a world and no grade gets the world's grade settings as `grade`, so
+ * the job's recipe says which grade made it and compose needs no library where it runs. The world's LUT is an asset:
+ * the caller passes it as the lut input.
+ */
+export function worldGradeAtSubmit(params: Record<string, any>, project: string): Record<string, any> {
+  if (params.grade || typeof params.world !== 'string') return params;
+  const w = worldFor(project, params.world);
+  const g = w?.look.grade;
+  if (!g) return params;
+  const settings = g.params ? { params: g.params, ...(g.params.grain != null ? { grain: g.params.grain } : {}), ...(g.params.vignette != null ? { vignette: g.params.vignette } : {}) } : null;
+  return { ...params, ...(settings ? { grade: settings } : {}) };
+}

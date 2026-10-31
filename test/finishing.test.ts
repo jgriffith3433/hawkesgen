@@ -322,7 +322,11 @@ test('a 3-shot cut: scored music, a mix at -14 LUFS, a world grade, titles, capt
   } : null));
   try {
     // 1. The cut, graded by the world.
-    const composed = await runTool('video.compose', { timeline: { clips: [{ clip: 0 }, { clip: 1, transition: 'crossfade', seconds: 0.5 }, { clip: 2 }] }, width: 640, height: 360, fps: 24, world: 'sn_world01', poster: false }, { clips: shots });
+    // The world's grade is read at submit (compose's admit), so compose needs no library where it runs.
+    const asked = { timeline: { clips: [{ clip: 0 }, { clip: 1, transition: 'crossfade', seconds: 0.5 }, { clip: 2 }] }, width: 640, height: 360, fps: 24, world: 'sn_world01', poster: false };
+    const admitted = getTool('video.compose')!.admit!({ params: asked, client: { id: 't', role: 'user', projects: [PROJECT] }, project: PROJECT, customer: false });
+    assert.deepEqual(admitted.grade, { params: { warmth: -0.3, contrast: 1.1, saturation: 0.9, vignette: 0.3 }, vignette: 0.3 });
+    const composed = await runTool('video.compose', admitted, { clips: shots });
     assert.ok(composed.result.grade?.params?.warmth === -0.3, 'the world\'s grade');
     const spans = composed.result.clips.map((c: any) => ({ start: c.start, end: c.end }));
     const length = composed.result.duration;
@@ -460,6 +464,15 @@ test('world.export: a zip and world.json from a mocked world, every file with it
     assert.equal(m.files.find((f: any) => f.path.endsWith('model.glb')).recipe.params.prompt, 'mesh.rig prompt');
     assert.match(files.get('frostmoon/look/palette.gpl')!.toString(), /GIMP Palette[\s\S]*192\s+57\s+43\t#c0392b/);
     assert.match(files.get('frostmoon/README.md')!.toString(), /Import World Pack/);
+    // The web loader reads the same manifest.
+    // @ts-ignore: plain JS client
+    const { worldPack } = await import('../clients/js/hawkes-world.mjs');
+    const wp = worldPack(m, 'https://game.example/worlds/frostmoon/');
+    assert.equal(wp.url(wp.character('maya').model), 'https://game.example/worlds/frostmoon/characters/maya/model.glb');
+    assert.equal(wp.place('p_harbor').skybox, 'places/the-harbor/skybox.png');
+    assert.deepEqual(wp.palette(), [0x0b1d3a, 0xc0392b]);
+    assert.equal(wp.file(wp.prop('Lantern').model).recipe.tool, 'mesh.rig');
+    assert.throws(() => worldPack({ format: 'other' }));
   } finally { exp._setWorldSource(null); }
 });
 

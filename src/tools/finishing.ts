@@ -18,7 +18,7 @@ import path from 'node:path';
 import type { RunContext, Tool } from './types.ts';
 import { GenError, run, filterScriptArgs } from '../util.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
-import { probeMedia, toSrt, toVtt, type Caption, type Probe } from './compose.ts';
+import { probeMedia, toSrt, toVtt, composeTool, setFinalPass, type Caption, type Probe } from './compose.ts';
 import { genClient, child, firstAsset } from './chain.ts';
 import { analyze, ff } from '../audio/post.ts';
 import { getAsset } from '../library.ts';
@@ -28,7 +28,7 @@ import {
   renderStem, mixStems, MIX, type CutPoint, type StoryBeat, type PlaceSpan, type StemKind, type StemPart,
 } from '../finishing/sound.ts';
 import { gradeFilters } from '../finishing/grade.ts';
-import { resolveGrade } from '../finishing/world-grade.ts';
+import { resolveGrade, worldGradeAtSubmit } from '../finishing/world-grade.ts';
 import { planPace } from '../finishing/cut.ts';
 import {
   ASPECTS, planReframe, parseCaptions, shiftCaptions, planCredits, assScript, titleEvents, creditEvents, creditSeconds,
@@ -658,3 +658,15 @@ export const FINISHING_TOOLS: Tool[] = [
   audioScoreTool, audioAmbienceTool, audioMixTool, editPaceTool, videoGradeTool, videoTitlesTool, videoReframeTool,
   videoThumbnailsTool, videoTrailerTool, videoDeliverTool, worldExportTool,
 ];
+
+// video.compose on the control server: a world's grade becomes its `grade` param at submit, and the final pass is queued
+// through Gen's own API (compose itself stays free of the library: it also runs in the CPU service).
+const ownAdmit = composeTool.admit;
+composeTool.admit = (call) => worldGradeAtSubmit(ownAdmit ? ownAdmit(call) : call.params, call.project);
+setFinalPass(async (ctx, cut, poster) => {
+  const gen = genClient(ctx);
+  const up = await gen.submit('video.upscale', { params: {}, inputs: { video: cut }, labels: { parent: ctx.job.id, step: 'final-upscale' }, key: `${ctx.job.id}:final-upscale`, reuse: true });
+  const restore = poster ? await gen.submit('image.restore', { params: {}, inputs: { image: poster }, labels: { parent: ctx.job.id, step: 'final-restore' }, key: `${ctx.job.id}:final-restore`, reuse: true }) : null;
+  ctx.log(`final pass queued: video.upscale ${up.id}${restore ? `, image.restore ${restore.id}` : ''}`);
+  return { upscale: up.id, ...(restore ? { restore: restore.id } : {}) };
+});

@@ -268,6 +268,15 @@ export function toolFloorCredits(toolId: string): number {
   if (toolId === 'video.change') return 60;
   if (toolId === 'audio.revoice') return 20;
   if (toolId === 'audio.transcribe') return 5;
+  // Finishing (src/tools/finishing.ts, provisional): ffmpeg work is near free; chains are priced for their children
+  // (music sections, ambience beds, Claude's picks, a trailer's score), which run on Gen's own key.
+  if (toolId === 'edit.pace' || toolId === 'world.export') return 1;
+  if (toolId === 'video.grade' || toolId === 'video.reframe' || toolId === 'video.titles' || toolId === 'audio.mix') return 3;
+  if (toolId === 'video.thumbnails') return 5;
+  if (toolId === 'audio.ambience') return 16;
+  if (toolId === 'audio.score') return 25;
+  if (toolId === 'video.deliver') return 15;
+  if (toolId === 'video.trailer') return 40;
   if (toolId === 'texture.maps' || toolId === 'image.normals' || toolId === 'image.albedo' || toolId === 'image.depth' || toolId === 'image.segment') {
     return 5;
   }
