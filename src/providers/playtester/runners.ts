@@ -10,7 +10,7 @@ import type { PlaytestRunner, PlaytestTarget, Settings } from '../../config.ts';
 import { env } from '../../config.ts';
 import { isDown } from '../gpu/health.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
-import { cloudPlaytestsFor, runpodPlaytest, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
+import { cloudPlaytestsFor, runpodPlaytest, modalPlaytest, providerOfVariant, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
 
 export type Lane = 'studio' | 'customer';
 export type RunnerChoice =
@@ -41,7 +41,7 @@ export function claimRunner(id: string): () => void {
 /** Tests start clean. */
 export const resetRunners = () => active.clear();
 
-const variantOf = (p: PlaytestRunner['provider']) => (p === 'runpod' ? 'runpod' : p === 'cloudrun-cpu' ? 'cpu' : 'gpu');
+const variantOf = (p: PlaytestRunner['provider']) => (p === 'runpod' ? 'runpod' : p === 'modal' ? 'modal' : p === 'cloudrun-cpu' ? 'cpu' : 'gpu');
 
 /**
  * The runners that apply: the settings' list, plus today's browser services as implicit web runners whenever that list
@@ -63,8 +63,8 @@ function implicitWebRunners(project: string | null | undefined, settings: Pick<S
   return clouds.map((cloud) => ({
     cloud,
     runner: {
-      id: `${cloud.variant === 'runpod' ? 'runpod' : cloud.variant === 'cpu' ? 'cloudrun-cpu' : 'cloudrun'}${cloud.region && cloud.region !== 'RunPod' ? `-${cloud.region}` : ''}`,
-      provider: cloud.variant === 'runpod' ? 'runpod' : cloud.variant === 'cpu' ? 'cloudrun-cpu' : 'cloudrun',
+      id: `${providerOfVariant(cloud.variant)}${cloud.region && cloud.region !== 'RunPod' && cloud.region !== 'Modal' ? `-${cloud.region}` : ''}`,
+      provider: providerOfVariant(cloud.variant),
       url: cloud.url, targets: ['web'], lanes: ['studio', 'customer'],
       pricePerSecond: cloud.pricePerSecond / Math.max(1, cloud.tabsPerInstance), maxConcurrent: cloud.maxInstances * cloud.tabsPerInstance,
       tokenEnv: null, enabled: true,
@@ -81,6 +81,10 @@ export function browserService(r: PlaytestRunner, settings: Pick<Settings, 'play
     const url = r.url ?? t.runpod.url;
     if (!url) return null;
     base = runpodPlaytest({ ...t.runpod, url });
+  } else if (v === 'modal') {
+    const url = r.url ?? t.modal.url;
+    if (!url) return null;
+    base = modalPlaytest({ ...t.modal, url });
   } else {
     const conf = v === 'cpu' ? t.cloudrunCpu : t.cloudrun;
     const url = r.url ?? conf.url;

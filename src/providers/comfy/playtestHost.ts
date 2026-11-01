@@ -74,7 +74,7 @@ export type PlaytestHost = {
   /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
   /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). Null on Cloud Run. */ ssh: { args: string[]; dest: string } | null;
   /** The runner it plays on (settings.playtest.runners), when the router chose it. */ runner?: string | null;
-  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu' | 'runpod';
+  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu' | 'runpod' | 'modal';
   /** Set when the browser has no GPU (the Cloud Run CPU service): why, for the result's softwareBecause. */ software?: string | null;
   /** How much slower than a GPU browser to allow for (the boot wait and the default scenario limit): 1 on a GPU. */ slow?: number;
   /** A browser already connected (Cloud Run: a pool with a connection per tab); else playtest.ts connects to wsEndpoint. */ browser?: any;
@@ -93,7 +93,7 @@ export const GPU_COLD_START_MS = 12 * 60_000;
  * minutes); with more than one service, the others and later rounds get 40 s each (a full region is skipped, not waited on).
  */
 export function connectWaitMs(cloud: { variant?: string }, round: number, { many, game }: { many: boolean; game: boolean }): number | undefined {
-  if (cloud.variant === 'runpod' && round === 1) return game ? GPU_COLD_START_MS : many ? 5 * 60_000 : undefined;
+  if ((cloud.variant === 'runpod' || cloud.variant === 'modal') && round === 1) return game ? GPU_COLD_START_MS : many ? 5 * 60_000 : undefined;
   return many ? 40_000 : undefined;
 }
 
@@ -113,7 +113,7 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
   /** false: when none of them has a browser, null instead of the playtesters (customers' runs, builds the service serves). */ fallback?: boolean;
   /** A build each service serves itself (cloudrun.ts siteHeader). */ site?: string;
 } = {}): Promise<PlaytestHost | null> {
-  const { cloudPlaytestsFor, openCloudPlaytestHost, localPortsOf } = await import('../playtester/cloudrun.ts');
+  const { cloudPlaytestsFor, openCloudPlaytestHost, localPortsOf, providerDown, providerHealthKey, refusedForMoney } = await import('../playtester/cloudrun.ts');
   const { loadSettings } = await import('../../config.ts');
   const { markDown } = await import('../gpu/health.ts');
   const { runnerHealthKey, runnerCooldown } = await import('../playtester/runners.ts');
@@ -137,7 +137,15 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
     step(`skipping RunPod: ${broke}`);
     passedOver.push(`RunPod skipped: ${broke}`);
   }
-  const clouds = broke ? listed.filter((c) => c.variant !== 'runpod') : listed;
+  // A provider that refused us a moment ago (Modal out of credit, a bad token) cools down: the next one plays.
+  const clouds = (broke ? listed.filter((c) => c.variant !== 'runpod') : listed).filter((c) => {
+    const down = c.variant !== 'cpu' ? providerDown(c) : null;
+    if (down) {
+      step(`skipping ${c.name}: ${down.reason}`);
+      passedOver.push(`${c.name} skipped: ${down.reason}`);
+    }
+    return !down;
+  });
   // In order: the GPU browser (the RunPod endpoint, docs/playtest-runpod.md, or the L4 service), then the CPU service
   // (software WebGL) in each of its regions, then the playtesters. Each
   // step says why it moved on. With more than one service, each try is short (a full region is skipped, not waited on)
@@ -157,6 +165,9 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
         if (cloud.variant !== 'cpu') passedOver.push(`${cloud.name}: ${why.split('\n')[0].slice(0, 160)}`);
         // A router's runner that refused us cools down (runners.ts), so the next runs go elsewhere first.
         if (cloud.runner && round === 1 && !/Build Failed/.test(why)) markDown(runnerHealthKey(cloud.runner), why.slice(0, 200), runnerCooldown(why));
+        // A provider out of credit or refusing our key cools down too when it isn't a router's runner, so the next
+        // playtests go straight to the next provider (RunPod's balance is read on its own: gpu/credit.ts).
+        else if (!cloud.runner && cloud.variant !== 'cpu' && (refusedForMoney(why) || /\b(401|403)\b|Unauthorized|Forbidden/i.test(why))) markDown(providerHealthKey(cloud.variant), why.slice(0, 200), runnerCooldown(refusedForMoney(why) ? '401' : why));
         const nxt = clouds[i + 1] ?? (many && Date.now() < end ? clouds[0] : null);
         step(`no browser on ${cloud.name} in ${cloud.region} (${why.slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : fallback ? 'using the playtesters' : 'no other runner'}`);
       }

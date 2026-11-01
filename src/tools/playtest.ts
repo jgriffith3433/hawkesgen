@@ -199,7 +199,7 @@ async function webRoute(ctx: RunContext, p: Record<string, any>, build: BuildRef
   const fallback = !customer && !site;
   if (!fallback) p.gpu = 'require';
   // GPU runners left out (cooldown, credit, already tried): said again if the run lands in software.
-  const passedOver = c.skipped.filter((x) => /^(runpod|cloudrun)(?!-cpu)/.test(x));
+  const passedOver = c.skipped.filter((x) => /^(runpod|modal|cloudrun)(?!-cpu)/.test(x));
   return { clouds, fallback, site, ...(passedOver.length ? { passedOver } : {}) };
 }
 

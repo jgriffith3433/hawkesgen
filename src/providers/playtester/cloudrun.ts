@@ -20,14 +20,15 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, type Settings, type PlaytestBackend } from '../../config.ts';
+import { paths, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
 import { gcpTokens } from '../gcp/gcs.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
+import { isDown } from '../gpu/health.ts';
 import { runpodEndpointMax } from './runpodcap.ts';
 import { loadServiceMap, pricePerSecond } from '../cloudrun/services.ts';
 import type { PlaytestHost } from '../comfy/playtestHost.ts';
 
-export type Variant = 'gpu' | 'cpu' | 'runpod';
+export type Variant = 'gpu' | 'cpu' | 'runpod' | 'modal';
 /**
  * One Cloud Run playtest service as Gen uses it. `variant` cpu is gen-playtest-cpu (software WebGL); `slow` multiplies
  * the boot wait and the default scenario limit there; `software` says why frame rates mean little (null on the L4).
@@ -50,7 +51,7 @@ export type ServiceSpec = {
   name: string; region: string; gpu: string | null; cpu: number; memoryGi: number; maxInstances: number; tabsPerInstance: number; timeoutSeconds: number;
   variant?: Variant; slow?: number; prices?: { cpuPerVcpuSecond: number; memoryPerGibSecond: number };
 };
-export const SPEC_FILE = (variant: Exclude<Variant, 'runpod'> = 'gpu') => path.join(paths.server, 'playtest-cloudrun', variant === 'cpu' ? 'service-cpu.json' : 'service.json');
+export const SPEC_FILE = (variant: Exclude<Variant, 'runpod' | 'modal'> = 'gpu') => path.join(paths.server, 'playtest-cloudrun', variant === 'cpu' ? 'service-cpu.json' : 'service.json');
 export const loadSpec = (file = SPEC_FILE()): ServiceSpec => JSON.parse(fs.readFileSync(file, 'utf8'));
 
 /** Which backend a playtest of this project runs on: the project's own setting, else the default. */
@@ -78,10 +79,13 @@ export const CPU_SOFTWARE_WHY = 'played on the Cloud Run CPU service (gen-playte
  */
 export function cloudPlaytestsFor(project: string | null | undefined, settings: Pick<Settings, 'playtest'>, specs: { gpu?: ServiceSpec; cpu?: ServiceSpec } = {}): CloudPlaytest[] {
   const t = settings.playtest;
-  const backend = playtestBackendOf(project, t);
-  const order: Variant[] = backend === 'runpod' ? ['runpod', 'cpu'] : backend === 'cloudrun' ? ['gpu', 'cpu'] : backend === 'cloudrun-cpu' ? ['cpu'] : [];
+  const order = playtestVariantsFor(project, t);
   const out: CloudPlaytest[] = [];
   for (const v of order) {
+    if (v === 'modal') {
+      if (t.modal?.url) out.push(modalPlaytest({ ...t.modal, url: t.modal.url }));
+      continue;
+    }
     if (v === 'runpod') {
       // The endpoint's own workers.max once Gen has read it (runpodcap.ts), so raising the endpoint raises the lane.
       const live = runpodEndpointMax(t.runpod?.url);
@@ -100,8 +104,38 @@ export function cloudPlaytestsFor(project: string | null | undefined, settings: 
   return out;
 }
 
+const VARIANT_OF: Record<PlaytestProvider, Variant> = { runpod: 'runpod', modal: 'modal', cloudrun: 'gpu', 'cloudrun-cpu': 'cpu' };
+export const providerOfVariant = (v: Variant | undefined): PlaytestProvider => (v === 'runpod' ? 'runpod' : v === 'modal' ? 'modal' : v === 'cpu' ? 'cloudrun-cpu' : 'cloudrun');
+
+/**
+ * The browser services a web playtest of this project tries, in order, as variants. A project's own backend
+ * (settings.playtest.projects) keeps today's rule; else settings.playtest.order (Studio's provider order) when it is
+ * set, without the disabled ones; else the default backend's rule (runpod: RunPod then the CPU service; cloudrun: the L4
+ * then the CPU service; cloudrun-cpu: the CPU service; ec2: none). Software WebGL is always last.
+ */
+export function playtestVariantsFor(project: string | null | undefined, t: Settings['playtest']): Variant[] {
+  const own = project ? t.projects[project] : undefined;
+  if (!own && t.order?.length) {
+    const off = new Set(t.disabled ?? []);
+    return t.order.filter((id) => !off.has(id)).map((id) => VARIANT_OF[id]);
+  }
+  const backend = own ?? t.backend;
+  return backend === 'runpod' ? ['runpod', 'cpu'] : backend === 'cloudrun' ? ['gpu', 'cpu'] : backend === 'cloudrun-cpu' ? ['cpu'] : [];
+}
+
+/** A web playtest provider's cooldown key after it refused us (gpu/health.ts), for providers not listed as runners. */
+export const providerHealthKey = (v: Variant | undefined) => `playtest:${providerOfVariant(v)}`;
+/** The provider's cooldown now, or null. */
+export const providerDown = (c: Pick<CloudPlaytest, 'variant' | 'runner'>, now = Date.now()) => isDown(c.runner ? `runner:${c.runner}` : providerHealthKey(c.variant), now);
+
+/** The Modal web endpoint as a playtest service: a GPU container per `tabsPerInstance` browsers, billed per second. */
+export function modalPlaytest(m: Settings['playtest']['modal'] & { url: string }): CloudPlaytest {
+  const app = /^https:\/\/[a-z0-9-]+?--([a-z0-9-]+)\.modal\.run/.exec(m.url)?.[1] ?? 'local';
+  return { ...m, url: m.url, pricePerSecond: m.pricePerHour / 3600, region: 'Modal', name: `modal ${app}`, variant: 'modal', slow: 1, software: null };
+}
+
 /** The RunPod endpoint as a playtest service (docs/playtest-runpod.md): a real GPU, billed per worker second. */
-export function runpodPlaytest(r: Settings['playtest']['runpod'] & { url: string }): CloudPlaytest {
+export function runpodPlaytest(r: Omit<Settings['playtest']['runpod'], 'workerQuota'> & { url: string }): CloudPlaytest {
   const id = /^https:\/\/([a-z0-9]+)(?:\.api\.runpod\.ai|-\d+\.proxy\.runpod\.net)/.exec(r.url)?.[1] ?? 'local';
   return { ...r, url: r.url, pricePerSecond: r.pricePerHour / 3600, region: 'RunPod', name: `runpod ${id}`, variant: 'runpod', slow: 1, software: null };
 }
@@ -112,7 +146,7 @@ export function cloudPlaytestFor(project: string | null | undefined, settings: P
 }
 
 /** The queue lane a Cloud Run playtest takes: one per service, so the L4's and the CPU service's tabs are counted apart. */
-export const cloudLaneKey = (c: Pick<CloudPlaytest, 'variant'>) => (c.variant === 'cpu' ? 'playtest-cloud-cpu' : c.variant === 'runpod' ? 'playtest-runpod' : 'playtest-cloud');
+export const cloudLaneKey = (c: Pick<CloudPlaytest, 'variant'>) => (c.variant === 'cpu' ? 'playtest-cloud-cpu' : c.variant === 'runpod' ? 'playtest-runpod' : c.variant === 'modal' ? 'playtest-modal' : 'playtest-cloud');
 
 /** Browser tabs the service plays at once: Gen's lane for Cloud Run playtests. */
 export const cloudLanes = (c: Pick<CloudPlaytest, 'maxInstances' | 'tabsPerInstance'>) => c.maxInstances * c.tabsPerInstance;
@@ -140,9 +174,23 @@ export function runpodHeaders(url: string, env: Record<string, string | undefine
   return { ...(isRunpodGateway(url) && env.RUNPOD_API_KEY ? { Authorization: `Bearer ${env.RUNPOD_API_KEY}` } : {}), ...(token ? { 'X-Hawkes-Token': token } : {}) };
 }
 
-/** The headers for a call to a playtest service: RunPod's for the RunPod endpoint, a Google ID token for Cloud Run. */
+/**
+ * Modal's headers: Modal's gateway checks a proxy auth token (MODAL_PROXY_KEY / MODAL_PROXY_SECRET, the ones Gen's GPU
+ * jobs use) and the image checks X-Hawkes-Token against its HAWKES_TOKEN (PLAYTEST_MODAL_TOKEN, else GPU_WORKER_TOKEN).
+ * The proxy token only ever goes to *.modal.run; a local container gets only the image's token.
+ */
+export function modalHeaders(url: string, env: Record<string, string | undefined> = process.env): Record<string, string> {
+  const token = env.PLAYTEST_MODAL_TOKEN || env.GPU_WORKER_TOKEN || '';
+  const gateway = /^https:\/\/[a-z0-9-]+\.modal\.run\/?$/.test(url) && env.MODAL_PROXY_KEY && env.MODAL_PROXY_SECRET;
+  return { ...(gateway ? { 'Modal-Key': env.MODAL_PROXY_KEY!, 'Modal-Secret': env.MODAL_PROXY_SECRET! } : {}), ...(token ? { 'X-Hawkes-Token': token } : {}) };
+}
+
+/** The headers for a call to a playtest service: RunPod's or Modal's for theirs, a Google ID token for Cloud Run. */
 export const headersFor = async (c: Pick<CloudPlaytest, 'url'> & Partial<Pick<CloudPlaytest, 'variant'>>, idToken: (aud: string) => Promise<string>, env?: Record<string, string | undefined>) =>
-  (c.variant === 'runpod' ? runpodHeaders(c.url, env) : authFor(c.url, idToken));
+  (c.variant === 'runpod' ? runpodHeaders(c.url, env) : c.variant === 'modal' ? modalHeaders(c.url, env) : authFor(c.url, idToken));
+
+/** A provider's refusal for money (Modal's spend limit or credit, a 402): no use waiting or retrying there. */
+export const refusedForMoney = (e: any) => /\b402\b|Payment Required|billing|spend(ing)? limit|out of credits?|insufficient (funds|credits?|balance)/i.test(String(e?.message ?? e));
 
 export const wsEndpointOf = (url: string) => `${url.replace(/^http/, 'ws').replace(/\/$/, '')}/pw`;
 
@@ -269,6 +317,7 @@ const defaultConnectDeps = (): ConnectDeps => ({ idToken: (aud) => gcpTokens().i
  * A refusal worth trying again: the service at its max instances (429), an instance starting or going away (503), or a
  * 500 on the WebSocket while a new instance cold-starts (2026-10-29: two playtests at once, one tab per instance).
  */
+const serviceLabel = (v: Variant | undefined) => (v === 'runpod' ? 'RunPod' : v === 'modal' ? 'Modal' : 'Cloud Run');
 export const retryable = (e: any) => /\b(429|503|502|500|504|408|524)\b|Too Many|Service Unavailable|Internal Server Error|Gateway Time-?out|no workers|ECONNRESET|socket hang up/i.test(String(e?.message ?? e));
 
 /**
@@ -289,10 +338,11 @@ export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & 
         headers: { ...(await headersFor(c, deps.idToken, deps.env)), ...(job ? { 'x-hawkes-job': job } : {}), ...(site ? { 'x-hawkes-site': site } : {}) },
       });
     } catch (e: any) {
-      // A RunPod gateway may hold the handshake while a worker cold-starts until Playwright's own timeout: on RunPod that
-      // is a slow start, not a refusal, so it is tried again until the whole wait is up.
-      const again = retryable(e) || (c.variant === 'runpod' && /Timeout \d+ ?ms exceeded/i.test(String(e?.message ?? e)));
-      if (!again || deps.now() + wait > end) throw new Error(`${c.variant === 'runpod' ? 'RunPod' : 'Cloud Run'} playtest service: ${String(e?.message ?? e).split('\n')[0]}`);
+      // A RunPod or Modal gateway may hold the handshake while a worker cold-starts until Playwright's own timeout: there
+      // that is a slow start, not a refusal, so it is tried again until the whole wait is up. A refusal for money isn't.
+      const gateway = c.variant === 'runpod' || c.variant === 'modal';
+      const again = !refusedForMoney(e) && (retryable(e) || (gateway && /Timeout \d+ ?ms exceeded/i.test(String(e?.message ?? e))));
+      if (!again || deps.now() + wait > end) throw new Error(`${serviceLabel(c.variant)} playtest service: ${String(e?.message ?? e).split('\n')[0]}`);
       onStep(`the playtest service is full or starting (attempt ${attempt}); trying again in ${Math.round(wait / 1000)} s`);
       await deps.sleep(wait);
       wait = Math.min(30_000, wait * 2);
@@ -355,8 +405,9 @@ export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 
   const n = Math.max(1, Math.min(8, Math.round(tabs)));
   const cpu = c.variant === 'cpu';
   const runpod = c.variant === 'runpod';
-  const where = runpod ? `RunPod (${c.name.replace(/^runpod /, 'endpoint ')}, ${c.gpu ?? 'GPU'})` : `Cloud Run (${c.name}, ${c.region}${cpu ? ', software WebGL' : ''})`;
-  step(`opening ${n === 1 ? 'a browser' : `${n} browsers`} on ${where}; a cold start takes ${cpu ? 'about half a minute' : runpod ? 'up to a few minutes (the image is pulled once per machine)' : 'a minute or two'}`);
+  const modal = c.variant === 'modal';
+  const where = runpod ? `RunPod (${c.name.replace(/^runpod /, 'endpoint ')}, ${c.gpu ?? 'GPU'})` : modal ? `Modal (${c.name.replace(/^modal /, '')}, ${c.gpu ?? 'GPU'})` : `Cloud Run (${c.name}, ${c.region}${cpu ? ', software WebGL' : ''})`;
+  step(`opening ${n === 1 ? 'a browser' : `${n} browsers`} on ${where}; a cold start takes ${cpu ? 'about half a minute' : runpod ? 'up to a few minutes (the image is pulled once per machine)' : modal ? 'a minute or two (the GPU self-test)' : 'a minute or two'}`);
   const t0 = Date.now();
   // A router's runner (runners.ts) counts this run against its maxConcurrent until close().
   const releaseRunner = c.runner ? (await import('./runners.ts')).claimRunner(c.runner) : () => {};
@@ -371,10 +422,10 @@ export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 
   let closed = false;
   return {
     wsEndpoint: wsEndpointOf(c.url),
-    server: runpod ? `RunPod ${c.name.replace(/^runpod /, '')} (${c.gpu ?? 'GPU'})` : `Cloud Run ${c.name} (${c.region}${cpu ? ', software WebGL' : ''})`,
+    server: runpod ? `RunPod ${c.name.replace(/^runpod /, '')} (${c.gpu ?? 'GPU'})` : modal ? `Modal ${c.name.replace(/^modal /, '')} (${c.gpu ?? 'GPU'})` : `Cloud Run ${c.name} (${c.region}${cpu ? ', software WebGL' : ''})`,
     playtester: null,
     runner: c.runner ?? null,
-    backend: runpod ? 'runpod' : cpu ? 'cloudrun-cpu' : 'cloudrun',
+    backend: runpod ? 'runpod' : modal ? 'modal' : cpu ? 'cloudrun-cpu' : 'cloudrun',
     software: c.software ?? null,
     slow: c.slow ?? 1,
     ssh: null,
@@ -390,7 +441,7 @@ export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 
       void pool.close();
       releaseRunner();
       const seconds = Math.round((Date.now() - connectedAt) / 100) / 10;
-      if (runpod) return onUsage?.(runpodUsage(c, { seconds, connectSeconds: (connectedAt - t0) / 1000, tabs: n }));
+      if (runpod || modal) return onUsage?.(runpodUsage(c, { seconds, connectSeconds: (connectedAt - t0) / 1000, tabs: n }, modal ? 'modal-playtest' : 'runpod-playtest'));
       onUsage?.({
         provider: cpu ? 'gcp-playtest-cpu' : 'gcp-playtest', unit: 'tab_seconds', amount: Math.round(seconds * n * 10) / 10, cost: Math.round(tabCost(c, seconds, n) * 10_000) / 10_000,
         detail: `${n} tab(s) on ${c.name} for ${seconds} s (connecting took ${Math.round((connectedAt - t0) / 1000)} s)${cpu ? '; request-based billing, no idle tail' : '; the instance\'s idle tail is not included'}`,
@@ -404,13 +455,13 @@ export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 
  * waited through counts) until its idle timeout after the last request, so the cost is the tabs' share of the worker for
  * the connect wait and the play, plus the idle tail once: an upper bound when playtests follow each other on a warm worker.
  */
-export function runpodUsage(c: Pick<CloudPlaytest, 'pricePerSecond' | 'tabsPerInstance' | 'name' | 'gpu' | 'idleSeconds'>, { seconds, connectSeconds, tabs }: { seconds: number; connectSeconds: number; tabs: number }) {
+export function runpodUsage(c: Pick<CloudPlaytest, 'pricePerSecond' | 'tabsPerInstance' | 'name' | 'gpu' | 'idleSeconds'>, { seconds, connectSeconds, tabs }: { seconds: number; connectSeconds: number; tabs: number }, provider: 'runpod-playtest' | 'modal-playtest' = 'runpod-playtest') {
   const idle = c.idleSeconds ?? 0;
   const share = Math.min(1, tabs / c.tabsPerInstance);
   const cost = c.pricePerSecond * share * (seconds + connectSeconds + idle);
   return {
-    provider: 'runpod-playtest', unit: 'tab_seconds', amount: Math.round(seconds * tabs * 10) / 10, cost: Math.round(cost * 10_000) / 10_000,
-    detail: `${tabs} tab(s) on ${c.name} (${c.gpu ?? 'GPU'}) for ${seconds} s; connecting took ${Math.round(connectSeconds)} s; includes the worker's ${idle} s idle tail`,
+    provider, unit: 'tab_seconds', amount: Math.round(seconds * tabs * 10) / 10, cost: Math.round(cost * 10_000) / 10_000,
+    detail: `${tabs} tab(s) on ${c.name} (${c.gpu ?? 'GPU'}) for ${seconds} s; connecting took ${Math.round(connectSeconds)} s; includes the ${provider === 'modal-playtest' ? 'container' : 'worker'}'s ${idle} s idle tail`,
   };
 }
 

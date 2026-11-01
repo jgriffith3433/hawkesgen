@@ -1781,8 +1781,10 @@ data: ${JSON.stringify(e)}
       const pc = await import('./providers/playtester/cloudrun.ts');
       const s = loadSettings();
       const project = url.searchParams.get('project');
-      const variant = url.searchParams.get('variant') === 'cpu' ? 'cpu' : url.searchParams.get('variant') === 'runpod' ? 'runpod' : 'gpu';
-      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, projects: {}, backend: variant === 'cpu' ? 'cloudrun-cpu' : variant === 'runpod' ? 'runpod' : 'cloudrun' } });
+      const v = url.searchParams.get('variant');
+      const variant = v === 'cpu' ? 'cpu' : v === 'runpod' ? 'runpod' : v === 'modal' ? 'modal' : 'gpu';
+      // One service: the variant asked for (?variant=modal: the Modal endpoint; a self-test there starts a container, about $0.02).
+      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, projects: {}, disabled: [], order: variant === 'modal' ? ['modal'] : [], backend: variant === 'cpu' ? 'cloudrun-cpu' : variant === 'runpod' ? 'runpod' : 'cloudrun' } });
       const out: any = { settings: s.playtest, backendFor: project ? pc.playtestBackendOf(project, s.playtest) : s.playtest.backend, deployed: Boolean(c) };
       if (c) Object.assign(out, { service: c.name, variant: c.variant, region: c.region, lanes: pc.cloudLanes(c), pricePerHour: Math.round(c.pricePerSecond * 3600 * 100) / 100, perTabMinute: Math.round(pc.tabCost(c, 60) * 10_000) / 10_000 });
       if (c && url.searchParams.get('selftest') === '1') out.selftest = await pc.cloudSelfTest(c, { fresh: url.searchParams.get('fresh') === '1', all: url.searchParams.get('all') === '1' });

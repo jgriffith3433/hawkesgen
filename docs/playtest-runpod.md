@@ -87,6 +87,29 @@ connection, the video encoded on the worker (NVENC) over `/encode`. Only the hea
 - Each GL candidate in the self-test now has a hard deadline, so a hung GPU process fails the test instead of holding
   `/ping` at 204.
 
+## Provider order and Modal (2026-11-01)
+
+Web playtests try browser providers in `settings.playtest.order` (Studio's playtest setting writes it through
+`PUT /v1/playtest/capacity`): `runpod`, `modal`, `cloudrun` (the L4 service), `cloudrun-cpu` (software WebGL). Software is
+always moved last, so a game takes any GPU first; ids in `settings.playtest.disabled` are left out; a project's own backend
+(`settings.playtest.projects`) still wins. Empty order: `backend` decides as before. A provider that is out of credit
+(RunPod's balance, `gpu/credit.ts`) is skipped with the reason, and one that refused us for money or a key (a 402, a spend
+limit, 401/403) cools down for 30 minutes (`playtest:<id>` in `gpu/health.ts`), so the next playtests go straight to the
+next provider. The queue's lane follows the first provider a run will actually use.
+
+**Modal** runs the same image (`ghcr.io/jgriffith3433/hawkes-gen-playtest:latest`, public) as a Modal web endpoint on an
+L4: `tools/playtest-modal/deploy.mjs` writes the app (`@modal.web_server(8080, requires_proxy_auth=True)`, `max_containers`,
+`scaledown_window=60`, no warm containers: scale to zero) and `--apply` deploys it. The workflow
+`ops-modal-playtest-deploy.yml` (production environment, main only; the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` that
+`ops-modal-deploy.yml` uses, and `GPU_WORKER_TOKEN` as the image's `HAWKES_TOKEN`) runs it and prints the endpoint URL.
+Gen calls it with the Modal proxy token it already has for GPU jobs (`MODAL_PROXY_KEY` / `MODAL_PROXY_SECRET`) and
+`X-Hawkes-Token` (`PLAYTEST_MODAL_TOKEN`, else `GPU_WORKER_TOKEN`). Then set `settings.playtest.modal.url` (and put `modal`
+in the order): `PUT /v1/playtest/capacity {"modal": {"url": "https://<workspace>--hawkes-gen-playtest-browser.modal.run"}}`.
+Check it with `GET /v1/playtester/cloud?variant=modal&selftest=1` (starts a container: about $0.02). About $1.12/hour per
+container while one runs (L4 $0.80, 4 cores, 16 GiB), two browsers each; usage rows are `modal-playtest`.
+Not verified yet: whether Modal's GPU sandbox gives Chromium a graphics path (EGL/Vulkan). If it doesn't, the image's
+self-test fails, `/pw` answers 412 "No GPU" and the run moves on to the next provider.
+
 ## Measured (2026-10-29)
 
 Each is Gen's real `playtest.run` (scratch Gen from this branch on J's PC, `gpu: require`), the browser on RunPod, the
