@@ -9,7 +9,11 @@ at every shot.
 
 ## What's built
 
-### The kinds (`src/worldkinds.ts`)
+### The kinds (`src/worldkinds.ts`; the documents in `src/worlddocs.ts`)
+
+`src/worlddocs.ts` holds the normalizers, `continuityAt` and the types with no scene-store imports, so `src/worlds.ts`
+(and the making loop and finishing, which import it) never load the scene kinds while `src/jobs.ts` is still loading.
+`src/jobs.ts`'s `onSubmit` hook list is function-hoisted for the same reason.
 
 Registered like the character kind (`registerKind`), plug and play by scene id. `KIND_IDS` in `src/scenes.ts` now lists
 them, so `/v1/scenes` makes, lists, opens, saves, renders and duplicates them like any scene.
@@ -41,7 +45,9 @@ them, so `/v1/scenes` makes, lists, opens, saves, renders and duplicates them li
 - **Inheritance on every job** (`inheritWorld`, registered with the new `onSubmit` hook in `src/jobs.ts`
   `prepareSubmit`, after presets): a job whose labels name the scene it came from (`scene`, else `editor`, else
   `director`; `labels.world` may also name a scene or world directly) and whose scene is in a world gets the look, and
-  `labels.world` records which. `labels.world: "off"` turns it off. The scene must be in the job's own project.
+  `labels.world` records which. `labels.world: "off"` turns it off. The scene must be in the job's own project. An
+  `asset.make` chain gets it on each step that draws (its steps run as jobs labelled only with their parent, so never
+  twice; a prompt that has the style line already isn't given it again).
   - The app sends `labels.scene` (the scene in front) on every job it runs (`media.js runJob`); Create's "More settings"
     has **Use the world's look** (on), which sends `world: "off"` when unticked.
   - The scene AIs (`/v1/scenes/:id/assistant`) already label jobs with `scene`; the world packs label each job with its
@@ -67,11 +73,12 @@ On the `src/sceneai.ts` pattern (the whole document back, jobs with `gen` marks,
 - Each turn sees the scene's world (`worldContext`): rules, look, members.
 - **Start a world**: `startWorld(project, idea, board)` (the mood board's pictures go to Claude as images and become the
   world's style board), `parseProposal`, `keepWorld(project, proposal, keep)`.
-- **Packs**: `placePackPlan` (panorama, a wide view, a 20-second ambience), `propPackPlan` (the sheet),
-  `worldPackPlan` (two style-board pictures), `characterPackPlan` (front and portrait). `packScenes` prices them and runs
-  them only when confirmed (or under the auto limit). **`placePackPlan` and `propPackPlan` are my stand-ins**, in
-  `worldai.ts` under the names the brief gives; when gen-identity lands its own in `src/identity.ts`, `packPlan` should
-  call those and these go.
+- **Packs**: `placePackPlan` and `propPackPlan` turn `src/identity.ts`'s plans into one `asset.make` job each, with the
+  world's style line as `style`: a place's panorama then three views painted from it (`panorama`, `view-wide`,
+  `view-eye`, `view-reverse`; with a panorama already made, only the views, from it), plus its ambience on its own; a
+  prop's front, cutout and checked view sheet (`sheet` is its sheet, `front` a view). Each element names the saved output
+  it takes (`from`, read by `resolveElements`). `worldPackPlan` (two style-board pictures), `characterPackPlan` (front and
+  portrait). `packScenes` prices them and runs them only when confirmed (or under the auto limit).
 - `useAsk(fn)` swaps the model call (the tests' mock).
 
 ### Routes (`src/worldroutes.ts`, one dispatch line in `src/api.ts`)
@@ -139,9 +146,7 @@ House AI rules as the other assistants: a Gen account without its own Claude pay
 - **The grade** is stored (`look.grade.params`) and editable; applying it to finished shots is gen-finishing's.
 - **Places on a stage**: dropping a place onto a stage doesn't set its sky yet (`director.js` explains drops of known
   kinds only). "Use in a new shot" does it.
-- **Inheritance inside `asset.make` steps**: a chain gets the look on its own params only, not on each step's.
 - The world AI's `create` makes scenes but doesn't start their packs; the person presses "Make the pictures".
-- `placePackPlan` / `propPackPlan` move to gen-identity's versions when they land.
 
 ## Live runs to approve (priced)
 

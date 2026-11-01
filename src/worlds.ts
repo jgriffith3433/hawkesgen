@@ -1,6 +1,6 @@
 // Worlds: the layer above scenes (docs/worlds.md, docs/worlds-roadmap.md Phase 3). A world scene holds the bible (tone,
 // rules, canon), the look every output inherits, and its characters, places, props and stories. Any scene may name its
-// world with `doc.world` (a scene id). The kinds are src/worldkinds.ts.
+// world with `doc.world` (a scene id). The kinds are src/worldkinds.ts (their documents src/worlddocs.ts).
 //
 // This file is the contract other work reads through:
 //   worldOf(doc)                    the world a scene belongs to
@@ -11,14 +11,14 @@
 //   continuityAt(story, i)          the state of things at a story's shot (src/worldkinds.ts)
 //   canonCheck(world, text)         the world's rules a script or a description breaks (Claude)
 //
-// Inheritance runs on every job: a job whose labels name the scene it came from (`scene`, `editor`, `director`) and whose
+// Inheritance runs on every job (an asset.make chain's steps each): a job whose labels name the scene it came from (`scene`, `editor`, `director`) and whose
 // scene has a world gets the look, unless its labels say `world: "off"` (the person turned it off under Fine-tune).
 
 import { db } from './db.ts';
 import { onSubmit, type JobSpec } from './jobs.ts';
 import { getTool } from './tools/index.ts';
 import { identityPack } from './identity.ts';
-import { normalizeWorld, normalizePlace, normalizeProp, continuityAt, type WorldDoc } from './worldkinds.ts';
+import { normalizeWorld, normalizePlace, normalizeProp, continuityAt, type WorldDoc } from './worlddocs.ts';
 import { ask, callScope } from './providers/anthropic.ts';
 import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
 
@@ -142,6 +142,21 @@ export function inheritWorld(project: string, spec: JobSpec) {
   if (L.world === 'off' || !spec.tool) return;
   const worldId = typeof L.world === 'string' && L.world !== 'off' ? worldOfScene(project, L.world) : worldOfScene(project, L.scene ?? L.editor ?? L.director);
   if (!worldId) return;
+  // A chain (asset.make): each step that draws gets the look on its own params and inputs. Its steps run as jobs
+  // labelled only with their parent, so they aren't given it twice.
+  const steps = (spec.params as any)?.steps;
+  if (spec.tool === 'asset.make' && Array.isArray(steps)) {
+    let any = false;
+    const next = steps.map((st: any) => {
+      if (!st || typeof st.tool !== 'string') return st;
+      const r = applyLook(project, worldId, st.tool, st.params ?? {}, st.inputs ?? {});
+      if (!r.labels.world) return st;
+      any = true;
+      return { ...st, params: r.params, ...(Object.keys(r.inputs).length ? { inputs: r.inputs } : {}) };
+    });
+    if (any) { spec.params = { ...spec.params, steps: next }; spec.labels = { ...L, world: worldId }; }
+    return;
+  }
   const r = applyLook(project, worldId, spec.tool, (spec.params ?? {}) as Record<string, any>, (spec.inputs ?? {}) as Record<string, any>);
   if (!r.labels.world) return;
   spec.params = r.params;

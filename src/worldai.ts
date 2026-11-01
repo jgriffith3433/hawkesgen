@@ -12,8 +12,8 @@
 // "Start a world" (startWorld, keepWorld): a sentence or a mood board in, a proposal out (the world with its look, three
 // characters, two places, a story idea) to keep, change or throw away; what's kept becomes scenes in that world.
 //
-// placePackPlan / propPackPlan stand in until the identity work (src/identity.ts, Phase 1) lands its own under the same
-// names; they plan the jobs that make a place's and a prop's references.
+// placePackPlan / propPackPlan turn src/identity.ts's pack plans (asset.make chains) into the jobs that fill a place's and
+// a prop's elements, with the world's style line.
 
 import crypto from 'node:crypto';
 import { ask as askClaude, callScope } from './providers/anthropic.ts';
@@ -26,6 +26,7 @@ import { worldContext, worldOf, type WorldContext } from './worlds.ts';
 import { normalizePlace, normalizeProp, normalizeWorld, normalizeStory, isWorldKind, type PlaceDoc, type PropDoc, type WorldDoc } from './worldkinds.ts';
 import { normalizeCharacter } from './scenekinds.ts';
 import { GenError } from './util.ts';
+import { placePackPlan as identityPlacePlan, propPackPlan as identityPropPlan } from './identity.ts';
 
 type AskFn = (p: any) => Promise<{ text: string; model?: string; cost?: number; billing?: string }>;
 let askFn: AskFn = askClaude as AskFn;
@@ -150,24 +151,48 @@ export function applyWorldAnswer(s: Scene, ans: { doc: any; jobs: SceneJob[]; cr
 export type PackPlan = { doc: any; jobs: SceneJob[] };
 const want = (e: any) => !e || (!e.asset && !e.pending);
 
-/** The jobs that make a place's pack: its panorama, a wide key view and its ambience, for what's missing. */
-export function placePackPlan(doc: PlaceDoc | any): PackPlan {
+/** The world's style line for a scene (its own world, or itself when it's a world): fed to the pack plans as `style`. */
+function styleOf(s: { kind?: string; id?: string; project?: string; doc: any }) {
+  const id = s.kind === 'world' ? s.id : worldOf(s.doc);
+  return s.project && id ? worldContext(s.project, id)?.look.style ?? '' : '';
+}
+
+/**
+ * The jobs that make a place's pack, for what's missing: one asset.make chain from src/identity.ts placePackPlan (a
+ * panorama, then three key views painted from it; or only the views, from the panorama it has), each element taking its
+ * saved output (`from`), and its ambience.
+ */
+export function placePackPlan(doc: PlaceDoc | any, o: { style?: string } = {}): PackPlan {
   const d = normalizePlace(doc);
-  const look = d.description.trim() || d.title;
   const jobs: SceneJob[] = [];
   const out: any = structuredClone(d);
-  if (want(d.panorama)) { jobs.push({ gen: jobs.length, tool: 'image.panorama', params: { prompt: `${look}. A seamless 360 degree equirectangular panorama, no people.`, seed: seed() }, inputs: {}, label: `${d.title}: panorama` }); out.panorama = { gen: jobs.length - 1 }; }
-  if (!d.views.some((v) => v.asset || v.pending)) { jobs.push({ gen: jobs.length, tool: 'image.generate', params: { prompt: `${look}. Wide establishing shot, no people.`, width: 1344, height: 768, seed: seed() }, inputs: {}, label: `${d.title}: wide view` }); out.views = [...out.views, { name: 'wide', gen: jobs.length - 1 }]; }
-  if (want(d.ambience)) { jobs.push({ gen: jobs.length, tool: 'audio.sfx', params: { text: `Ambience, room tone of ${look.slice(0, 200)}, a seamless loop`, seconds: 20 }, inputs: {}, label: `${d.title}: ambience` }); out.ambience = { gen: jobs.length - 1 }; }
+  const steps: any[] = identityPlacePlan(d.description.trim() || d.title, { style: o.style }).steps;
+  const needViews = !d.views.some((v) => v.asset || v.pending);
+  if (want(d.panorama) || (needViews && d.panorama?.asset)) {
+    const fromPano = !want(d.panorama);
+    // With a panorama already made, the views are painted from it (the chain's first step becomes the job's input).
+    const chain = fromPano ? steps.slice(1).map((st) => ({ ...st, inputs: { images: ['$input:0'] } })) : needViews ? steps : steps.slice(0, 1);
+    jobs.push({ gen: 0, tool: 'asset.make', params: { steps: chain, seed: seed() }, inputs: fromPano ? { files: [`el:${d.panorama!.id}`] } : {}, label: `${d.title}: ${fromPano ? 'views' : 'panorama and views'}` });
+    if (!fromPano) out.panorama = { gen: 0, from: 'panorama' };
+    if (needViews) out.views = [...out.views, ...[['wide', 'view-wide'], ['eye level', 'view-eye'], ['reverse', 'view-reverse']].map(([name, from]) => ({ name, gen: 0, from }))];
+  }
+  if (want(d.ambience)) { jobs.push({ gen: jobs.length, tool: 'audio.sfx', params: { text: `Ambience, room tone of ${(d.description.trim() || d.title).slice(0, 200)}, a seamless loop`, seconds: 20 }, inputs: {}, label: `${d.title}: ambience` }); out.ambience = { gen: jobs.length - 1 }; }
   return { doc: out, jobs };
 }
 
-/** The jobs that make a prop's pack: its sheet (the object alone, on a plain background). */
-export function propPackPlan(doc: PropDoc | any): PackPlan {
+/**
+ * The jobs that make a prop's pack: one asset.make chain from src/identity.ts propPackPlan (the prop alone, cut out,
+ * then a checked view sheet); the sheet is its `sheet`, the front picture a view.
+ */
+export function propPackPlan(doc: PropDoc | any, o: { style?: string } = {}): PackPlan {
   const d = normalizeProp(doc);
   const jobs: SceneJob[] = [];
   const out: any = structuredClone(d);
-  if (want(d.sheet)) { jobs.push({ gen: 0, tool: 'image.generate', params: { prompt: `${d.description.trim() || d.title}. The object alone, centered, three-quarter view, plain light grey background, even studio light, nothing else in frame.`, width: 1024, height: 1024, seed: seed() }, inputs: {}, label: `${d.title}: sheet` }); out.sheet = { gen: 0 }; }
+  if (want(d.sheet)) {
+    jobs.push({ gen: 0, tool: 'asset.make', params: { steps: identityPropPlan(d.description.trim() || d.title, { style: o.style }).steps, seed: seed() }, inputs: {}, label: `${d.title}: sheet` });
+    out.sheet = { gen: 0, from: 'sheet' };
+    if (!d.views.some((v) => v.asset || v.pending)) out.views = [...out.views, { name: 'front', gen: 0, from: 'front' }];
+  }
   return { doc: out, jobs };
 }
 
@@ -198,10 +223,10 @@ export function characterPackPlan(doc: any): PackPlan {
   return { doc: out, jobs };
 }
 
-export function packPlan(kind: string, doc: any): PackPlan | null {
+export function packPlan(kind: string, doc: any, o: { style?: string } = {}): PackPlan | null {
   if (kind === 'world') return worldPackPlan(doc);
-  if (kind === 'place') return placePackPlan(doc);
-  if (kind === 'prop') return propPackPlan(doc);
+  if (kind === 'place') return placePackPlan(doc, o);
+  if (kind === 'prop') return propPackPlan(doc, o);
   if (kind === 'character') return characterPackPlan(doc);
   return null;
 }
@@ -291,7 +316,7 @@ export function makeWorldPacks(project: string, worldId: string, canSee: (p: str
 
 /** The pack jobs for these scenes (what each is missing), priced; run when confirmed or under the auto limit. */
 export function packScenes(scenes: Scene[], deps: Omit<Deps, 'autoCredits'> & { confirm?: boolean; autoCredits?: number }) {
-  const plans = scenes.map((s) => ({ s, plan: packPlan(s.kind, s.doc) })).filter((x) => x.plan && x.plan.jobs.length) as { s: Scene; plan: PackPlan }[];
+  const plans = scenes.map((s) => ({ s, plan: packPlan(s.kind, s.doc, { style: styleOf(s) }) })).filter((x) => x.plan && x.plan.jobs.length) as { s: Scene; plan: PackPlan }[];
   const credits = plans.reduce((n, x) => n + x.plan.jobs.reduce((m, j) => m + deps.quote(j.tool, j.params), 0), 0);
   if (!deps.confirm && credits > (deps.autoCredits ?? 0)) return { credits, jobs: plans.reduce((n, x) => n + x.plan.jobs.length, 0), started: [], errors: [] as string[], proposed: true };
   const started: { scene: string; job: string; tool: string }[] = [];

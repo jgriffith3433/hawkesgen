@@ -16,6 +16,7 @@ const sc = await import('../src/scenes.ts');
 await import('../src/editor.ts');
 const dr = await import('../src/director.ts');
 const wk = await import('../src/worldkinds.ts');
+const kinds = await import('../src/scenekinds.ts');
 const W = await import('../src/worlds.ts');
 const wai = await import('../src/worldai.ts');
 const { getTool } = await import('../src/tools/index.ts');
@@ -200,11 +201,51 @@ test('the story AI writes top down with continuity; the place and prop packs are
     assert.equal(r.doc.shots[0].state.people[ana.id].wears, 'red parka');
     assert.equal(r.doc.shots[0].state.time, 'night');
   } finally { wai.useAsk(null); }
-  const place = wai.placePackPlan({ title: 'Dock', description: 'iced pier' });
-  assert.deepEqual(place.jobs.map((j) => j.tool), ['image.panorama', 'image.generate', 'audio.sfx']);
-  assert.equal(place.doc.panorama.gen, 0);
+});
+
+test('place and prop packs: one asset.make chain from the identity plans, each element taking its saved output', () => {
+  const { resolveElements } = kinds;
+  // A place: the panorama, then three views painted from it, in one chain; the ambience on its own; the world's style in.
+  const place = wai.placePackPlan({ title: 'Dock', description: 'iced pier' }, { style: 'grainy 16mm film' });
+  assert.deepEqual(place.jobs.map((j) => j.tool), ['asset.make', 'audio.sfx']);
+  const steps = place.jobs[0].params.steps;
+  assert.deepEqual(steps.map((s: any) => s.save), ['panorama', 'view-wide', 'view-eye', 'view-reverse']);
+  assert.match(steps[0].params.prompt, /iced pier\. grainy 16mm film/);
+  assert.deepEqual([place.doc.panorama, ...place.doc.views].map((e: any) => e.from), ['panorama', 'view-wide', 'view-eye', 'view-reverse']);
+  // Normalized (as applyScene does) and resolved: each element takes its own output, not the first.
+  const d = wk.normalizePlace(JSON.parse(JSON.stringify(place.doc).replaceAll('"gen":0', '"pending":"j_00000aaa"')));
+  const outs = [['panorama', A1], ['view-wide', A2], ['view-eye', A3], ['view-reverse', 'a_4444dddd4444']].map(([title, asset]) => ({ kind: 'image', title, asset }));
+  assert.equal(resolveElements([d.panorama, ...d.views], ['image'], () => ({ status: 'done', outputs: outs }) as any), true);
+  assert.deepEqual([d.panorama, ...d.views].map((e: any) => e.asset), [A1, A2, A3, 'a_4444dddd4444']);
+  assert.ok([d.panorama, ...d.views].every((e: any) => !e.from && !e.pending));
+  // With a panorama made, only the views, painted from it (the element's file is the chain's input).
+  const views = wai.placePackPlan({ title: 'Dock', panorama: { id: 'e_pano1', asset: A1 }, ambience: { asset: A3 } });
+  assert.equal(views.jobs.length, 1);
+  assert.deepEqual(views.jobs[0].inputs, { files: ['el:e_pano1'] });
+  assert.deepEqual(views.jobs[0].params.steps.map((s: any) => s.inputs.images[0]), ['$input:0', '$input:0', '$input:0']);
   assert.equal(wai.placePackPlan({ ...place.doc, panorama: { asset: A1 }, views: [{ name: 'wide', asset: A2 }], ambience: { asset: A3 } }).jobs.length, 0, 'nothing remade');
-  assert.deepEqual(wai.propPackPlan({ title: 'Lamp' }).jobs.map((j) => j.tool), ['image.generate']);
+  // A prop: front, cutout, a checked sheet; the sheet is its sheet, the front a view.
+  const prop = wai.propPackPlan({ title: 'Lamp', description: 'brass lantern' });
+  assert.deepEqual(prop.jobs.map((j) => j.tool), ['asset.make']);
+  assert.deepEqual(prop.jobs[0].params.steps.map((s: any) => s.tool), ['image.generate', 'image.remove-background', 'image.viewsheet']);
+  assert.equal(prop.doc.sheet.from, 'sheet');
+  assert.equal(prop.doc.views[0].from, 'front');
+});
+
+test('a chain made inside a world: each step that draws gets the look', () => {
+  const w = sc.createScene(P, 'world', { title: 'Chains', look: { style: 'grainy 16mm film', negative: 'neon' } });
+  const plc = sc.createScene(P, 'place', { title: 'Dock', world: w.id });
+  const spec: any = { project: P, tool: 'asset.make', params: { steps: [{ tool: 'image.generate', params: { prompt: 'a pier' } }, { tool: 'image.remove-background', inputs: { image: '$prev' } }, { preset: 'material' }] }, labels: { scene: plc.id } };
+  W.inheritWorld(P, spec);
+  assert.equal(spec.params.steps[0].params.prompt, 'a pier. grainy 16mm film');
+  assert.deepEqual(spec.params.steps[1], { tool: 'image.remove-background', inputs: { image: '$prev' } }, 'a step with no prompt is left alone');
+  assert.deepEqual(spec.params.steps[2], { preset: 'material' });
+  assert.equal(spec.labels.world, w.id);
+  // A pack whose prompts carry the style already isn't given it twice.
+  const pack = wai.placePackPlan({ title: 'Dock', description: 'iced pier' }, { style: 'grainy 16mm film' });
+  const again: any = { project: P, tool: 'asset.make', params: pack.jobs[0].params, labels: { scene: plc.id } };
+  W.inheritWorld(P, again);
+  assert.equal(again.params.steps[0].params.prompt.split('grainy 16mm film').length, 2);
 });
 
 test('start a world from a sentence: a proposal, then the kept parts as scenes in it (mocked)', async () => {
@@ -231,8 +272,9 @@ test('start a world from a sentence: a proposal, then the kept parts as scenes i
     assert.equal(priced.proposed, true);
     assert.equal(d.submitted.length, 0);
     const ran = wai.makeWorldPacks(P, kept.world.id, () => true, { ...d, confirm: true });
-    // world board 2 + characters 2 x 2 + places 2 x 3 = 12
-    assert.equal(ran.started.length, 12);
+    // world board 2 + characters 2 x 2 + places 2 x (one chain + ambience) = 10
+    assert.equal(ran.started.length, 10);
+    assert.ok(d.submitted.filter((s) => s.tool === 'asset.make').every((s) => s.params.steps[0].params.prompt.includes('grainy 16mm film, cold light')), "the world's style line goes into the packs");
     assert.ok(d.submitted.every((s) => s.scene), 'each job names its scene (so it inherits the world)');
     // (read as stored: the mocked jobs don't exist, so reading the scene would mark them gone)
     const { db } = await import('../src/db.ts');
