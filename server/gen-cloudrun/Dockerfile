@@ -32,6 +32,14 @@ RUN npm install -g --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-cod
 # The same Python tools auto-start.bat sets up on J's PC (src/jobs.ts finds .venv/bin/python).
 RUN python3 -m venv /app/.venv && /app/.venv/bin/pip install "rembg[cpu]" pillow
 
+# quality.identity runs here by default (post/quality/identity.py: onnxruntime and OpenCV, which rembg brings). Its face
+# models (insightface buffalo_l: detection and ArcFace) are baked in, as on the CPU service, so a check never downloads
+# 280 MB into an instance's in-memory disk.
+ENV HAWKESGEN_FACE_MODELS=/opt/insightface
+RUN /app/.venv/bin/python -c "import io, os, urllib.request, zipfile; d = '/opt/insightface/models/buffalo_l'; os.makedirs(d, exist_ok=True); z = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip').read())); [open(os.path.join(d, os.path.basename(n)), 'wb').write(z.read(n)) for n in z.namelist() if n.endswith(('det_10g.onnx', 'w600k_r50.onnx'))]" \
+    && chmod -R a+rX /opt/insightface \
+    && /app/.venv/bin/python -c "import cv2, onnxruntime"
+
 COPY . .
 COPY server/gen-cloudrun/litestream.yml /etc/litestream.yml
 RUN chmod +x server/gen-cloudrun/entrypoint.sh && mkdir -p /data
