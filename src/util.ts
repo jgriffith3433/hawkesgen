@@ -80,9 +80,21 @@ export function run(cmd: string, args: string[], opts: { cwd?: string; env?: Nod
     child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
     child.on('error', (e) => reject(e));
-    child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error((err || out).trim().slice(-800) || `${path.basename(cmd)} exited ${code}`))));
+    child.on('close', (code, signal) => (code === 0 ? resolve(out) : reject(new Error(failure(cmd, code, signal, err || out)))));
     if (opts.input !== undefined) child.stdin.end(opts.input);
   });
+}
+
+/**
+ * Why a child process failed, for its job's error: the end of its output without progress bars (a tqdm bar redraws
+ * its line with \r, so a download's 973 MB of bars read as a blank error), and the signal when something killed it
+ * (SIGKILL is almost always the machine running out of memory).
+ */
+export function failure(cmd: string, code: number | null, signal: NodeJS.Signals | null, output: string): string {
+  const text = output.replace(/[^\n]*\r(?!\n)/g, '').trim().slice(-800);
+  const name = path.basename(cmd);
+  const how = signal === 'SIGKILL' ? `${name} was killed (SIGKILL, most likely out of memory)` : signal ? `${name} was stopped (${signal})` : `${name} exited ${code}`;
+  return signal ? (text ? `${how}: ${text}` : how) : text || how;
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
