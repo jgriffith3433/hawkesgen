@@ -37,11 +37,14 @@ export type KindDef = {
   elements?(doc: any): any[];
 };
 
-const KINDS = new Map<Kind, KindDef>();
+// A hoisted var behind a function declaration: kinds register from modules an import cycle can load before this
+// module's body has run (editor.ts, scenekinds.ts), and a const would still be in its temporal dead zone then.
+var KINDS_: Map<Kind, KindDef> | undefined;
+function kinds() { return (KINDS_ ??= new Map<Kind, KindDef>()); }
 export function registerKind(kind: Kind, def: KindDef) {
   // Every kind keeps the world it belongs to (src/worlds.ts worldOf), whatever its own normalize knows.
   const own = def.normalize;
-  KINDS.set(kind, { ...def, normalize: (doc: any) => {
+  kinds().set(kind, { ...def, normalize: (doc: any) => {
     const n = own(doc);
     const w = sceneRef(doc?.world);
     if (n && typeof n === 'object') { if (w) n.world = w; else delete n.world; }
@@ -49,7 +52,7 @@ export function registerKind(kind: Kind, def: KindDef) {
   } });
 }
 export function kindOf(kind: string): KindDef {
-  const d = KINDS.get(kind as Kind);
+  const d = kinds().get(kind as Kind);
   if (!d) throw new GenError(`No kind of scene "${kind}"`, { status: 400 });
   return d;
 }

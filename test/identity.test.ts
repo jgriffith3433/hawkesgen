@@ -19,6 +19,7 @@ const dr = await import('../src/director.ts');
 const sc = await import('../src/scenes.ts');
 const routes = await import('../src/identityroutes.ts');
 const { putAsset } = await import('../src/library.ts');
+const quality = await import('../src/quality/index.ts');
 
 const FIXED = 'A woman in her early thirties, tall and lean, warm brown skin, an oval face with high cheekbones, dark almond eyes and a small scar through her left eyebrow. Black hair in a short undercut, swept right. A rust-orange canvas field jacket over a grey hoodie, dark green cargo trousers, scuffed tan boots, a brass compass worn on a cord around her neck.';
 const SHEET = 'a_5ee75ee75ee75ee7', FRONT = 'a_f0f0f0f0f0f0f0f0', PORTRAIT = 'a_9090909090909090', MODEL = 'a_3d3d3d3d3d3d3d3d';
@@ -229,9 +230,15 @@ test('the identity check: a failed face is reported with the worst distance (moc
   assert.equal(r.checked, 1, 'refs that are not files are skipped');
   assert.deepEqual(seen[0].identityRefs, [a.path]);
   assert.equal(seen[0].kind, 'image');
-  // The placeholder checks (until the bench lands) pass.
-  const real = await routes.identityCheck(a.path, [{ cast: 0, name: 'Maya', refs: [a.id] }], 'x');
-  assert.equal(real.pass, true);
+  // Without a fake, the real checks run (src/quality): mocked here, so no Python, ffmpeg or Claude. A verdict comes back.
+  quality.setQualityMock(true);
+  try {
+    const real = await routes.identityCheck(a.path, [{ cast: 0, name: 'Maya', refs: [a.id] }], 'x');
+    assert.equal(typeof real.pass, 'boolean');
+    assert.equal(real.checked, 1);
+  } finally {
+    quality.setQualityMock(null);
+  }
 });
 
 test('places and props get packs: a panorama and three key views; a prop alone, then its 4-view sheet', () => {
@@ -332,9 +339,10 @@ test('routes: the pack, lock and unlock, the LoRA priced then trained, the promp
     assert.equal((await B('/v1/director/prompts', 'POST', { doc: shots[0].doc, shot: shots[0].id })).status, 404);
     // The check runs on a file the caller can see.
     const frame = putAsset({ data: Buffer.from('png'), ext: '.png', client: 'test', project: shots[0].project, tool: 'file.import', recipe: { tool: 'file.import', version: 1, params: {}, inputs: {} } as any });
-    const chk = await A('/v1/director/identity-check', 'POST', { asset: frame.id, shot: shots[0].id });
+    quality.setQualityMock(true);
+    const chk = await A('/v1/director/identity-check', 'POST', { asset: frame.id, shot: shots[0].id }).finally(() => quality.setQualityMock(null));
     assert.equal(chk.status, 200);
-    assert.equal(chk.body.pass, true);
+    assert.equal(typeof chk.body.pass, 'boolean');
     assert.equal((await B('/v1/director/identity-check', 'POST', { asset: frame.id })).status, 404);
   } finally {
     server.close();
