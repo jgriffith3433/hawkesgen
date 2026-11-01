@@ -22,6 +22,11 @@ const prod = await import('../src/showrunner/production.ts');
 const mem = await import('../src/showrunner/memory.ts');
 const scenes = await import('../src/scenes.ts');
 
+// No test reaches a real Claude call: the showrunner's own calls are mocked (setDeps), and the house AI is off, so the
+// assistants a small edit is handed to refuse instead of calling out (a checkout's .env may hold a real key).
+const { saveHouseSettings } = await import('../src/houseai.ts');
+saveHouseSettings({ source: 'off' });
+
 const PROJECT = 'u_5h0wrunner01';
 const CLIENT = { id: 'u_test', name: 'tester', role: 'owner' as const, projects: ['*'] };
 const PRICES: Record<string, number> = { 'image.generate': 4, 'image.edit': 5, 'video.i2v': 30, 'video.talk': 25, 'video.scene': 60, 'audio.voice': 2, 'audio.music': 8, 'make.checked': 50 };

@@ -78,8 +78,8 @@ export function priceSteps(project: string, steps: ReturnType<typeof compileStep
   const d = deps();
   for (const s of steps) {
     if (!s.make) continue;
-    const t = toolFor(s, d.hasTool);
-    s.credits = d.quote(project, t.tool, t.params);
+    // A step nothing on this Gen can make is priced 0 and fails when it runs (the card still shows the rest).
+    try { const t = toolFor(s, d.hasTool); s.credits = d.quote(project, t.tool, t.params); } catch { s.credits = 0; }
   }
   return steps;
 }
