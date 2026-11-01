@@ -4,6 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Hawkes Gen</title>
+  <script>
+    // The page never zooms on a phone (J, 2026-11-01: "I can still zoom in on mobile"). iPhone Safari ignores the
+    // viewport's user-scalable=no, so pinches are stopped here, first thing, before the app has loaded, and on the
+    // window in the capture phase, so nothing inside the page can keep them from being seen. The fingers' touch events
+    // still reach the page: the timeline's pinch and the 3D stage's gestures work as before. gen.css adds touch-action
+    // on every element (no pinch or double-tap zoom inside the boxes that scroll).
+    (function () {
+      var stop = function (e) { if (e.cancelable) e.preventDefault(); };
+      var opt = { passive: false, capture: true };
+      ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (t) { window.addEventListener(t, stop, opt); });
+      var many = function (e) { if ((e.touches && e.touches.length > 1) || (e.scale != null && e.scale !== 1)) stop(e); };
+      window.addEventListener('touchstart', many, opt);
+      window.addEventListener('touchmove', many, opt);
+    })();
+  </script>
   <meta name="description" content="Make anything. Hawkes Gen is a studio with generative AI built in: scenes of every kind (video, 3D stages, images, audio, characters) that plug into each other, every tool for images, video, 3D, voices and music, and an AI beside you in each.">
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
