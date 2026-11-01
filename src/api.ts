@@ -53,7 +53,12 @@ import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
+import { handleBench } from './bench/routes.ts';
+import { handleMake } from './make/routes.ts';
+import { handleShowrunner } from './showrunner/routes.ts';
 import { handleNetBridge } from './netbridge.ts';
+import { handleIdentity } from './identityroutes.ts';
+import { handleWorlds } from './worldroutes.ts';
 import {
   authenticateRequest,
   isPublicSaas,
@@ -220,7 +225,7 @@ export function isCustomer(c: Client) {
   const globs = loadSettings().queue.projects;
   return c.projects.length > 0 && c.projects.every((p) => p !== '*' && globs.some((g) => (g.endsWith('*') ? p.startsWith(g.slice(0, -1)) : p === g)));
 }
-const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune)(\/|$)/;
+const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
@@ -502,6 +507,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       setSessionCookie(res, req, result.sessionToken);
       return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
     }
+    if (route === '/v1/users/test-session/github' && method === 'POST') {
+      // A GitHub Actions run of an allowed repo, as its test account, on beta only (src/githubsignin.ts).
+      const gh = await import('./githubsignin.ts');
+      const project = await gh.checkGitHubToken((await readJson(req))?.token);
+      const ts = await import('./testsignin.ts');
+      const result = googleSignin(ts.testAccountOf(project));
+      setSessionCookie(res, req, result.sessionToken);
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+    }
     if (route === '/v1/users/google' && method === 'POST') {
       const { credential } = await readJson(req);
       let who;
@@ -649,6 +663,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       throw new GenError(`No admin route ${method} ${route}`, { status: 404 });
     }
 
+    // A character's identity pack, and the director's prompts and first frames with the cast's packs (src/identityroutes.ts).
+    if (await handleIdentity(client, route, method, q, req, res, send, readJson)) return;
+    // Worlds (src/worldroutes.ts): /v1/worlds, /v1/stories and the world kinds' AI.
+    if (await handleWorlds({ req, res, route, method, client, send, readJson })) return;
+
     // --------------------------------------------------------------- scenes (src/scenes.ts): every kind, plug and play
     if (route === '/v1/scenes' || route.startsWith('/v1/scenes/')) {
       const sc = await import('./scenes.ts');
@@ -673,7 +692,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (route === '/v1/scenes' && method === 'POST') {
         const b = await readJson(req);
         const kind = String(b.kind ?? '');
-        if (!sc.KIND_IDS.includes(kind as any)) throw new GenError('kind: video, stage, image, audio or character', { status: 400 });
+        if (!sc.KIND_IDS.includes(kind as any)) throw new GenError(`kind: ${sc.KIND_IDS.join(', ')}`, { status: 400 });
         const project = projectOf(b.project);
         const k = sc.kindOf(kind);
         const doc = b.doc ?? k.blank(typeof b.title === 'string' && b.title.trim() ? b.title.trim() : 'Untitled');
@@ -822,14 +841,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (dm[2] === 'blender' && method === 'POST') {
           // Films the shot with Gen's Blender pipeline (cinemaPass) as one asset.make job. ?quote=1 prices it only.
           const sh = dr.getShot(id, canSee);
-          const { recipe, files } = dr.blenderRecipe(sh.doc);
-          const params = { steps: recipe.steps, candidates: recipe.candidates, pickAt: recipe.pickAt, pick: recipe.pick };
+          const { recipe, files } = dr.blenderRecipe(sh.doc, dr.shotPacks(sh.doc, sh.project));
+          const params = { steps: recipe.steps, candidates: recipe.candidates, pickAt: recipe.pickAt, pick: recipe.pick, ...(recipe.refs ? { refs: recipe.refs } : {}), ...(recipe.canon ? { canon: recipe.canon } : {}) };
           if (q('quote') === '1') return send(res, 200, { quote: quoteJobCredits({ project: sh.project, tool: 'asset.make', params } as any), notes: recipe.notes });
           const job = await submitJob(client, { project: sh.project, tool: 'asset.make', params, inputs: { files }, labels: { by: client.name, director: sh.id, title: `Shot: ${sh.doc.title}` } } as JobSpec);
           return send(res, 200, { job: summary(job), notes: recipe.notes });
         }
       }
-      if (route === '/v1/director/prompts' && method === 'POST') return send(res, 200, dr.filmPrompts(dr.normalizeShot((await readJson(req)).doc)));
       throw new GenError(`No director route ${method} ${route}`, { status: 404 });
     }
 
@@ -1183,6 +1201,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // ------------------------------------------------------------ analytics
     // Reading what players did (src/analytics/routes.ts, docs/analytics.md).
     if (handleAnalytics(client, route, method, q, res, send, url.search, route === '/v1/analytics/marks' && method === 'POST' ? await readJson(req) : undefined)) return;
+    // Gen Bench and the quality checks (src/bench/routes.ts, docs/bench.md): admins only.
+    if (await handleBench(client, route, method, () => readJson(req), res, send)) return;
+
+    // The making loop: feedback, quotes, routing, the learning's proposals, the owner's knobs (src/make/routes.ts, docs/make.md).
+    if (await handleMake(client, route, method, q, res, send, () => readJson(req))) return;
+
+    // The showrunner: one AI for every scene, and productions on the server (src/showrunner/, docs/showrunner.md).
+    if (await handleShowrunner(req, res, client, route, method, readJson, send, handle)) return;
 
     // ----------------------------------------------------------- templates
     if (route === '/v1/templates' && method === 'GET') {
@@ -1368,10 +1394,17 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
       events.on('job', onJob);
       events.on('library', onLibrary);
+      // Productions (src/showrunner/production.ts): progress, and "done" when one finishes.
+      const onProduction = (e: any) => canProject(client, String(e.project)) && res.write(`event: production
+data: ${JSON.stringify(e)}
+
+`);
+      events.on('production', onProduction);
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => {
         events.off('job', onJob);
         events.off('library', onLibrary);
+        events.off('production', onProduction);
         clearInterval(ping);
       });
       return;

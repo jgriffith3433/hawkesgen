@@ -114,6 +114,8 @@ export function initAccount() {
   $('#billingPortalBtn').addEventListener('click', () => go('/v1/billing/portal', null, 'POST'));
   const back = new URLSearchParams(location.search).get('checkout');
   if (back === 'success') { toast('Thanks: your credits are on their way.'); setTimeout(refreshCredits, 2500); }
+  // /#credits opens the credits (the Unity plugin's Buy credits button links here).
+  if (location.hash === '#credits') loadMe().then(() => openAccount('credits'));
 }
 
 export async function signOut() {
@@ -190,6 +192,7 @@ export async function openAccount(section) {
   $('#aiKeysTitle').hidden = !own && !state.ai?.anthropic?.set && !state.ai?.claudeSubscription?.set && section !== 'ai';
   $('#aiKeysTitle').open = section === 'ai' || !state.ai?.house?.ready;
   drawAiKeys($('#aiKeys'));
+  import('./memory.js').then((m) => m.drawMemory($('#aiMemory')));
   $('#accountDialog').showModal();
   if (section === 'ai') $('#aiKeys').scrollIntoView({ block: 'center' });
   if (section === 'credits') $('#acctPacksTitle').scrollIntoView({ block: 'start' });

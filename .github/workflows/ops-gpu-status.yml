@@ -1,4 +1,5 @@
-# Read-only: RunPod's serverless endpoints and each one's /health (workers, jobs in queue). The RunPod key is read from
+# Read-only: RunPod's serverless endpoints (API v2) and each one's /health (workers, jobs in queue), then what the
+# setup scripts' --apply would change (--check: GETs only). The RunPod key is read from
 # Secret Manager as ops-reader (keyless) and masked. Gen's WIF provider trusts main and beta only: dispatch with --ref main.
 #   gh workflow run ops-gpu-status.yml --repo jgriffith3433/hawkesgen --ref main
 name: ops-gpu-status
@@ -25,12 +26,22 @@ jobs:
         run: |
           key=$(gcloud secrets versions access latest --secret=gen-runpod-api-key --project "${{ vars.GCP_PROJECT }}")
           echo "::add-mask::$key"
-          eps=$(curl -s --max-time 30 -H "Authorization: Bearer $key" -H 'Content-Type: application/json' \
-            -d '{"query":"query { myself { endpoints { id name workersMin workersMax gpuIds } } }"}' https://api.runpod.io/graphql)
-          echo "$eps" | jq -e '.data.myself' >/dev/null || { echo "RunPod answered: $(echo "$eps" | jq -c '.errors // .' | head -c 300)"; exit 1; }
-          { echo "### RunPod endpoints"; echo '| id | name | workers min/max | gpus | health |'; echo '|---|---|---|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
-          echo "$eps" | jq -r '.data.myself.endpoints[] | [.id, .name, "\(.workersMin)/\(.workersMax)", .gpuIds] | @tsv' | while IFS=$'\t' read -r id name w gpus; do
+          echo "RUNPOD_API_KEY=$key" >> "$GITHUB_ENV"
+          # API v2 (REST v1 retires 2026-11-15, GraphQL early 2027): GET /v2/serverless, RFC 9457 errors.
+          eps=$(curl -s --max-time 30 -H "Authorization: Bearer $key" 'https://api.runpod.io/v2/serverless?limit=100')
+          echo "$eps" | jq -e '.endpoints' >/dev/null || { echo "RunPod answered: $(echo "$eps" | jq -c '{title, detail} // .' | head -c 300)"; exit 1; }
+          { echo "### RunPod endpoints"; echo '| id | name | type | workers min/max | gpu pools | health |'; echo '|---|---|---|---|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "$eps" | jq -r '.endpoints[] | [.id, .name, (.type // "?"), "\(.workers.min // "?")/\(.workers.max // "?")", ((.gpu.pools // []) | join(","))] | @tsv' | while IFS=$'\t' read -r id name type w pools; do
             h=$(curl -s --max-time 20 -H "Authorization: Bearer $key" "https://api.runpod.ai/v2/$id/health" | jq -c '{jobs, workers}' 2>/dev/null || echo unreachable)
-            echo "| $id | $name | $w | $gpus | \`$h\` |" >> "$GITHUB_STEP_SUMMARY"
-            echo "$id $name $w $h"
+            echo "| $id | $name | $type | $w | $pools | \`$h\` |" >> "$GITHUB_STEP_SUMMARY"
+            echo "$id $name $type $w $pools $h"
           done
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: What the RunPod setup scripts would change (reads only)
+        run: |
+          set -o pipefail
+          node tools/playtest-runpod/setup.mjs --check --name hawkes-gen-playtest-gfx | sed -n '/^# Check against/,/^# Then/p'
+          node tools/play-native/setup.mjs --check | sed -n '/^# Check against/,/^# Then/p'

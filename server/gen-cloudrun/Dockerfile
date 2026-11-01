@@ -30,7 +30,22 @@ RUN npm ci --omit=dev --no-audit --no-fund
 RUN npm install -g --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code && claude --version
 
 # The same Python tools auto-start.bat sets up on J's PC (src/jobs.ts finds .venv/bin/python).
-RUN python3 -m venv /app/.venv && /app/.venv/bin/pip install "rembg[cpu]" pillow
+RUN python3 -m venv /app/.venv && /app/.venv/bin/pip install "rembg[cpu]" pillow opencv-python-headless==5.0.0.93
+
+# quality.identity runs here by default (post/quality/identity.py: onnxruntime from rembg, OpenCV above). Its face
+# models (insightface buffalo_l: detection and ArcFace) are baked in, as on the CPU service, so a check never downloads
+# 280 MB into an instance's in-memory disk.
+ENV HAWKESGEN_FACE_MODELS=/opt/insightface
+RUN /app/.venv/bin/python -c "import io, os, urllib.request, zipfile; d = '/opt/insightface/models/buffalo_l'; os.makedirs(d, exist_ok=True); z = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen('https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip').read())); [open(os.path.join(d, os.path.basename(n)), 'wb').write(z.read(n)) for n in z.namelist() if n.endswith(('det_10g.onnx', 'w600k_r50.onnx'))]" \
+    && chmod -R a+rX /opt/insightface \
+    && /app/.venv/bin/python -c "import cv2, onnxruntime"
+
+# image.cutout's ISNet model, baked in so a cutout never downloads it into the instance's in-memory disk. BiRefNet
+# (973 MB, about 8.5 GB of memory while it runs) doesn't fit this 4 GiB instance, so post/cutout.py uses ISNet here;
+# BiRefNet runs where there is room for it (the gen-cpu-heavy service, docs/cpu-cloudrun.md).
+ENV U2NET_HOME=/opt/u2net
+RUN /app/.venv/bin/python -c "from rembg import new_session; new_session('isnet-general-use')" \
+    && chmod -R a+rX /opt/u2net
 
 COPY . .
 COPY server/gen-cloudrun/litestream.yml /etc/litestream.yml

@@ -268,10 +268,19 @@ export function toolFloorCredits(toolId: string): number {
   if (toolId === 'video.change') return 60;
   if (toolId === 'audio.revoice') return 20;
   if (toolId === 'audio.transcribe') return 5;
+  // Finishing (src/tools/finishing.ts, provisional): ffmpeg work is near free; chains are priced for their children
+  // (music sections, ambience beds, Claude's picks, a trailer's score), which run on Gen's own key.
+  if (toolId === 'edit.pace' || toolId === 'world.export') return 1;
+  if (toolId === 'video.grade' || toolId === 'video.reframe' || toolId === 'video.titles' || toolId === 'audio.mix') return 3;
+  if (toolId === 'video.thumbnails') return 5;
+  if (toolId === 'audio.ambience') return 16;
+  if (toolId === 'audio.score') return 25;
+  if (toolId === 'video.deliver') return 15;
+  if (toolId === 'video.trailer') return 40;
   if (toolId === 'texture.maps' || toolId === 'image.normals' || toolId === 'image.albedo' || toolId === 'image.depth' || toolId === 'image.segment') {
     return 5;
   }
-  if (toolId === 'image.cutout' || toolId === 'image.remove-background' || toolId === 'image.frame' || toolId === 'image.tile' || toolId === 'image.sheet' || toolId === 'sprite.sheet' || toolId === 'image.transform' || toolId === 'video.fit' || toolId === 'media.probe' || toolId === 'file.import') {
+  if (toolId === 'image.cutout' || toolId === 'image.cutout-gpu' || toolId === 'image.remove-background' || toolId === 'image.frame' || toolId === 'image.tile' || toolId === 'image.sheet' || toolId === 'sprite.sheet' || toolId === 'image.transform' || toolId === 'video.fit' || toolId === 'media.probe' || toolId === 'file.import') {
     return 2;
   }
   if (toolId === 'image.viewsheet' || toolId === 'image.character') {
@@ -327,6 +336,17 @@ export function quoteJobCredits(
   const params = applied.params ?? {};
   const itemCount = Math.max(1, Math.round(Number(spec.count ?? params.count ?? 1)));
 
+  // A tool that prices itself (make.checked: its loop's worst case). Its children run on Gen's key, so each is priced at
+  // its work with the margin, not a standalone job's floor (a cheap preview stays cheap); the call keeps its main tool's floor.
+  const own = tool.quote?.(params, { project: spec.project, child: (t, p) => childCredits(t, p, spec.project), getTool });
+  if (own) {
+    const credits = Math.max(1, Math.ceil(own.credits), own.tool ? toolFloorCredits(own.tool) : 0) * itemCount;
+    return {
+      tool: tool.id, credits, usdEquivalent: credits / 100, margin: COMMERCIAL_MARGIN, rawCostUsd: Math.round((credits / 100 / COMMERCIAL_MARGIN) * 10000) / 10000,
+      breakdown: own.breakdown.map((b) => ({ label: b.label, tool: own.tool ?? tool.id, count: itemCount, gpuSeconds: 0, apiCost: 0, rawUsd: 0, floorCredits: 0, credits: b.credits * itemCount, basis: 'worst case of the making loop' })),
+    };
+  }
+
   // Playtests are priced by what they run on, not the GPU estimate (plan 7; provisional).
   const pt = playtestCost(tool.id, params) ?? buildCost(tool.id, params);
   if (pt) {
@@ -380,6 +400,11 @@ export function quoteJobCredits(
     rawCostUsd: Math.round(totalRawUsd * 10000) / 10000,
     breakdown,
   };
+}
+
+/** One child job of a pipeline tool, in credits: its work with the margin, without a standalone job's floor. */
+export function childCredits(toolId: string, params: Record<string, any>, project = 'sandbox'): number {
+  return Math.max(1, Math.ceil(quoteJobCredits(toolId, params, project).rawCostUsd * COMMERCIAL_MARGIN * 100));
 }
 
 export function reserveJobCredits(userId: string, jobId: string, credits: number, detail: string): CreditLedgerEntry {

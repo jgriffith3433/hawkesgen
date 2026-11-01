@@ -21,8 +21,11 @@ a real NVIDIA GPU. Games play at 50+ fps, and the CPU service stays as the fallb
   never says 200 gets no traffic, and the gateway holds requests for it until the client gives up** (seen 2026-10-29:
   requests hung for 5 minutes). `server.mjs` therefore answers 200 once its self-test is over, whatever it found, and a
   worker without a GPU path refuses `/pw` with `412 No GPU` (Gen moves on at once).
-- **Endpoints can be made by API.** RunPod's GraphQL `saveEndpoint` takes `type: "LB"` (the REST API has no field for
-  it). `tools/playtest-runpod/setup.mjs` uses it; nothing has to be clicked in the console.
+- **Endpoints can be made by API.** RunPod's API v2 (`https://api.runpod.io/v2/serverless`) takes
+  `type: "LOAD_BALANCER"`, with the GPU models as `gpu.pools` plus `gpu.excludedTypes` (every other type in those pools,
+  from `GET /v2/catalog/gpus`). `tools/playtest-runpod/setup.mjs` uses it through `tools/gpu-providers/runpod-v2.mjs`;
+  nothing has to be clicked in the console. REST v1 is retired on 2026-11-15 and GraphQL in early 2027, so no script
+  uses either.
 - **Worker logs by API:** `GET https://api.runpod.io/v2/serverless/<endpoint>/workers/<worker>/logs` (Server-Sent
   Events; [docs](https://docs.runpod.io/api-reference-v2/serverless/stream-serverless-worker-logs)).
 - **Prices** (flex workers, [runpod.io/pricing](https://www.runpod.io/pricing), 2026-10-29): 16 GB tier (A4000, A4500,

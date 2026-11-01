@@ -8,9 +8,10 @@
 // The AI marks elements to make with `gen` (src/sceneai.ts), which become `pending` when the jobs are submitted.
 
 import crypto from 'node:crypto';
-import { registerKind, sceneRef } from './scenes.ts';
+import { registerKind, sceneRef, kindOf } from './scenes.ts';
 import { keptRender } from './editor.ts';
 import type { getJob } from './jobs.ts';
+import { normalizeLock, normalizeLora, type Lock, type LoraState } from './identity.ts';
 
 const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -44,9 +45,12 @@ export function resolveElements(els: any[], want: string[], jobOf: typeof getJob
     const j = jobOf(e.pending);
     if (!j) { delete e.pending; e.failed = 'The job is gone'; changed = true; continue; }
     if (j.status === 'done') {
-      const out = j.outputs.find((o: any) => want.includes(o.kind) && !/mask/i.test(o.title ?? '')) ?? j.outputs.find((o: any) => want.includes(o.kind)) ?? null;
+      // `from` names the output to take when the job makes several (an asset.make chain's saved steps).
+      const named = e.from ? j.outputs.find((o: any) => want.includes(o.kind) && (o.title === e.from || String(o.title ?? '').startsWith(`${e.from}.`))) : null;
+      const out = named ?? j.outputs.find((o: any) => want.includes(o.kind) && !/mask/i.test(o.title ?? '')) ?? j.outputs.find((o: any) => want.includes(o.kind)) ?? null;
       if (out) { e.asset = out.asset; delete e.failed; } else e.failed = 'The job made nothing of that kind';
       delete e.pending;
+      delete e.from;
       changed = true;
     } else if (j.status === 'failed' || j.status === 'cancelled') {
       delete e.pending;
@@ -59,11 +63,15 @@ export function resolveElements(els: any[], want: string[], jobOf: typeof getJob
 
 // ------------------------------------------------------------------ character
 export const PICTURE_ROLES = ['portrait', 'front', 'sheet', 'reference', 'turnaround', 'cutout'] as const;
-export type Picture = { id: string; role: typeof PICTURE_ROLES[number]; asset?: string; pending?: string; failed?: string; gen?: number };
+export type Picture = { id: string; role: typeof PICTURE_ROLES[number]; asset?: string; pending?: string; failed?: string; gen?: number; from?: string };
 export type CharacterDoc = {
   v: 1; title: string; description: string; height: number; color: string; voice: string | null;
   model: { asset?: string; pending?: string; failed?: string; gen?: number } | null;
   pictures: Picture[]; clips: { name: string; asset?: string }[]; notes: string; render?: any;
+  /** The identity pack (src/identity.ts): the approved sheet and fixed description; `at` null is a draft. */
+  lock?: Lock;
+  /** Their LoRA (lora.train), once it's asked for. */
+  lora?: LoraState;
 };
 
 export function normalizeCharacter(input: any): CharacterDoc {
@@ -79,11 +87,38 @@ export function normalizeCharacter(input: any): CharacterDoc {
       id: idOf(p.id, 'p', seen), role: (PICTURE_ROLES as readonly string[]).includes(p.role) ? p.role : 'reference',
       ...(asset(p.asset) ? { asset: asset(p.asset)! } : {}), ...(job(p.pending) ? { pending: job(p.pending)! } : {}),
       ...(p.failed ? { failed: String(p.failed).slice(0, 300) } : {}), ...(Number.isInteger(p.gen) && p.gen >= 0 && p.gen < 20 ? { gen: p.gen } : {}),
+      ...(typeof p.from === 'string' && /^[\w.-]{1,40}$/.test(p.from) && (p.pending || p.gen != null) ? { from: p.from } : {}),
     })).filter((p: Picture) => p.asset || p.pending || p.failed || p.gen != null),
     clips: (Array.isArray(d.clips) ? d.clips : []).slice(0, 40).filter((c: any) => c && typeof c.name === 'string' && c.name.trim()).map((c: any) => ({ name: c.name.trim().slice(0, 60), ...(asset(c.asset) ? { asset: asset(c.asset)! } : {}) })),
     notes: str(d.notes, 4000),
     ...(keptRender(d.render) ? { render: keptRender(d.render) } : {}),
+    ...(normalizeLock(d.lock) ? { lock: normalizeLock(d.lock)! } : {}),
+    ...(normalizeLora(d.lora) ? { lora: normalizeLora(d.lora)! } : {}),
   };
+}
+
+/**
+ * A LoRA being trained: when its job ends, the trained file (the lora.train step's own output, which image.character
+ * reads its trigger from) and its trigger word, or why it failed. True when the document changed.
+ */
+export function resolveLora(doc: CharacterDoc, jobOf: typeof getJob): boolean {
+  const l = doc.lora;
+  if (l?.state !== 'training' || !l.pending) return false;
+  const j = jobOf(l.pending);
+  if (!j) { doc.lora = { trigger: l.trigger, state: 'failed', failed: 'The job is gone' }; return true; }
+  if (j.status === 'done') {
+    // Through asset.make the chain names the lora.train job; its output carries the LoRA's meta.
+    const step = ((j.result as any)?.chain ?? []).find((c: any) => c.tool === 'lora.train');
+    const train = step ? jobOf(step.job) : j;
+    const out = train?.outputs?.find((o: any) => o.kind === 'file') ?? train?.outputs?.[0];
+    doc.lora = out ? { asset: out.asset, trigger: String((train?.result as any)?.trigger ?? l.trigger), state: 'ready' } : { trigger: l.trigger, state: 'failed', failed: 'Training made no file' };
+    return true;
+  }
+  if (j.status === 'failed' || j.status === 'cancelled') {
+    doc.lora = { trigger: l.trigger, state: 'failed', failed: String(j.error ?? j.status).split('\n')[0].slice(0, 300) };
+    return true;
+  }
+  return false;
 }
 
 registerKind('character', {
@@ -92,12 +127,13 @@ registerKind('character', {
   resolve: (doc: CharacterDoc, jobOf) => {
     const a = resolveElements(doc.pictures, ['image'], jobOf);
     const b = doc.model ? resolveElements([doc.model], ['mesh'], jobOf) : false;
-    return a || b;
+    const c = resolveLora(doc, jobOf);
+    return a || b || c;
   },
 });
 
 /** Every element of a scene that can hold a file (for the AI's `gen` marks and `el:` inputs). */
 export function fileElements(kind: string, doc: any): any[] {
   if (kind === 'character') return [...doc.pictures, ...(doc.model ? [doc.model] : [])];
-  return [];
+  return kindOf(kind).elements?.(doc) ?? [];
 }

@@ -36,6 +36,8 @@ import { toolCraft } from './knowledge.ts';
 import './scenekinds.ts';
 import { keptRender } from './editor.ts';
 import type { Render } from './scenes.ts';
+import { identityPack } from './identity.ts';
+import { firstFramePlan, viewOf, type CastPack, type FirstFrameOptions } from './identity-film.ts';
 
 
 export const MOVES = ['static', 'push-in', 'pull-out', 'orbit', 'turntable', 'pan', 'truck', 'crane-up', 'crane-down', 'follow'] as const;
@@ -192,7 +194,8 @@ export function castFromCharacters(doc: ShotDoc, project: string): boolean {
     const r = db.prepare(`SELECT doc FROM scenes WHERE id = ? AND project = ? AND kind = 'character'`).get(c.character, project) as { doc: string } | undefined;
     if (!r) continue;
     const ch = kindOf('character').normalize(JSON.parse(r.doc));
-    const next = { name: ch.title, description: ch.description, voice: ch.voice, height: ch.height, color: ch.color, asset: ch.model?.asset ?? c.asset ?? null, animation: c.animation ?? ch.clips?.[0]?.name ?? null };
+    // A locked character's fixed description (src/identity.ts) is who they are in every shot.
+    const next = { name: ch.title, description: identityPack(ch).description, voice: ch.voice, height: ch.height, color: ch.color, asset: ch.model?.asset ?? c.asset ?? null, animation: c.animation ?? ch.clips?.[0]?.name ?? null };
     for (const [k, v] of Object.entries(next)) if ((c as any)[k] !== v) { (c as any)[k] = v; changed = true; }
   }
   return changed;
@@ -209,7 +212,7 @@ export const listShots = (project: string, limit = 60) => listScenes(project, 's
 export function createShot(project: string, doc?: unknown): ShotRow {
   const d = normalizeShot(doc ?? newShot());
   castFromCharacters(d, project);
-  return createScene(project, 'stage', d, 'sh');
+  return createScene(project, 'stage', { ...d, world: (doc as any)?.world }, 'sh');
 }
 
 export function getShot(id: string, canSee: (project: string) => boolean): ShotRow {
@@ -223,7 +226,7 @@ export function saveShot(s: ShotRow, doc: unknown, version?: number): ShotRow {
   const d = normalizeShot(doc);
   castFromCharacters(d, s.project);
   try {
-    return saveScene(s, d, version) as ShotRow;
+    return saveScene(s, { ...d, world: (doc as any)?.world }, version) as ShotRow;
   } catch (e: any) {
     if (e.status === 409) e.shot = e.scene;
     throw e;
@@ -404,23 +407,60 @@ export async function directorTurn(a: DirectorTurn) {
 }
 
 // ------------------------------------------------------------------ filming
-/** The prompts the "film it now" path uses: the first frame's paint, and the video's. */
-export function filmPrompts(s: ShotDoc) {
-  const who = s.cast.map((c) => `${c.name}${c.description ? `: ${c.description}` : ''}`).join('; ');
+/**
+ * The identity pack of every cast member who plays a character scene (src/identity.ts), with their cast index. What
+ * the first frame, the video and the Blender pipeline read so every shot shows the same person.
+ */
+export function shotPacks(doc: ShotDoc, project: string): CastPack[] {
+  const out: CastPack[] = [];
+  doc.cast.forEach((c, i) => {
+    if (!c.character) return;
+    const r = db.prepare(`SELECT doc FROM scenes WHERE id = ? AND project = ? AND kind = 'character'`).get(c.character, project) as { doc: string } | undefined;
+    if (!r) return;
+    const pack = identityPack(kindOf('character').normalize(JSON.parse(r.doc)));
+    if (pack.refs.length || pack.description) out.push({ ...pack, cast: i, name: c.name });
+  });
+  return out;
+}
+
+/**
+ * The prompts the "film it now" path uses: the first frame's paint, and the video's. A cast member with an identity
+ * pack is described by its fixed description, unchanged, in every one of them.
+ */
+export function filmPrompts(s: ShotDoc, packs: CastPack[] = []) {
+  const descOf = (i: number) => packs.find((p) => p.cast === i)?.description || s.cast[i]?.description || '';
+  const who = s.cast.map((c, i) => `${c.name}${descOf(i) ? `: ${descOf(i)}` : ''}`).join('; ');
   const things = s.props.map((p) => `${p.name}${p.description ? ` (${p.description})` : ''}`).join(', ');
-  const look = [s.look || 'A cinematic live-action film still', who && `Characters: ${who}.`, things && `Also in the scene: ${things}.`, 'Keep the layout, the camera and every figure\'s position and pose exactly as in the control image.'].filter(Boolean).join(' ');
+  // Fixed descriptions must reach the model whole: the look gives way first.
+  const lookText = packs.length ? (s.look || '').slice(0, 1400) : s.look;
+  const look = [lookText || 'A cinematic live-action film still', who && `Characters: ${who}.`, things && `Also in the scene: ${things}.`, 'Keep the layout, the camera and every figure\'s position and pose exactly as in the control image.'].filter(Boolean).join(' ');
   // Spoken lines are made with audio.voice and laid on the timeline: the video's own sound is the room, not the words.
-  const action = [s.action || 'The scene plays out with natural, continuous motion', s.lines.length ? 'People talk quietly; room tone and natural sound, no music.' : 'Cinematic camera, natural sound.'].join(' ');
-  const speaker = s.cast[s.lines[0]?.who ?? 0];
-  const talk = `${speaker ? `${speaker.name}${speaker.description ? `, ${speaker.description},` : ''}` : 'The character'} speaks to someone just off camera, natural head and hand motion, subtle expressions, steady close-up. ${s.action}`.trim();
+  const known = packs.length ? s.cast.map((c, i) => (packs.some((p) => p.cast === i) ? `${c.name}: ${descOf(i)}` : '')).filter(Boolean).join('; ') : '';
+  const action = [(packs.length ? (s.action || '').slice(0, 1400) : s.action) || 'The scene plays out with natural, continuous motion', known && `Characters: ${known}.`, s.lines.length ? 'People talk quietly; room tone and natural sound, no music.' : 'Cinematic camera, natural sound.'].filter(Boolean).join(' ');
+  const si = s.lines[0]?.who ?? 0;
+  const speaker = s.cast[si];
+  const talk = `${speaker ? `${speaker.name}${descOf(si) ? `, ${descOf(si)},` : ''}` : 'The character'} speaks to someone just off camera, natural head and hand motion, subtle expressions, steady close-up. ${(packs.length ? (s.action || '').slice(0, 800) : s.action)}`.trim();
   return { look: look.slice(0, 3000), action: action.slice(0, 3000), talk: talk.slice(0, 2000), size: ASPECTS[s.aspect] };
+}
+
+/**
+ * The first-frame job for a shot (src/identity-film.ts): the stage painted in the look, then each known character put
+ * back on-model from their pack and the camera render. "$stage" and "$camera" are filled by the app after uploading.
+ */
+export function firstFrameFor(s: ShotDoc, packs: CastPack[], o: Partial<FirstFrameOptions> = {}) {
+  const [width, height] = ASPECTS[s.aspect];
+  const views = Object.fromEntries(s.cast.map((c, i) => [String(i), viewOf(s.camera.angle, c.facing)]));
+  return firstFramePlan(packs, {
+    look: o.look ?? filmPrompts(s, packs).look, keyframe: s.film.keyframe, keyframeNodes: s.film.keyframeNodes, width, height,
+    camera: o.camera ?? s.cast.some((c) => c.asset), views, ...o,
+  });
 }
 
 /**
  * The shot as Gen's Blender film pipeline (cinemaPass): blender.render's shot, its files (the cast's and props' models,
  * the sky) and the asset.make recipe. Every cast member needs a 3D model.
  */
-export function blenderRecipe(s: ShotDoc) {
+export function blenderRecipe(s: ShotDoc, packs: CastPack[] = []) {
   const missing = s.cast.filter((c) => !c.asset).map((c) => c.name);
   if (!s.cast.length) throw new GenError('Add someone to the shot first', { status: 400 });
   if (missing.length) throw new GenError(`Blender needs a 3D model for everyone: ${missing.join(', ')} ${missing.length === 1 ? 'is a stand-in' : 'are stand-ins'}. Make one in Create (3D), or film it now instead.`, { status: 400 });
@@ -440,9 +480,13 @@ export function blenderRecipe(s: ShotDoc) {
     camera: { ...s.camera, dof: true },
   };
   const [width, height] = ASPECTS[s.aspect];
-  const p = filmPrompts(s);
+  const p = filmPrompts(s, packs);
   delete shot.camera.keys;
-  const recipe = cinemaPass({ shot, look: p.look, motion: p.action, seconds: s.seconds, width, height, engine: s.film.engine });
+  // Their sheets go after the shot's own files: the best-of-3 keyframe is painted with them and picked against them.
+  const sheets = [...packs].sort((a, b) => Number(Boolean(b.locked)) - Number(Boolean(a.locked))).map((x) => x.sheet ?? x.refs[0]).filter(Boolean).slice(0, 2) as string[];
+  const refs = sheets.map((a) => { files.push(`asset:${a}`); return files.length - 1; });
+  const canon = packs.filter((x) => x.description).map((x) => `${x.name}: ${x.description}`).join('\n') || undefined;
+  const recipe = cinemaPass({ shot, look: p.look, motion: p.action, seconds: s.seconds, width, height, engine: s.film.engine, refs, canon });
   if (s.camera.keys?.length) recipe.notes.unshift('Blender films the camera move, not the camera keys: the keys are for "Film it".');
   return { recipe, files };
 }

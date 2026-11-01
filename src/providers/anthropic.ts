@@ -146,6 +146,16 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
 }
 
 /** The API key path: billed per token. */
+/** True when every object in a JSON schema says `additionalProperties: false`, which structured output requires. */
+export function isClosedSchema(s: unknown): boolean {
+  if (Array.isArray(s)) return s.every(isClosedSchema);
+  if (!s || typeof s !== 'object') return true;
+  const o = s as Record<string, unknown>;
+  const isObject = o.type === 'object' || (Array.isArray(o.type) && o.type.includes('object'));
+  if (isObject && o.additionalProperties !== false) return false;
+  return Object.entries(o).every(([k, v]) => k === 'enum' || k === 'const' || k === 'default' || isClosedSchema(v));
+}
+
 async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effort = 'high', maxTokens = 16000, schema, onText }: AskParams, signal?: AbortSignal, apiKey?: string, whose: 'org' | 'house' = 'org') {
   const content: any[] = images.map((file) => {
     const mime = mimeOf(file);
@@ -160,7 +170,9 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
       max_tokens: maxTokens,
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
-      output_config: { effort, ...(schema ? { format: { type: 'json_schema', schema } } : {}) },
+      // Structured output only takes closed schemas; an open one (the assistants' free-form ops, shots and docs) is left to
+      // the prompt's "JSON only" and the callers' tolerant parsers instead of being refused with a 400.
+      output_config: { effort, ...(schema && isClosedSchema(schema) ? { format: { type: 'json_schema', schema } } : {}) },
       // The system prompt is cached: callers like the portal's Overseer send the same long guide with every message.
       ...(system ? { system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }] } : {}),
       messages: [{ role: 'user', content }],

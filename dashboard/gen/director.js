@@ -180,14 +180,15 @@ async function flushSave() {
 }
 
 // ------------------------------------------------------------------ the AI director (ai.js sends here while open)
-export async function askDirector(messages, extra = {}) {
+export async function askDirector(messages, extra = {}, via = null, more = {}) {
   await flushSave();
   const id = D.shot.id;
   const selection = { t: Math.round(D.t * 100) / 100, range: D.range, selected: D.sel, ...extra };
-  const r = await api(`/v1/director/shots/${id}/assistant`, { body: { messages, doc: D.shot.doc, selection } });
+  // via: the showrunner's one entry (ai.js), which hands small edits to this shot's own route (src/showrunner/).
+  const r = await api(via ?? `/v1/director/shots/${id}/assistant`, { body: { messages, doc: D.shot.doc, selection, ...(via ? { scene: id, ...more } : {}) } });
   // Only into the shot it was asked about: if another tab is in front now, the answer stays saved with its own shot.
   const here = D.open && D.shot?.id === id;
-  if (here) take(r.shot);
+  if (here && r.shot) take(r.shot);
   if (r.aiCredits) refreshCredits();
   return { ...r, shotId: id, here };
 }
@@ -740,7 +741,7 @@ async function makeStage(wrap) {
   const loadGltf = (id) => { if (!gltfCache.has(id)) gltfCache.set(id, new Promise((ok) => loader.load(fileUrl(id), ok, undefined, () => ok(null)))); return gltfCache.get(id); };
   const clipsKnown = new Map();
   const texCache = new Map();
-  let actors = [], propsObj = [], markers = [], build = 0;
+  let actors = [], propsObj = [], markers = [], build = 0, groundObj = null;
   /** A picture's or a video's texture (videos play muted, looping), and its shape. */
   const screens = new Map();
   function screenTexture(id) {
@@ -830,7 +831,7 @@ async function makeStage(wrap) {
       const group = m?.group ?? mannequin(c);
       group.userData = { type: 'cast', i };
       next.add(group);
-      nextActors.push({ group, mixer: m?.mixer ?? null, clips: m?.clips ?? [], c });
+      nextActors.push({ group, mixer: m?.mixer ?? null, clips: m?.clips ?? [], c, model: Boolean(m) });
     }
     const nextProps = [];
     for (const [i, p] of s.props.entries()) {
@@ -874,7 +875,7 @@ async function makeStage(wrap) {
     markers.forEach((m) => helpers.remove(m));
     world.clear();
     world.add(next);
-    actors = nextActors; propsObj = nextProps; markers = nextMarkers;
+    actors = nextActors; propsObj = nextProps; markers = nextMarkers; groundObj = ground;
     live = null;
     select();
     if (D.sel?.type === 'cast' && clipsKnown.size) drawPanel();
@@ -1106,6 +1107,28 @@ async function makeStage(wrap) {
       placeCamera(cam, 0, w / hh);
       r2.render(scene, cam);
       const first = await new Promise((ok) => out.toBlob(ok, 'image/png'));
+      // The reference from the shot's own camera (docs/identity.md): the cast who have 3D models, in their pose at
+      // frame 1, alone on a plain background, so the first frame can be put back on-model at exactly this angle.
+      let camera = null;
+      if (actors.some((a) => a.model)) {
+        const hidden = [...actors.filter((a) => !a.model).map((a) => a.group), ...propsObj, groundObj].filter(Boolean);
+        const bg0 = scene.background;
+        try {
+          hidden.forEach((o) => { o.visible = false; });
+          scene.background = new THREE.Color(0xe6e6e6);
+          r2.render(scene, cam);
+          camera = await new Promise((ok) => out.toBlob(ok, 'image/png'));
+        } finally {
+          hidden.forEach((o) => { o.visible = true; });
+          scene.background = bg0;
+        }
+      }
+      // Where each person stands in frame 1, for the words that put them back on-model.
+      const screen = {};
+      for (const [i, a] of actors.entries()) {
+        const p = new THREE.Box3().setFromObject(a.group).getCenter(new THREE.Vector3()).project(cam);
+        screen[i] = p.x < -0.33 ? 'left' : p.x > 0.33 ? 'right' : 'center';
+      }
       const { near, far } = depthRange(cam, w / hh, FPS);
       const depth = depthMaterial(near, far);
       const bg = scene.background;
@@ -1134,7 +1157,7 @@ async function makeStage(wrap) {
       await stopped;
       scene.overrideMaterial = null;
       scene.background = bg;
-      return { first, depth: new Blob(chunks, { type: 'video/webm' }), frames, fps: FPS, width: w, height: hh };
+      return { first, camera, screen, depth: new Blob(chunks, { type: 'video/webm' }), frames, fps: FPS, width: w, height: hh };
     } finally {
       scene.overrideMaterial = null;
       helpers.visible = D.view === 'free';
@@ -1232,10 +1255,17 @@ function filmProblem(s) {
   return null;
 }
 
+/** A first-frame job with the uploaded files in place of "$stage" and "$camera" (src/identity-film.ts fillPlan). */
+function fillPlan(plan, files) {
+  const fill = (v) => (Array.isArray(v) ? v.map(fill) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)])) : v === '$stage' ? `asset:${files.stage}` : v === '$camera' && files.camera ? `asset:${files.camera}` : v);
+  const { checks, ...job } = plan;
+  return fill(job);
+}
+
 /** The price of filming a shot as it stands (the first frame, the video or the talk, and its lines). */
-async function priceShot(s, look, action) {
+async function priceShot(s, look, action, firstFrame = null) {
   const [w, hh] = ASPECTS[s.aspect];
-  const parts = [quote(s.film.keyframe, { prompt: look })];
+  const parts = [firstFrame ? quote(firstFrame.tool, firstFrame.params) : quote(s.film.keyframe, { prompt: look })];
   if (s.kind === 'talk') parts.push(quote('video.talk', { prompt: action, width: TALK_SIZE[s.aspect][0], height: TALK_SIZE[s.aspect][1], frames: talkFrames(4), fps: 25 }));
   else { const v = videoJob(s, { prompt: action, width: w, height: hh, ...filmClock(s) }); parts.push(quote(v.tool, v.params)); }
   for (const l of s.lines) parts.push(quote('audio.voice', { text: l.text, voice: voiceOf(s, l.who) }));
@@ -1248,24 +1278,39 @@ async function priceShot(s, look, action) {
  * then the shot: video.talk on the first line for a talk shot, else the depth through the video model. Returns the
  * take: the video and each line's sound with when it's said.
  */
-async function filmShot(s, rec, { look, action, talk }, say) {
+async function filmShot(s, rec, { look, action, talk }, say, shotId = null) {
   const lines = await Promise.all(s.lines.map(async (l) => {
     const r = await runJob({ tool: 'audio.voice', params: { text: l.text, voice: voiceOf(s, l.who) }, label: `${s.cast[l.who]?.name ?? 'Line'}: ${l.text.slice(0, 50)}` });
     const a = (r.outputs.find((o) => o.kind === 'audio') ?? r.outputs[0]).asset;
     return { asset: a, at: l.at, seconds: (await mediaInfo(a, 'audio')).duration ?? 3 };
   }));
   say(`${s.title}: uploading the stage`);
-  const [first, depth] = await Promise.all([
+  const [first, depth, camera] = await Promise.all([
     uploadBlob(rec.first, `${s.title}: first frame (stage).png`, 'image/png'),
     s.kind === 'talk' ? null : uploadBlob(rec.depth, `${s.title}: depth.webm`, 'video/webm'),
+    rec.camera ? uploadBlob(rec.camera, `${s.title}: camera reference.png`, 'image/png') : null,
   ]);
   say(`${s.title}: painting the first frame`);
-  const f = s.film;
-  const kn = Object.keys(f.keyframeNodes ?? {}).length ? { nodes: f.keyframeNodes } : {};
-  const key = await runJob(f.keyframe === 'image.edit'
-    ? { tool: 'image.edit', params: { prompt: `${look} Keep the composition, camera and every figure's position exactly.`, width: rec.width, height: rec.height, ...kn }, inputs: { images: [`asset:${first}`] }, label: `${s.title}: first frame` }
-    : { tool: 'image.control', params: { prompt: look, ...kn }, inputs: { image: `asset:${first}` }, label: `${s.title}: first frame` });
-  const keyAsset = (key.outputs.find((o) => o.kind === 'image') ?? key.outputs[0]).asset;
+  // The first frame with every known character's pack (src/identity-film.ts): painted in the look, then each one put
+  // back on-model from their sheet and the camera render. A face that fails the identity check is painted once more
+  // with firmer references; the closer take is kept.
+  const plan = (strong) => api('/v1/director/prompts', { body: { doc: s, shot: shotId, look, camera: Boolean(camera), screen: rec.screen ?? {}, loraReady: toolReady('image.character'), strong } }).then((p) => p.firstFrame);
+  const keyOf = (r) => (r.outputs.find((o) => o.kind === 'image' && o.title === 'keyframe') ?? r.outputs.find((o) => o.kind === 'image') ?? r.outputs[0]).asset;
+  const check = (asset) => api('/v1/director/identity-check', { body: { asset, shot: shotId, doc: s } }).catch(() => null);
+  const ff = await plan(false);
+  let keyAsset = keyOf(await runJob({ ...fillPlan(ff, { stage: first, camera }), label: `${s.title}: first frame` }));
+  let identity = null;
+  if (ff.checks?.length) {
+    say(`${s.title}: checking faces`);
+    identity = await check(keyAsset);
+    if (identity && !identity.pass) {
+      say(`${s.title}: a face drifted, painting it again`);
+      const again = keyOf(await runJob({ ...fillPlan(await plan(true), { stage: first, camera }), label: `${s.title}: first frame (again)` }));
+      const second = await check(again);
+      if (second && (second.pass || (second.distance ?? 1) < (identity.distance ?? 1))) { keyAsset = again; identity = second; }
+      if (!identity.pass) say(`${s.title}: kept the closest take (a face may not match)`);
+    }
+  }
   say(`${s.title}: filming (a few minutes)`);
   let shot;
   if (s.kind === 'talk') {
@@ -1277,7 +1322,7 @@ async function filmShot(s, rec, { look, action, talk }, say) {
   }
   const out = shot.outputs.find((o) => o.kind === 'video') ?? shot.outputs[0];
   // A talk shot runs as long as its line; an action shot as long as the shot.
-  return { video: out.asset, kind: s.kind, title: s.title, seconds: s.kind === 'talk' ? lines[0].seconds + 0.3 : s.seconds, lines: s.kind === 'talk' ? [{ ...lines[0], at: 0 }] : lines };
+  return { video: out.asset, keyframe: keyAsset, identity: identity ? { pass: identity.pass, distance: identity.distance } : null, kind: s.kind, title: s.title, seconds: s.kind === 'talk' ? lines[0].seconds + 0.3 : s.seconds, lines: s.kind === 'talk' ? [{ ...lines[0], at: 0 }] : lines };
 }
 
 /**
@@ -1301,14 +1346,14 @@ async function openFilm() {
   const s = D.shot.doc;
   const problem = filmProblem(s);
   if (problem) return toast(problem);
-  const p = await api('/v1/director/prompts', { body: { doc: s } });
+  const p = await api('/v1/director/prompts', { body: { doc: s, shot: D.shot.id } });
   const look = h('textarea', { rows: '3' }, p.look);
   const action = h('textarea', { rows: '3' }, s.kind === 'talk' ? p.talk : p.action);
   const q = h('span', { class: 'quote' });
   const status = h('div', { class: 'muted small dir-status' });
   const go = h('button', { class: 'primary' }, icon('film'), 'Film it');
   const [w, hh] = ASPECTS[s.aspect];
-  const price = async () => { const n = await priceShot(s, look.value, action.value); q.textContent = n != null ? credits({ credits: n }) : ''; };
+  const price = async () => { const n = await priceShot(s, look.value, action.value, p.firstFrame); q.textContent = n != null ? credits({ credits: n }) : ''; };
   price();
   const vt = s.kind === 'talk' ? 'video.talk' : s.film.engine === 'wan' ? 'video.control-wan' : 'video.control';
   const offline = !toolReady(vt) || !toolReady(s.film.keyframe);
@@ -1318,6 +1363,7 @@ async function openFilm() {
       ? `A dialogue close-up: Gen says the line in ${s.cast[s.lines[0].who]?.name ?? 'the speaker'}'s voice, paints the stage's first frame in your look (${s.film.keyframe}), then makes them say it (video.talk) at ${size[0]}×${size[1]}.`
       : `Gen records this shot's depth and first frame here, paints the first frame in your look (${s.film.keyframe}), then films the shot from it (${vt}): ${s.seconds} s at ${size[0]}×${size[1]}.${s.lines.length ? ` The ${s.lines.length} line${s.lines.length === 1 ? '' : 's'} are spoken in the cast's voices.` : ''} ${s.cast.some((c) => !c.asset) ? 'Stand-ins become the characters you describe.' : ''}`),
     h('p', { class: 'muted small' }, 'The take becomes this stage\'s render: videos that play this stage can update to it.'),
+    p.packs?.length ? h('p', { class: 'muted small' }, `${p.packs.map((x) => x.name).join(', ')}: kept on-model from ${p.packs.length === 1 ? 'their' : 'each one\'s'} ${p.packs.every((x) => x.locked) ? 'locked look' : 'pictures'}, and their faces are checked before filming.`) : '',
     offline ? h('p', { class: 'warn small' }, 'The filming GPUs are offline right now. It will queue and start when they\'re back.') : '',
     h('label', { class: 'field' }, 'The first frame', look),
     h('label', { class: 'field' }, s.kind === 'talk' ? 'How they move while they talk' : 'What happens (and sounds like)', action),
@@ -1334,7 +1380,7 @@ async function film({ look, action, status, go }) {
   go.disabled = true;
   try {
     const rec = await recordShot(say);
-    const take = await filmShot(s, rec, { look, action, talk: action }, say);
+    const take = await filmShot(s, rec, { look, action, talk: action }, say, shot.id);
     await setRender(shot.id, take.video, 'video');
     say('');
     $('#dirSheet')?.remove();
@@ -1386,7 +1432,7 @@ async function openFilmSequence() {
     status,
   ], h('div', { class: 'sheet-foot' }, q, go));
   if (problems.length) { go.disabled = true; q.textContent = ''; return; }
-  Promise.all(shots.map(async (x) => { const p = await api('/v1/director/prompts', { body: { doc: x.doc } }); return priceShot(x.doc, p.look, x.doc.kind === 'talk' ? p.talk : p.action); }))
+  Promise.all(shots.map(async (x) => { const p = await api('/v1/director/prompts', { body: { doc: x.doc, shot: x.id } }); return priceShot(x.doc, p.look, x.doc.kind === 'talk' ? p.talk : p.action, p.firstFrame); }))
     .then((ns) => { q.textContent = ns.every((n) => n != null) ? credits({ credits: ns.reduce((a, b) => a + b, 0) }) : ''; }).catch(() => { q.textContent = ''; });
   go.addEventListener('click', async () => {
     go.disabled = true;
@@ -1396,8 +1442,8 @@ async function openFilmSequence() {
       const jobs = [];
       for (const [i, x] of shots.entries()) {
         const rec = await withShot(x.doc, () => recordShot((t) => say(`Shot ${i + 1} of ${shots.length}: ${t}`)));
-        const p = await api('/v1/director/prompts', { body: { doc: x.doc } });
-        jobs.push(filmShot(x.doc, rec, { look: p.look, action: p.action, talk: p.talk }, (t) => say(t)).then(async (t) => {
+        const p = await api('/v1/director/prompts', { body: { doc: x.doc, shot: x.id } });
+        jobs.push(filmShot(x.doc, rec, { look: p.look, action: p.action, talk: p.talk }, (t) => say(t), x.id).then(async (t) => {
           const sc = await setRender(x.id, t.video, 'video');
           return { ...t, shot: x.id, version: sc.doc.render.version };
         }));
@@ -1426,12 +1472,12 @@ async function openPhoto() {
   if (!D.shot || !D.three) return;
   await flushSave();
   const s = D.shot.doc;
-  const p = await api('/v1/director/prompts', { body: { doc: s } });
+  const p = await api('/v1/director/prompts', { body: { doc: s, shot: D.shot.id, camera: false } });
   const look = h('textarea', { rows: '3' }, p.look);
   const q = h('span', { class: 'quote' });
   const status = h('div', { class: 'muted small dir-status' });
   const go = h('button', { class: 'primary' }, icon('image'), 'Take the photo');
-  quote(s.film.keyframe, { prompt: look.value }).then((r) => { q.textContent = r ? credits(r) : ''; });
+  quote(p.firstFrame.tool, p.firstFrame.params).then((r) => { q.textContent = r ? credits(r) : ''; });
   const at = D.t;
   sheetIn('Photo of the stage', [h('p', { class: 'muted small' }, `The stage at ${fmt(at, 1)} through the shot's camera, painted in the look (${s.film.keyframe}). The layout and poses stay.`), h('label', { class: 'field' }, 'The look', look), status], h('div', { class: 'sheet-foot' }, q, go));
   go.addEventListener('click', async () => {
@@ -1441,11 +1487,10 @@ async function openPhoto() {
       const still = await D.three.still(at);
       const first = await uploadBlob(still.blob, `${s.title}: stage at ${fmt(at, 1)}.png`, 'image/png');
       status.textContent = 'Painting it';
-      const kn = Object.keys(s.film.keyframeNodes ?? {}).length ? { nodes: s.film.keyframeNodes } : {};
-      const r = await runJob(s.film.keyframe === 'image.edit'
-        ? { tool: 'image.edit', params: { prompt: `${look.value} Keep the composition, camera and every figure's position exactly.`, width: still.width, height: still.height, ...kn }, inputs: { images: [`asset:${first}`] }, label: `${s.title}: photo` }
-        : { tool: 'image.control', params: { prompt: look.value, ...kn }, inputs: { image: `asset:${first}` }, label: `${s.title}: photo` });
-      const out = (r.outputs.find((o) => o.kind === 'image') ?? r.outputs[0]).asset;
+      // The same first-frame job as filming (the cast's packs put them on-model), with the look as written here.
+      const plan = (await api('/v1/director/prompts', { body: { doc: s, shot: D.shot.id, look: look.value, camera: false, loraReady: toolReady('image.character') } })).firstFrame;
+      const r = await runJob({ ...fillPlan(plan, { stage: first }), label: `${s.title}: photo` });
+      const out = (r.outputs.find((o) => o.kind === 'image' && o.title === 'keyframe') ?? r.outputs.find((o) => o.kind === 'image') ?? r.outputs[0]).asset;
       $('#dirSheet')?.remove();
       sheetIn(`Photo: ${s.title}`, [h('img', { src: fileUrl(out), alt: '', class: 'dir-result' }), h('p', { class: 'muted small' }, 'Saved to Media.')], h('div', { class: 'sheet-foot' },
         h('button', { class: 'ghost', onclick: () => { $('#dirSheet')?.remove(); bus.emit('useIn', { tool: 'video.i2v', asset: { id: out, kind: 'image', title: s.title } }); } }, icon('film'), 'Animate it'),

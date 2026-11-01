@@ -9,6 +9,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { run, filterScriptArgs } from '../util.ts';
+import { gradeFilters, parseGrade, GRADE_PRESETS, type Grade } from '../finishing/grade.ts';
+
+// compose also runs in the CPU service (docs/cpu-cloudrun.md), which carries no library or queue: what needs them (a
+// world's grade read at submit, queueing the final pass) is installed by src/tools/finishing.ts on the control server.
+type FinalPass = (ctx: Parameters<Tool['run']>[0], cut: string, poster: string | null) => Promise<Record<string, string>>;
+let finalPassHook: FinalPass | null = null;
+/** src/tools/finishing.ts: how the final pass is queued (null: not on this machine). */
+export function setFinalPass(f: FinalPass | null) { finalPassHook = f; }
+
+/** The grade a compose job asks for: a preset or settings (`grade`), a LUT input, grain and vignette. Pure. */
+export function composeGrade(p: Record<string, any>, lut?: string): Grade | null {
+  let g: Grade | null = typeof p.grade === 'string' && GRADE_PRESETS[p.grade] ? structuredClone(GRADE_PRESETS[p.grade]) : p.grade ? parseGrade(p.grade) : null;
+  if (lut) g = { ...(g ?? {}), lutFile: lut };
+  if (p.grain != null) g = { ...(g ?? {}), grain: Number(p.grain) };
+  if (p.vignette != null) g = { ...(g ?? {}), vignette: Number(p.vignette) };
+  return g;
+}
 
 export type Probe = { duration: number; video: boolean; audio: boolean; width?: number; height?: number; fps?: number };
 
@@ -74,7 +91,7 @@ export type Timeline = {
   fadeOut?: number;
 };
 
-export type ComposeOptions = { width: number; height: number; fps: number; fit: 'pad' | 'crop'; color: string; burn: boolean; captionsFile?: string };
+export type ComposeOptions = { width: number; height: number; fps: number; fit: 'pad' | 'crop'; color: string; burn: boolean; captionsFile?: string; /** The color grade's filters (src/finishing/grade.ts), applied to the whole cut before fades and captions. */ grade?: string[] };
 
 /** The transitions a clip can go into the next with (timeline name -> ffmpeg xfade). */
 export const TRANSITIONS: Record<string, string> = {
@@ -187,7 +204,7 @@ export function planCompose(tl: Timeline, clips: Probe[], audio: Probe[], o: Com
   }
   const fadeIn = Math.max(0, num(tl.fadeIn, 0));
   const fadeOut = Math.max(0, num(tl.fadeOut, 0));
-  const vpost: string[] = [];
+  const vpost: string[] = [...(o.grade ?? [])];
   if (fadeIn) vpost.push(`fade=t=in:st=0:d=${f3(fadeIn)}`);
   if (fadeOut) vpost.push(`fade=t=out:st=${f3(Math.max(0, total - fadeOut))}:d=${f3(fadeOut)}`);
 
@@ -355,6 +372,7 @@ export const composeTool: Tool = {
   inputs: {
     clips: { kind: 'video', required: true, multiple: true, max: 200, description: 'The shots. timeline.clips picks them by index (default: all, in order).' },
     audio: { kind: 'audio', multiple: true, max: 100, description: 'Music, voice lines, sound beds. timeline.audio places them by index.' },
+    lut: { kind: 'file', description: 'A .cube LUT: the grade for the whole cut.' },
   },
   params: {
     timeline: {
@@ -372,6 +390,11 @@ export const composeTool: Tool = {
     crf: { type: 'integer', min: 12, max: 35, default: 20, description: 'Quality (lower is better and bigger).', advanced: true },
     poster: { type: 'boolean', default: true, description: 'Also a PNG still for the player.' },
     posterAt: { type: 'number', min: 0, description: 'Seconds into the cut for the poster (default: the middle of the first clip).', advanced: true },
+    grade: { type: 'json', orString: true, description: 'One color grade for every shot: a preset (natural, warm, cool, filmic, noir, vivid, faded) or { params: { contrast, saturation, warmth, tint, lift, gamma, gain, brightness }, grain, vignette }. Default: the grade of the world (world), else none.' },
+    world: { type: 'string', description: 'The world (scene id) the cut belongs to: its grade becomes `grade` at submit when none is given (its LUT goes in as the lut input).', advanced: true },
+    grain: { type: 'number', min: 0, max: 1, description: 'Film grain (0 to 1).', advanced: true },
+    vignette: { type: 'number', min: 0, max: 1, description: 'Vignette (0 to 1).', advanced: true },
+    finalPass: { type: 'enum', values: ['none', 'upscale'], default: 'none', description: 'After the cut: queue video.upscale on it (and image.restore on the poster). Restore and upscale the final cut only, never each take.', advanced: true },
   },
   async run(ctx) {
     const p = ctx.params;
@@ -386,7 +409,8 @@ export const composeTool: Tool = {
     const fps = Number(p.fps);
     const width = Math.round(Number(p.width) / 2) * 2;
     const height = Math.round(Number(p.height) / 2) * 2;
-    const plan = planCompose(tl, clips, audio, { width, height, fps, fit: p.fit, color: String(p.color).replace(/^#/, ''), burn });
+    const grade = composeGrade(p, ctx.inputs.lut as string | undefined);
+    const plan = planCompose(tl, clips, audio, { width, height, fps, fit: p.fit, color: String(p.color).replace(/^#/, ''), burn, grade: grade ? gradeFilters(grade) : [] });
     for (const n of plan.notes) ctx.log(n);
 
     const out = ctx.tmp('cut.mp4');
@@ -412,7 +436,8 @@ export const composeTool: Tool = {
     const result = {
       duration: Math.round(made.duration * 1000) / 1000, width: made.width, height: made.height, fps: made.fps,
       bytes: fs.statSync(out).size, codec: p.codec, clips: plan.clips, captions: plan.captions.length, notes: plan.notes,
-    };
+      ...(grade ? { grade } : {}),
+    } as Record<string, unknown>;
     const emits: { make: () => Promise<Buffer> | Buffer; ext: string; title: string; meta?: Record<string, unknown> }[] = [
       { make: () => fs.readFileSync(out), ext: '.mp4', title: 'cut', meta: { duration: result.duration, width: result.width, height: result.height, fps: result.fps } },
     ];
@@ -431,6 +456,12 @@ export const composeTool: Tool = {
     for (let i = ctx.done; i < emits.length; i++) {
       const e = emits[i];
       await ctx.emit({ data: await e.make(), ext: e.ext, title: e.title, meta: e.meta });
+    }
+    if (p.finalPass === 'upscale') {
+      // Queued, not waited for: the finished cut is ready now, the upscaled one follows as its own job.
+      const poster = path.join(dir, 'poster.png');
+      if (finalPassHook) result.finalPass = await finalPassHook(ctx, out, p.poster && fs.existsSync(poster) ? poster : null);
+      else { result.finalPass = { skipped: 'the final pass is queued by Gen itself, not here' }; ctx.log('final pass: not queued on this machine'); }
     }
     ctx.result(result);
   },

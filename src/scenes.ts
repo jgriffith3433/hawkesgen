@@ -6,6 +6,8 @@
 //   image      a timeline whose frame at the playhead is the picture (src/timeline.ts): tracks as layers
 //   audio      a timeline of sound (src/timeline.ts): tracks with volume, pan, mute and solo; export is the mixdown
 //   character  a person or creature (src/scenekinds.ts): look, voice, height, 3D model, references, clips
+//   world, place, prop, story   the layer above scenes (src/worldkinds.ts): a world's bible and look, its places, props
+//              and stories. Any scene may name its world with `doc.world` (kept here for every kind).
 // Scenes plug into each other: a scene's document can name others (a stage cast member is a character scene, a video
 // clip is a filmed stage or a rendered image, an audio clip is another audio scene's mixdown); `uses` lists them, and a
 // scene's `render` is its latest output (the film, the picture, the mixdown) that the scenes using it play.
@@ -18,7 +20,7 @@ import { db } from './db.ts';
 import { GenError } from './util.ts';
 import { getJob } from './jobs.ts';
 
-export const KIND_IDS = ['video', 'stage', 'image', 'audio', 'character'] as const;
+export const KIND_IDS = ['video', 'stage', 'image', 'audio', 'character', 'world', 'place', 'prop', 'story'] as const;
 export type Kind = typeof KIND_IDS[number];
 
 export type Render = { asset: string; kind: 'video' | 'image' | 'audio' | 'mesh'; version: number; at: number };
@@ -31,12 +33,26 @@ export type KindDef = {
   resolve?(doc: any, jobOf: (id: string) => ReturnType<typeof getJob>): boolean;
   /** The scenes this document uses (by id). */
   uses?(doc: any): string[];
+  /** The elements that can hold a file (the AI's `gen` marks and `el:` inputs: src/sceneai.ts applyScene). */
+  elements?(doc: any): any[];
 };
 
-const KINDS = new Map<Kind, KindDef>();
-export function registerKind(kind: Kind, def: KindDef) { KINDS.set(kind, def); }
+// A hoisted var behind a function declaration: kinds register from modules an import cycle can load before this
+// module's body has run (editor.ts, scenekinds.ts), and a const would still be in its temporal dead zone then.
+var KINDS_: Map<Kind, KindDef> | undefined;
+function kinds() { return (KINDS_ ??= new Map<Kind, KindDef>()); }
+export function registerKind(kind: Kind, def: KindDef) {
+  // Every kind keeps the world it belongs to (src/worlds.ts worldOf), whatever its own normalize knows.
+  const own = def.normalize;
+  kinds().set(kind, { ...def, normalize: (doc: any) => {
+    const n = own(doc);
+    const w = sceneRef(doc?.world);
+    if (n && typeof n === 'object') { if (w) n.world = w; else delete n.world; }
+    return n;
+  } });
+}
 export function kindOf(kind: string): KindDef {
-  const d = KINDS.get(kind as Kind);
+  const d = kinds().get(kind as Kind);
   if (!d) throw new GenError(`No kind of scene "${kind}"`, { status: 400 });
   return d;
 }

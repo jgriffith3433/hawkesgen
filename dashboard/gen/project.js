@@ -3,7 +3,7 @@
 // back), undo and redo, saving to Gen (with a version, so edits from the AI or MCP elsewhere aren't lost), waiting clips
 // filled in when their jobs end, and changes made elsewhere picked up.
 
-import { api, bus, toast, plainError, jobStatusText } from './lib.js';
+import { api, bus, toast, plainError, jobStatusText, sendFeedback } from './lib.js';
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -205,6 +205,8 @@ export function deleteSelected() {
   const ids = [...P.selection.clips];
   if (!ids.length && !P.selection.range) return false;
   remember();
+  // A made take taken off the timeline tells the making loop it wasn't wanted (uploads are ignored there).
+  if (ids.length) for (const c of P.doc.clips) if (P.selection.clips.has(c.id) && !trackOf(c.track)?.locked && c.asset) sendFeedback('discard', c.asset);
   if (ids.length) P.doc.clips = P.doc.clips.filter((c) => !P.selection.clips.has(c.id) || trackOf(c.track)?.locked);
   else cutRange(P.selection.range.start, P.selection.range.end);
   const what = ids.length ? `Deleted ${ids.length} clip${ids.length === 1 ? '' : 's'}.` : 'Cut that stretch out.';

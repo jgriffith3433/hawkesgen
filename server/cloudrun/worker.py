@@ -10,7 +10,8 @@ the answer lists them. Gen (src/providers/cloudrun/run.ts) sends one request per
   GET  /healthz   200 while the wrapper runs (liveness)
   POST /run       {key, graph, files, models, out, timeoutSeconds, extra} -> NDJSON stream:
                   {"t":"progress","detail":...} lines (one at least every 15 s, so nothing idles the stream out), then
-                  {"t":"done","files":[{filename,subfolder,type,node,uri,bytes}],"seconds":..,"cold":{..}|null} or
+                  {"t":"done","files":[{filename,subfolder,type,node,uri,bytes}],"seconds":..,"cold":{..}|null,
+                  "vram":{peakMB,totalMB,gpu}} or
                   {"t":"error","message":..,"lost":bool,"overLimit":bool,"missingModels":[..]}
 
 Idempotent by key: the final line is also written to <out>manifest.json, so the same key again (Gen restarted, the
@@ -536,8 +537,59 @@ class OverLimit(Exception):
     pass
 
 
+class VramWatch:
+    """Samples ComfyUI's /system_stats while a graph runs: the GPU memory in use at its peak (device-wide, what PyTorch
+    holds included), so Gen can log what a tool really needs on the card."""
+
+    def __init__(self, every=0.2):
+        self.every, self.peak, self.total, self.name = every, 0, 0, None
+        self._stop = threading.Event()
+        self._t = threading.Thread(target=self._loop, daemon=True)
+
+    def _sample(self):
+        try:
+            dev = (comfy("/system_stats", timeout=5).get("devices") or [{}])[0]
+            total, free = int(dev.get("vram_total") or 0), int(dev.get("vram_free") or 0)
+            if total:
+                self.total, self.name = total, dev.get("name")
+                self.peak = max(self.peak, total - free)
+        except Exception:  # noqa: BLE001 - a missed sample is only a missed sample
+            pass
+
+    def _loop(self):
+        while not self._stop.wait(self.every):
+            self._sample()
+
+    def __enter__(self):
+        self._sample()
+        self._t.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._t.join(timeout=2)
+        self._sample()
+
+    def report(self):
+        if not self.total:
+            return None
+        return {"peakMB": self.peak // 2**20, "totalMB": self.total // 2**20, "gpu": self.name}
+
+
 def run_graph(graph, extra, run):
     """Queues a graph and waits for it, checking cancel, heartbeat and the time limit. -> output files."""
+    with VramWatch() as watch:
+        try:
+            return _run_graph(graph, extra, run)
+        finally:
+            vram = watch.report()
+            if vram:
+                prev = getattr(run, "vram", None) or {}
+                vram["peakMB"] = max(vram["peakMB"], prev.get("peakMB", 0))
+                run.vram = vram
+
+
+def _run_graph(graph, extra, run):
     body = {"prompt": graph, "client_id": "hawkesgen"}
     if extra:
         body["extra_data"] = extra
@@ -673,6 +725,8 @@ class Run:
                 final["missingModels"] = e.__cause__.models
         final["seconds"] = round(time.time() - t0, 1)
         final["cold"] = cold
+        if getattr(self, "vram", None):
+            final["vram"] = self.vram
         final["service"] = SERVICE
         if not final.get("cancelled"):
             try:

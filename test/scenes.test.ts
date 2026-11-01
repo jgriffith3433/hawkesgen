@@ -21,6 +21,8 @@ const ed = await import('../src/editor.ts');
 const dr = await import('../src/director.ts');
 const kinds = await import('../src/scenekinds.ts');
 const ai = await import('../src/sceneai.ts');
+// The house AI off: .env wins over process.env, so a real key there would otherwise reach Claude from these tests.
+(await import('../src/houseai.ts')).saveHouseSettings({ source: 'off' });
 
 test('the editor\'s old projects come into the store as video scenes, ids and versions kept', () => {
   const p = ed.getProject('ep_0123456789ab', () => true);

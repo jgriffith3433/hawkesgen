@@ -1,6 +1,8 @@
 // Hawkes Gen dashboard: plain JS over the /v1 API. Live job updates come from
 // /v1/events (server-sent events).
 
+import { benchTab } from './bench.js';
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const money = (n) => (n == null ? '—' : n < 0.01 && n > 0 ? `$${n.toFixed(4)}` : `$${Number(n).toFixed(2)}`);
@@ -1046,6 +1048,42 @@ async function showAccount(id) {
   labelCells();
 }
 
+// ---------------------------------------------------------------- making (src/make/, docs/make.md)
+// The making loop's knobs and what its learning proposes: nothing applies until the owner approves it here.
+render.making = async () => {
+  const [st, open, done] = await Promise.all([api('/make/settings'), api('/make/proposals?status=open'), api('/make/proposals')]);
+  const decided = done.items.filter((p) => p.status !== 'open').slice(0, 20);
+  const row = (p) => `<tr><td><span class="pill">${esc(p.kind)}</span></td><td>${esc(p.title)}<div class="small muted">${esc(JSON.stringify(p.evidence).slice(0, 220))}</div></td>
+    <td class="num">${p.status === 'open' ? `<button data-ok="${esc(p.id)}">Approve</button> <button class="ghost" data-no="${esc(p.id)}">Reject</button>` : `<span class="small muted">${esc(p.status)} ${esc(ago(p.decided))}</span>`}</td></tr>`;
+  $('#making').innerHTML = `
+    <div class="card"><h3>Making settings</h3>
+      <p class="small muted">Every AI action makes things through the making loop: cheap previews, checks, the final, at most two fixes, never past the budget.</p>
+      <div class="row">
+        <label>Default budget (credits) <input id="mkBudget" type="number" min="1" value="${esc(st.defaultBudget ?? '')}"></label>
+        <label>Most retries <input id="mkRetries" type="number" min="0" max="2" value="${esc(st.maxRetries)}"></label>
+        <label>Checklist pass <input id="mkCheck" type="number" step="0.05" min="0" max="1" placeholder="0.85" value="${esc(st.thresholds.checklist ?? '')}"></label>
+        <label>Face distance <input id="mkFace" type="number" step="0.01" min="0" max="1" placeholder="0.15" value="${esc(st.thresholds.identity ?? '')}"></label>
+        <label>Style pass <input id="mkStyle" type="number" step="0.05" min="0" max="1" placeholder="0.7" value="${esc(st.thresholds.style ?? '')}"></label>
+        <label><input id="mkPaid" type="checkbox" ${st.allowPaid ? 'checked' : ''}> Paid partner models may be used</label>
+        <button id="mkSave">Save</button>
+      </div></div>
+    <div class="card"><div class="row spread"><h3>Proposed from feedback</h3><button id="mkRun">Look at the feedback now</button></div>
+      ${open.items.length ? `<table><tbody>${open.items.map(row).join('')}</tbody></table>` : '<div class="empty">Nothing proposed yet. Picks, discards, redos and complaints are grouped every day.</div>'}</div>
+    ${decided.length ? `<div class="card"><h3>Decided</h3><table><tbody>${decided.map(row).join('')}</tbody></table></div>` : ''}`;
+  const num = (id) => ($(id).value === '' ? undefined : Number($(id).value));
+  $('#mkSave').onclick = () => api('/make/settings', { method: 'PUT', body: JSON.stringify({
+    defaultBudget: num('#mkBudget') ?? null, maxRetries: num('#mkRetries'), allowPaid: $('#mkPaid').checked,
+    thresholds: Object.fromEntries([['checklist', num('#mkCheck')], ['identity', num('#mkFace')], ['style', num('#mkStyle')]].filter(([, v]) => v !== undefined)),
+  }) }).then(() => { toast('Saved'); render.making(); }).catch(fail);
+  $('#mkRun').onclick = () => api('/make/proposals/summarize', { method: 'POST', body: '{}' }).then((r) => { toast(`${r.proposed.length} new from ${r.looked} pieces of feedback`); render.making(); }).catch(fail);
+  const decide = (id, approve) => api(`/make/proposals/${id}`, { method: 'POST', body: JSON.stringify({ approve }) }).then(() => render.making()).catch(fail);
+  for (const b of $('#making').querySelectorAll('[data-ok]')) b.onclick = () => decide(b.dataset.ok, true);
+  for (const b of $('#making').querySelectorAll('[data-no]')) b.onclick = () => decide(b.dataset.no, false);
+};
+
 // ---------------------------------------------------------------- start
 api('/tools').then((r) => { state.tools = r.tools; }).catch(() => {}).finally(() => { connect(); show(current); });
+// ---------------------------------------------------------------- bench: Gen Bench (dashboard/bench.js, docs/bench.md)
+render.bench = benchTab({ $, esc, ago, api, post, toast, fail, modal, mediaTag, me: () => api('/me') });
+
 setInterval(() => { if (['fleet', 'machines'].includes(current) && !$('#modal').open) render[current]().catch(() => {}); }, 15000);

@@ -243,11 +243,19 @@ export async function submitJob(client: Client, spec0: JobSpec): Promise<Job> {
   return 'id' in p ? p : createJobCharged(client, p.tool, p.s);
 }
 
+/** Hooks that adjust a job's spec before it's checked (src/worlds.ts: a job made inside a world gets the world's look). */
+// A hoisted var behind a function declaration: an import cycle (worlds.ts → jobs.ts → tools → make → worlds.ts) can
+// register a hook before this module's body has run, and a const would still be in its temporal dead zone then.
+var submitHooks: ((project: string, spec: JobSpec) => void)[] | undefined;
+function hooks() { return (submitHooks ??= []); }
+export function onSubmit(fn: (project: string, spec: JobSpec) => void) { hooks().push(fn); }
+
 function prepareSubmit(client: Client, spec0: JobSpec): Job | Pending {
   const project0 = fixedProject(client) ?? String(spec0.project ?? '').trim();
   // A preset (the project's art direction) fills in the tool, params and inputs.
   const applied = applyPreset({ ...spec0, project: project0 }, (id) => getTool(id)?.params ?? null);
   const spec: JobSpec = { ...spec0, tool: applied.tool ?? spec0.tool, params: applied.params, inputs: applied.inputs, labels: applied.preset ? { ...(spec0.labels ?? {}), preset: applied.preset } : spec0.labels };
+  if (canProject(client, project0)) for (const h of hooks()) h(project0, spec);
   // Library clips ("clips": ["Walk_Loop"]) become retarget/export ops and motion: file refs before anything else.
   const motion = expandMotionRequest(client, spec);
   if (motion) {

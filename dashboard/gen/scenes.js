@@ -6,7 +6,7 @@
 // on screen for every kind: a stage lends it its lanes (people's moves, camera keys, lines). The Scenes tab on the left lists every scene: open one, or drag it into another
 // (a character onto a stage, a stage or image into a video, an audio scene into a track): that's plug and play.
 
-import { $, $$, h, api, toast, bus, icon, fileUrl, plainError } from './lib.js';
+import { $, $$, h, api, toast, bus, icon, fileUrl, keyedRedraw, plainError } from './lib.js';
 import { state, needSignIn } from './account.js';
 import { showPane } from './media.js';
 import { popMenu, closeMenus, lendTimeline } from './timeline.js';
@@ -32,6 +32,10 @@ export const KINDS = [
   { kind: 'image', label: 'Image', icon: 'image', about: 'A picture in layers: the frame at the playhead' },
   { kind: 'audio', label: 'Audio', icon: 'music', about: 'Tracks of music, voices and sound, mixed down' },
   { kind: 'character', label: 'Character', icon: 'person', about: 'A person or creature to cast: look, voice, 3D model' },
+  { kind: 'world', label: 'World', icon: 'layers', about: 'A world: its look, rules, people, places and stories' },
+  { kind: 'place', label: 'Place', icon: 'sun', about: 'A location: a 360° view, key views, its sound' },
+  { kind: 'prop', label: 'Prop', icon: 'cube', about: 'An object that looks the same in every shot' },
+  { kind: 'story', label: 'Story', icon: 'text', about: 'A story, series or episode, written top down into shots' },
 ];
 export const kindInfo = (k) => KINDS.find((x) => x.kind === k) ?? KINDS[0];
 export function registerEditor(ed) { EDITORS[ed.kind] = ed; }
@@ -169,8 +173,8 @@ async function activate(id) {
   try { await W.switching; } finally { W.switching = null; }
 }
 
-/** A kind with nothing timed (a character) still keeps the timeline on screen, saying so. */
-const NO_LANES = { length: () => 10, playhead: () => 0, seek() {}, lanes: () => [], move() {}, empty: 'A character has no timeline of their own: drag them onto a stage, where their moves and lines are timed.' };
+/** A kind with nothing timed (a character, a world) still keeps the timeline on screen, saying so. */
+const NO_LANES = { length: () => 10, playhead: () => 0, seek() {}, lanes: () => [], move() {}, get empty() { return { world: 'A world has no timeline of its own: drag its characters and places onto a stage, where they are timed.', place: 'A place has no timeline of its own: use it in a shot, or drop its views on a video.', prop: 'A prop has no timeline of its own: drop it into a shot of a story.', story: 'A story is timed shot by shot: make a shot, and its stage has the timeline.' }[activeKind()] ?? 'A character has no timeline of their own: drag them onto a stage, where their moves and lines are timed.'; } };
 
 async function closeTab(id, { quiet = false } = {}) {
   const i = W.tabs.findIndex((x) => x.id === id);
@@ -323,25 +327,31 @@ export function readDrag(e) {
 function drawList() {
   const box = $('#scenesList');
   if (!box) return;
-  if (!state.user) { box.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Your scenes live here: videos, 3D stages, images, audio and characters.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadList, 'login') }, 'Sign in'))); return; }
+  if (!state.user) { box.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Your scenes live here: worlds, videos, 3D stages, images, audio, characters, places, props and stories.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadList, 'login') }, 'Sign in'))); return; }
   const q = $('#scenesSearch').value.trim().toLowerCase();
   const items = W.list.filter((s) => (!W.filter || s.kind === W.filter) && (!q || s.title.toLowerCase().includes(q)));
   if (!items.length) { box.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, q || W.filter ? 'Nothing matches.' : 'No scenes yet.'), h('button', { class: 'ghost small', onclick: (e) => newSceneMenu(e.currentTarget) }, icon('plus'), 'New scene'))); return; }
-  box.replaceChildren(...items.map((s) => {
+  // In place (lib.js keyedRedraw): the list is read again after every job, and a rendered scene's clip would reload.
+  keyedRedraw(box, items.map((s) => {
     const open = W.tabs.some((t) => t.id === s.id);
-    const thumb = s.render?.asset && s.render.kind === 'image' ? h('img', { src: fileUrl(s.render.asset), alt: '', loading: 'lazy' })
-      : s.render?.asset && s.render.kind === 'video' ? h('video', { src: `${fileUrl(s.render.asset)}#t=0.1`, muted: true, preload: 'metadata' })
-        : h('span', { class: 'scene-ico' }, icon(kindInfo(s.kind).icon, 'ico'));
-    const el = h('div', { class: `scene-row${s.id === W.active ? ' on' : ''}`, draggable: 'true', tabindex: '0', title: 'Open it, or drag it into another scene' },
-      h('div', { class: 'scene-thumb' }, thumb),
-      h('div', { class: 'scene-txt' }, h('b', {}, s.title), h('span', { class: 'muted small' }, `${kindInfo(s.kind).label}${s.render ? ' · rendered' : ''}${open ? ' · open' : ''}`)),
-      h('button', { class: 'icon-btn small', title: 'More', onclick: (e) => { e.stopPropagation(); sceneMenu(s, e.currentTarget); } }, icon('more')));
-    el.addEventListener('click', () => openScene(s.id));
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openScene(s.id); });
-    el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-hg-scene', JSON.stringify(sceneItem(s))); e.dataTransfer.effectAllowed = 'copy'; });
-    touchDrag(el, () => sceneItem(s));
-    return el;
+    return { key: s.id, sig: JSON.stringify([s.title, s.kind, s.render?.asset, s.render?.kind, open]), make: () => sceneRow(s, open), update: (el) => el.classList.toggle('on', s.id === W.active) };
   }));
+}
+function sceneRow(s, open) {
+  // The row stays while the list is read again: its buttons act on the newest copy of the scene.
+  const now = () => W.list.find((x) => x.id === s.id) ?? s;
+  const thumb = s.render?.asset && s.render.kind === 'image' ? h('img', { src: fileUrl(s.render.asset), alt: '', loading: 'lazy' })
+    : s.render?.asset && s.render.kind === 'video' ? h('video', { src: `${fileUrl(s.render.asset)}#t=0.1`, muted: true, preload: 'metadata' })
+      : h('span', { class: 'scene-ico' }, icon(kindInfo(s.kind).icon, 'ico'));
+  const el = h('div', { class: 'scene-row', draggable: 'true', tabindex: '0', title: 'Open it, or drag it into another scene' },
+    h('div', { class: 'scene-thumb' }, thumb),
+    h('div', { class: 'scene-txt' }, h('b', {}, s.title), h('span', { class: 'muted small' }, `${kindInfo(s.kind).label}${s.render ? ' · rendered' : ''}${open ? ' · open' : ''}`)),
+    h('button', { class: 'icon-btn small', title: 'More', onclick: (e) => { e.stopPropagation(); sceneMenu(now(), e.currentTarget); } }, icon('more')));
+  el.addEventListener('click', () => openScene(s.id));
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openScene(s.id); });
+  el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-hg-scene', JSON.stringify(sceneItem(now()))); e.dataTransfer.effectAllowed = 'copy'; });
+  touchDrag(el, () => sceneItem(now()));
+  return el;
 }
 
 function sceneMenu(s, btn) {

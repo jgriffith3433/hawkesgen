@@ -8,11 +8,12 @@ import { cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeT
 import { composeTool } from '../tools/compose.ts';
 import { videoMatteTool, videoCompositeTool, videoControlMixTool } from '../tools/film-video.ts';
 import { sheetTool } from '../tools/sheet.ts';
+import { qualityIdentityTool } from '../tools/quality-identity.ts';
 
 /** How heavy a call is, for the doc's price table and the service's concurrency (a heavy call wants the instance's CPUs). */
 export type Weight = 'light' | 'medium' | 'heavy';
 
-export type SuiteTool = { tool: Tool; area: 'image' | 'texture' | 'video' | 'sprite' | '3d' | 'media'; weight: Weight; typicalSeconds: number };
+export type SuiteTool = { tool: Tool; area: 'image' | 'texture' | 'video' | 'sprite' | '3d' | 'media' | 'quality'; weight: Weight; typicalSeconds: number };
 
 /** Every tool the service can run, with what it is for. typicalSeconds: one ordinary call on 4 vCPUs (docs/cpu-cloudrun.md). */
 export const CPU_SUITE: SuiteTool[] = [
@@ -30,6 +31,7 @@ export const CPU_SUITE: SuiteTool[] = [
   { tool: videoCompositeTool, area: 'video', weight: 'heavy', typicalSeconds: 40 },
   { tool: videoControlMixTool, area: 'video', weight: 'heavy', typicalSeconds: 30 },
   { tool: splatBuildTool, area: '3d', weight: 'heavy', typicalSeconds: 45 },
+  { tool: qualityIdentityTool, area: 'quality', weight: 'medium', typicalSeconds: 8 },
 ];
 
 /** CPU tools that stay on Gen's machine, and why (the doc and GET /v1/cpu say so). */

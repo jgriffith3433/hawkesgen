@@ -16,7 +16,34 @@ export const h = (tag, attrs = {}, ...kids) => {
   for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
   return el;
 };
-export const fileUrl = (id) => `/v1/assets/${encodeURIComponent(id)}/file`;
+/**
+ * A library file's link. Given the file's hash (list rows carry `sha256`), the link names its bytes, so Gen serves it as
+ * immutable and the browser never asks for it again (J, 2026-11-01: Media kept reloading its pictures and clips).
+ */
+export const fileUrl = (id, sha) => `/v1/assets/${encodeURIComponent(id)}/file${sha ? `?v=${String(sha).slice(0, 16)}` : ''}`;
+
+/**
+ * Redraws a list in place instead of rebuilding it (J, 2026-11-01: "I hope in general the app doesn't refresh constantly").
+ * Each row is { key, sig, make, update? }: a row whose key and sig match what's on screen keeps its element (pictures
+ * and clips don't reload, a hovered clip keeps playing, the scroll stays); a new or changed row is made with make();
+ * update(el) runs on every row for the cheap bits (a class, a status line). Only rows out of place are moved, and
+ * anything else in the box (an empty note) goes.
+ */
+const SIG = new WeakMap();
+export function keyedRedraw(box, rows) {
+  const old = new Map();
+  for (const el of box.children) if (SIG.has(el)) old.set(el.dataset.key, el);
+  const next = rows.map((r) => {
+    const key = String(r.key);
+    let el = old.get(key);
+    if (el && SIG.get(el) === r.sig) old.delete(key);
+    else { el = r.make(); el.dataset.key = key; SIG.set(el, r.sig); }
+    r.update?.(el);
+    return el;
+  });
+  next.forEach((el, i) => { if (box.children[i] !== el) box.insertBefore(el, box.children[i] ?? null); });
+  while (box.children.length > next.length) box.lastElementChild.remove();
+}
 
 export class ApiError extends Error {
   constructor(message, status, data) { super(message); this.status = status; this.data = data; }
@@ -31,6 +58,13 @@ export async function api(path, { method, body } = {}) {
   try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
   if (!r.ok) throw new ApiError(data?.error ?? `HTTP ${r.status}`, r.status, data);
   return data;
+}
+
+/** Tells the making loop's learning what the person thought of a take (src/make/feedback.ts): pick, discard, redo,
+ *  rating or complaint. Never in the way: it fails silently. */
+export function sendFeedback(kind, asset, extra = {}) {
+  if (!asset) return;
+  api('/v1/make/feedback', { body: { kind, asset, source: 'app', ...extra } }).catch(() => {});
 }
 
 let toastTimer = 0;

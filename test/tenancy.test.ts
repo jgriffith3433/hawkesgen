@@ -183,6 +183,26 @@ test('the editor\'s tools: a mask, a video or a clip to revoice must be the cust
   db.prepare("UPDATE jobs SET status = 'cancelled' WHERE id = ?").run(a.body.jobs[0].id);
 });
 
+test("the making loop: make.checked names only a customer's own files; feedback only on its own takes; the learning is the owner's", async () => {
+  const pic = await json(await call(portal, '/v1/blobs', { project: 'usr_aaaa', raw: Buffer.from('aaaa make picture') }));
+  // make.checked's children run on Gen's key, so a file named inside its params is checked at submit.
+  const b = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool: 'make.checked', params: { intent: 'image', brief: 'x', refs: { style: [pic.body.blob] }, inputs: { image: pic.body.blob } } } }));
+  assert.equal(b.status, 404, JSON.stringify(b.body));
+  const pin = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool: 'make.checked', params: { intent: 'image', brief: 'x', tool: 'unity.build' } } }));
+  assert.equal(pin.status, 403, JSON.stringify(pin.body));
+  // Feedback on another customer's take: refused.
+  const { putAsset } = await import('../src/library.ts');
+  const theirs = putAsset({ data: Buffer.from('a take'), ext: '.png', client: 'x', project: 'usr_aaaa', tool: 'image.generate', recipe: { tool: 'image.generate', version: 1, params: {}, inputs: {} } as any });
+  const fbB = await json(await call(portal, '/v1/make/feedback', { project: 'usr_bbbb', body: { kind: 'discard', asset: theirs.id } }));
+  assert.equal(fbB.status, 403, JSON.stringify(fbB.body));
+  const fbA = await json(await call(portal, '/v1/make/feedback', { project: 'usr_aaaa', body: { kind: 'pick', asset: theirs.id } }));
+  assert.equal(fbA.status, 200, JSON.stringify(fbA.body));
+  for (const [route, method] of [['/v1/make/feedback', 'GET'], ['/v1/make/proposals', 'GET'], ['/v1/make/settings', 'GET'], ['/v1/make/proposals/summarize', 'POST']]) {
+    const r = await call(own, route, { method, ...(method === 'POST' ? { body: {} } : {}) });
+    assert.equal(r.status, 403, route);
+  }
+});
+
 test('an upload that needs normalizing queues media.normalize in the uploader\'s project, out of other customers\' sight', async () => {
   // Not a picture ffprobe can read, but named .heic: it goes by its extension.
   const up = await json(await call(portal, '/v1/assets?filename=photo.heic', { project: 'usr_aaaa', raw: Buffer.from('not really a heic') }));
@@ -215,4 +235,11 @@ test('share links: only the owner can make one; anyone with it sees the file, in
   assert.equal(got.status, 200);
   assert.match(String(got.headers.get('content-disposition')), /^inline/);
   assert.equal((await fetch(base + sh.body.url.replace(/\.[\w-]+\//, '.forged/'))).status, 404);
+});
+
+test('Gen Bench and the quality door are the studio\'s: a customer gets 403', async () => {
+  for (const [route, body] of [['/v1/bench', undefined], ['/v1/bench/runs', { mode: 'mock' }], ['/v1/bench/baseline', { brief: 'poster', asset: 'a_1' }], ['/v1/quality/assess', { brief: 'x', asset: 'a_1' }]] as const) {
+    assert.equal((await call(own, route, { body, method: body ? 'POST' : 'GET' })).status, 403, route);
+    assert.equal((await call(portal, route, { body, method: body ? 'POST' : 'GET', project: 'usr_aaaa' })).status, 403, `${route} (portal key)`);
+  }
 });

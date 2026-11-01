@@ -10,7 +10,18 @@
 import { $, h, fileUrl, fmt, bus, icon, peaks } from './lib.js';
 import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack, PROGRESS } from './project.js';
 
-const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true };
+const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, holdOff: 0 };
+// Playback smoothness (J, 2026-11-01: "make the buffering of the videos a little better so we don't see hitching during
+// playback"). The clock waits while a clip under the playhead is short of data instead of running on and jumping the
+// video (each jump throws its buffer away and starts the stall again); small drift is taken up by nudging the clip's
+// speed, not by seeking; the next clip is loaded and parked on its first frame well before the cut; and a clip that is
+// seeking keeps showing its last frame instead of a blank one.
+const AHEAD = 6; // seconds before a clip starts that its media element is made and parked on its first frame
+const SEEK_OVER = 0.5; // drift (s) past which a playing element is moved; under it, its speed is nudged
+const IN_STEP = 0.04; // drift (s) that counts as in step
+const NUDGE = 0.05; // how much faster or slower a drifting element plays while it catches up
+const HOLD_MAX = 5000; // ms the clock waits for one stall before playing on regardless (a broken or very slow file)
+const KEEP = 40; // media elements kept before ones away from the playhead are let go
 const M = new Map(); // clip id -> { el, asset, src (MediaElementSource), gain }
 const IMGS = new Map(); // asset -> Image
 const PEAKS = new Map(); // asset -> peaks or 'loading'
@@ -69,11 +80,13 @@ export async function play() {
   S.playing = true;
   S.t0 = performance.now();
   S.p0 = P.playhead;
+  S.buffering = 0;
   drawPlayBtn();
-  syncMedia(P.playhead, true);
+  syncMedia(P.playhead, true, true);
 }
 export function pause() {
   S.playing = false;
+  S.buffering = 0;
   for (const m of M.values()) m.el.pause();
   if (S.source?.el) S.source.el.pause();
   drawPlayBtn();
@@ -84,8 +97,8 @@ function drawPlayBtn() { $('#playBtn').replaceChildren(icon(S.playing ? 'pause' 
 export function seek(t) {
   if (S.source) { if (S.source.el) S.source.el.currentTime = Math.max(0, t); return; }
   P.playhead = Math.max(0, Math.min(Math.max(docLength(), 0), t));
-  if (S.playing) { S.p0 = P.playhead; S.t0 = performance.now(); }
-  syncMedia(P.playhead, S.playing);
+  if (S.playing) { S.p0 = P.playhead; S.t0 = performance.now(); S.buffering = 0; }
+  syncMedia(P.playhead, S.playing, true);
   S.dirty = true;
   bus.emit('time', P.playhead);
 }
@@ -93,20 +106,61 @@ export function seek(t) {
 /** One loop for everything: the clock while playing, the media kept in step, and the canvas drawn when something changed. */
 function frameLoop() {
   const tick = () => {
-    if (S.playing && !S.source) {
+    if (S.playing && !S.source && holdForData()) {
+      // Waiting for a clip under the playhead to have data: the playhead stays where it is.
+      S.dirty = true;
+    } else if (S.playing && !S.source) {
       let t = S.p0 + (performance.now() - S.t0) / 1000;
       const end = S.loop && P.selection.range ? P.selection.range.end : docLength();
       if (t >= end) {
-        if (S.loop && !S.recording) { t = P.selection.range?.start ?? 0; S.p0 = t; S.t0 = performance.now(); syncMedia(t, true); } else { P.playhead = end; pause(); S.recording?.done(); }
+        if (S.loop && !S.recording) { t = P.selection.range?.start ?? 0; S.p0 = t; S.t0 = performance.now(); syncMedia(t, true, true); } else { P.playhead = end; pause(); S.recording?.done(); }
       }
       if (S.playing) { P.playhead = t; syncMedia(t, true); bus.emit('time', t); }
       S.dirty = true;
     }
     if (S.dirty && !S.source && canvas.isConnected) { S.dirty = false; draw(g, P.playhead, { live: true }); drawHandles(); }
-    $('#timecode').textContent = S.source ? $('#timecode').textContent : `${fmt(P.playhead, 2)} / ${fmt(docLength(), 2)}`;
+    $('#timecode').textContent = S.source ? $('#timecode').textContent : `${fmt(P.playhead, 2)} / ${fmt(docLength(), 2)}${S.buffering ? ' · buffering' : ''}`;
     S.raf = requestAnimationFrame(tick);
   };
   S.raf = requestAnimationFrame(tick);
+}
+
+/** A media element under the playhead that should be playing but can't yet (seeking, or not enough data ahead). */
+function starved(t) {
+  for (const c of P.doc.clips) {
+    if (!c.asset || (c.kind !== 'video' && c.kind !== 'audio') || !active(c, t)) continue;
+    const m = M.get(c.id);
+    if (!m || m.el.error || m.el.ended) continue;
+    const tr = trackOf(c.track);
+    if (c.kind === 'video' ? tr?.hidden && !(hasSound(c) && audible(tr) && !c.muted) : !audible(tr) || c.muted) continue;
+    const d = m.el.duration;
+    if (Number.isFinite(d) && local(c, t) >= d - 0.15) continue; // at its file's end: nothing more is coming
+    if (m.el.seeking || m.el.readyState < 3) return true;
+  }
+  return false;
+}
+/**
+ * While playing: true while the clock should wait for data (everything paused at the playhead, a "buffering" hint);
+ * when the data is there, the clock starts again from the same time. Not while recording an export (it records in real
+ * time), and never longer than HOLD_MAX for one stall.
+ */
+function holdForData() {
+  const now = performance.now();
+  if (S.recording || now < S.holdOff) { S.buffering = 0; return false; }
+  const short = starved(P.playhead);
+  if (S.buffering) {
+    if (short && now - S.buffering < HOLD_MAX) { S.p0 = P.playhead; S.t0 = now; return true; }
+    if (short) S.holdOff = now + 3000; // waited long enough: play on (as before) for a while
+    S.buffering = 0;
+    S.p0 = P.playhead; S.t0 = now;
+    syncMedia(P.playhead, true);
+    return false;
+  }
+  if (!short) return false;
+  S.buffering = now;
+  for (const m of M.values()) if (!m.el.paused) m.el.pause();
+  syncMedia(P.playhead, false, false, true); // load and park what's coming, without moving what's under the playhead
+  return true;
 }
 
 // ------------------------------------------------------------------ media and sound
@@ -142,26 +196,41 @@ function clipGain(c, t) {
 }
 const local = (c, t) => c.in + (Math.min(t, clipEnd(c) - 0.001) - c.start) * (c.speed || 1);
 
-/** Keeps every media element in step with the timeline: those under the playhead play (or hold the frame), the next ones load. */
-function syncMedia(t, playing) {
+/**
+ * Keeps every media element in step with the timeline: those under the playhead play (or hold the frame), the next ones
+ * load and wait on their first frame. hard: the playhead jumped (play, a seek, a loop), so playing elements are moved to
+ * it; otherwise a playing element that drifts a little is sped up or slowed down until it's back in step, and only moved
+ * when it is far off. park: leave the elements under the playhead where they are (the clock is waiting for them).
+ */
+function syncMedia(t, playing, hard = false, park = false) {
   const want = new Set();
   for (const c of P.doc.clips) {
     if (!c.asset || (c.kind !== 'video' && c.kind !== 'audio')) continue;
     const on = t >= c.start && t < clipEnd(c);
-    const soon = !on && c.start > t && c.start - t < 2.5;
+    const soon = !on && c.start > t && c.start - t < AHEAD;
     if (!on && !soon) continue;
     want.add(c.id);
     let m = M.get(c.id);
     if (!m || m.asset !== c.asset) {
       if (m) dropMedia(c.id);
       const el = c.kind === 'video' ? h('video', { playsinline: true, preload: 'auto', crossorigin: 'use-credentials' }) : h('audio', { preload: 'auto', crossorigin: 'use-credentials' });
+      m = { el, asset: c.asset, still: null };
+      const mm = m, id = c.id;
+      el.addEventListener('seeked', () => { mm.still = null; S.dirty = true; });
+      el.addEventListener('canplay', () => { S.dirty = true; });
+      // As soon as it knows its length: to the playhead if it's under it, else parked on its first frame for the cut.
+      el.addEventListener('loadedmetadata', () => {
+        const cc = byId(id);
+        if (!cc || M.get(id) !== mm) return;
+        const under = P.playhead >= cc.start && P.playhead < clipEnd(cc);
+        el.currentTime = Math.max(0.001, under ? local(cc, P.playhead) : cc.in);
+      });
+      el.addEventListener('loadeddata', () => { S.dirty = true; });
       el.src = fileUrl(c.asset);
-      el.addEventListener('seeked', () => { S.dirty = true; });
-      el.addEventListener('loadeddata', () => { S.dirty = true; if (!S.playing) el.currentTime = Math.max(0.001, local(c, P.playhead)); });
-      m = { el, asset: c.asset };
       M.set(c.id, m);
       route(m);
     }
+    m.used = performance.now();
     const tr = trackOf(c.track);
     const sounding = hasSound(c) && audible(tr);
     if (m.gain && AU.ctx) {
@@ -174,18 +243,48 @@ function syncMedia(t, playing) {
       m.el.muted = !sounding || Boolean(c.muted);
       m.el.volume = Math.min(1, clipGain(c, t) * (tr?.volume ?? 1));
     }
-    m.el.playbackRate = c.speed || 1;
-    if (!on) { if (!m.el.paused) m.el.pause(); if (Math.abs(m.el.currentTime - c.in) > 0.05 && m.el.readyState >= 1) m.el.currentTime = c.in; continue; }
+    const speed = c.speed || 1;
+    // Not yet under the playhead: paused on its first frame, loading, moved there once (not every frame).
+    if (!on) {
+      if (!m.el.paused) m.el.pause();
+      if (m.el.playbackRate !== speed) m.el.playbackRate = speed;
+      if (m.el.readyState >= 1 && !m.el.seeking && Math.abs(m.el.currentTime - c.in) > 0.05) moveTo(m, c.in);
+      continue;
+    }
+    if (park) { if (!m.el.paused) m.el.pause(); continue; }
     const at = local(c, t);
     if (playing) {
-      if (Math.abs(m.el.currentTime - at) > 0.25) m.el.currentTime = at;
+      const drift = m.el.currentTime - at;
+      let rate = speed;
+      if (m.el.readyState >= 1 && (hard ? Math.abs(drift) > IN_STEP : Math.abs(drift) > SEEK_OVER)) moveTo(m, at);
+      else if (!m.el.seeking && Math.abs(drift) > IN_STEP) rate = speed * (drift > 0 ? 1 - NUDGE : 1 + NUDGE);
+      if (m.el.playbackRate !== rate) m.el.playbackRate = rate;
       if (m.el.paused) m.el.play().catch(() => {});
     } else {
       if (!m.el.paused) m.el.pause();
-      if (Math.abs(m.el.currentTime - at) > 0.02 && m.el.readyState >= 1) m.el.currentTime = at;
+      if (m.el.playbackRate !== speed) m.el.playbackRate = speed;
+      if (Math.abs(m.el.currentTime - at) > 0.02 && m.el.readyState >= 1) moveTo(m, at);
     }
   }
-  for (const id of [...M.keys()]) if (!want.has(id)) { const m = M.get(id); m.el.pause(); if (!byId(id) || M.size > 24) dropMedia(id); }
+  const away = [...M.keys()].filter((id) => !want.has(id));
+  for (const id of away) M.get(id).el.pause();
+  // Let go of clips that are gone, and of the longest-unused ones past KEEP (so scrubbing back doesn't reload them).
+  for (const id of away) if (!byId(id)) dropMedia(id);
+  if (M.size > KEEP) for (const id of away.filter((x) => M.has(x)).sort((a, b) => (M.get(a).used ?? 0) - (M.get(b).used ?? 0)).slice(0, M.size - KEEP)) dropMedia(id);
+}
+/** Moves an element to time `at`, keeping a copy of the frame it shows so the canvas has something to draw meanwhile. */
+function moveTo(m, at) {
+  const el = m.el;
+  if (el.videoWidth && el.readyState >= 2 && !m.still) {
+    try {
+      const k = Math.min(1, 1280 / el.videoWidth);
+      const cv = m.stillCanvas ?? (m.stillCanvas = document.createElement('canvas'));
+      cv.width = Math.round(el.videoWidth * k); cv.height = Math.round(el.videoHeight * k);
+      cv.getContext('2d').drawImage(el, 0, 0, cv.width, cv.height);
+      m.still = { el: cv, w: el.videoWidth, h: el.videoHeight };
+    } catch { m.still = null; }
+  }
+  el.currentTime = Math.max(0.001, at);
 }
 function dropMedia(id) {
   const m = M.get(id);
@@ -194,6 +293,7 @@ function dropMedia(id) {
   try { m.src?.disconnect(); m.gain?.disconnect(); } catch { /* */ }
   m.el.removeAttribute('src');
   m.el.load();
+  m.still = null; m.stillCanvas = null;
   M.delete(id);
 }
 function imgOf(asset) {
@@ -210,9 +310,15 @@ function peaksOf(asset) {
 // ------------------------------------------------------------------ drawing
 const active = (c, t) => t >= c.start && t < clipEnd(c);
 /** A clip's picture source and its natural size, if it has one ready. */
-function sourceOf(c) {
+function sourceOf(c, live = false) {
   if (c.kind === 'image' && c.asset) { const im = imgOf(c.asset); return im.complete && im.naturalWidth ? { el: im, w: im.naturalWidth, h: im.naturalHeight } : null; }
-  if (c.kind === 'video' && c.asset) { const m = M.get(c.id); return m && m.el.readyState >= 2 && m.el.videoWidth ? { el: m.el, w: m.el.videoWidth, h: m.el.videoHeight } : null; }
+  if (c.kind === 'video' && c.asset) {
+    const m = M.get(c.id);
+    if (!m) return null;
+    if (m.el.readyState >= 2 && m.el.videoWidth) return { el: m.el, w: m.el.videoWidth, h: m.el.videoHeight };
+    // Seeking or short of data: the last frame it showed, on screen only (an export waits for the real frame).
+    return live && m.still ? m.still : null;
+  }
   return null;
 }
 /** A visual clip's box on the frame (center, size before turning), in the scene's pixels. */
@@ -353,7 +459,7 @@ function drawClip(ctx, c, t, live, alpha) {
     const ox = ((z.x ?? 0.5) - 0.5) * b.w, oy = ((z.y ?? 0.5) - 0.5) * b.h;
     ctx.translate(ox, oy); ctx.scale(s, s); ctx.translate(-ox, -oy);
   }
-  const src = sourceOf(c);
+  const src = sourceOf(c, live);
   if (src) ctx.drawImage(src.el, -b.w / 2, -b.h / 2, b.w, b.h);
   else if (live) {
     ctx.fillStyle = c.failed ? 'rgba(255,107,129,.18)' : 'rgba(139,123,255,.16)';

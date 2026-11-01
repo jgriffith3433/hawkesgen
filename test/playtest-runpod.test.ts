@@ -237,8 +237,9 @@ test('the driver\'s graphics libraries: the right files out of NVIDIA\'s install
 test('setup.mjs: a dry run prints a load-balancer endpoint, scale to zero, the settings, and no secret', () => {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'tools', 'playtest-runpod', 'setup.mjs'), '--image', 'ghcr.io/x/y:1'], { encoding: 'utf8', env: { ...process.env, RUNPOD_API_KEY: 'rp_secret_value', GPU_WORKER_TOKEN: 'gw_secret_value' } });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /"type": "LB"/);
-  assert.match(r.stdout, /"workersMin": 0/);
+  assert.match(r.stdout, /"type": "LOAD_BALANCER"/);
+  assert.match(r.stdout, /"min": 0/);
+  assert.ok(!r.stdout.includes('rest.runpod.io'), 'RunPod REST v1 is retired on 2026-11-15');
   assert.match(r.stdout, /"backend": "runpod"/);
   assert.match(r.stdout, /dry run/);
   assert.ok(!r.stdout.includes('rp_secret_value') && !r.stdout.includes('gw_secret_value'), 'secrets are never printed');

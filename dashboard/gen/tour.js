@@ -40,6 +40,7 @@ export function endTour(remember = true) {
   document.body.classList.remove('touring');
   T = null;
   if (remember) { try { localStorage.setItem(doneKey(), '1'); } catch { /* */ } }
+  bus.emit('tourDone');
 }
 function onKey(e) {
   if (e.key === 'Escape') { e.stopPropagation(); endTour(); }
