@@ -245,9 +245,16 @@ const AREAS = [
   { prop: '--left', sel: '#leftPane', min: 220, max: 560, fold: 'no-left' },
   { prop: '--right', sel: '#rightPane', min: 260, max: 600, invert: true, fold: 'no-right' },
   { prop: '--tl', sel: '#timelinePane', min: 120, max: 720, invert: true, axis: 'y', fold: 'tl-small', foldTo: 40 },
-  { prop: '--sheet', sel: '#sheetGrip', min: 140, max: 760, invert: true, axis: 'y', phone: true },
-  { prop: '--tlm', sel: '#timelinePane', min: 96, max: 420, invert: true, axis: 'y', phone: true, grip: 'grip-tlm' },
+  // Phones: the sheet and the timeline drag almost the whole screen (J, 2026-11-01); the CSS keeps a strip of the
+  // picture and the timeline's bar, so the max here is only a ceiling.
+  { prop: '--sheet', sel: '#sheetGrip', min: 90, max: 2000, invert: true, axis: 'y', phone: true },
+  { prop: '--tlm', sel: '#timelinePane', min: 40, max: 2000, invert: true, axis: 'y', phone: true, grip: 'grip-tlm' },
 ];
+/** What a phone area really shows (the CSS caps it), so a drag starts from what's on screen, not a stored number. */
+const shownSize = (a) => {
+  if (a.prop === '--tlm') return $('#timelinePane').getBoundingClientRect().height;
+  return Math.max(...['#leftPane', '#rightPane'].map((s) => $(s).getBoundingClientRect().height));
+};
 const keep = (k, v) => { try { localStorage.setItem(k, v); } catch { /* */ } };
 const kept = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 for (const a of AREAS) {
@@ -270,7 +277,7 @@ for (const a of AREAS) {
     grip.setPointerCapture?.(e.pointerId);
     const start = a.axis === 'y' ? e.clientY : e.clientX;
     const folded = a.fold && app.classList.contains(a.fold);
-    const v0 = folded ? (a.foldTo ?? 0) : parseFloat(getComputedStyle(app).getPropertyValue(a.prop)) || a.min;
+    const v0 = folded ? (a.foldTo ?? 0) : a.phone ? shownSize(a) : parseFloat(getComputedStyle(app).getPropertyValue(a.prop)) || a.min;
     app.classList.add('sizing');
     app.style.setProperty('--sizing-cursor', a.axis === 'y' ? 'row-resize' : 'col-resize');
     const move = (ev) => {
@@ -282,11 +289,22 @@ for (const a of AREAS) {
       app.style.setProperty(a.prop, `${val}px`);
       keep(`hg.${a.prop}`, String(val));
     };
-    const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); app.classList.remove('sizing'); fit(); };
+    const up = () => {
+      removeEventListener('pointermove', move); removeEventListener('pointerup', up); app.classList.remove('sizing');
+      // Keep what the screen shows, so the next drag has no dead zone past the cap.
+      if (a.phone) { const shown = Math.round(shownSize(a)); if (shown > 0) { app.style.setProperty(a.prop, `${shown}px`); keep(`hg.${a.prop}`, String(shown)); } }
+      fit();
+    };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
   });
 }
+
+// ------------------------------------------------------------------ phones: the page never zooms (J, 2026-11-01)
+// Safari ignores user-scalable=no, so pinches on the page are stopped here. Touch handlers still get the fingers, so
+// the timeline's own pinch and the stage's gestures keep working.
+for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(t, (e) => e.preventDefault(), { passive: false });
+document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 
 // ------------------------------------------------------------------ phone: the sheet under the timeline
 $$('#mobileTabs button').forEach((b) => b.addEventListener('click', () => {
