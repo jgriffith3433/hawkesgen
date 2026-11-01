@@ -58,3 +58,15 @@ test('upload_file gives the link as upload.url too; a string result has no struc
   const plain = await rpc({ name: 'x', version: '1', instructions: '', tools: [{ name: 's', description: '', inputSchema: {}, run: async () => 'hello' }] }, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 's' } });
   assert.equal(plain.result.structuredContent, undefined);
 });
+
+test('transform_image runs image.transform with the steps as its ops', async () => {
+  const gen = fakeGen();
+  let sent: any = null;
+  gen.submit = async (tool: string, body: any) => { sent = { tool, ...body }; return { id: 'j1', tool: 'image.transform', project: 'u_x', status: 'running' }; };
+  const server = genMcp(gen, { remote: true, account: 'u_x', fileLink: () => '' });
+  const steps = [{ op: 'trim' }, { op: 'pixelate', size: 64, colors: 16 }];
+  await call(server, 'transform_image', { image: 'asset:a_0', steps, wait_seconds: 0 });
+  assert.equal(sent.tool, 'image.transform');
+  assert.deepEqual(sent.params.ops, steps);
+  assert.equal(sent.inputs.image, 'asset:a_0');
+});
