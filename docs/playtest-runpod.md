@@ -62,7 +62,11 @@ connection, the video encoded on the worker (NVENC) over `/encode`. Only the hea
   (`PLAYTEST_RUNPOD_TOKEN`, else `GPU_WORKER_TOKEN`) always. The image checks the token as `HAWKES_TOKEN` on `/pw`,
   `/encode`, `/selftest` and `/ready` (`/ping` and `/healthz` stay open for the gateway).
 - **Retries:** a cold start may answer 408, 504 or 524 (Cloudflare); they are retried like 429/503. 412 (no GPU) is not.
-- **Lane:** `playtest-runpod`, `maxInstances x tabsPerInstance` tabs.
+- **Lane:** `playtest-runpod`, `maxInstances x tabsPerInstance` tabs. Since 2026-11-01 `maxInstances` is the
+  endpoint's own `workers.max`, read from RunPod every 2 minutes (`src/providers/playtester/runpodcap.ts`); the setting
+  is only the fallback when RunPod can't be read. To change how many playtests run at once, change the endpoint:
+  `ops-playtest-capacity.yml` (or `node tools/playtest-runpod/capacity.mjs --max N --apply`), which touches only
+  `workers.max`. Per-second billing means more workers play the same queue sooner for about the same money.
 - **Usage:** a `runpod-playtest` row per playtest (`runpodUsage`): the tabs' share of a worker for the connect wait, the
   play and the idle tail. It is an upper bound when playtests follow each other on a warm worker.
 - **Check it:** `GET /v1/playtester/cloud?variant=runpod&selftest=1` (starts a worker: about a cent).
