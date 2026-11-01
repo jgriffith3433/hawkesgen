@@ -10,18 +10,27 @@
 import { $, h, fileUrl, fmt, bus, icon, peaks } from './lib.js';
 import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack, PROGRESS } from './project.js';
 
-const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, holdOff: 0 };
+const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, holdOff: 0, thinSince: 0, drawn: false, keepSince: 0 };
 // Playback smoothness (J, 2026-11-01: "make the buffering of the videos a little better so we don't see hitching during
 // playback"). The clock waits while a clip under the playhead is short of data instead of running on and jumping the
-// video (each jump throws its buffer away and starts the stall again); small drift is taken up by nudging the clip's
-// speed, not by seeking; the next clip is loaded and parked on its first frame well before the cut; and a clip that is
-// seeking keeps showing its last frame instead of a blank one.
+// video (each jump throws its buffer away and starts the stall again), and starts again once a second is loaded ahead;
+// small drift is taken up by nudging the clip's speed, not by seeking; the next clip is loaded and parked on its first
+// frame well before the cut; a clip that is seeking keeps showing its last frame instead of a blank one; and while
+// playing into a clip with no picture yet, the canvas keeps the last one it drew.
 const AHEAD = 6; // seconds before a clip starts that its media element is made and parked on its first frame
 const SEEK_OVER = 0.5; // drift (s) past which a playing element is moved; under it, its speed is nudged
 const IN_STEP = 0.04; // drift (s) that counts as in step
 const NUDGE = 0.05; // how much faster or slower a drifting element plays while it catches up
 const HOLD_MAX = 5000; // ms the clock waits for one stall before playing on regardless (a broken or very slow file)
+const RESUME_AHEAD = 1; // seconds loaded past the playhead a held clip should have before the clock starts again...
+const THIN_MAX = 1000; // ...or ms it waits once the clip can play at all (so a stall doesn't stop and start, stop and start)
 const KEEP = 40; // media elements kept before ones away from the playhead are let go
+// What playback did, for the playtest bot and the console (`playbackStats()`): how often and how long the clock waited,
+// how often a playing clip still had to be moved or nudged, and the frames where a clip had no picture (kept: the last
+// picture stayed on screen; blank: it was drawn without one).
+const STATS = { holds: 0, holdMs: 0, maxHoldMs: 0, driftSeeks: 0, nudges: 0, keptFrames: 0, blankFrames: 0 };
+export const playbackStats = () => ({ ...STATS, holdMs: Math.round(STATS.holdMs), maxHoldMs: Math.round(STATS.maxHoldMs) });
+export function resetPlaybackStats() { for (const k of Object.keys(STATS)) STATS[k] = 0; }
 const M = new Map(); // clip id -> { el, asset, src (MediaElementSource), gain }
 const IMGS = new Map(); // asset -> Image
 const PEAKS = new Map(); // asset -> peaks or 'loading'
@@ -118,15 +127,36 @@ function frameLoop() {
       if (S.playing) { P.playhead = t; syncMedia(t, true); bus.emit('time', t); }
       S.dirty = true;
     }
-    if (S.dirty && !S.source && canvas.isConnected) { S.dirty = false; draw(g, P.playhead, { live: true }); drawHandles(); }
+    if (S.dirty && !S.source && canvas.isConnected) {
+      // Playing into a clip that has no picture yet (the cut came before its first frame, or it's seeking with nothing
+      // kept): the canvas keeps the last picture it drew, for as long as the clock would wait, instead of a blank tile.
+      const now = performance.now();
+      const gap = S.playing && S.drawn && pictureMissing(P.playhead);
+      if (gap && now - (S.keepSince || (S.keepSince = now)) < HOLD_MAX) STATS.keptFrames++;
+      else {
+        if (gap) STATS.blankFrames++; else S.keepSince = 0;
+        S.dirty = false; S.drawn = true;
+        draw(g, P.playhead, { live: true }); drawHandles();
+      }
+    }
     $('#timecode').textContent = S.source ? $('#timecode').textContent : `${fmt(P.playhead, 2)} / ${fmt(docLength(), 2)}${S.buffering ? ' · buffering' : ''}`;
     S.raf = requestAnimationFrame(tick);
   };
   S.raf = requestAnimationFrame(tick);
 }
 
-/** A media element under the playhead that should be playing but can't yet (seeking, or not enough data ahead). */
-function starved(t) {
+/** Seconds loaded past an element's current time (in the buffered range it's in). */
+function loadedAhead(el) {
+  const b = el.buffered, x = el.currentTime;
+  for (let i = 0; i < b.length; i++) if (b.start(i) <= x + 0.05 && b.end(i) > x) return b.end(i) - x;
+  return 0;
+}
+/**
+ * How ready the media under the playhead that should be playing is: 2 starved (seeking, or no data ahead: it can't
+ * play), 1 thin (it can play, but less than RESUME_AHEAD is loaded and the browser doesn't expect to play through), 0 fine.
+ */
+function readiness(t) {
+  let worst = 0;
   for (const c of P.doc.clips) {
     if (!c.asset || (c.kind !== 'video' && c.kind !== 'audio') || !active(c, t)) continue;
     const m = M.get(c.id);
@@ -135,29 +165,37 @@ function starved(t) {
     if (c.kind === 'video' ? tr?.hidden && !(hasSound(c) && audible(tr) && !c.muted) : !audible(tr) || c.muted) continue;
     const d = m.el.duration;
     if (Number.isFinite(d) && local(c, t) >= d - 0.15) continue; // at its file's end: nothing more is coming
-    if (m.el.seeking || m.el.readyState < 3) return true;
+    if (m.el.seeking || m.el.readyState < 3) return 2;
+    // Only as much as the clip still plays (and the file still has) is needed.
+    const need = Math.min(RESUME_AHEAD, (clipEnd(c) - t) * (c.speed || 1), Number.isFinite(d) ? d - m.el.currentTime : RESUME_AHEAD) - 0.05;
+    if (m.el.readyState < 4 && loadedAhead(m.el) < need) worst = 1;
   }
-  return false;
+  return worst;
 }
 /**
- * While playing: true while the clock should wait for data (everything paused at the playhead, a "buffering" hint);
- * when the data is there, the clock starts again from the same time. Not while recording an export (it records in real
- * time), and never longer than HOLD_MAX for one stall.
+ * While playing: true while the clock should wait for data (everything paused at the playhead, a "buffering" hint).
+ * It starts waiting when a clip can't play, and starts again from the same time once every clip can and has a second
+ * loaded ahead (or THIN_MAX after it could play at all), so a slow file doesn't stop and start every few frames. Not while
+ * recording an export (it records in real time), and never longer than HOLD_MAX for one stall.
  */
 function holdForData() {
   const now = performance.now();
   if (S.recording || now < S.holdOff) { S.buffering = 0; return false; }
-  const short = starved(P.playhead);
+  const r = readiness(P.playhead);
   if (S.buffering) {
-    if (short && now - S.buffering < HOLD_MAX) { S.p0 = P.playhead; S.t0 = now; return true; }
-    if (short) S.holdOff = now + 3000; // waited long enough: play on (as before) for a while
-    S.buffering = 0;
+    if (r !== 1) S.thinSince = 0; else if (!S.thinSince) S.thinSince = now;
+    const waited = now - S.buffering;
+    if ((r === 2 || (r === 1 && now - S.thinSince < THIN_MAX)) && waited < HOLD_MAX) { S.p0 = P.playhead; S.t0 = now; return true; }
+    if (r === 2) S.holdOff = now + 3000; // waited long enough: play on (as before) for a while
+    STATS.holdMs += waited; STATS.maxHoldMs = Math.max(STATS.maxHoldMs, waited);
+    S.buffering = 0; S.thinSince = 0;
     S.p0 = P.playhead; S.t0 = now;
     syncMedia(P.playhead, true);
     return false;
   }
-  if (!short) return false;
-  S.buffering = now;
+  if (r < 2) return false;
+  STATS.holds++;
+  S.buffering = now; S.thinSince = 0;
   for (const m of M.values()) if (!m.el.paused) m.el.pause();
   syncMedia(P.playhead, false, false, true); // load and park what's coming, without moving what's under the playhead
   return true;
@@ -256,9 +294,9 @@ function syncMedia(t, playing, hard = false, park = false) {
     if (playing) {
       const drift = m.el.currentTime - at;
       let rate = speed;
-      if (m.el.readyState >= 1 && (hard ? Math.abs(drift) > IN_STEP : Math.abs(drift) > SEEK_OVER)) moveTo(m, at);
+      if (m.el.readyState >= 1 && (hard ? Math.abs(drift) > IN_STEP : Math.abs(drift) > SEEK_OVER)) { moveTo(m, at); if (!hard) STATS.driftSeeks++; }
       else if (!m.el.seeking && Math.abs(drift) > IN_STEP) rate = speed * (drift > 0 ? 1 - NUDGE : 1 + NUDGE);
-      if (m.el.playbackRate !== rate) m.el.playbackRate = rate;
+      if (m.el.playbackRate !== rate) { if (rate !== speed && m.el.playbackRate === speed) STATS.nudges++; m.el.playbackRate = rate; }
       if (m.el.paused) m.el.play().catch(() => {});
     } else {
       if (!m.el.paused) m.el.pause();
@@ -309,6 +347,15 @@ function peaksOf(asset) {
 
 // ------------------------------------------------------------------ drawing
 const active = (c, t) => t >= c.start && t < clipEnd(c);
+/** A visible video clip under time t whose element is loading but has nothing to show yet (not even a kept frame). */
+function pictureMissing(t) {
+  for (const c of P.doc.clips) {
+    if (c.kind !== 'video' || !c.asset || !active(c, t) || trackOf(c.track)?.hidden) continue;
+    const m = M.get(c.id);
+    if (m && !m.el.error && !sourceOf(c, true)) return true;
+  }
+  return false;
+}
 /** A clip's picture source and its natural size, if it has one ready. */
 function sourceOf(c, live = false) {
   if (c.kind === 'image' && c.asset) { const im = imgOf(c.asset); return im.complete && im.naturalWidth ? { el: im, w: im.naturalWidth, h: im.naturalHeight } : null; }
