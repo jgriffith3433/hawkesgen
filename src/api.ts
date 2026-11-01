@@ -507,6 +507,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       setSessionCookie(res, req, result.sessionToken);
       return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
     }
+    if (route === '/v1/users/test-session/github' && method === 'POST') {
+      // A GitHub Actions run of an allowed repo, as its test account, on beta only (src/githubsignin.ts).
+      const gh = await import('./githubsignin.ts');
+      const project = await gh.checkGitHubToken((await readJson(req))?.token);
+      const ts = await import('./testsignin.ts');
+      const result = googleSignin(ts.testAccountOf(project));
+      setSessionCookie(res, req, result.sessionToken);
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+    }
     if (route === '/v1/users/google' && method === 'POST') {
       const { credential } = await readJson(req);
       let who;
