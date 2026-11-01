@@ -225,7 +225,7 @@ export function isCustomer(c: Client) {
   const globs = loadSettings().queue.projects;
   return c.projects.length > 0 && c.projects.every((p) => p !== '*' && globs.some((g) => (g.endsWith('*') ? p.startsWith(g.slice(0, -1)) : p === g)));
 }
-const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
+const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|playtest\/capacity|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
@@ -1769,6 +1769,26 @@ data: ${JSON.stringify(e)}
       if (act === 'rdp') return send(res, 200, { ok: true, ...(await builder.builderRdp()) });
       if (act === 'idle') return send(res, 200, { ok: true, ...(await builder.setBuilderIdle(Number(body.minutes))) });
       if (act === 'ssh') return send(res, 200, { ok: true, output: await builder.ssh(String(body.command ?? ''), { timeoutMs: Math.min(600_000, Number(body.timeoutMs) || 120_000) }) });
+    }
+
+    // ------------------------------------------------- Studio's playtest capacity setting (docs/playtest-runpod.md, "Capacity")
+    // GET: browsers at once (the RunPod lane), the most the account allows, every provider in order with why it can't
+    // play now. PUT (or POST): { browsers?, providers?, modal?, runpod?: { workerQuota } }. The studio's own key (owner)
+    // only for changes; customers' keys never reach it (OPS_ROUTES).
+    if (route === '/v1/playtest/capacity' && method === 'GET') {
+      requireRole(client, 'admin');
+      const { playtestCapacity } = await import('./providers/playtester/capacity.ts');
+      return send(res, 200, await playtestCapacity(loadSettings()));
+    }
+    if (route === '/v1/playtest/capacity' && (method === 'PUT' || method === 'POST')) {
+      requireRole(client, 'owner');
+      const { setPlaytestCapacity, CapacityError } = await import('./providers/playtester/capacity.ts');
+      try {
+        return send(res, 200, await setPlaytestCapacity(await readJson(req), loadSettings()));
+      } catch (e: any) {
+        if (e instanceof CapacityError) return send(res, e.status, { error: e.message });
+        throw e;
+      }
     }
 
     // ------------------------------------------------- playtests on Cloud Run (docs/playtest-cloudrun.md)

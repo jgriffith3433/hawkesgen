@@ -110,6 +110,25 @@ container while one runs (L4 $0.80, 4 cores, 16 GiB), two browsers each; usage r
 Not verified yet: whether Modal's GPU sandbox gives Chromium a graphics path (EGL/Vulkan). If it doesn't, the image's
 self-test fails, `/pw` answers 412 "No GPU" and the run moves on to the next provider.
 
+## Capacity (Studio's setting: `/v1/playtest/capacity`)
+
+`GET /v1/playtest/capacity` (admin or owner key; customers' keys get 403) returns `{ browsers, perWorker, workers,
+maxBrowsers, order, providers: [{ id, name, kind: "gpu"|"software", enabled, selectable, deployed, ready, ok, browsers,
+maxBrowsers, perWorker, gpu, pricePerHour, credit: { ok, balance } | null, reason }], runpod: { endpoint, workers, others,
+quota, maxWorkers, readError } }`. `browsers` is the RunPod lane (workers.max x 2); `maxBrowsers` is what RunPod's account
+worker quota leaves this endpoint after the other endpoints' workers.max (read from `GET /v2/serverless` each call).
+Every provider is listed, switched-off ones too, and `aws` last (`selectable: false`: suspended since 2026-10-28).
+
+`PUT` (or `POST`, owner key only) takes any of `{ browsers, providers, modal, runpod: { workerQuota } }`:
+- `browsers` (1-40): workers.max = ceil(browsers / 2), clamped to the account; only `workers` is PATCHed. When RunPod
+  refuses for its quota, its "at most N" is applied and its quota remembered (`settings.playtest.runpod.workerQuota`).
+- `providers`: the ids to use, in order (`["runpod", "modal", "cloudrun-cpu"]`, or `{ id, enabled }`). Ids left out are
+  switched off. Software is kept last. `aws` can't be switched on (409).
+- `modal`: `{ url, maxInstances, tabsPerInstance, gpu, pricePerHour, idleSeconds }` once the Modal app is deployed.
+
+It answers `{ applied: { requested, workers, browsers, clamped, providers, modal }, ...the GET body }`; a bad body is a 400
+(503 without RUNPOD_API_KEY, 409 without a RunPod endpoint, 502 when RunPod refuses) with `{ error }`.
+
 ## Measured (2026-10-29)
 
 Each is Gen's real `playtest.run` (scratch Gen from this branch on J's PC, `gpu: require`), the browser on RunPod, the
