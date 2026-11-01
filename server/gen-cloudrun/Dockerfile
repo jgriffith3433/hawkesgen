@@ -30,10 +30,9 @@ RUN npm ci --omit=dev --no-audit --no-fund
 RUN npm install -g --no-audit --no-fund --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code && claude --version
 
 # The same Python tools auto-start.bat sets up on J's PC (src/jobs.ts finds .venv/bin/python).
-# rembg 2.0.86 no longer brings OpenCV, which quality.identity needs (below): installed by name.
-RUN python3 -m venv /app/.venv && /app/.venv/bin/pip install "rembg[cpu]" pillow opencv-python-headless
+RUN python3 -m venv /app/.venv && /app/.venv/bin/pip install "rembg[cpu]" pillow opencv-python-headless==5.0.0.93
 
-# quality.identity runs here by default (post/quality/identity.py: onnxruntime and OpenCV, which rembg brings). Its face
+# quality.identity runs here by default (post/quality/identity.py: onnxruntime from rembg, OpenCV above). Its face
 # models (insightface buffalo_l: detection and ArcFace) are baked in, as on the CPU service, so a check never downloads
 # 280 MB into an instance's in-memory disk.
 ENV HAWKESGEN_FACE_MODELS=/opt/insightface
