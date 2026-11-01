@@ -26,10 +26,12 @@ const HOLD_MAX = 5000; // ms the clock waits for one stall before playing on reg
 const RESUME_AHEAD = 1; // seconds loaded past the playhead a held clip should have before the clock starts again...
 const THIN_MAX = 1000; // ...or ms it waits once the clip can play at all (so a stall doesn't stop and start, stop and start)
 const KEEP = 40; // media elements kept before ones away from the playhead are let go
+const FEED_AFTER = 600; // ms a waited-on clip may load nothing while paused before it's played so it loads (iPhone Safari)
+const POOL_MAX = 24; // empty media elements of each kind blessed by a tap, for clips that get their element later
 // What playback did, for the playtest bot and the console (`playbackStats()`): how often and how long the clock waited,
 // how often a playing clip still had to be moved or nudged, and the frames where a clip had no picture (kept: the last
 // picture stayed on screen; blank: it was drawn without one).
-const STATS = { holds: 0, holdMs: 0, maxHoldMs: 0, driftSeeks: 0, nudges: 0, keptFrames: 0, blankFrames: 0 };
+const STATS = { holds: 0, holdMs: 0, maxHoldMs: 0, driftSeeks: 0, nudges: 0, keptFrames: 0, blankFrames: 0, fed: 0 };
 export const playbackStats = () => ({ ...STATS, holdMs: Math.round(STATS.holdMs), maxHoldMs: Math.round(STATS.maxHoldMs) });
 export function resetPlaybackStats() { for (const k of Object.keys(STATS)) STATS[k] = 0; }
 const M = new Map(); // clip id -> { el, asset, src (MediaElementSource), gain }
@@ -98,12 +100,16 @@ function prepare() {
 // ------------------------------------------------------------------ the clock
 export const isPlaying = () => S.playing;
 export function toggle() { S.playing ? pause() : play(); }
-export async function play() {
+export function play() {
   if (S.source) return playSource();
   const len = docLength();
   if (!len) return;
+  // Everything that starts media happens here, inside the tap itself (J, 2026-11-01: "on mobile if you press play on a
+  // video it doesn't play"): iPhone Safari lets a clip with sound start only from the user's gesture, and awaiting the
+  // AudioContext's resume first (as this did) lost the gesture, so the clip's play() was refused.
   audio();
-  if (AU.ctx.state !== 'running') await AU.ctx.resume().catch(() => {});
+  if (AU.ctx.state !== 'running') AU.ctx.resume().catch(() => {});
+  unlockMedia();
   const r = P.selection.range;
   if (P.playhead >= len - 0.05 || (S.loop && r && (P.playhead < r.start || P.playhead >= r.end))) P.playhead = S.loop && r ? r.start : 0;
   S.playing = true;
@@ -116,6 +122,7 @@ export async function play() {
 }
 export function pause() {
   S.playing = false;
+  for (const m of M.values()) m.fed = false;
   setBusy(false);
   S.buffering = 0;
   for (const m of M.values()) m.el.pause();
@@ -174,12 +181,8 @@ function loadedAhead(el) {
   for (let i = 0; i < b.length; i++) if (b.start(i) <= x + 0.05 && b.end(i) > x) return b.end(i) - x;
   return 0;
 }
-/**
- * How ready the media under the playhead that should be playing is: 2 starved (seeking, or no data ahead: it can't
- * play), 1 thin (it can play, but less than RESUME_AHEAD is loaded and the browser doesn't expect to play through), 0 fine.
- */
-function readiness(t) {
-  let worst = 0;
+/** The clips under time t whose media should be playing (sounding, or a visible picture), with their elements. */
+function* underPlayhead(t) {
   for (const c of P.doc.clips) {
     if (!c.asset || (c.kind !== 'video' && c.kind !== 'audio') || !active(c, t)) continue;
     const m = M.get(c.id);
@@ -188,12 +191,52 @@ function readiness(t) {
     if (c.kind === 'video' ? tr?.hidden && !(hasSound(c) && audible(tr) && !c.muted) : !audible(tr) || c.muted) continue;
     const d = m.el.duration;
     if (Number.isFinite(d) && local(c, t) >= d - 0.15) continue; // at its file's end: nothing more is coming
-    if (m.el.seeking || m.el.readyState < 3) return 2;
+    yield { c, m };
+  }
+}
+/** True while a playing element's time has gone on in the last 150 ms: the browser is playing it, so it has data. */
+function moving(m, now) {
+  const x = m.el.currentTime, was = m.lastT;
+  m.lastT = x;
+  if (was != null && x > was && x - was < 0.5) m.movedAt = now; // on, not a seek
+  return !m.el.paused && !m.el.seeking && now - (m.movedAt ?? -Infinity) < 150;
+}
+/**
+ * How ready the media under the playhead that should be playing is: 2 starved (seeking, or no data ahead: it can't
+ * play), 1 thin (it can play, but less than RESUME_AHEAD is loaded and the browser doesn't expect to play through), 0 fine.
+ * A clip that is playing and moving is fine whatever it says (iPhone Safari can report too little for a clip that plays),
+ * and a clip with RESUME_AHEAD loaded counts as able to play (iPhone Safari may not say it can until it plays).
+ */
+function readiness(t) {
+  let worst = 0;
+  const now = performance.now();
+  for (const { c, m } of underPlayhead(t)) {
+    if ((m.fed || m.el.readyState < 3) && moving(m, now)) continue;
+    if (m.el.seeking || m.el.readyState < 2) return 2;
+    const d = m.el.duration;
     // Only as much as the clip still plays (and the file still has) is needed.
     const need = Math.min(RESUME_AHEAD, (clipEnd(c) - t) * (c.speed || 1), Number.isFinite(d) ? d - m.el.currentTime : RESUME_AHEAD) - 0.05;
-    if (m.el.readyState < 4 && loadedAhead(m.el) < need) worst = 1;
+    const ahead = loadedAhead(m.el);
+    if (m.el.readyState < 3 && ahead < need) return 2;
+    if (m.el.readyState < 4 && ahead < need) worst = 1;
   }
   return worst;
+}
+/** End of what an element has loaded, in seconds into its file. */
+function loadedTo(el) { const b = el.buffered; return b.length ? b.end(b.length - 1) : 0; }
+/**
+ * While the clock waits: a clip under the playhead that the browser has stopped loading while it's paused (iPhone Safari
+ * loads a clip only while it plays: it says it's idle, or what it has loaded stops growing) is played, so it loads; the
+ * clock goes on from where it got to once it moves. Elsewhere a paused clip goes on loading, and waits paused as before.
+ */
+function feed(now) {
+  for (const { m } of underPlayhead(P.playhead)) {
+    if (!m.el.paused || m.el.readyState >= 3) continue;
+    const to = loadedTo(m.el);
+    if (m.feedTo == null || to > m.feedTo + 0.01 || m.el.readyState > m.feedRs) { m.feedTo = to; m.feedRs = m.el.readyState; m.feedAt = now; }
+    const idle = m.el.networkState === HTMLMediaElement.NETWORK_IDLE;
+    if (idle || now - m.feedAt > FEED_AFTER) { m.fed = true; m.el.play().catch(() => {}); STATS.fed++; }
+  }
 }
 /**
  * While playing: true while the clock should wait for data (everything paused at the playhead, a "buffering" hint).
@@ -208,10 +251,15 @@ function holdForData() {
   if (S.buffering) {
     if (r !== 1) S.thinSince = 0; else if (!S.thinSince) S.thinSince = now;
     const waited = now - S.buffering;
-    if ((r === 2 || (r === 1 && now - S.thinSince < THIN_MAX)) && waited < HOLD_MAX) { S.p0 = P.playhead; S.t0 = now; return true; }
+    if ((r === 2 || (r === 1 && now - S.thinSince < THIN_MAX)) && waited < HOLD_MAX) { feed(now); S.p0 = P.playhead; S.t0 = now; return true; }
     if (r === 2) S.holdOff = now + 3000; // waited long enough: play on (as before) for a while
     STATS.holdMs += waited; STATS.maxHoldMs = Math.max(STATS.maxHoldMs, waited);
     S.buffering = 0; S.thinSince = 0;
+    // A clip played so it would load is playing: the clock goes on from where that clip is, so nothing has to seek.
+    let lead = Infinity;
+    for (const { c, m } of underPlayhead(P.playhead)) if (m.fed && !m.el.paused) lead = Math.min(lead, c.start + (m.el.currentTime - c.in) / (c.speed || 1));
+    for (const m of M.values()) m.fed = false;
+    if (Math.abs(lead - P.playhead) < 2) { P.playhead = Math.max(0, lead); bus.emit('time', P.playhead); }
     S.p0 = P.playhead; S.t0 = now;
     syncMedia(P.playhead, true);
     return false;
@@ -219,14 +267,35 @@ function holdForData() {
   if (r < 2) return false;
   STATS.holds++;
   S.buffering = now; S.thinSince = 0;
-  for (const m of M.values()) if (!m.el.paused) m.el.pause();
+  for (const m of M.values()) { m.fed = false; m.feedTo = null; if (!m.el.paused) m.el.pause(); }
   syncMedia(P.playhead, false, false, true); // load and park what's coming, without moving what's under the playhead
   return true;
 }
 
 // ------------------------------------------------------------------ media and sound
+const mediaEl = (kind) => kind === 'video' ? h('video', { playsinline: true, preload: 'auto', crossorigin: 'use-credentials' }) : h('audio', { preload: 'auto', crossorigin: 'use-credentials' });
+/**
+ * iPhone Safari lets an element with sound play only once it has been started (or loaded) inside a tap; started later from
+ * the clock (the next clip at a cut, made a few seconds before it) it is refused, once per element. So each tap on play
+ * blesses every element there is, and keeps a pool of empty blessed ones that the clips made later take (syncMedia).
+ */
+const BLESSED = { video: [], audio: [] };
+function unlockMedia() {
+  for (const m of M.values()) if (m.el.paused) { try { m.el.play().catch(() => {}); m.el.pause(); } catch { /* */ } }
+  const need = { video: 0, audio: 0 };
+  for (const c of P.doc.clips) if (c.asset && (c.kind === 'video' || c.kind === 'audio') && !M.has(c.id)) need[c.kind]++;
+  for (const kind of ['video', 'audio']) {
+    while (BLESSED[kind].length < Math.min(POOL_MAX, need[kind])) {
+      const el = mediaEl(kind);
+      try { el.load(); el.play().catch(() => {}); el.pause(); } catch { /* */ }
+      BLESSED[kind].push(el);
+    }
+  }
+}
 function audio() {
   if (AU.ctx) return AU.ctx;
+  // Sound through Web Audio plays like a video's, even with an iPhone's silent switch on (Safari 16.4+).
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch { /* */ }
   AU.ctx = new AudioContext();
   AU.master = AU.ctx.createGain();
   AU.analyser = AU.ctx.createAnalyser();
@@ -274,7 +343,7 @@ function syncMedia(t, playing, hard = false, park = false) {
     let m = M.get(c.id);
     if (!m || m.asset !== c.asset) {
       if (m) dropMedia(c.id);
-      const el = c.kind === 'video' ? h('video', { playsinline: true, preload: 'auto', crossorigin: 'use-credentials' }) : h('audio', { preload: 'auto', crossorigin: 'use-credentials' });
+      const el = BLESSED[c.kind].pop() ?? mediaEl(c.kind);
       m = { el, asset: c.asset, still: null };
       const mm = m, id = c.id;
       // A seek landed: keep its frame for scrubbing, and if the playhead moved on meanwhile, go to where it is now (one
