@@ -11,6 +11,10 @@ export type Credit = { balance: number; at: number };
 /** Below this RunPod warns by email; the dashboard shows it too. */
 export const LOW_CREDIT = 5;
 const EVERY_MS = 2 * 60_000;
+/** A reading older than this is not trusted (RunPod stopped answering): nothing is skipped on it, as with no reading. */
+const STALE_MS = 15 * 60_000;
+/** How old an empty reading may be before a run about to skip RunPod reads it again (funds just added count at once). */
+export const RECHECK_EMPTY_MS = 30_000;
 const GRAPHQL = 'https://api.runpod.io/graphql';
 
 let last: Credit | null = null;
@@ -47,9 +51,19 @@ export function checkRunpodCredit(get: Secrets = env, fetcher: typeof fetch = fe
 }
 
 /** Why RunPod can't run anything now (its balance is empty), or null. Reads the last check (the watch keeps it fresh). */
-export function runpodCreditProblem(get: Secrets = env): string | null {
-  if (!get('RUNPOD_API_KEY') || !last || last.balance > 0) return null;
+export function runpodCreditProblem(get: Secrets = env, now = Date.now()): string | null {
+  if (!get('RUNPOD_API_KEY') || !last || last.balance > 0 || now - last.at > STALE_MS) return null;
   return `RunPod is out of credit (balance $${last.balance.toFixed(2)}): add funds at runpod.io (Billing)`;
+}
+
+/**
+ * Before a run skips RunPod for an empty balance: reads the balance again when that empty reading is older than
+ * RECHECK_EMPTY_MS, so a top-up counts for the very next playtest instead of after the watch's next tick. A positive
+ * or missing reading is left to the watch (no extra call). Never throws.
+ */
+export async function recheckEmptyRunpodCredit(get: Secrets = env, fetcher: typeof fetch = fetch, now = Date.now): Promise<void> {
+  if (!last || last.balance > 0 || now() - last.at < RECHECK_EMPTY_MS) return;
+  await checkRunpodCredit(get, fetcher, now).catch(() => null);
 }
 
 /** For GET /v1/gpu/providers and the dashboard. */

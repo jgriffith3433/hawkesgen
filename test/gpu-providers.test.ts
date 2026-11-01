@@ -537,3 +537,27 @@ test('RunPod out of credit: its endpoints and playtest runners are skipped, a wa
   assert.equal(runpodCreditProblem(get), null);
   setRunpodCredit(null);
 });
+
+test('RunPod credit: a stale empty reading skips nothing, and an empty one is read again before a run skips RunPod', async () => {
+  const { recheckEmptyRunpodCredit, RECHECK_EMPTY_MS } = await import('../src/providers/gpu/credit.ts');
+  const get = (k: string) => (k === 'RUNPOD_API_KEY' ? 'rp-key' : undefined);
+  let reads = 0;
+  const fake = (balance: number) => (async () => { reads++; return new Response(JSON.stringify({ data: { myself: { clientBalance: balance } } }), { status: 200 }); }) as any;
+  const t0 = 1_000_000_000;
+  // Empty a moment ago: skipped, and not read again yet.
+  setRunpodCredit({ balance: -0.006, at: t0 });
+  assert.match(runpodCreditProblem(get, t0 + 1_000)!, /out of credit/);
+  await recheckEmptyRunpodCredit(get, fake(25), () => t0 + RECHECK_EMPTY_MS - 1);
+  assert.equal(reads, 0);
+  // Older than that: read again, and funds added since count for this run.
+  await recheckEmptyRunpodCredit(get, fake(25), () => t0 + RECHECK_EMPTY_MS + 1);
+  assert.equal(reads, 1);
+  assert.equal(runpodCreditProblem(get, t0 + RECHECK_EMPTY_MS + 2), null);
+  // A positive reading is the watch's to keep fresh: no extra call.
+  await recheckEmptyRunpodCredit(get, fake(25), () => t0 + 10 * RECHECK_EMPTY_MS);
+  assert.equal(reads, 1);
+  // RunPod stopped answering: an empty reading from long ago no longer keeps RunPod off.
+  setRunpodCredit({ balance: -0.006, at: t0 });
+  assert.equal(runpodCreditProblem(get, t0 + 16 * 60_000), null);
+  setRunpodCredit(null);
+});

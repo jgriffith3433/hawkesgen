@@ -102,6 +102,31 @@ test('connectOne on RunPod: its headers, and it waits through a cold start (408,
   await assert.rejects(pc.connectOne(denied, { url: RP, variant: 'runpod' }, { deps: { idToken: async () => '', sleep: async () => {}, now: () => 0, env: ENV } }), /RunPod playtest service: .*401/);
 });
 
+test('connectOne on RunPod: a handshake the gateway holds past Playwright\'s timeout is a cold start, tried again; on Cloud Run it ends the try', async () => {
+  let n = 0;
+  const slow = { connect: async () => { n++; if (n < 3) throw new Error('browserType.connect: Timeout 300000ms exceeded.'); return { id: 'gpu' }; } };
+  let now = 0;
+  const deps = { idToken: async () => 'tok', sleep: async (ms: number) => { now += ms; }, now: () => now, env: ENV };
+  assert.deepEqual(await pc.connectOne(slow, { url: RP, variant: 'runpod' }, { timeoutMs: 12 * 60_000, deps }), { id: 'gpu' });
+  assert.equal(n, 3);
+  const cloud = { connect: async () => { throw new Error('browserType.connect: Timeout 300000ms exceeded.'); } };
+  await assert.rejects(pc.connectOne(cloud, { url: CPU_URL, variant: 'cpu' }, { deps }), /Cloud Run playtest service: .*Timeout/);
+});
+
+test('openGpuHost\'s waits: a game waits out RunPod\'s cold start before software WebGL; a run in software says why', async () => {
+  const { connectWaitMs, softwareWhy, GPU_COLD_START_MS } = await import('../src/providers/comfy/playtestHost.ts');
+  assert.ok(GPU_COLD_START_MS >= 10 * 60_000);
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 1, { many: true, game: true }), GPU_COLD_START_MS);
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 1, { many: false, game: true }), GPU_COLD_START_MS);
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 1, { many: true, game: false }), 5 * 60_000, 'a site crawl: as before');
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 2, { many: true, game: true }), 40_000);
+  assert.equal(connectWaitMs({ variant: 'cpu' }, 1, { many: true, game: true }), 40_000);
+  assert.equal(connectWaitMs({ variant: 'cpu' }, 1, { many: false, game: true }), undefined);
+  const why = softwareWhy(pc.CPU_SOFTWARE_WHY, ['RunPod skipped: RunPod is out of credit (balance $-0.01): add funds at runpod.io (Billing)']);
+  assert.match(why, /^no GPU browser \(RunPod skipped: RunPod is out of credit .*\), so it played on the Cloud Run CPU service/);
+  assert.ok(softwareWhy('x', ['y'.repeat(2000)]).length <= 600);
+});
+
 test('openCloudPlaytestHost on RunPod: a GPU host, its label, and a runpod-playtest usage row with the cold start and idle tail', async () => {
   const usage: any[] = [];
   const browser = { contexts: () => [], isConnected: () => true, newContext: async () => ({}), close: async () => {} };
