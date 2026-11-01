@@ -105,6 +105,8 @@ export const busyCount = () => M.inflight.size + (P.active ? P.doc.clips.filter(
  */
 function drawMedia() {
   bus.emit('busy', M.inflight.size);
+  // Signed out, loadMedia's "Sign in" note stays (a scene edit used to swap it for "Nothing here yet").
+  if (!state.user) return;
   const grid = $('#mediaGrid');
   const rows = [];
   for (const [k, j] of M.inflight) {
