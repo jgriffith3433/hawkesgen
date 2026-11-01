@@ -49,3 +49,23 @@ test('the client walks pages, reads RFC 9457 errors and never calls REST v1', as
   await assert.rejects(api.req('GET', '/serverless/bad'), /404 Not Found: no endpoint bad/);
   assert.ok(calls.every((c) => c.includes('https://api.runpod.io/v2/') && !c.includes('rest.runpod.io')));
 });
+
+test('checkPlan reads only (GETs) and says what --apply would change', async () => {
+  const methods: string[] = [];
+  const fetch = async (url: string, init: any) => {
+    methods.push(init.method);
+    const p = new URL(url).pathname;
+    const body = p.endsWith('/catalog/gpus') ? { gpus: CATALOG, pagination: {} }
+      : p.endsWith('/templates') ? { templates: [{ id: 't1', name: 'x', image: 'old' }], pagination: {} }
+      : p.endsWith('/serverless') ? { endpoints: [{ id: 'e1', name: 'x' }], pagination: {} }
+      : { id: 'e1', type: 'LOAD_BALANCER', workers: { min: 0, max: 1, idleTimeout: 60 } };
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const lines = await lib.checkPlan(lib.runpod('k', { fetch }), {
+    template: { name: 'x', image: 'new' }, name: 'x', gpuTypes: ['NVIDIA L4'], pools: null,
+    endpointBody: (tid: string, gpu: any) => lib.lbEndpoint({ name: 'x', templateId: tid, gpu, max: 2, idle: 60, perWorker: 1, timeoutMs: 1 }),
+  });
+  assert.ok(methods.every((m) => m === 'GET'));
+  assert.match(lines.join('\n'), /template t1: would PATCH \(image now old, wanted new\)/);
+  assert.match(lines.join('\n'), /endpoint e1 \(x\): would PATCH/);
+});
