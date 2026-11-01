@@ -55,7 +55,10 @@ export function initAi() {
   bus.on('selection', drawContext);
   bus.on('mediaPick', drawContext);
   bus.on('doc', drawContext);
-  bus.on('time', () => { if (!P.selection.clips.size && !P.selection.range) drawContext(); });
+  // The playhead chip follows the playhead, but not on every frame of a scrub or of playback (that rebuilt this pane
+  // dozens of times a second while scrubbing: J, 2026-11-01, "I want scrubbing to be really responsive").
+  let ctxT = 0;
+  bus.on('time', () => { if (!ctxT) ctxT = setTimeout(() => { ctxT = 0; if (!P.selection.clips.size && !P.selection.range) drawContext(); }, 200); });
   // A new scene in front brings its own conversation; the same scene taken again (a save, a sync, the AI's own edit)
   // keeps the one on screen, a message in flight included.
   bus.on('project', (p) => { if (A.id === p.id) return; A.id = p.id; A.messages = load(p.id); drawMessages(); });

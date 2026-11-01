@@ -9,6 +9,7 @@
 
 import { $, h, fileUrl, fmt, bus, icon, peaks } from './lib.js';
 import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack, PROGRESS } from './project.js';
+import { keep, nearest, warm, onFrames, setBusy } from './frames.js';
 
 const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, holdOff: 0, thinSince: 0, drawn: false, keepSince: 0 };
 // Playback smoothness (J, 2026-11-01: "make the buffering of the videos a little better so we don't see hitching during
@@ -54,6 +55,7 @@ export function initPlayer() {
   new ResizeObserver(fitStage).observe($('#viewer'));
   canvas.addEventListener('pointerdown', onCanvasDown);
   handles.addEventListener('pointerdown', onCanvasDown);
+  onFrames(() => { S.dirty = true; });
   fitStage();
   frameLoop();
 }
@@ -73,7 +75,25 @@ function fitStage() {
   drawHandles();
 }
 /** Something changed: draw again on the next frame (and put paused media at the playhead). */
-export function refresh() { S.dirty = true; if (!S.playing) syncMedia(P.playhead, false); }
+export function refresh() { S.dirty = true; if (!S.playing) syncMedia(P.playhead, false); prepare(); }
+
+/**
+ * Gets what scrubbing will need before it's needed: every picture in the scene loading, and every video made into a strip
+ * of small frames in the background (frames.js), the ones nearest the playhead first. Cheap to call often.
+ */
+let prepared = -Infinity, prepareT = 0;
+function prepare() {
+  const now = performance.now();
+  if (now - prepared < 400) { if (!prepareT) prepareT = setTimeout(() => { prepareT = 0; prepare(); }, 400 - (now - prepared)); return; }
+  prepared = now;
+  const list = [];
+  for (const c of P.doc.clips) {
+    if (!c.asset) continue;
+    if (c.kind === 'image') imgOf(c.asset);
+    else if (c.kind === 'video') list.push({ asset: c.asset, dist: P.playhead < c.start ? c.start - P.playhead : Math.max(0, P.playhead - clipEnd(c)) });
+  }
+  warm(list);
+}
 
 // ------------------------------------------------------------------ the clock
 export const isPlaying = () => S.playing;
@@ -87,6 +107,7 @@ export async function play() {
   const r = P.selection.range;
   if (P.playhead >= len - 0.05 || (S.loop && r && (P.playhead < r.start || P.playhead >= r.end))) P.playhead = S.loop && r ? r.start : 0;
   S.playing = true;
+  setBusy(true);
   S.t0 = performance.now();
   S.p0 = P.playhead;
   S.buffering = 0;
@@ -95,6 +116,7 @@ export async function play() {
 }
 export function pause() {
   S.playing = false;
+  setBusy(false);
   S.buffering = 0;
   for (const m of M.values()) m.el.pause();
   if (S.source?.el) S.source.el.pause();
@@ -108,6 +130,7 @@ export function seek(t) {
   P.playhead = Math.max(0, Math.min(Math.max(docLength(), 0), t));
   if (S.playing) { S.p0 = P.playhead; S.t0 = performance.now(); S.buffering = 0; }
   syncMedia(P.playhead, S.playing, true);
+  prepare();
   S.dirty = true;
   bus.emit('time', P.playhead);
 }
@@ -254,7 +277,13 @@ function syncMedia(t, playing, hard = false, park = false) {
       const el = c.kind === 'video' ? h('video', { playsinline: true, preload: 'auto', crossorigin: 'use-credentials' }) : h('audio', { preload: 'auto', crossorigin: 'use-credentials' });
       m = { el, asset: c.asset, still: null };
       const mm = m, id = c.id;
-      el.addEventListener('seeked', () => { mm.still = null; S.dirty = true; });
+      // A seek landed: keep its frame for scrubbing, and if the playhead moved on meanwhile, go to where it is now (one
+      // seek at a time: a new one started before the last lands throws the last away, so nothing would ever show).
+      el.addEventListener('seeked', () => {
+        mm.still = null; mm.shownAt = el.currentTime; S.dirty = true;
+        keep(mm.asset, el);
+        if (mm.next != null && M.get(id) === mm) { const n = mm.next; mm.next = null; if (Math.abs(n - el.currentTime) > 0.01) moveTo(mm, n); }
+      });
       el.addEventListener('canplay', () => { S.dirty = true; });
       // As soon as it knows its length: to the playhead if it's under it, else parked on its first frame for the cut.
       el.addEventListener('loadedmetadata', () => {
@@ -263,7 +292,7 @@ function syncMedia(t, playing, hard = false, park = false) {
         const under = P.playhead >= cc.start && P.playhead < clipEnd(cc);
         el.currentTime = Math.max(0.001, under ? local(cc, P.playhead) : cc.in);
       });
-      el.addEventListener('loadeddata', () => { S.dirty = true; });
+      el.addEventListener('loadeddata', () => { S.dirty = true; if (!el.seeking) { mm.shownAt = el.currentTime; keep(mm.asset, el); } });
       el.src = fileUrl(c.asset);
       M.set(c.id, m);
       route(m);
@@ -310,9 +339,14 @@ function syncMedia(t, playing, hard = false, park = false) {
   for (const id of away) if (!byId(id)) dropMedia(id);
   if (M.size > KEEP) for (const id of away.filter((x) => M.has(x)).sort((a, b) => (M.get(a).used ?? 0) - (M.get(b).used ?? 0)).slice(0, M.size - KEEP)) dropMedia(id);
 }
-/** Moves an element to time `at`, keeping a copy of the frame it shows so the canvas has something to draw meanwhile. */
+/**
+ * Moves an element to time `at`, keeping a copy of the frame it shows so the canvas has something to draw meanwhile.
+ * While a seek is still going, only the latest place is remembered and gone to when it lands.
+ */
 function moveTo(m, at) {
   const el = m.el;
+  if (el.seeking) { m.next = at; return; }
+  m.next = null;
   if (el.videoWidth && el.readyState >= 2 && !m.still) {
     try {
       const k = Math.min(1, 1280 / el.videoWidth);
@@ -352,19 +386,27 @@ function pictureMissing(t) {
   for (const c of P.doc.clips) {
     if (c.kind !== 'video' || !c.asset || !active(c, t) || trackOf(c.track)?.hidden) continue;
     const m = M.get(c.id);
-    if (m && !m.el.error && !sourceOf(c, true)) return true;
+    if (m && !m.el.error && !sourceOf(c, true, t)) return true;
   }
   return false;
 }
-/** A clip's picture source and its natural size, if it has one ready. */
-function sourceOf(c, live = false) {
+/**
+ * A clip's picture source and its natural size, if it has one ready. On screen (`live`), at timeline time `t`, while its
+ * video is seeking or short of data: the nearest frame of its strip (frames.js), or else the last frame it showed (an
+ * export always waits for the real frame).
+ */
+function sourceOf(c, live = false, t = null) {
   if (c.kind === 'image' && c.asset) { const im = imgOf(c.asset); return im.complete && im.naturalWidth ? { el: im, w: im.naturalWidth, h: im.naturalHeight } : null; }
   if (c.kind === 'video' && c.asset) {
     const m = M.get(c.id);
-    if (!m) return null;
-    if (m.el.readyState >= 2 && m.el.videoWidth) return { el: m.el, w: m.el.videoWidth, h: m.el.videoHeight };
-    // Seeking or short of data: the last frame it showed, on screen only (an export waits for the real frame).
-    return live && m.still ? m.still : null;
+    const ready = m && m.el.readyState >= 2 && m.el.videoWidth;
+    if (ready && !(live && (m.el.seeking || m.next != null))) return { el: m.el, w: m.el.videoWidth, h: m.el.videoHeight };
+    if (!live) return null;
+    const at = t == null ? null : local(c, t);
+    const f = at == null ? null : nearest(c.asset, at);
+    // Seeking with a frame on show: the strip's frame if it's nearer the playhead than the frame on show.
+    if (ready) return f && (m.shownAt == null || Math.abs(f.at - at) < Math.abs(m.shownAt - at)) ? f : { el: m.el, w: m.el.videoWidth, h: m.el.videoHeight };
+    return f ?? m?.still ?? null;
   }
   return null;
 }
@@ -374,7 +416,7 @@ export function boxOf(c, ctx = g) {
   const cx = (c.x ?? 0.5) * W, cy = (c.y ?? 0.5) * H;
   if (c.kind === 'fill') return c.w == null ? { x: W / 2, y: H / 2, w: W, h: H } : { x: cx, y: cy, w: c.w * W, h: c.w * W * (H / W) };
   if (c.kind === 'text') { const t = textFit(c, ctx); return { x: t.x, y: t.y, w: t.w, h: t.h }; }
-  const src = sourceOf(c) ?? (c.kind === 'image' && c.asset && IMGS.get(c.asset)?.naturalWidth ? { w: IMGS.get(c.asset).naturalWidth, h: IMGS.get(c.asset).naturalHeight } : null);
+  const src = sourceOf(c, true) ?? (c.kind === 'image' && c.asset && IMGS.get(c.asset)?.naturalWidth ? { w: IMGS.get(c.asset).naturalWidth, h: IMGS.get(c.asset).naturalHeight } : null);
   const nw = src?.w ?? W, nh = src?.h ?? H;
   if (c.w == null) {
     // Fit the frame: inside it (bars) or filling it (cropped), as the scene says.
@@ -506,7 +548,7 @@ function drawClip(ctx, c, t, live, alpha) {
     const ox = ((z.x ?? 0.5) - 0.5) * b.w, oy = ((z.y ?? 0.5) - 0.5) * b.h;
     ctx.translate(ox, oy); ctx.scale(s, s); ctx.translate(-ox, -oy);
   }
-  const src = sourceOf(c, live);
+  const src = sourceOf(c, live, t);
   if (src) ctx.drawImage(src.el, -b.w / 2, -b.h / 2, b.w, b.h);
   else if (live) {
     ctx.fillStyle = c.failed ? 'rgba(255,107,129,.18)' : 'rgba(139,123,255,.16)';
@@ -813,6 +855,7 @@ function playSource() {
   const el = S.source?.el;
   if (!el) return;
   S.playing = true;
+  setBusy(true);
   drawPlayBtn();
   el.play().catch(() => {});
   el.onended = () => pause();
