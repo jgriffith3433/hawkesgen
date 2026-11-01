@@ -188,12 +188,15 @@ test('an MCP job (hawkesgen_run over /mcp with the cell key) is charged too', as
   assert.equal(charges().at(-1).body.genOrg, ORG);
 });
 
-test('a Unity customer build is charged its flat price the same way', async () => {
+test('a Unity customer build is charged its flat price (per machine size) the same way', async () => {
   const n = charges().length;
   const params = { github: { repo: 'acme/rocket-game', commit: 'c'.repeat(40), token: 'ghs_customerInstallationToken0123456789', ref: 'refs/heads/main' }, target: 'web', out: 'artifact' };
   const r = await call(cell, '/v1/jobs', { tool: 'unity.build', project: `${ORG}.rocket`, params });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(charges().length, n + 1);
-  assert.equal(charges().at(-1).body.credits, 100);
+  assert.equal(charges().at(-1).body.credits, 50, 'the default size, m (4 vCPU, 16 GiB): half of the full machine');
   assert.equal(charges().at(-1).body.tool, 'unity.build');
+  const big = await call(cell, '/v1/jobs', { tool: 'unity.build', project: `${ORG}.rocket`, params: { ...params, machine: 'xl' } });
+  assert.equal(big.status, 200, JSON.stringify(big.body));
+  assert.equal(charges().at(-1).body.credits, 100);
 });

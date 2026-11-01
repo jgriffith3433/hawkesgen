@@ -782,7 +782,7 @@ export type BuildSpec = {
    * (here in memory only: never written to spec.json), the output folder back as a .tar.gz. `project` is then the
    * folder in the container ("src" or "src/<path>"); `owner` is the Gen project the job belongs to (its own cache).
    */
-  customer?: { repo: string; commit: string; ref: string | null; path: string; owner: string; version: string; job: string; token: string };
+  customer?: { repo: string; commit: string; ref: string | null; path: string; owner: string; version: string; job: string; token: string; machine?: { name: string; cpu: number; memoryGiB: number } };
 };
 
 export type BuildHooks = { step(s: string): void; log(s: string): void; signal?: AbortSignal };

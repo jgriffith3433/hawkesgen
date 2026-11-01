@@ -176,7 +176,7 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
     J's (`--shared-license` is there but warns).
 - **Setting up the customer job** (J, once per lane's project; every step prints first, `--apply` does it):
   1. `node tools/unity-cloudrun/customer-setup.mjs --project hawkes-staging` (read the plan; `--all` makes a twin for
-     every version's job, `--for-job <job>` one).
+     every version's job, `--for-job <job>` one, `--sizes` also every machine size's job).
   2. Make a Unity account for customer builds (no two-factor sign-in). `node tools/unity-cloudrun/customer-setup.mjs
      --project hawkes-staging --apply` creates `unity-customer@`, the secrets `unity-customer-email` and
      `unity-customer-password` (empty), and stops (exit 3) until they have values: `gcloud secrets versions add
@@ -192,10 +192,31 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   The image needs rebuilding once for the new `entrypoint.sh` (signed URLs, `HAWKES_CUSTOMER_JOB`) and iptables:
   `tools/unity-cloudrun/build-image.mjs`, then point both jobs at it. Until then the customer job's old entrypoint would
   try the metadata server and fail to read the spec (no access), so no customer build can work, which is safe.
+- **Machine sizes** (J, 2026-11-01: "make it work and make it cheap if we don't need all that ... $1 a build feels
+  wrong to me"; `src/providers/builder/sizes.ts`). Param `machine`: a size from `gcp.sizes` (default `s` 2 vCPU / 8 GiB,
+  `m` 4 / 16, `l` 6 / 24, `xl` 8 / 32) or `{ "cpu": 4, "memoryGiB": 12 }` (Cloud Run's combinations: 2 vCPU up to 8 GiB,
+  4 up to 16, 6 up to 24, 8 up to 32). None: `gcp.customerSize`, **`m`** (80 minutes: about $0.50 against $1.00 on xl;
+  the flat price is that share of `UNITY_BUILD_CREDITS`: m 50, s 25, l 75, xl 100, `billing.ts unityBuildCredits`).
+  A Cloud Run execution can't change its job's CPU or memory (`jobs.run` overrides are env, task count and timeout), so
+  each size is a job: `<customer job>-<size>` (`-4c12g` for numbers that aren't a named size); the size equal to
+  `gcp.cpu` / `gcp.memoryGiB` (xl) is the customer job itself, as before. Before a build Gen makes sure the size's job is
+  there in each region the customer job is in (`customerJobForMachine`, remembered 10 minutes): made from the customer
+  job's template (image, `unity-customer@`, env and license secrets, timeout, gen2) with the first container's limits
+  changed, and patched when anything but the limits differs, so a new image on the customer job reaches the sizes on
+  their next build. That needs `run.jobs.create`/`update` for Gen's account; without them (the setup only grants
+  `jobsExecutorWithOverrides` on each job) the build runs on the customer job at its own size, with a warning in the log
+  and `result.warnings`: never a failed build. `customer-setup.mjs --sizes --apply` makes every size's job (and the
+  grants) up front. **Out of memory** (Cloud Run's "Memory limit ... exceeded"): built again once, the next named size
+  with more memory (none past the biggest); `result.retried` says so (`{ reason, from, to, note }`, `totalSeconds`,
+  `totalCost`). Every result has `machine` (`{ name, cpu, memoryGiB }`, what it ran on) and `machineAsked`; the cost is
+  priced at that machine. Disk: on Cloud Run `/work` (checkout, Library, output, log) is in memory, so memory is the disk
+  too; a Cloud Run ephemeral-disk volume (Preview) would take it off memory, but its v2 API shape wasn't confirmed, so it
+  isn't used yet (TODO).
 - **Library cache:** its own per Gen project and repo (`unity-cache/cust--<project>--<owner>--<repo>[--<path>]`, key
   `build`), never J's or another customer's.
 - **Result:** `{ ok, exitCode, seconds, cost, unity, artifact: { asset, url, bytes, files }, github: { repo, commit,
-  ref, path }, method, target: "web", errors, logTail?, backend: "cloudrun", cloud }`. `artifact.asset` is a library
+  ref, path }, method, target: "web", errors, logTail?, backend: "cloudrun", cloud, machine, machineAsked, retried?,
+  warnings? }`. `artifact.asset` is a library
   asset of the job's project (a `.tar.gz` of the build folder; `url` is `/v1/assets/<id>/file` on Gen); the Unity log
   is the job's first output.
 - **Price:** flat `UNITY_BUILD_CREDITS` = 100 credits ($1.00; Cloud Run at 8 vCPU / 32 GiB is about $0.0125 a minute),
