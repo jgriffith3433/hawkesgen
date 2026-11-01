@@ -351,7 +351,8 @@ portal and Studio use Gen in the back end with their own keys.
     smallest size and the area folds away (its edge stays to drag it back; the timeline folds to its bar); double-click
     an edge to fold or unfold; sizes kept per browser. **On a phone** the center and the timeline stay on screen with a
     sheet below for Media, Create, Scenes, the Inspector or the AI (bottom tabs; the sheet and the timeline size by their
-    top edges), and a Media tile or a Scenes row drags onto a track with a finger: hold it, then drag (`dragdrop.js`:
+    top edges, nearly the whole screen: a strip of the picture and the timeline's bar always stay; J, 2026-11-01: menus
+    open as sheets from the bottom and scroll inside, the page never zooms, no logo in the bar), and a Media tile or a Scenes row drags onto a track with a finger: hold it, then drag (`dragdrop.js`:
     a ghost follows, the track lights up; the timeline and the center register as drop targets).
   - **The project** (`project.js`, `src/editor.ts`): the timeline scene in front, saved to Gen
     (`/v1/editor/projects/:id`, any timeline kind, with a version: a save that crosses another one gets 409 and the
