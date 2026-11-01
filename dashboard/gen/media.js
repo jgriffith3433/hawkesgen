@@ -2,7 +2,7 @@
 // at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Create (every tool) is studio.js.
 // Also the one way every tool runs (runJob).
 
-import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
+import { $, $$, h, api, toast, fileUrl, keyedRedraw, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
 import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor, PROGRESS, stopClip } from './project.js';
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
@@ -36,7 +36,7 @@ export function initMedia() {
   $('#uploadInput').addEventListener('change', (e) => { const files = [...(e.target.files ?? [])]; e.target.value = ''; uploadFiles(files); });
   bus.on('signedIn', loadMedia);
   bus.on('ready', loadMedia);
-  bus.on('jobDone', () => loadMedia());
+  bus.on('jobDone', () => loadMediaSoon());
   // New files from anywhere (the AI in another tab, a chain, another device): Gen's own job stream says when one of
   // this account's jobs finishes (J, 2026-10-30: Media sometimes needed a reload to show new things).
   bus.on('signedIn', followJobs);
@@ -99,49 +99,80 @@ export async function loadMedia() {
 
 /** How many things are being made or uploaded now (the bar's "Making" pill shows it). */
 export const busyCount = () => M.inflight.size + (P.active ? P.doc.clips.filter((c) => c.pending && c.job && !M.inflight.has(c.job)).length : 0);
+/**
+ * Draws Media in place (keyedRedraw): a tile already on screen keeps its picture or clip, so a reload, a job's progress
+ * or an edit to the scene never makes the grid flash or the clips reload (J, 2026-11-01: "it refreshes a lot").
+ */
 function drawMedia() {
   bus.emit('busy', M.inflight.size);
   const grid = $('#mediaGrid');
-  const stop = (fn) => h('button', { class: 'tile-stop', title: 'Stop making it', onclick: (e) => { e.stopPropagation(); fn(); } }, icon('close'));
-  const busy = [...M.inflight.entries()].map(([k, j]) => h('div', { class: 'tile busy' }, h('div', { class: 'working' }, j.step || 'Starting'), h('div', { class: 'tile-cap' }, j.label),
-    k.startsWith('j_') ? stop(() => api(`/v1/jobs/${k}/cancel`, { method: 'POST' }).catch(() => {})) : ''));
+  const rows = [];
+  for (const [k, j] of M.inflight) {
+    rows.push({ key: `busy:${k}`, sig: 'busy', make: () => busyTile(k.startsWith('j_') ? () => api(`/v1/jobs/${k}/cancel`, { method: 'POST' }).catch(() => {}) : null),
+      update: (el) => setBusy(el, j.step || 'Starting', j.label) });
+  }
   // The scene's clips still being made (by the AI, or before a reload) show here too, with the same status.
   for (const c of P.active ? P.doc.clips.filter((x) => x.pending && x.job && !M.inflight.has(x.job)) : []) {
-    busy.push(h('div', { class: 'tile busy', title: 'On the timeline; it fills in when it\'s made' }, h('div', { class: 'working' }, PROGRESS.get(c.job) ?? 'Making'), h('div', { class: 'tile-cap' }, c.label ?? 'Being made'), stop(() => stopClip(c.id))));
+    rows.push({ key: `clip:${c.id}`, sig: 'busy', make: () => busyTile(() => stopClip(c.id), 'On the timeline; it fills in when it\'s made'),
+      update: (el) => setBusy(el, PROGRESS.get(c.job) ?? 'Making', c.label ?? 'Being made') });
   }
-  const tiles = M.items.map(tileFor);
-  grid.replaceChildren(...busy, ...tiles);
-  if (!busy.length && !tiles.length) grid.append(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'),
-    M.q || M.kind ? '' : h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: () => $('#uploadInput').click() }, icon('upload'), 'Upload'), h('button', { class: 'primary small', onclick: () => showPane('generate') }, icon('sparkle'), 'Make something'))));
+  for (const a of M.items) rows.push({ key: a.id, sig: tileSig(a), make: () => tileFor(a), update: (el) => decorate(el, a) });
+  if (!rows.length) {
+    grid.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'),
+      M.q || M.kind ? '' : h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: () => $('#uploadInput').click() }, icon('upload'), 'Upload'), h('button', { class: 'primary small', onclick: () => showPane('generate') }, icon('sparkle'), 'Make something'))));
+    return;
+  }
+  keyedRedraw(grid, rows);
+}
+function busyTile(onStop, title) {
+  return h('div', { class: 'tile busy', title }, h('div', { class: 'working' }), h('div', { class: 'tile-cap' }),
+    onStop ? h('button', { class: 'tile-stop', title: 'Stop making it', onclick: (e) => { e.stopPropagation(); onStop(); } }, icon('close')) : '');
+}
+function setBusy(el, step, label) {
+  const w = el.querySelector('.working');
+  const cap = el.querySelector('.tile-cap');
+  if (w.textContent !== step) w.textContent = step;
+  if (cap.textContent !== label) cap.textContent = label;
+}
+/** What a tile shows; when it changes, the tile is made again (the picks and "In use" change in place: decorate). */
+const tileSig = (a) => JSON.stringify([a.kind, a.sha256, a.title, a.tool, a.recipe?.params?.prompt, a.recipe?.params?.text, durationOf(a)]);
+/** Picked and "In use": changed on the tile itself, so its picture or clip stays as it is. */
+function decorate(el, a) {
+  const used = Boolean(P.active && P.doc.clips.some((c) => c.asset === a.id));
+  el.classList.toggle('sel', M.picked.has(a.id));
+  if (el.classList.contains('used') === used) return;
+  el.classList.toggle('used', used);
+  if (used) el.querySelector('.tile-cap')?.before(h('span', { class: 'badge used', title: 'It\'s in the scene in front' }, 'In use'));
+  else el.querySelector('.badge.used')?.remove();
 }
 
 const durationOf = (a) => a.meta?.duration ?? null;
 function tileFor(a) {
+  // The tile stays while Media is read again: what it does uses the newest copy of the file's row.
+  const now = () => M.items.find((x) => x.id === a.id) ?? a;
   const prompt = a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? a.title ?? '';
-  const media = a.kind === 'image' ? h('img', { src: fileUrl(a.id), alt: '', loading: 'lazy', draggable: 'false' })
-    : a.kind === 'video' ? h('video', { src: `${fileUrl(a.id)}#t=0.1`, muted: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => { e.target.pause(); } })
+  const media = a.kind === 'image' ? h('img', { src: fileUrl(a.id, a.sha256), alt: '', loading: 'lazy', draggable: 'false' })
+    : a.kind === 'video' ? h('video', { src: `${fileUrl(a.id, a.sha256)}#t=0.1`, muted: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => { e.target.pause(); } })
     : a.kind === 'audio' ? h('div', { class: 'tile-audio' }, icon(a.tool === 'audio.music' ? 'music' : a.tool?.startsWith('audio.voice') ? 'mic' : 'volume', 'ico big'))
     : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
   const d = durationOf(a);
-  const used = P.active && P.doc.clips.some((c) => c.asset === a.id);
-  const el = h('div', { class: `tile kind-${a.kind}${used ? ' used' : ''}${M.picked.has(a.id) ? ' sel' : ''}`, 'data-asset': a.id, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
+  const el = h('div', { class: `tile kind-${a.kind}`, 'data-asset': a.id, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
 ` : ''}Double-click to look at it; drag it onto a track` },
     media,
     d ? h('span', { class: 'badge' }, fmt(d, 0)) : '',
-    used ? h('span', { class: 'badge used', title: 'It\'s in the scene in front' }, 'In use') : '',
     h('div', { class: 'tile-cap' }, a.title || prompt || a.kind),
-    onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(a)); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
+    onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(now())); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
   // One click picks a tile (Ctrl or Cmd adds to the picks; the "+" adds it to the timeline); a double-click looks at it in
   // the center (J, 2026-10-30). Picks are kept by id, so a refresh keeps them, and the AI is told about them.
-  el.addEventListener('click', (e) => pickTile(a, el, e.ctrlKey || e.metaKey));
-  el.addEventListener('dblclick', () => openAsset(a));
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(a); if (e.key === 'Escape') clearPicked(); });
+  el.addEventListener('click', (e) => pickTile(now(), el, e.ctrlKey || e.metaKey));
+  el.addEventListener('dblclick', () => openAsset(now()));
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(now()); if (e.key === 'Escape') clearPicked(); });
   el.addEventListener('dragstart', (e) => {
-    e.dataTransfer.setData('application/x-hg-asset', JSON.stringify(assetLite(a)));
+    e.dataTransfer.setData('application/x-hg-asset', JSON.stringify(assetLite(now())));
     e.dataTransfer.effectAllowed = 'copy';
   });
   // Any tile drags (mouse or finger); where it's dropped says whether it fits there and why not.
-  touchDrag(el, () => { const x = assetLite(a); return { asset: x.id, assetKind: x.kind, title: x.title, duration: x.duration }; });
+  touchDrag(el, () => { const x = assetLite(now()); return { asset: x.id, assetKind: x.kind, title: x.title, duration: x.duration }; });
   return el;
 }
 const onTimeline = (kind) => ['image', 'video', 'audio'].includes(kind);
