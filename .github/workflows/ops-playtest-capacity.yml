@@ -48,6 +48,8 @@ jobs:
           MAX: ${{ inputs.max }}
           APPLY: ${{ inputs.apply && '--apply' || '' }}
         run: |
+          # pipefail: without it the tee below hid a refused change (RunPod's worker quota) behind a green run.
+          set -o pipefail
           key=$(gcloud secrets versions access latest --secret=gen-runpod-api-key --project "${{ vars.GCP_PROJECT }}")
           echo "::add-mask::$key"
           RUNPOD_API_KEY="$key" node tools/playtest-runpod/capacity.mjs --max "$MAX" $APPLY | tee -a "$GITHUB_STEP_SUMMARY"
