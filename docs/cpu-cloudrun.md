@@ -173,3 +173,9 @@ Gen's credentials must be able to mint ID tokens for the services (`docs/cloudru
   LOD images and a GLB, a job through the real queue with its usage).
 - The service starts from the build context alone and answers `/healthz` (run locally with this PC's Node and Python).
 - Not yet: the image built and run in Cloud Run (cold start time, BiRefNet speed on 4 vCPUs, real billed seconds).
+- **BiRefNet's memory** (measured 2026-11-01 on 4 vCPUs, rembg 2.0.86, onnxruntime 1.31, a 1024 px image): about
+  8.5 GB at its peak with onnxruntime's memory arena off (`post/cutout.py` turns it off; 9.8 GB with it on), about
+  45 s; BiRefNet lite needs about 7 GB; ISNet 1.3 GB and 3 s. So **gen-cpu-heavy's 8 GiB is not enough for BiRefNet**:
+  it needs 16 GiB (`service.json`, then a deploy). Until then, and on Gen's own 4 GiB Cloud Run instance, `cutout.py`
+  sees there isn't room (`HAWKESGEN_BIREFNET_GB`, default 9) and makes the mask with ISNet, saying so in the job's log
+  and the output's `meta.fallback`, instead of being killed mid-run (beta, 2026-11-01: every cutout failed that way).

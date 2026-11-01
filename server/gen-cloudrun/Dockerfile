@@ -40,6 +40,13 @@ RUN /app/.venv/bin/python -c "import io, os, urllib.request, zipfile; d = '/opt/
     && chmod -R a+rX /opt/insightface \
     && /app/.venv/bin/python -c "import cv2, onnxruntime"
 
+# image.cutout's ISNet model, baked in so a cutout never downloads it into the instance's in-memory disk. BiRefNet
+# (973 MB, about 8.5 GB of memory while it runs) doesn't fit this 4 GiB instance, so post/cutout.py uses ISNet here;
+# BiRefNet runs where there is room for it (the gen-cpu-heavy service, docs/cpu-cloudrun.md).
+ENV U2NET_HOME=/opt/u2net
+RUN /app/.venv/bin/python -c "from rembg import new_session; new_session('isnet-general-use')" \
+    && chmod -R a+rX /opt/u2net
+
 COPY . .
 COPY server/gen-cloudrun/litestream.yml /etc/litestream.yml
 RUN chmod +x server/gen-cloudrun/entrypoint.sh && mkdir -p /data

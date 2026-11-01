@@ -27,6 +27,8 @@ export const cutoutTool: Tool = {
     if (ctx.params.glow) args.push('--glow');
     if (!ctx.params.crop) args.push('--no-crop');
     const info = JSON.parse((await ctx.python('cutout.py', args)).trim().split('\n').pop() || '{}');
+    // A machine without room for BiRefNet (about 8.5 GB) makes the mask with ISNet instead of being killed (cutout.py).
+    if (info.fallback) ctx.log(info.fallback);
     await ctx.emit({ data: fs.readFileSync(out), ext: '.png', meta: info });
     ctx.result(info);
   },
