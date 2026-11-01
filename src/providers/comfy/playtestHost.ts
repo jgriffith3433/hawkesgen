@@ -98,7 +98,8 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
   const { loadSettings } = await import('../../config.ts');
   const { markDown } = await import('../gpu/health.ts');
   const { runnerHealthKey, runnerCooldown } = await import('../playtester/runners.ts');
-  const clouds = given ?? (() => {
+  const { runpodCreditProblem } = await import('../gpu/credit.ts');
+  const listed = given ?? (() => {
     try {
       return cloudPlaytestsFor(project, loadSettings());
     } catch (e: any) {
@@ -106,6 +107,10 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
       return [];
     }
   })();
+  // An empty RunPod balance starts no browser and its gateway just waits (gpu/credit.ts): the next service plays it.
+  const broke = listed.some((c) => c.variant === 'runpod') ? runpodCreditProblem() : null;
+  if (broke) step(`skipping RunPod: ${broke}`);
+  const clouds = broke ? listed.filter((c) => c.variant !== 'runpod') : listed;
   // In order: the GPU browser (the RunPod endpoint, docs/playtest-runpod.md, or the L4 service), then the CPU service
   // (software WebGL) in each of its regions, then the playtesters. Each
   // step says why it moved on. With more than one service, each try is short (a full region is skipped, not waited on)

@@ -64,7 +64,7 @@ The job takes the first provider that has room. Room is the endpoint's `maxConcu
 
 | What happened | Cooldown |
 |---|---|
-| No GPU free within 3 minutes (429/503 the whole time) | 5 min |
+| No GPU free within 3 minutes (429/503 the whole time; 15 minutes when the provider is cold, below) | 5 min |
 | Unreachable | 10 min |
 | 401/403: our key refused | 30 min |
 
@@ -72,6 +72,17 @@ When every provider in the order has been tried, the job's tried list is cleared
 take it now: …", with each reason) and tries again once one is back.
 
 Cooldowns live in memory, so a restart gives every provider a new chance. A successful run clears the provider's cooldown.
+
+**Cold starts.** An endpoint that hasn't run a job in Gen for 20 minutes (Modal's `scaledown_window`) has no worker up, so
+the next job starts one: it pulls the image and starts ComfyUI, which takes several minutes. The job says so up front
+("starting a modal GPU (none has run for a while; a cold start takes several minutes)") instead of "waiting for a free
+GPU", and 429/503 answers while it starts get the cold start's 12 extra minutes before the provider cools down.
+
+**Credit.** RunPod starts no worker for an account at or below $0, and its gateway doesn't say so: requests just wait
+(2026-11-01: four playtests sat at "opening a browser on RunPod"). Gen reads the balance every 2 minutes (`credit.ts`,
+RunPod's GraphQL `myself.clientBalance` with `RUNPOD_API_KEY`). While it is empty, RunPod endpoints and RunPod playtest
+runners are skipped with "RunPod is out of credit", jobs already waiting on RunPod move on, and playtests go to the next
+service. The GPU providers card shows the balance, in red below $5. Adding funds clears it within 2 minutes.
 
 **The AWS fleet cools down quietly.** It gets one 30-minute cooldown, instead of an error on every job, when:
 

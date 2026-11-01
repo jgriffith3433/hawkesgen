@@ -38,6 +38,8 @@ server.listen(PORT, HOST, () => {
     return;
   }
   queue.start();
+  // RunPod's balance, every 2 minutes: an empty one is skipped instead of waited on (providers/gpu/credit.ts).
+  void import('./providers/gpu/credit.ts').then((m) => m.startCreditWatch()).catch((e) => console.warn(`[gpu] ${e.message}`));
   void import('./storage.ts').then((m) => m.resumeOnStart()).catch((e) => console.warn(`[storage] ${e.message}`));
   // Analytics: the daily rollups and the 13-month purge, and the GeoIP database (downloaded monthly).
   void import('./analytics/store.ts').then((m) => m.startMaintenance()).catch((e) => console.warn(`[analytics] ${e.message}`));

@@ -7,6 +7,7 @@ import { healthOf } from './health.ts';
 import { missingSecrets, type Secrets } from './auth.ts';
 import { fleetBlocked } from './egress.ts';
 import { orderFor } from './route.ts';
+import { runpodCredit, runpodCreditProblem } from './credit.ts';
 
 export type ProviderRow = {
   id: string; provider: 'fleet' | 'cloudrun' | 'runpod' | 'modal' | 'http'; url: string | null; gpu: string; pricePerHour: number | null;
@@ -34,7 +35,8 @@ export function gpuStatus(settings: Pick<Settings, 'gpu' | 'fleet'>, map: Servic
   });
   for (const ep of g.providers) {
     const missing = missingSecrets(ep.provider, get);
-    const problem = !ep.enabled ? 'turned off' : missing ?? (!g.cloudrun.bucket ? 'settings.gpu.cloudrun.bucket is not set' : !get('HAWKESGEN_PUBLIC_URL') ? 'HAWKESGEN_PUBLIC_URL is not set' : null);
+    // missingSecrets says "" when nothing is missing: || reaches the checks after it.
+    const problem = !ep.enabled ? 'turned off' : missing || (ep.provider === 'runpod' ? runpodCreditProblem(get) : null) || (!g.cloudrun.bucket ? 'settings.gpu.cloudrun.bucket is not set' : !get('HAWKESGEN_PUBLIC_URL') ? 'HAWKESGEN_PUBLIC_URL is not set' : null);
     rows.push({ id: ep.id, provider: ep.provider, url: host(ep.url), gpu: ep.gpu, pricePerHour: ep.pricePerHour, families: ep.families, enabled: ep.enabled, ready: !problem, problem, health: healthOf(ep.id) });
   }
   const families = Object.keys(g.familyOrder);
@@ -44,5 +46,7 @@ export function gpuStatus(settings: Pick<Settings, 'gpu' | 'fleet'>, map: Servic
     order: orderFor(settings, null),
     familyOrder: g.familyOrder,
     providers: rows,
+    // RunPod's balance (credit.ts): null until read, or without RUNPOD_API_KEY.
+    runpodCredit: get('RUNPOD_API_KEY') ? runpodCredit() : null,
   };
 }

@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { paths, type Settings, type PlaytestBackend } from '../../config.ts';
 import { gcpTokens } from '../gcp/gcs.ts';
+import { runpodCreditProblem } from '../gpu/credit.ts';
 import { loadServiceMap, pricePerSecond } from '../cloudrun/services.ts';
 import type { PlaytestHost } from '../comfy/playtestHost.ts';
 
@@ -276,6 +277,9 @@ export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & 
   let wait = 3_000;
   for (let attempt = 1; ; attempt++) {
     const left = end - deps.now();
+    // An empty RunPod balance starts no worker (gpu/credit.ts): no use waiting for one.
+    const broke = c.variant === 'runpod' ? runpodCreditProblem(deps.env ? (k) => deps.env![k] : undefined) : null;
+    if (broke) throw new Error(`RunPod playtest service: ${broke}`);
     try {
       return await chromium.connect(wsEndpointOf(c.url), {
         timeout: Math.max(10_000, Math.min(left, 5 * 60_000)),

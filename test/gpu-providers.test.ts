@@ -19,7 +19,8 @@ delete process.env.K_SERVICE;
 const { loadServiceMap, cloudRoute } = await import('../src/providers/cloudrun/services.ts');
 const { cloudComfyRun, runKey, setCloudDeps } = await import('../src/providers/cloudrun/run.ts');
 const { gpuCandidates, orderFor } = await import('../src/providers/gpu/route.ts');
-const { markDown, isDown, resetHealth, awsRefused, COOLDOWN, healthOf } = await import('../src/providers/gpu/health.ts');
+const { markDown, markUp, isDown, resetHealth, awsRefused, COOLDOWN, healthOf } = await import('../src/providers/gpu/health.ts');
+const { checkRunpodCredit, runpodCreditProblem, runpodCredit, setRunpodCredit } = await import('../src/providers/gpu/credit.ts');
 const { brokerToken, readToken, allowed, resetBrokerKey } = await import('../src/providers/gpu/broker.ts');
 const { handleBroker } = await import('../src/providers/gpu/brokerRoute.ts');
 const { signedGetUrl } = await import('../src/providers/gpu/sign.ts');
@@ -375,8 +376,12 @@ test('a provider that refuses our key, or has no GPU in its wait, throws "unavai
   const [rp, md] = gpuCandidates({ family: 'z-image', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get).choices.map((c: any) => c.service);
   const denied = fakeProvider(() => ({ status: 401 }));
   await assert.rejects(cloudComfyRun({ id: 'j_401' }, rp, hooks() as any, denied.deps as any).runGraph({} as any), (e: any) => e.unavailable && e.auth && /refused Gen's credentials/.test(e.message));
+  // Warm (it ran a job a moment ago): a busy provider gets its 3 minutes.
+  markUp('mod', 1_000_000);
   const busy = fakeProvider(() => ({ status: 429 }));
-  await assert.rejects(cloudComfyRun({ id: 'j_429' }, md, hooks() as any, busy.deps as any).runGraph({} as any), (e: any) => e.unavailable && e.capacity && /no modal GPU came free in 3 minutes/.test(e.message));
+  const bh = hooks();
+  await assert.rejects(cloudComfyRun({ id: 'j_429' }, md, bh as any, busy.deps as any).runGraph({} as any), (e: any) => e.unavailable && e.capacity && /no modal GPU came free in 3 minutes/.test(e.message));
+  assert.ok(bh.steps.some((x) => /waiting for a free modal GPU/.test(x)), JSON.stringify(bh.steps));
   assert.equal(denied.posts[0].headers['Modal-Key'], undefined);
   assert.equal(busy.posts[0].headers['Modal-Key'], 'wk-1');
 });
@@ -470,4 +475,65 @@ print(json.dumps({"size": size, "manifest": json.loads(st.read(out + "manifest.j
     assert.equal(res.denied, 403);
     assert.equal(objects.get(`gs://bkt/cloudrun/runs/${KEY}/heartbeat.json`)!.toString(), '{"at": 1}');
   } finally { srv.close(); }
+});
+
+// ------------------------------------------------------------------ cold starts and RunPod's credit
+
+test('a cold provider says it is starting a GPU (not "waiting for a free" one) and gets the cold start\'s time for 429/503', async () => {
+  resetHealth();
+  const s = gpuSettings({ providers: [ep({ id: 'mod', provider: 'modal', url: 'https://m.modal.run', graphLimitSeconds: 3300 })], order: ['mod'] });
+  const md = (gpuCandidates({ family: 'z-image', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get).choices[0] as any).service;
+  // 503 for 8 minutes while the container starts (past the warm 3-minute wait), then the answer.
+  let f: ReturnType<typeof fakeProvider>;
+  f = fakeProvider((body, n) => (n <= 32 ? { status: 503 } : done(body, f.objects)));
+  const h = hooks();
+  const files = await cloudComfyRun({ id: 'j_coldmodal' }, md, h as any, f.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any);
+  assert.equal(files[0].filename, 'out.png');
+  assert.match(h.steps[0], /starting a modal GPU \(none has run for a while; a cold start takes several minutes\)/);
+  assert.ok(!h.steps.some((x) => /waiting for a free/.test(x)), JSON.stringify(h.steps));
+  // Past the cold allowance it is still handed on.
+  const never = fakeProvider(() => ({ status: 503 }));
+  await assert.rejects(cloudComfyRun({ id: 'j_coldnever' }, md, hooks() as any, never.deps as any).runGraph({} as any), (e: any) => e.unavailable && /came free in 15 minutes/.test(e.message));
+});
+
+test('RunPod out of credit: its endpoints and playtest runners are skipped, a waiting job moves on, the card shows it', async () => {
+  resetHealth();
+  const fake = (balance: unknown, status = 200) => (async (url: string, init: any) => {
+    assert.equal(url, 'https://api.runpod.io/graphql');
+    assert.equal(init.headers.Authorization, 'Bearer rp-key');
+    return new Response(JSON.stringify({ data: { myself: { clientBalance: balance } } }), { status });
+  }) as any;
+  // No key: nothing read, nothing skipped.
+  assert.equal(await checkRunpodCredit(none, fake(1)), null);
+  assert.equal(await checkRunpodCredit(get, fake(-0.006)).then((c: any) => c.balance), -0.006);
+  assert.match(runpodCreditProblem(get)!, /RunPod is out of credit \(balance \$-0\.01\): add funds/);
+  assert.equal(runpodCreditProblem(none), null, 'without a key RunPod is not set up anyway');
+  const s = gpuSettings({ order: ['runpod-a', 'mod'], providers: [ep(), ep({ id: 'mod', provider: 'modal', url: 'https://m.modal.run' })] });
+  const r = gpuCandidates({ family: 'z-image', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get);
+  assert.deepEqual(r.choices.map((c: any) => c.service.lane), ['mod']);
+  assert.ok(r.skipped.some((x: string) => /runpod-a: RunPod is out of credit/.test(x)), JSON.stringify(r.skipped));
+  const st = gpuStatus(s, map, get);
+  assert.match(st.providers.find((p: any) => p.id === 'runpod-a')!.problem!, /out of credit/);
+  assert.equal(st.runpodCredit!.empty, true);
+  assert.equal(st.runpodCredit!.low, true);
+  // A job already on RunPod (picked before the balance ran out) hands itself on instead of waiting at the gateway.
+  setRunpodCredit({ balance: 3, at: Date.now() });
+  const rp = (gpuCandidates({ family: 'z-image', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get).choices[0] as any).service;
+  setRunpodCredit({ balance: -0.006, at: Date.now() });
+  const prev = process.env.RUNPOD_API_KEY;
+  process.env.RUNPOD_API_KEY = 'rp-key';
+  try {
+    const f = fakeProvider((body) => done(body, f.objects));
+    await assert.rejects(cloudComfyRun({ id: 'j_broke' }, rp, hooks() as any, f.deps as any).runGraph({} as any), (e: any) => e.unavailable && /out of credit/.test(e.message));
+    assert.equal(f.posts.length, 0, 'nothing posted to the gateway');
+  } finally {
+    if (prev === undefined) delete process.env.RUNPOD_API_KEY; else process.env.RUNPOD_API_KEY = prev;
+  }
+  // Funds added: the next check clears it. RunPod's own error answer changes nothing.
+  await checkRunpodCredit(get, fake(25));
+  assert.equal(runpodCreditProblem(get), null);
+  assert.equal(runpodCredit().low, false);
+  assert.equal(await checkRunpodCredit(get, (async () => new Response('{"errors":[{"message":"bad key"}]}', { status: 401 })) as any), null);
+  assert.equal(runpodCreditProblem(get), null);
+  setRunpodCredit(null);
 });
