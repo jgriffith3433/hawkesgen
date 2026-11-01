@@ -144,6 +144,8 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
   /** The final line of a run: its files, or an error that says what happened. */
   const finish = (m: any): CloudFile[] => {
     hooks.addSeconds(Number(m.seconds) || 0, Number(m.cold?.startupSeconds) || 0);
+    // What the graph held on the card at its peak (the worker samples it; older images don't send it).
+    if (m.vram?.peakMB) hooks.step(`${svc.name}: GPU memory at peak ${(m.vram.peakMB / 1024).toFixed(1)} GB of ${(m.vram.totalMB / 1024).toFixed(0)} GB${m.vram.gpu ? ` (${m.vram.gpu})` : ''}, ${m.seconds} s on the worker`);
     if (m.t === 'done') return (m.files ?? []) as CloudFile[];
     if (m.cancelled) throw new Error('Cancelled');
     if (m.missingModels?.length) {

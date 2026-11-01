@@ -136,7 +136,9 @@ export function workflowTool(wf: Workflow): Tool {
         for (const [node, field] of p.targets) graph[node].inputs[field] = ctx.params[name];
       }
       applyNodeOverrides(graph, ctx.params.nodes, settings);
-      for (const o of m.outputs) if ('filename_prefix' in graph[o].inputs) graph[o].inputs.filename_prefix = `hawkesgen/${ctx.job.project}/${m.id}`;
+      // The job's id in the name: a warm worker's ComfyUI answers an identical graph (a workflow with no seed, the same
+      // input again) from its cache with the earlier run's file, which that run deleted, so the save must differ.
+      for (const o of m.outputs) if ('filename_prefix' in graph[o].inputs) graph[o].inputs.filename_prefix = `hawkesgen/${ctx.job.project}/${m.id}-${ctx.job.id}`;
 
       const n = ctx.params.count ?? 1;
       const doneRuns = new Set(ctx.outputs.map((o) => o.seed)).size;

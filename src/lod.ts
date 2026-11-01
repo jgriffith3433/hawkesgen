@@ -42,7 +42,7 @@ export const LOD_PROJECT = 'hawkesgen.lod';
 export const LOD_CLIENT = { id: 'gen', name: 'Hawkes Gen', role: 'owner' as const, projects: ['*'] };
 const IMAGE_MIME = /^image\/(png|jpeg|webp)$/;
 /** Steps whose picture is a chain's cutout (kept: it's the thumbnail), not in-between work. */
-const CUTOUT_TOOLS = new Set(['image.remove-background', 'image.cutout']);
+const CUTOUT_TOOLS = new Set(['image.remove-background', 'image.cutout', 'image.cutout-gpu']);
 const MESH_MIME = /^model\/gltf-binary$/;
 /** Assets per job: images are quick (a second or two each), models take longer. */
 const BATCH = { image: 24, mesh: 4 };

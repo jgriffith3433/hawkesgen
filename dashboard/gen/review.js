@@ -86,9 +86,14 @@ function follow() {
   clearInterval(R.timer);
   R.timer = setInterval(async () => {
     if (!R.fix) return clearInterval(R.timer);
-    try { R.fix = await api(`/v1/showrunner/productions/${R.fix.id}`); } catch { return; }
-    if (!['running', 'proposed', 'paused'].includes(R.fix.status)) clearInterval(R.timer);
-    draw();
+    let next;
+    try { next = await api(`/v1/showrunner/productions/${R.fix.id}`); } catch { return; }
+    if (!R.fix || next.id !== R.fix.id) return;
+    if (!['running', 'proposed', 'paused'].includes(next.status)) clearInterval(R.timer);
+    // Drawn only when something changed: a redraw restarts the before and after takes (J, 2026-11-01: no constant refreshes).
+    const same = JSON.stringify(next) === JSON.stringify(R.fix);
+    R.fix = next;
+    if (!same) draw();
   }, 4000);
 }
 

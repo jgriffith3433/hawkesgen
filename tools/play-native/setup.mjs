@@ -5,8 +5,9 @@
 // Mirrors tools/playtest-runpod/setup.mjs (the browser runner).
 //
 //   node tools/play-native/setup.mjs                      print the plan (changes nothing)
+//   node tools/play-native/setup.mjs --check              read RunPod (GETs only) and say what --apply would change
 //   node tools/play-native/setup.mjs --apply              create or update the template and the endpoint
-//   options: --image ghcr.io/jgriffith3433/hawkes-play-native:latest  --name hawkes-play-native
+//   options: --image ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-5-ebc6186  --name hawkes-play-native
 //            --gpu AMPERE_16  --gpu-types "NVIDIA RTX A4000,..."  --max 2  --idle 60  --max-seconds 3600
 //            --recreate   delete the endpoint of this name first and make a new one (a new GPU list needs one)
 //
@@ -21,7 +22,7 @@
 // Secrets (hawkesgen/.env, never printed): RUNPOD_API_KEY, and the token the image checks as HAWKES_TOKEN:
 // PLAY_NATIVE_TOKEN, else PLAYTEST_RUNPOD_TOKEN, else GPU_WORKER_TOKEN, else none (then only RunPod's key guards it).
 import { APPLY, arg, secret, say, header, redact } from '../gpu-providers/lib.mjs';
-import { runpod, gpuFor, envObject, lbEndpoint, upsertTemplate, findEndpoint, readCatalog, POOL_PRICES, POOL_GPUS } from '../gpu-providers/runpod-v2.mjs';
+import { runpod, gpuFor, envObject, lbEndpoint, upsertTemplate, findEndpoint, readCatalog, checkPlan, POOL_PRICES, POOL_GPUS } from '../gpu-providers/runpod-v2.mjs';
 
 // RunPod's management API v2 (tools/gpu-providers/runpod-v2.mjs): REST v1 is retired on 2026-11-15, GraphQL early 2027.
 const flag = (n) => process.argv.includes(`--${n}`);
@@ -30,7 +31,10 @@ const flag = (n) => process.argv.includes(`--${n}`);
 // got an RTX PRO 6000 Blackwell MIG slice (2026-10-29), which has no graphics.
 const GRAPHICS_GPUS = ['NVIDIA RTX A4000', 'NVIDIA RTX A4500', 'NVIDIA RTX 4000 Ada Generation', 'NVIDIA RTX 2000 Ada Generation'];
 
-const image = arg('image', 'ghcr.io/jgriffith3433/hawkes-play-native:latest');
+// The image the endpoint runs now: the public hawkes-gen-gpu copy, pinned. hawkes-play-native:latest is in a package
+// that may not be public, so RunPod might not pull it. Move this to the new tag each time a new image is proven.
+const DEFAULT_IMAGE = 'ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-5-ebc6186';
+const image = arg('image', DEFAULT_IMAGE);
 const name = arg('name', 'hawkes-play-native');
 const gpus = arg('gpu', 'AMPERE_16');
 const max = Math.max(1, Math.min(10, Number(arg('max', '2')) || 2));
@@ -87,7 +91,13 @@ if (APPLY) {
   endpointId = e.id;
   say(`${old ? 'updated' : 'made'} endpoint ${e.id} (type ${e.type}); GPU pools ${(e.gpu?.pools ?? gpu.pools).join(', ')}, open to ${max} workers`);
   if (old) say('An endpoint that existed keeps the workers it placed: --recreate if its GPU list changed.');
-} else say('\n(dry run: --apply creates or updates them; that costs nothing until a playtest starts a worker)');
+} else if (process.argv.includes('--check')) {
+  // Read-only (GETs): what --apply would change.
+  if (!key) { console.error('RUNPOD_API_KEY is not set.'); process.exit(1); }
+  header('Check against RunPod API v2 (reads only, changes nothing)');
+  try { for (const line of await checkPlan(runpod(key), { template, name, gpuTypes, pools, endpointBody })) say(line); }
+  catch (e) { console.error(e.message); process.exit(1); }
+} else say('\n(dry run: --check reads RunPod without changing it; --apply creates or updates them, which costs nothing until a playtest starts a worker)');
 
 const url = `https://${endpointId ?? '<endpoint id>'}.api.runpod.ai`;
 header('Then Gen\'s runner list (platform-plan 3.3; Gen\'s router reads it once it exists)');

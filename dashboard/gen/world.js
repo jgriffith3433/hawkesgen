@@ -51,8 +51,11 @@ registerEditor({
 async function loadHome() {
   if (!D.scene || Wd.loading) return;
   Wd.loading = true;
+  const was = Wd.home ? JSON.stringify(Wd.home) : null;
   try { Wd.home = await api(`/v1/worlds/${D.scene.id}`); } catch { /* the scene still shows */ } finally { Wd.loading = false; }
-  draw();
+  // Drawn only when the world's members changed (it's read again after every job and every few seconds while
+  // pictures are being made; J, 2026-11-01: no constant refreshes).
+  if (!was || was !== JSON.stringify(Wd.home) || !$('#wldWrap')?.childElementCount) draw();
   // While members' pictures are being made, look again now and then.
   clearTimeout(Wd.poll);
   const waiting = Wd.home && [...Wd.home.characters, ...Wd.home.places, ...Wd.home.props].some((m) => m.waiting);

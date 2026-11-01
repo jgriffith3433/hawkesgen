@@ -1,7 +1,7 @@
 """Cuts a subject out of an image with a segmentation model (rembg).
 Ported from Dose Of Destruction's tools/cutout.py.
 
-    python cutout.py <image> <out.png> [--mode birefnet|isnet|union] [--glow] [--no-crop] [--pad 16]
+    python cutout.py <image> <out.png> [--mode birefnet|isnet|union] [--glow] [--no-crop] [--pad 16] [--mask m.png]
 
 Modes:
   birefnet  BiRefNet: the cleanest edges and solid dark clothing (default)
@@ -9,11 +9,19 @@ Modes:
   union     both masks combined, for wispy edges that fade into the backdrop
 --glow      fire, lightning and glow on a black backdrop are light, not solid:
             their opacity comes from their brightness
-Prints the crop box and size as JSON.
+--mask      a mask already made elsewhere (BiRefNet on a GPU server, src/tools/cutout-gpu.ts): white is the subject,
+            or the alpha of an RGBA cutout. No model runs here; glow, crop and pad apply as usual.
+Prints the crop box and size as JSON, and the model that made the mask.
+
+BiRefNet needs about 8.5 GB of memory while it runs (measured 2026-11-01: 8.5 GB peak at 1024 px with onnxruntime's
+arena off, 9.8 GB with it on); ISNet about 1.3 GB. A machine without room for BiRefNet (beta Gen's 4 GiB Cloud Run
+instance) used to be killed mid-run with a blank error, so there the mask comes from ISNet and the JSON says so
+("model", "fallback"). HAWKESGEN_BIREFNET_GB sets the room BiRefNet needs (default 9).
 """
 
 import argparse
 import json
+import os
 
 from PIL import Image, ImageChops, ImageFilter
 
@@ -21,11 +29,63 @@ MODELS = {"birefnet": "birefnet-general", "isnet": "isnet-general-use"}
 _sessions = {}
 
 
+def _read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def free_gb():
+    """Memory this process can still use, in GB: the container's limit (cgroup v2 or v1) and the machine's own."""
+    seen = []
+    info = {}
+    for line in (_read("/proc/meminfo") or "").splitlines():
+        k, _, v = line.partition(":")
+        if v.strip().endswith("kB"):
+            info[k] = int(v.split()[0]) * 1024
+    if "MemAvailable" in info:
+        seen.append(info["MemAvailable"])
+    for limit, used, stat in (
+        ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.stat"),
+        ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory/memory.stat"),
+    ):
+        lim, cur = _read(limit), _read(used)
+        if not lim or not cur or not lim.isdigit() or not cur.isdigit() or int(lim) >= 1 << 60:
+            continue
+        # Page cache the kernel can drop doesn't count as used.
+        cache = 0
+        for line in (_read(stat) or "").splitlines():
+            k, _, v = line.partition(" ")
+            if k in ("inactive_file", "total_inactive_file") and v.isdigit():
+                cache = int(v)
+        seen.append(int(lim) - max(0, int(cur) - cache))
+        break
+    return min(seen) / 1e9 if seen else None
+
+
+def pick_mode(mode):
+    """The mode to run here, and why it changed: BiRefNet only where it has room."""
+    if mode == "isnet":
+        return mode, None
+    need = float(os.environ.get("HAWKESGEN_BIREFNET_GB") or 9)
+    have = free_gb()
+    if have is None or have >= need:
+        return mode, None
+    return "isnet", f"BiRefNet needs about {need:g} GB of memory and this machine has {have:.1f} GB free, so ISNet made the mask"
+
+
 def mask(model, img):
+    import onnxruntime as ort
     from rembg import new_session, remove
 
     if model not in _sessions:
-        _sessions[model] = new_session(MODELS[model])
+        # No memory arena or pattern planning: the same speed, about 1.3 GB less at BiRefNet's peak.
+        opts = ort.SessionOptions()
+        opts.enable_cpu_mem_arena = False
+        opts.enable_mem_pattern = False
+        _sessions[model] = new_session(MODELS[model], sess_opts=opts)
     return remove(img, session=_sessions[model], only_mask=True)
 
 
@@ -61,9 +121,17 @@ def main():
     p.add_argument("--glow", action="store_true")
     p.add_argument("--no-crop", action="store_true")
     p.add_argument("--pad", type=int, default=16)
+    p.add_argument("--mask")
     o = p.parse_args()
     img = Image.open(o.src).convert("RGB")
-    a = ImageChops.lighter(mask("birefnet", img), mask("isnet", img)) if o.mode == "union" else mask(o.mode, img)
+    fallback = None
+    if o.mask:
+        mode = o.mode
+        given = Image.open(o.mask)
+        a = given.getchannel("A") if given.mode in ("RGBA", "LA") else given.convert("L")
+    else:
+        mode, fallback = pick_mode(o.mode)
+        a = ImageChops.lighter(mask("birefnet", img), mask("isnet", img)) if mode == "union" else mask(mode, img)
     # Drop the faint haze a model leaves in empty backdrop.
     a = a.resize(img.size, Image.BILINEAR).point(lambda v: 0 if v < 10 else v)
     if o.glow:
@@ -79,7 +147,10 @@ def main():
             box = (max(0, box[0] - o.pad), max(0, box[1] - o.pad), min(out.width, box[2] + o.pad), min(out.height, box[3] + o.pad))
             out = out.crop(box)
     out.save(o.out)
-    print(json.dumps({"box": box, "size": out.size}))
+    result = {"box": box, "size": out.size, "model": mode}
+    if fallback:
+        result["fallback"] = fallback
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

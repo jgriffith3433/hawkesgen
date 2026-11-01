@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_SIZES, DEFAULT_CUSTOMER_SIZE, cleanSizes, cleanCustomerSize, type MachineSizes } from './providers/builder/machine-sizes.ts';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -177,7 +178,14 @@ export type Settings = {
      * `regions`: more regions with the same jobs, tried in order when `region` has no machine free (J, 2026-10-31: Google
      * left a build waiting for "unknown quota capacity" in us-east4). A region without the job is skipped.
      */
-    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[] };
+    /**
+     * `sizes`: the machine sizes a customer build may ask for (unity.build param `machine`; docs/unity-cloudrun.md,
+     * "Machine sizes"), each a Cloud Run job of its own ("<customer job>-<size>", made by Gen from the customer job; the
+     * size equal to `cpu` / `memoryGiB` is the customer job itself). `customerSize`: the default, "m" (4 vCPU, 16 GiB,
+     * half the cost of xl; J, 2026-11-01: "make it cheap if we don't need all that"). A build out of memory is built
+     * again once a size up.
+     */
+    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[]; sizes: MachineSizes; customerSize: string };
     /** The build VMs: one per project, named hawkes-unity-<project>, made by tools/unity-cloudrun/vm.mjs. */
     vm: { zone: string; machineType: string; pricePerHour: number };
   };
@@ -310,7 +318,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
-    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'] },
+    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'], sizes: { ...DEFAULT_SIZES }, customerSize: DEFAULT_CUSTOMER_SIZE },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
@@ -538,6 +546,7 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
   const n = (v: unknown, lo: number, hi: number, def: number) => Math.max(lo, Math.min(hi, Math.round(Number(v)) || def));
   const g = { ...d.gcp, ...(u?.gcp ?? {}) };
   const vm = { ...d.vm, ...(u?.vm ?? {}) };
+  const sizes = cleanSizes((u?.gcp as { sizes?: unknown } | undefined)?.sizes);
   const word = (v: unknown, re: RegExp, def: string) => (typeof v === 'string' && re.test(v) ? v : def);
   return {
     backend: isUnityBackend(u?.backend) ? u!.backend : 'builder',
@@ -566,6 +575,8 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
       regions: Array.isArray(g.regions)
         ? [...new Set(g.regions.filter((r: unknown): r is string => typeof r === 'string' && /^[a-z]+-[a-z]+\d+$/.test(r)))].filter((r) => r !== word(g.region, /^[a-z]+-[a-z]+\d+$/, d.gcp.region)).slice(0, 5)
         : d.gcp.regions,
+      sizes,
+      customerSize: cleanCustomerSize(g.customerSize, sizes),
     },
   };
 }

@@ -56,3 +56,53 @@ test("the app's 🐞 line: a Studio project's report script, at a Studio's root 
   assert.throws(() => R.setReportScript(`https://studio.hawkesgen.ai/r/gen-app.js?k=${key}" onload="x`), /not a Studio project report script/);
   assert.equal(R.setReportScript('').script, null);
 });
+
+test("a GitHub Actions run of the Unity plugin's repo signs in its test account, on beta only, once, and nothing else", async () => {
+  const GH = await import('../src/githubsignin.ts');
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const other = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+  GH.setKeySource(async () => [{ ...publicKey.export({ format: 'jwk' }), kid: 'k1' }]);
+  const now = Math.floor(Date.now() / 1000);
+  const jwt = (claims: Record<string, unknown> = {}, { key = privateKey, kid = 'k1', alg = 'RS256' } = {}) => {
+    const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+    const body = { iss: GH.ISSUER, aud: GH.AUDIENCE, exp: now + 300, nbf: now - 5, repository_id: '1429202968', repository: 'jgriffith3433/hawkesgen-unity', runner_environment: 'github-hosted', jti: crypto.randomUUID(), ...claims };
+    const head = `${enc({ alg, kid, typ: 'JWT' })}.${enc(body)}`;
+    return `${head}.${crypto.sign('RSA-SHA256', Buffer.from(head), key).toString('base64url')}`;
+  };
+  const server = http.createServer((req, res) => handle(req, res).catch((e) => { res.writeHead(500); res.end(String(e)); }));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const base = `http://127.0.0.1:${(server.address() as any).port}`;
+  const post = (token: string) => fetch(`${base}/v1/users/test-session/github`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) });
+  try {
+    delete process.env.HAWKESGEN_LANE; delete process.env.HAWKESGEN_TEST_SIGNIN;
+    assert.equal((await post(jwt())).status, 404, 'off on live');
+    process.env.HAWKESGEN_LANE = 'live';
+    assert.equal((await post(jwt())).status, 404, 'off on any lane but beta');
+    process.env.HAWKESGEN_LANE = 'beta';
+    const good = jwt();
+    const r = await post(good);
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get('set-cookie') ?? '', /hg_session=/);
+    const body = await r.json();
+    assert.equal(body.user.email, 'playtest+hawkesgen-unity@playtest.hawkesgen.ai', 'only the fixed test account');
+    const U = await import('../src/users.ts');
+    assert.equal(U.isGenAdmin(body.user), false, 'never an admin');
+    assert.equal((await post(good)).status, 401, 'each token once');
+    assert.equal((await post(jwt({ repository_id: '1', repository: 'someone/else' }))).status, 401, 'another repository');
+    assert.equal((await post(jwt({ repository_id: '999', repository: 'jgriffith3433/hawkesgen-unity' }))).status, 401, 'the name alone is not enough');
+    assert.equal((await post(jwt({ aud: 'something-else' }))).status, 401, 'another audience');
+    assert.equal((await post(jwt({ iss: 'https://evil.example.com' }))).status, 401, 'another issuer');
+    assert.equal((await post(jwt({ exp: now - 10 }))).status, 401, 'expired');
+    assert.equal((await post(jwt({ runner_environment: 'self-hosted' }))).status, 401, 'a self-hosted runner');
+    assert.equal((await post(jwt({ jti: '' }))).status, 401, 'no token id');
+    assert.equal((await post(jwt({}, { key: other.privateKey }))).status, 401, 'signed with another key');
+    assert.equal((await post(jwt({}, { kid: 'nope' }))).status, 401, 'an unknown key id');
+    assert.equal((await post(jwt({}, { alg: 'none' }))).status, 401, 'no algorithm swaps');
+    assert.equal((await post('not.a.token')).status, 401);
+    const again = await (await post(jwt())).json();
+    assert.equal(again.user.id, body.user.id, 'the same test account every time');
+  } finally {
+    delete process.env.HAWKESGEN_LANE;
+    server.close();
+  }
+});
