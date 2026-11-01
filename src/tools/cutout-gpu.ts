@@ -79,7 +79,9 @@ export const cutoutGpuTool: Tool = {
       for (const [id, n] of Object.entries(graph)) if (n.class_type === 'SaveImage' && id !== '20') delete graph[id];
       delete graph.cut;
       delete graph.inv;
-      graph['20'].inputs.filename_prefix = `hawkesgen/${ctx.job.project}/${CUTOUT_GPU}`;
+      // A name of this job's own: a warm worker's ComfyUI answers an identical graph from its cache with the file of the
+      // earlier run, which that run already deleted (beta, 2026-11-01: "No such file or directory" on every repeat).
+      graph['20'].inputs.filename_prefix = `hawkesgen/${ctx.job.project}/${CUTOUT_GPU}-${ctx.job.id}`;
       const [node, field] = wf.manifest.inputs.image.targets[0];
       graph[node].inputs[field] = await c.upload(ctx.inputs.image);
       const files = await c.runGraph(graph);
