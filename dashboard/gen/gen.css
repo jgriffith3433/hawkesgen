@@ -267,7 +267,7 @@ input.num { width: 70px; }
 .tl-slider input[type=range] { flex: 1; min-width: 90px; accent-color: var(--accent); }
 .tl-scroll { flex: 1; overflow: auto; position: relative; min-width: 0; }
 .tl-canvas { position: relative; min-height: 100%; }
-.tl-ruler { height: 26px; position: sticky; top: 0; z-index: 6; background: var(--panel); border-bottom: 1px solid var(--line); cursor: pointer; }
+.tl-ruler { height: 26px; position: sticky; top: 0; z-index: 6; background: var(--panel); border-bottom: 1px solid var(--line); cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; }
 .tick { position: absolute; top: 18px; width: 1px; height: 8px; background: var(--line-2); font-size: 10.5px; color: var(--muted); }
 .tick.major { top: 0; height: 26px; background: var(--line-2); padding-left: 4px; white-space: nowrap; line-height: 14px; }
 .tl-track { position: relative; height: 46px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
@@ -311,7 +311,11 @@ input.num { width: 70px; }
 .tl-range { position: absolute; top: 26px; bottom: 0; background: color-mix(in srgb, var(--accent) 14%, transparent); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); pointer-events: none; z-index: 3; }
 .tl-range::before { content: attr(data-label); position: absolute; top: 2px; left: 4px; font-size: 10.5px; color: var(--accent); white-space: nowrap; }
 .tl-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; margin-left: -1px; background: #ff4d6d; z-index: 7; pointer-events: none; }
-.tl-playhead-cap { position: absolute; top: 0; left: -6px; width: 14px; height: 14px; background: #ff4d6d; clip-path: polygon(0 0, 100% 0, 50% 100%); }
+/* The grip (a triangle) drags the playhead; its parent lets the pointer through to the clips. A bigger invisible hit area
+   around it, finger-sized on a phone. */
+.tl-playhead-cap { position: absolute; top: 0; left: -6px; width: 14px; height: 14px; pointer-events: auto; cursor: ew-resize; touch-action: none; }
+.tl-playhead-cap::before { content: ""; position: absolute; inset: 0; background: #ff4d6d; clip-path: polygon(0 0, 100% 0, 50% 100%); }
+.tl-playhead-cap::after { content: ""; position: absolute; inset: -6px -10px -10px; }
 .tl-empty { position: absolute; top: 60px; left: 50%; transform: translateX(-50%); pointer-events: none; font-size: 13px; }
 
 /* Menus, dialogs, toast */
@@ -865,6 +869,7 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
 /* Phones: bigger things to grab */
 @media (pointer: coarse) {
   .tl-playhead-cap { left: -10px; width: 22px; height: 18px; }
+  .tl-playhead-cap::after { inset: -10px -14px -18px; }
   .clip .h-l, .clip .h-r { width: 16px; }
   .xf { border-width: 2px; }
 }
