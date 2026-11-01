@@ -7,6 +7,9 @@
 // cast's pictures) with image.edit, and the shot is made from it by what the shot is (MakeIntent): dialogue talks to its
 // line, two people share a scene, everything else moves from its first frame. When the page is open, the director can
 // claim a shot and film it on the stage instead (production.ts claimShot).
+//
+// Every step names its tool: its params are written for that tool (sizes, frames, inputs). make.checked still checks,
+// retries and picks the best take of it; routing (knowledge/routing.json) chooses only when a step leaves the tool out.
 
 import { route, type MakeIntent, type MakeRequest } from '../make/index.ts';
 import type { Plan, PlanShot } from './plan.ts';
@@ -54,7 +57,7 @@ export function compileSteps(plan: Plan, o: { style?: string; negative?: string;
   const refs: Refs = { characters: { ...(o.refs?.characters ?? {}) }, places: { ...(o.refs?.places ?? {}) } };
   const [width, height] = SIZES[plan.aspect];
   const req = (intent: MakeIntent, b: string, x: Partial<Omit<MakeRequest, 'project'>> = {}): Omit<MakeRequest, 'project'> => ({
-    intent, brief: b.slice(0, 2400), quality: 'final', world: o.world ?? null, ...(o.budgetPerStep ? { budgetCredits: o.budgetPerStep } : {}), ...x,
+    intent, brief: b.slice(0, 2400), quality: 'final', ...(o.world ? { world: o.world } : {}), ...(o.budgetPerStep ? { budgetCredits: o.budgetPerStep } : {}), ...x,
   });
   const steps: Step[] = [];
   const add = (s: Step) => { steps.push(s); return s.id; };
@@ -98,7 +101,7 @@ export function compileSteps(plan: Plan, o: { style?: string; negative?: string;
       const c = plan.characters.find((x) => x.key === l.who);
       return add(S(`line:${s.key}:${i}`, `${c?.name ?? 'Line'}: "${l.text.slice(0, 50)}"`, [shots], {
         makes: 'voice', shot: s.key,
-        make: req('voice', l.text, { params: { text: l.text, ...(c?.voice ? { voice: c.voice } : {}), ...(l.direction ? { direction: l.direction } : {}) } }),
+        make: req('voice', l.text, { tool: 'audio.voice', params: { text: l.text, ...(c?.voice ? { voice: c.voice } : {}), ...(l.direction ? { direction: l.direction } : {}) } }),
       }));
     });
     voiced.push(...lines);
@@ -116,9 +119,9 @@ export function compileSteps(plan: Plan, o: { style?: string; negative?: string;
     const secs = Math.max(2, s.seconds);
     let shot: Omit<MakeRequest, 'project'>;
     if (s.type === 'dialogue' && lines.length) {
-      shot = req('shot-dialogue', words, { inputs: { image: `$step:${frame}`, audio: `$step:${lines[0]}` }, params: { prompt: `${s.lines[0]?.direction ?? ''} ${s.action}`.trim() || 'speaks naturally', width, height, frames: framesFor(secs, 25), fps: 25 } });
+      shot = req('shot-dialogue', words, { tool: 'video.talk', inputs: { image: `$step:${frame}`, audio: `$step:${lines[0]}` }, params: { prompt: `${s.lines[0]?.direction ?? ''} ${s.action}`.trim() || 'speaks naturally', width, height, frames: framesFor(secs, 25), fps: 25 } });
     } else if (s.type === 'two-people' && castRefs.length >= 2) {
-      shot = req('shot-two-people', words, { inputs: { image: castRefs[0], image2: castRefs[1], set: `$step:${frame}` }, params: { prompt: words, seconds: Math.round(secs) } });
+      shot = req('shot-two-people', words, { tool: 'video.scene', inputs: { image: castRefs[0], image2: castRefs[1], set: `$step:${frame}` }, params: { prompt: words, seconds: Math.round(secs) } });
     } else {
       // Action staged on the stage films with video.control in the browser; here there's no stage render, so the shot
       // moves from its painted first frame.
@@ -127,7 +130,7 @@ export function compileSteps(plan: Plan, o: { style?: string; negative?: string;
     const after = [frame, ...(shot.intent === 'shot-dialogue' ? [lines[0]] : []), ...Object.values(shot.inputs ?? {}).filter((v) => typeof v === 'string' && v.startsWith('$step:')).map((v) => String(v).slice(6))];
     filmed.push(add(S(`shot:${s.key}`, `Shot ${s.key}: ${s.action.slice(0, 60) || s.type}`, [...new Set(after)], { makes: 'clip', shot: s.key, make: shot, browser: Boolean(o.browser) && shot.intent === 'shot-action' })));
   }
-  const music = plan.music ? add(S('music', 'Score', [story], { makes: 'music', make: req('music', plan.music.brief, { params: { prompt: plan.music.brief, seconds: Math.min(190, Math.max(10, plan.seconds)) } }) })) : null;
+  const music = plan.music ? add(S('music', 'Score', [story], { makes: 'music', make: req('music', plan.music.brief, { tool: 'audio.music', params: { prompt: plan.music.brief, seconds: Math.min(190, Math.max(10, plan.seconds)) } }) })) : null;
   const cut = add(S('cut', 'The cut', [...filmed, ...voiced, ...(music ? [music] : [])], { write: 'cut' }));
   add(S('review', 'Checking every shot', [cut], { write: 'review' }));
   return steps;

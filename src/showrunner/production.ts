@@ -476,7 +476,7 @@ export function createFix(parent: Production, a: { shot: string; clip: string; s
   // What the new steps read from the parent (its pictures and lines) comes in as done steps with their files.
   const all = [...known.filter((k) => !steps.some((s) => s.id === k.id)), ...steps];
   const d = deps();
-  for (const s of steps) s.credits = d.quote(parent.project, toolFor(s, d.hasTool).tool, toolFor(s, d.hasTool).params);
+  for (const s of steps) { try { const t = toolFor(s, d.hasTool); s.credits = d.quote(parent.project, t.tool, t.params); } catch { s.credits = 0; } }
   const card: Card = { counts: { clips: 1, ...(a.redoFrame ? { pictures: 1 } : {}) }, credits: steps.reduce((n, s) => n + s.credits, 0), fixCredits: 0, minutes: 2, outline: { title: parent.title, logline: '', seconds: shot.seconds, world: null, characters: [], places: [], beats: [], shots: [{ key: shot.key, seconds: shot.seconds, type: shot.type, action: a.brief, lines: shot.lines.length }] }, issues: [], steps: steps.map((s) => ({ id: s.id, label: s.label, credits: s.credits })) };
   return createProduction({
     project: parent.project, client: a.client, payer: parent.payer, plan: parent.plan, steps: all, card, kind: 'fix', parent: parent.id, note: a.brief,
