@@ -1412,9 +1412,13 @@ function newestFile(dir: string, ext: string) {
 // ------------------------------------------------------------ S3 (videos and reports)
 
 const S3_REGION = 'us-east-1';
-/** HAWKES_PLAYTEST_BUCKET picks another bucket; "off" keeps playtests local. */
+/**
+ * The S3 copy of each run's video and report is off unless HAWKES_PLAYTEST_BUCKET names a bucket: the AWS account it
+ * went to is suspended (2026-10-28), and the video and report are already Gen library assets (backed up to Cloud Storage
+ * with the rest of the library), which Studio falls back to when a run has no S3 copy. "off" still means off.
+ */
 const playtestBucket = () => {
-  const b = process.env.HAWKES_PLAYTEST_BUCKET ?? 'hawkes-playtests-028793236279';
+  const b = process.env.HAWKES_PLAYTEST_BUCKET ?? '';
   return b && b !== 'off' ? b : null;
 };
 
