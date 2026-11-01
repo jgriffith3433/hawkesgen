@@ -55,6 +55,7 @@ import { noteRoute, lagReport } from './lag.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import { handleBench } from './bench/routes.ts';
 import { handleMake } from './make/routes.ts';
+import { handleShowrunner } from './showrunner/routes.ts';
 import { handleNetBridge } from './netbridge.ts';
 import { handleIdentity } from './identityroutes.ts';
 import { handleWorlds } from './worldroutes.ts';
@@ -1197,6 +1198,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // The making loop: feedback, quotes, routing, the learning's proposals, the owner's knobs (src/make/routes.ts, docs/make.md).
     if (await handleMake(client, route, method, q, res, send, () => readJson(req))) return;
 
+    // The showrunner: one AI for every scene, and productions on the server (src/showrunner/, docs/showrunner.md).
+    if (await handleShowrunner(req, res, client, route, method, readJson, send, handle)) return;
+
     // ----------------------------------------------------------- templates
     if (route === '/v1/templates' && method === 'GET') {
       return send(res, 200, { templates: listTemplates() });
@@ -1381,10 +1385,17 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
       events.on('job', onJob);
       events.on('library', onLibrary);
+      // Productions (src/showrunner/production.ts): progress, and "done" when one finishes.
+      const onProduction = (e: any) => canProject(client, String(e.project)) && res.write(`event: production
+data: ${JSON.stringify(e)}
+
+`);
+      events.on('production', onProduction);
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => {
         events.off('job', onJob);
         events.off('library', onLibrary);
+        events.off('production', onProduction);
         clearInterval(ping);
       });
       return;

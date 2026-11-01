@@ -348,6 +348,21 @@ Admins only (customers get 403).
 | `POST /v1/bench/baseline` | `{brief, asset, label}`: an output made elsewhere, scored like Gen's |
 | `POST /v1/bench/results/:id/rate` | `{rating: 1-5 \| null, note?}` |
 | `PUT /v1/bench/cast/:id` | `{assets: [ids]}`: a character's references |
+## The showrunner (src/showrunner/, docs/showrunner.md)
+
+One AI for every scene, and productions that run on the server. Scoped to the caller's project.
+
+| Route | |
+|---|---|
+| `POST /v1/showrunner/turn` `{ messages, scene?, selection?, doc?, version?, world?, autoCredits?, browser?, production? }` | The AI pane's one entry. A small edit is answered by the scene's own assistant (the editor's, the director's or `/v1/scenes/:id/assistant`) with that route's own answer plus `role` (`editor`, `director`, `art director`, `sound`) and `looked` when it looked at the results first. A production comes back as `{ role: "showrunner", say, production, started }`: the plan and its approval card (`card`: counts, credits, fixCredits, minutes, outline, issues). `production` (a proposed one's id) makes the message a change to that plan |
+| `GET /v1/showrunner/productions`, `GET /v1/showrunner/productions/:id` | The caller's productions; one with its steps and progress |
+| `POST /v1/showrunner/productions/:id/approve \| dismiss \| pause \| resume \| cancel` | The card's buttons. Approve refuses (402) when the account can't cover the card; cancel answers `uncharged` (work not started, never charged) |
+| `POST /v1/showrunner/productions/:id/browser \| claim \| finish` | The page is open with a stage: it may claim an action shot (`{ step }`) and bring back its filmed file (`{ step, asset }`); unclaimed shots are filmed on the server |
+| `POST /v1/showrunner/review` `{ scene, t, box?, text }` | Review mode: a new take of the shot at `t` seconds of a cut the showrunner made (a fix production). `box` is `{ x, y, w, h }` in shares of the frame |
+| `POST /v1/showrunner/productions/:id/keep \| undo` | A fix's new take into the cut, or back out |
+| `GET/PUT/DELETE /v1/showrunner/memory` | What the showrunner remembers about this account (`notes`, `off`, and removals of `looks`, `changes`, `characters`, `pacing`) |
+
+Events: `/v1/events` sends `production` events (`{ id, status, progress, out: { cut, fix }, notice? }`); the last one of a production carries `notice`.
 
 ## Other
 

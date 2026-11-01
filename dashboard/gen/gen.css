@@ -959,3 +959,29 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
 .deliver .row.wrap { flex-wrap: wrap; gap: 6px; }
 .deliver-files { display: flex; flex-direction: column; gap: 6px; }
 .deliver-file { gap: 8px; align-items: center; }
+
+/* The showrunner (showrunner.js, review.js, memory.js): the approval card, progress, review mode, what the AI remembers. */
+.msg-role { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; margin-bottom: 4px; }
+.production { margin-top: 10px; padding: 12px; border-radius: 10px; background: var(--panel-3); white-space: normal; font-size: 13px; display: grid; gap: 8px; }
+.production-head { display: flex; align-items: center; gap: 8px; }
+.production-logline { margin: 0; color: var(--muted); }
+.production-counts { display: flex; flex-wrap: wrap; gap: 4px; }
+.production-counts .chip.static { cursor: default; font-size: 12px; padding: 2px 8px; }
+.production-plan summary { cursor: pointer; color: var(--muted); }
+.production-plan h4 { margin: 10px 0 4px; font-size: 12px; }
+.production-plan ul { margin: 0; padding-left: 18px; color: var(--muted); }
+.production.cancelled, .production.dismissed { opacity: .6; }
+.sr-bar { height: 6px; border-radius: 3px; background: var(--line-2); overflow: hidden; }
+.sr-bar i { display: block; height: 100%; background: var(--text); transition: width .4s; }
+.review-layer { position: absolute; inset: 0; cursor: crosshair; z-index: 5; }
+.review-box { position: absolute; border: 2px solid var(--accent); border-radius: 4px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .25); }
+.review-panel { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); width: min(520px, calc(100% - 32px)); z-index: 6; display: grid; gap: 8px; padding: 12px; border-radius: var(--radius); background: var(--panel-2); border: 1px solid var(--line-2); box-shadow: var(--shadow); }
+.review-panel textarea { width: 100%; box-sizing: border-box; }
+.review-head { display: flex; align-items: center; gap: 6px; }
+.review-head .icon-btn { margin-left: auto; }
+.review-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.review-take { margin: 0; }
+.review-take video { width: 100%; border-radius: 8px; background: #000; }
+.memory-list { margin: 0 0 6px; padding-left: 18px; color: var(--muted); font-size: 13px; }
+.memory-list .link { margin-left: 6px; }
+#aiMemory textarea { width: 100%; box-sizing: border-box; }

@@ -180,14 +180,15 @@ async function flushSave() {
 }
 
 // ------------------------------------------------------------------ the AI director (ai.js sends here while open)
-export async function askDirector(messages, extra = {}) {
+export async function askDirector(messages, extra = {}, via = null, more = {}) {
   await flushSave();
   const id = D.shot.id;
   const selection = { t: Math.round(D.t * 100) / 100, range: D.range, selected: D.sel, ...extra };
-  const r = await api(`/v1/director/shots/${id}/assistant`, { body: { messages, doc: D.shot.doc, selection } });
+  // via: the showrunner's one entry (ai.js), which hands small edits to this shot's own route (src/showrunner/).
+  const r = await api(via ?? `/v1/director/shots/${id}/assistant`, { body: { messages, doc: D.shot.doc, selection, ...(via ? { scene: id, ...more } : {}) } });
   // Only into the shot it was asked about: if another tab is in front now, the answer stays saved with its own shot.
   const here = D.open && D.shot?.id === id;
-  if (here) take(r.shot);
+  if (here && r.shot) take(r.shot);
   if (r.aiCredits) refreshCredits();
   return { ...r, shotId: id, here };
 }
