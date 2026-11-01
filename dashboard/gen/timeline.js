@@ -49,21 +49,36 @@ export function initTimeline() {
     const factor = Math.min(1.1, Math.max(1 / 1.1, Math.exp(-px * 0.001)));
     zoomTo(T.z * factor, at, e.clientX - r.left);
   }, { passive: false });
-  // Ruler: click or drag to move the playhead; shift-drag selects a range.
-  $('#tlRuler').addEventListener('pointerdown', (e) => {
+  // Ruler: click or drag to move the playhead; shift-drag selects a range. The playhead's grip drags it too (on a phone,
+  // a finger on the grip or the ruler scrubs instead of scrolling the timeline: J, 2026-11-01).
+  const scrub = (e) => {
+    if (e.button > 0) return;
     const r = T.canvas.getBoundingClientRect();
     const t0 = Math.max(0, tOf(e.clientX - r.left));
     if (e.shiftKey && !lender) return rangeDrag(e, t0);
+    e.preventDefault();
     const go = (t) => (lender ? lender.seek(Math.min(lender.length(), t)) : seek(t));
     if (!lender && isPlaying()) pause();
     go(t0);
     // Past the visible part, the timeline pans along and the playhead follows (J, 2026-10-30).
     const pan = edgePan(go);
-    const move = (ev) => { go(timeAt(ev.clientX)); pan.move(ev.clientX); };
-    const up = () => { pan.stop(); removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+    // Many pointer moves can come between two screen frames (a fast mouse, a 120 Hz touch screen): only the last one in
+    // each frame moves the playhead.
+    let x = null, raf = 0;
+    const apply = () => { raf = 0; if (x != null) { go(timeAt(x)); x = null; } };
+    const move = (ev) => { if (ev.pointerId !== e.pointerId) return; x = ev.clientX; pan.move(ev.clientX); if (!raf) raf = requestAnimationFrame(apply); };
+    const up = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      if (raf) { cancelAnimationFrame(raf); apply(); }
+      pan.stop();
+      removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+    };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
-  });
+    addEventListener('pointercancel', up);
+  };
+  $('#tlRuler').addEventListener('pointerdown', scrub);
+  $('#tlPlayhead .tl-playhead-cap')?.addEventListener('pointerdown', scrub);
   // Empty track area: select that track, move the playhead; with a mouse, drag to select a time range.
   $('#tlTracks').addEventListener('pointerdown', (e) => {
     if (lender || e.target.closest('.clip, .tl-join, .lane-item')) return;
