@@ -300,11 +300,8 @@ for (const a of AREAS) {
   });
 }
 
-// ------------------------------------------------------------------ phones: the page never zooms (J, 2026-11-01)
-// Safari ignores user-scalable=no, so pinches on the page are stopped here. Touch handlers still get the fingers, so
-// the timeline's own pinch and the stage's gestures keep working.
-for (const t of ['gesturestart', 'gesturechange', 'gestureend']) document.addEventListener(t, (e) => e.preventDefault(), { passive: false });
-document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+// Phones: the page never zooms. That guard is the first script in index.html (it runs before the app loads) and the
+// touch-action rules at the end of gen.css.
 
 // ------------------------------------------------------------------ phone: the sheet under the timeline
 $$('#mobileTabs button').forEach((b) => b.addEventListener('click', () => {

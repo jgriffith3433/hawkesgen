@@ -992,8 +992,17 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
 #aiMemory textarea { width: 100%; box-sizing: border-box; }
 
 /* ---------------------------------------------------------------- Mobile pass (J, 2026-11-01) */
-/* The page never zooms: no pinch, no double-tap (gen.js stops Safari's pinch too). */
-html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* The page never zooms: no pinch, no double-tap (index.html's first script stops Safari's pinch too).
+   On every element, not just the page (J, 2026-11-01: "I can still zoom in on mobile"): WebKit starts touch-action over
+   at each box that scrolls (the timeline, the panes, the sheets, the menus), so a pinch inside one of those still zoomed
+   the page. Rules that ask for less (none, pan-y) are more specific and still win. */
+html, body, *, *::before, *::after { touch-action: pan-x pan-y; }
+html, body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* A text box under 16px makes iOS zoom in when it's tapped: 16px wherever fingers are the pointer (a phone turned
+   sideways is wider than the phone layout). */
+@media (pointer: coarse) {
+  textarea, select, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]) { font-size: 16px; }
+}
 /* Menus never run off the screen: they scroll inside. Rows keep the icon beside the words. */
 .menu { max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; }
 .menu-item .row { flex-wrap: nowrap; align-items: flex-start; }
