@@ -1,0 +1,37 @@
+# Deploys Gen's GPU worker to Modal (tools/gpu-providers/modal.mjs --apply; was uvx modal deploy on J's laptop).
+# Production environment (main only): it changes where GPU jobs run. Deploying costs nothing until a request starts a container.
+#   gh workflow run ops-modal-deploy.yml --repo jgriffith3433/hawkesgen --ref main -f gpu=L40S
+name: ops-modal-deploy
+on:
+  workflow_dispatch:
+    inputs:
+      gpu:
+        type: choice
+        options: [L40S, L4, A10, A100-80GB, H100]
+        default: L40S
+permissions:
+  contents: read
+concurrency:
+  group: ops-modal-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    name: Deploy to Modal
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet modal
+      - name: Deploy
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          GPU_WORKER_TOKEN: ${{ secrets.GPU_WORKER_TOKEN }}
+        run: node tools/gpu-providers/modal.mjs --image ghcr.io/jgriffith3433/hawkes-gen-gpu:latest --gpu "${{ inputs.gpu }}" --apply
