@@ -231,8 +231,9 @@ Each script prints what it would do. `--apply` changes things (J's call: provide
    - `WORKER_TOKEN`, when `GPU_WORKER_TOKEN` is in .env
 3. In RunPod's console, go to **Serverless > New Endpoint**:
    - import the template
-   - endpoint type **Load balancer** (RunPod's REST API has no field for this type, checked 2026-10-28; its GraphQL
-     `saveEndpoint` does take `type: "LB"`, as `tools/playtest-runpod/setup.mjs` uses, 2026-10-29)
+   - endpoint type **Load balancer** (RunPod's API v2 takes `type: "LOAD_BALANCER"` too, as `tools/playtest-runpod/setup.mjs`
+     uses; `runpod.mjs` still prints these steps. A new image later: `runpod.mjs --update <endpoint id> --apply`, which
+     PATCHes the endpoint's image, since a v2 template is applied once and keeps no link)
    - GPU: L40S
    - workers 0 to 2, idle timeout 600 s, FlashBoot on
    - health path `/ping`
