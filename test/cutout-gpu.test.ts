@@ -95,6 +95,7 @@ test('the GPU makes only the mask; crop, pad and glow run here on it', async () 
   const saves = Object.entries(calls.graph).filter(([, n]: any) => n.class_type === 'SaveImage').map(([id]) => id);
   assert.deepEqual(saves, ['20'], 'one save: the mask');
   assert.equal(calls.graph['17'].inputs.image, 'hawkesgen/abc.png');
+  assert.equal(calls.graph['20'].inputs.filename_prefix, 'hawkesgen/p1/image.cutout-gpu-j1', 'a name of the job\'s own (a warm ComfyUI caches identical graphs)');
   assert.ok(!calls.graph.cut && !calls.graph.inv);
   assert.deepEqual(calls.python!.slice(2), ['--mode', 'birefnet', '--pad', '16', '--mask', ctx.tmp('mask.png')]);
   assert.equal(fs.readFileSync(ctx.tmp('mask.png'), 'utf8'), 'mask');
