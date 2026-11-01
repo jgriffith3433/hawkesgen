@@ -289,7 +289,10 @@ export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & 
         headers: { ...(await headersFor(c, deps.idToken, deps.env)), ...(job ? { 'x-hawkes-job': job } : {}), ...(site ? { 'x-hawkes-site': site } : {}) },
       });
     } catch (e: any) {
-      if (!retryable(e) || deps.now() + wait > end) throw new Error(`${c.variant === 'runpod' ? 'RunPod' : 'Cloud Run'} playtest service: ${String(e?.message ?? e).split('\n')[0]}`);
+      // A RunPod gateway may hold the handshake while a worker cold-starts until Playwright's own timeout: on RunPod that
+      // is a slow start, not a refusal, so it is tried again until the whole wait is up.
+      const again = retryable(e) || (c.variant === 'runpod' && /Timeout \d+ ?ms exceeded/i.test(String(e?.message ?? e)));
+      if (!again || deps.now() + wait > end) throw new Error(`${c.variant === 'runpod' ? 'RunPod' : 'Cloud Run'} playtest service: ${String(e?.message ?? e).split('\n')[0]}`);
       onStep(`the playtest service is full or starting (attempt ${attempt}); trying again in ${Math.round(wait / 1000)} s`);
       await deps.sleep(wait);
       wait = Math.min(30_000, wait * 2);
