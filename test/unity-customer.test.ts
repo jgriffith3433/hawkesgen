@@ -24,6 +24,7 @@ const { runCustomerBuild } = await import('../src/tools/build.ts');
 const { tokenFor } = await import('../src/providers/playtester/intake.ts');
 const { loadSettings } = await import('../src/config.ts');
 const Sign = await import('../src/providers/gpu/sign.ts');
+const Sizes = await import('../src/providers/builder/sizes.ts');
 const crypto = await import('node:crypto');
 
 // Gen's signer: a real RSA key standing in for IAM signBlob, so the signatures can be checked.
@@ -96,10 +97,15 @@ test('the stored job has no token: params, the row and the recipe carry only its
   assert.ok(!JSON.stringify(all).includes(TOKEN));
 });
 
-test('a customer build is priced flat', () => {
-  const q = quoteJobCredits({ project: 'usr_acme', tool: 'unity.build', params: good() });
-  assert.equal(q.credits, UNITY_BUILD_CREDITS);
+test('a customer build is priced flat per machine size: m by default (half of xl), xl the old 100', () => {
+  const q = (machine?: unknown) => quoteJobCredits({ project: 'usr_acme', tool: 'unity.build', params: { ...good(), ...(machine === undefined ? {} : { machine }) } }).credits;
   assert.equal(UNITY_BUILD_CREDITS, 100);
+  assert.equal(q('xl'), UNITY_BUILD_CREDITS);
+  assert.equal(q(), 50, 'the default size is m: 4 vCPU, 16 GiB');
+  assert.equal(q('m'), 50);
+  assert.equal(q('l'), 75);
+  assert.equal(q('s'), 25);
+  assert.equal(q({ cpu: 4, memoryGiB: 8 }), 42);
 });
 
 test('Unity versions: the images setting, and a version without an image fails naming both', () => {
@@ -128,8 +134,15 @@ const customerJobResource = (over: Record<string, any> = {}) => ({
   } },
 });
 
-function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [] }: { version?: string; result: unknown; jobs?: Record<string, unknown>; cacheObjects?: string[] }) {
+function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [], executions = [], canCreate = false }: {
+  version?: string; result: unknown | ((run: number) => unknown); jobs?: Record<string, unknown>; cacheObjects?: string[];
+  /** The execution resources of the 1st, 2nd... run (default: a success). */ executions?: unknown[];
+  /** Whether Gen may create a job (POST jobs?jobId=): the made ones are kept in `created`. */ canCreate?: boolean;
+}) {
   C.forgetCustomerJobChecks();
+  Sizes.forgetSizedJobs();
+  let runs = 0;
+  const created = new Map<string, any>();
   const writes = new Map<string, Buffer>();
   const calls: { method: string; url: string; body: string; auth: string }[] = [];
   const real = globalThis.fetch;
@@ -153,25 +166,38 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
     }
     if (url.startsWith('https://storage.googleapis.com/storage/v1/b/')) {
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
-      if (method === 'DELETE') return new Response(null, { status: 204 });
+      if (method === 'DELETE') { writes.delete(key); return new Response(null, { status: 204 }); }
       if (key.endsWith('/cloud-job.json') && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
-      if (key.endsWith('/result.json')) return new Response(JSON.stringify(result));
+      if (key.endsWith('/result.json')) {
+        const v = typeof result === 'function' ? (result as (n: number) => unknown)(runs) : result;
+        return v === null ? new Response('not found', { status: 404 }) : new Response(JSON.stringify(v));
+      }
       if (key.endsWith('/unity.log')) return new Response('[Hawkes] stage: unity\n[Hawkes] built 2 scene(s)\n');
       if (key.endsWith('/artifact.tgz')) return new Response(Buffer.from('fake tar.gz bytes') as unknown as BodyInit);
       return new Response('not found', { status: 404 });
     }
-    if (url.includes('run.googleapis.com') && url.endsWith(':run')) return json({ metadata: { name: `projects/hawkes-test/locations/us-east4/jobs/${url.split('/jobs/')[1].split(':')[0]}/executions/e-7` } });
-    if (url.includes('run.googleapis.com') && url.includes('/executions/e-7')) return json({ startTime: '2026-10-31T10:00:00Z', completionTime: '2026-10-31T10:06:00Z', succeededCount: 1 });
+    if (url.includes('run.googleapis.com') && url.endsWith(':run')) { runs++; return json({ metadata: { name: `projects/hawkes-test/locations/us-east4/jobs/${url.split('/jobs/')[1].split(':')[0]}/executions/e-${runs === 1 ? 7 : 7 + runs}` } }); }
+    const ex = /\/executions\/e-(\d+)$/.exec(url);
+    if (url.includes('run.googleapis.com') && ex) {
+      const n = Number(ex[1]) === 7 ? 1 : Number(ex[1]) - 7;
+      return json(executions[n - 1] ?? { startTime: '2026-10-31T10:00:00Z', completionTime: '2026-10-31T10:06:00Z', succeededCount: 1 });
+    }
+    const create = /run\.googleapis\.com\/v2\/projects\/hawkes-test\/locations\/us-east4\/jobs\?jobId=([^&]+)$/.exec(url);
+    if (create && method === 'POST') {
+      if (!canCreate) return json({ error: { message: 'Permission run.jobs.create denied' } }, 403);
+      created.set(decodeURIComponent(create[1]), JSON.parse(body));
+      return json({ name: 'projects/hawkes-test/locations/us-east4/operations/op-1', done: true });
+    }
     if (url.startsWith('https://logging.googleapis.com/')) return json({ entries: [] });
     const jobGet = /run\.googleapis\.com\/v2\/projects\/hawkes-test\/locations\/us-east4\/jobs\/([^/:]+)$/.exec(url);
     if (jobGet && method === 'GET') {
       const name = jobGet[1];
-      const j = name in jobs ? jobs[name] : name.endsWith('-customer') ? customerJobResource() : null;
+      const j = name in jobs ? jobs[name] : created.has(name) ? created.get(name) : name.endsWith('-customer') ? customerJobResource() : null;
       return j ? json(j) : json({ error: { message: 'not found' } }, 404);
     }
     return json({ error: `unexpected ${url}` }, 500);
   }) as typeof fetch;
-  return { writes, calls, restore: () => { globalThis.fetch = real; } };
+  return { writes, calls, created, runs: () => runs, restore: () => { globalThis.fetch = real; } };
 }
 
 /** A RunContext for runCustomerBuild: emits become fake assets, the result is kept. */
@@ -472,4 +498,100 @@ test("credits: a build that failed on the project itself or ran a while before a
   assert.equal(keepsCharge(u(now - 30_000), null, true, now), false, 'cancelled in its first two minutes');
   assert.equal(keepsCharge(u(), null, true, now), true, 'cancelled after running a while');
   assert.equal(keepsCharge({ tool: 'image.generate', started: now - 60 * 60_000 }, { kind: 'build' }, false, now), false, 'other tools refund as before');
+});
+
+// ------------------------------------------------------------------ machine sizes (sizes.ts; J, 2026-11-01: "make it cheap")
+
+const OK_RESULT = (job: string) => ({ ok: true, stage: 'end', exitCode: 0, unity: '6000.3.7f1', seconds: { unity: 300 }, cache: { restoredFrom: null, saved: true, savedKey: 'build' },
+  memoryPeakBytes: 9 * 1024 ** 3, output: { object: `unity-builds/${job}/artifact.tgz`, bytes: 52_000_000, files: 12, changed: [], deleted: [] } });
+
+test('machine sizes: admit keeps a size name or { cpu, memoryGiB }, refuses what Cloud Run can\'t run; J\'s builds refuse it', async () => {
+  assert.equal(C.admitCustomer({ ...good(), machine: 'S' }).machine, 's');
+  assert.equal(C.admitCustomer({ ...good(), machine: { cpu: 8, memoryGiB: 32 } }).machine, 'xl', 'a named size by its numbers');
+  assert.deepEqual(C.admitCustomer({ ...good(), machine: { cpu: 4, memoryGiB: 12 } }).machine, { cpu: 4, memoryGiB: 12 });
+  assert.equal('machine' in C.admitCustomer(good()), false, 'none asked: settings\' customerSize at run time');
+  assert.throws(() => C.admitCustomer({ ...good(), machine: 'huge' }), (e: any) => e.status === 400 && /isn't a build size/.test(e.message) && /m \(4 vCPU, 16 GiB\)/.test(e.message));
+  assert.throws(() => C.admitCustomer({ ...good(), machine: { cpu: 2, memoryGiB: 16 } }), /2 vCPU takes 1 to 8 GiB/);
+  assert.throws(() => C.admitCustomer({ ...good(), machine: { cpu: 3, memoryGiB: 8 } }), /cpu must be 2, 4, 6, 8/);
+  const { getTool } = await import('../src/tools/index.ts');
+  assert.throws(() => getTool('unity.build')!.admit!({ params: { project: 'sickofitgame-unity', machine: 's' } } as any), /machine is for customer builds/);
+});
+
+test('machine sizes: the default m runs on its own job, made from the customer job with 4 vCPU and 16 GiB', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_size1'), canCreate: true });
+  try {
+    const { ctx } = ctxFor('j_size1', C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    const run = g.calls.find((c) => c.url.endsWith(':run'))!;
+    assert.match(run.url, /jobs\/hawkes-unity-build-customer-m:run$/);
+    const made = g.created.get('hawkes-unity-build-customer-m');
+    assert.deepEqual(made.template.template.containers[0].resources.limits, { cpu: '4', memory: '16Gi' });
+    assert.equal(made.template.template.serviceAccount, 'unity-customer@hawkes-test.iam.gserviceaccount.com', 'the same account: nothing it may reach');
+    assert.ok(made.template.template.containers[0].env.some((e: any) => e.name === 'HAWKES_CUSTOMER_JOB' && e.value === '1'));
+    assert.deepEqual(ctx.value.machine, { name: 'm', cpu: 4, memoryGiB: 16 });
+    assert.equal(ctx.value.machineAsked, 'm');
+    // Priced at the size it ran on: 6 minutes at 4 vCPU / 16 GiB.
+    const { cloudRunCost } = await import('../src/providers/builder/cloudrun.ts');
+    assert.equal(ctx.value.cost, Math.round(cloudRunCost(360, 4, 16) * 1000) / 1000);
+    assert.ok(cloudRunCost(4800, 4, 16) < 0.51 && cloudRunCost(4800, 8, 32) > 0.99, '80 minutes: about $0.50 on m, $1.00 on xl');
+  } finally {
+    g.restore();
+  }
+});
+
+test('machine sizes: when Gen may not make the size\'s job, the build runs on the customer job (xl) with a warning', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_size2'), canCreate: false });
+  try {
+    const { ctx, logs } = ctxFor('j_size2', C.admitCustomer({ ...good(), machine: 's' }));
+    await runCustomerBuild(ctx);
+    assert.equal(ctx.value.ok, true, 'never fails over a size');
+    assert.match(g.calls.find((c) => c.url.endsWith(':run'))!.url, /jobs\/hawkes-unity-build-customer:run$/);
+    assert.deepEqual(ctx.value.machine, { name: 'xl', cpu: 8, memoryGiB: 32 });
+    assert.equal(ctx.value.machineAsked, 's');
+    assert.match(ctx.value.warnings[0], /The s build machine .* isn't set up .*customer-setup\.mjs --sizes --apply/);
+    assert.ok(logs.some((l) => /isn't set up/.test(l)));
+  } finally {
+    g.restore();
+  }
+});
+
+test('machine sizes: out of memory on s, built again once on m, and the result says so', async () => {
+  const oom = { startTime: '2026-10-31T10:00:00Z', completionTime: '2026-10-31T10:03:00Z', succeededCount: 0, failedCount: 1,
+    conditions: [{ type: 'Completed', state: 'CONDITION_FAILED', message: 'Task j-x failed: Memory limit of 8192 MiB exceeded with 8400 MiB used.' }] };
+  const g = fakeCloud({ result: (run) => (run === 1 ? null : OK_RESULT('j_size3')), executions: [oom], canCreate: true });
+  try {
+    const params = C.admitCustomer({ ...good(), machine: 's' });
+    const { ctx, logs } = ctxFor('j_size3', params);
+    await runCustomerBuild(ctx);
+    const runs = g.calls.filter((c) => c.url.endsWith(':run'));
+    assert.equal(runs.length, 2);
+    assert.match(runs[0].url, /customer-s:run$/);
+    assert.match(runs[1].url, /customer-m:run$/);
+    // The second execution had the token too: kept for the retry, dropped after.
+    assert.ok(JSON.parse(runs[1].body).overrides.containerOverrides[0].env.some((e: any) => e.name === 'HAWKES_GITHUB_TOKEN' && e.value === TOKEN));
+    assert.equal(tokenFor(params.github.tokenRef), null);
+    const r = ctx.value;
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.machine, { name: 'm', cpu: 4, memoryGiB: 16 });
+    assert.equal(r.machineAsked, 's');
+    assert.deepEqual({ reason: r.retried.reason, from: r.retried.from, to: r.retried.to }, { reason: 'out of memory', from: 's', to: 'm' });
+    assert.ok(r.totalCost > r.cost, 'both runs counted');
+    assert.ok(logs.some((l) => /ran out of memory on s .* building again on m/.test(l)));
+  } finally {
+    g.restore();
+  }
+});
+
+test('machine sizes: out of memory on xl (the biggest) is not built again', async () => {
+  const oom = { startTime: '2026-10-31T10:00:00Z', completionTime: '2026-10-31T10:03:00Z', succeededCount: 0, failedCount: 1,
+    conditions: [{ type: 'Completed', state: 'CONDITION_FAILED', message: 'Memory limit of 32768 MiB exceeded' }] };
+  const g = fakeCloud({ result: () => null, executions: [oom], canCreate: true });
+  try {
+    const { ctx } = ctxFor('j_size4', C.admitCustomer({ ...good(), machine: 'xl' }));
+    await assert.rejects(() => runCustomerBuild(ctx));
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 1);
+    assert.equal(ctx.value.retried, undefined);
+  } finally {
+    g.restore();
+  }
 });

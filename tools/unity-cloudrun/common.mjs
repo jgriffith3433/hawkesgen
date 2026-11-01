@@ -43,6 +43,9 @@ export function config() {
     // Customer builds (customer-setup.mjs): the Unity versions' jobs and the customer job's name.
     images: gcp.images && typeof gcp.images === 'object' ? gcp.images : {},
     customerJob: flag('customer-job', gcp.customerJob ?? 'hawkes-unity-build-customer'),
+    // Customer builds' machine sizes (src/providers/builder/sizes.ts; customer-setup.mjs --sizes makes their jobs).
+    sizes: gcp.sizes && typeof gcp.sizes === 'object' && Object.keys(gcp.sizes).length ? gcp.sizes
+      : { s: { cpu: 2, memoryGiB: 8 }, m: { cpu: 4, memoryGiB: 16 }, l: { cpu: 6, memoryGiB: 24 }, xl: { cpu: 8, memoryGiB: 32 } },
   };
   if (!c.project) die('Which Google Cloud project? Pass --project <id> (or set settings.unityBuild.gcp.project in Gen).');
   return c;

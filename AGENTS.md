@@ -188,6 +188,10 @@ chosen one.
   `settings.unityBuild.gcp.images`), the output back as a `.tar.gz` asset; the token stays in memory only. Isolated: only on the customer job
   (`gcp.customerJob`, account `unity-customer@` with no roles, checked before each build), the bucket only through
   per-execution V4 signed URLs (`HAWKES_SIGNED`); setup `tools/unity-cloudrun/customer-setup.mjs`. docs/unity-cloudrun.md, "Customer mode".
+  **Machine sizes** (`machine` param, `settings.unityBuild.gcp.sizes` / `customerSize`, default `m` = 4 vCPU / 16 GiB;
+  `src/providers/builder/sizes.ts`): one Cloud Run job per size (`<customer job>-<size>`, xl = the customer job), made or
+  brought in line by Gen from the customer job (else the customer job, with a warning), out of memory = once more a size
+  up; priced and charged per size (`billing.ts unityBuildCredits`). Test `test/unity-build-sizes.test.ts`.
 
 ## The app (hawkesgen.ai `/`)
 

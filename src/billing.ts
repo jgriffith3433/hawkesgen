@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { db } from './db.ts';
-import { env, DATA_DIR } from './config.ts';
+import { env, DATA_DIR, loadSettings } from './config.ts';
 import { estimate } from './estimate.ts';
 import { costOf, DEFAULT_MODEL } from './providers/anthropic.ts';
 import { getTool } from './tools/index.ts';
@@ -14,6 +14,7 @@ import { getUserById, type UserRow } from './users.ts';
 import { id, GenError } from './util.ts';
 import { subscriptionEvent } from './subscriptions.ts';
 import { isCustomerMode } from './providers/builder/customer.ts';
+import { resolveMachine, type Machine } from './providers/builder/sizes.ts';
 
 const STRIPE_CONFIG_FILE = path.join(DATA_DIR, 'stripe.json');
 
@@ -235,17 +236,31 @@ export function customerMayRun(toolId: string, params: Record<string, any> | und
 }
 
 /**
- * A customer's Unity cloud build, flat (credits; 1 credit = $0.01). Our cost is Cloud Run at 8 vCPU / 32 GiB, about
+ * A customer's Unity cloud build on the full machine, flat (credits; 1 credit = $0.01; smaller sizes: unityBuildCredits). Our cost is Cloud Run at 8 vCPU / 32 GiB, about
  * $0.0125 a minute: an incremental build of 10 minutes is about $0.13, a clean import of 40 about $0.50. 100 credits
  * ($1.00) covers a 40-minute build at 2x and breaks even at 80 minutes (past the default limit). Provisional, like the
  * playtest prices: measure, then move to per-minute settling.
  */
 export const UNITY_BUILD_CREDITS = 100;
 
-/** unity.build in customer mode is priced flat; anything else is not this function's. */
+/**
+ * The flat credits of a customer build on a machine size (sizes.ts): UNITY_BUILD_CREDITS is the full machine (the
+ * customer job's own 8 vCPU / 32 GiB); a smaller one costs its share of Cloud Run's price (m 4/16: 50, s 2/8: 25).
+ * J, 2026-11-01: "$1 a build feels wrong to me".
+ */
+export function unityBuildCredits(m: { cpu: number; memoryGiB: number }, full: { cpu: number; memoryGiB: number }): number {
+  const rate = (x: { cpu: number; memoryGiB: number }) => x.cpu * 18 + x.memoryGiB * 2;
+  return Math.max(10, Math.round(UNITY_BUILD_CREDITS * rate(m) / rate(full)));
+}
+
+/** unity.build in customer mode is priced flat per machine size; anything else is not this function's. */
 export function buildCost(toolId: string, params: Record<string, any>): { usd: number; floor: number; basis: string } | null {
   if (toolId !== 'unity.build' || !isCustomerMode(params)) return null;
-  return { usd: UNITY_BUILD_CREDITS / 100 / COMMERCIAL_MARGIN, floor: UNITY_BUILD_CREDITS, basis: `Unity cloud build, flat ${UNITY_BUILD_CREDITS} credits (provisional)` };
+  const gcp = loadSettings().unityBuild.gcp;
+  let m: Machine;
+  try { m = resolveMachine(params.machine, gcp); } catch { m = resolveMachine(undefined, gcp); }
+  const credits = unityBuildCredits(m, { cpu: gcp.cpu, memoryGiB: gcp.memoryGiB });
+  return { usd: credits / 100 / COMMERCIAL_MARGIN, floor: credits, basis: `Unity cloud build on ${m.name} (${m.cpu} vCPU, ${m.memoryGiB} GiB), flat ${credits} credits (provisional)` };
 }
 
 export function listCreditPacks(): CreditPack[] {
