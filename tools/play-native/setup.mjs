@@ -7,7 +7,7 @@
 //   node tools/play-native/setup.mjs                      print the plan (changes nothing)
 //   node tools/play-native/setup.mjs --check              read RunPod (GETs only) and say what --apply would change
 //   node tools/play-native/setup.mjs --apply              create or update the template and the endpoint
-//   options: --image ghcr.io/jgriffith3433/hawkes-play-native:latest  --name hawkes-play-native
+//   options: --image ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-5-ebc6186  --name hawkes-play-native
 //            --gpu AMPERE_16  --gpu-types "NVIDIA RTX A4000,..."  --max 2  --idle 60  --max-seconds 3600
 //            --recreate   delete the endpoint of this name first and make a new one (a new GPU list needs one)
 //
@@ -31,7 +31,10 @@ const flag = (n) => process.argv.includes(`--${n}`);
 // got an RTX PRO 6000 Blackwell MIG slice (2026-10-29), which has no graphics.
 const GRAPHICS_GPUS = ['NVIDIA RTX A4000', 'NVIDIA RTX A4500', 'NVIDIA RTX 4000 Ada Generation', 'NVIDIA RTX 2000 Ada Generation'];
 
-const image = arg('image', 'ghcr.io/jgriffith3433/hawkes-play-native:latest');
+// The image the endpoint runs now: the public hawkes-gen-gpu copy, pinned. hawkes-play-native:latest is in a package
+// that may not be public, so RunPod might not pull it. Move this to the new tag each time a new image is proven.
+const DEFAULT_IMAGE = 'ghcr.io/jgriffith3433/hawkes-gen-gpu:play-native-5-ebc6186';
+const image = arg('image', DEFAULT_IMAGE);
 const name = arg('name', 'hawkes-play-native');
 const gpus = arg('gpu', 'AMPERE_16');
 const max = Math.max(1, Math.min(10, Number(arg('max', '2')) || 2));
