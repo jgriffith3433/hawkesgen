@@ -628,9 +628,9 @@ returns a verdict, scores and findings.
   waiting, with each one's step, players' bot state and note, problems, console errors), `GET /v1/jobs/:id/live` (one, in
   full: every step, the timeline), `GET /v1/jobs/:id/live.mjpeg?player=&fps=` (the newest screencast frames as MJPEG for
   an `<img>`, 1 to 15 fps, only while someone watches) and `/frame` (one JPEG).
-- **S3:** each run's video and report also go to `s3://hawkes-playtests-028793236279/<project>/<date>/<job>/`
-  (private, objects to Infrequent Access after 30 days; created on first use). `HAWKES_PLAYTEST_BUCKET=off` skips it.
-  `result.s3` has the keys; Studio serves them through short-lived signed links.
+- **S3 (off by default since the AWS suspension):** with `HAWKES_PLAYTEST_BUCKET=<bucket>` each run's video and report
+  also go to `s3://<bucket>/<project>/<date>/<job>/` (private, Infrequent Access after 30 days; created on first use).
+  `result.s3` has the keys; Studio serves them through short-lived signed links, and otherwise from Gen's library.
 - **Video:** on a GPU machine, a CDP screencast (`src/tools/screencast.ts`: every frame Chromium draws, kept at a steady
   30 fps, encoded after the run on the machine that played it: NVENC, else libx264; on the control server only if that fails), about 30 distinct fps even with two playtests on the
   playtester; elsewhere, or if the screencast won't start, Playwright's `recordVideo` (25 fps). `recorder` forces one;

@@ -10,8 +10,11 @@ export type MakeContext = {
   gen: any;
   /** The project to work in when the caller names none (a Gen account's own). */
   account?: string;
-  /** Runs a job (or chain) and returns it with its files (mcp-tools.ts withFiles). */
-  finish: (job: any) => Promise<any>;
+  /**
+   * Waits for a job (or chain) up to the call's wait_seconds and returns it with its files (state "done"), or
+   * {state: "running", task_id} for get_task when it is still going (mcp-tools.ts settle).
+   */
+  finish: (job: any, a: any) => Promise<any>;
   remote: boolean;
   /** An upload link for a file (remote only: src/links.ts). */
   uploadLink?: (filename: string) => string;
@@ -32,10 +35,13 @@ export function makeTools(c: MakeContext): McpTool[] {
     return p;
   };
   const run = async (a: any, tool: string, params: Record<string, unknown>, inputs: Record<string, unknown> = {}) =>
-    c.finish(await c.gen.submit(tool, { project: project(a), params, inputs, reuse: a.new_take ? false : true }));
+    c.finish(await c.gen.submit(tool, { project: project(a), params, inputs, reuse: a.new_take ? false : true }), a);
   const chain = async (a: any, steps: Step[]) =>
-    c.finish(await c.gen.submit('asset.make', { project: project(a), params: { steps }, inputs: {}, reuse: a.new_take ? false : true }));
-  const common = { project: str('Project (default: your own)'), new_take: bool('A new take instead of reusing an identical earlier result') };
+    c.finish(await c.gen.submit('asset.make', { project: project(a), params: { steps }, inputs: {}, reuse: a.new_take ? false : true }), a);
+  const common = {
+    project: str('Project (default: your own)'), new_take: bool('A new take instead of reusing an identical earlier result'),
+    wait_seconds: num('How long to wait for the result (0-1800, default 240). Still running then: state "running" and a task_id for get_task'),
+  };
   const dims = (a: any) => SHAPES[String(a.shape ?? 'square')] ?? SHAPES.square;
 
   const tools: McpTool[] = [
@@ -51,7 +57,8 @@ export function makeTools(c: MakeContext): McpTool[] {
       inputSchema: obj({ filename: str('The file name, with its extension (hero.png)') }, ['filename']),
       run: async (a) => {
         if (!c.remote || !c.uploadLink) return { note: 'On this computer, pass the file path itself as the input.' };
-        return { upload_url: c.uploadLink(String(a.filename)), how: `curl -T "${a.filename}" "<upload_url>"`, then: 'Pass the blob:<sha> from the answer as the input. The link works once, for 30 minutes.' };
+        const url = c.uploadLink(String(a.filename));
+        return { upload_url: url, upload: { url }, how: `curl -T "${a.filename}" "<upload_url>"`, then: 'Pass the blob:<sha> from the answer as the input. The link works once, for 30 minutes.' };
       },
     },
     {

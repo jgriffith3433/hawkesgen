@@ -10,7 +10,7 @@ import path from 'node:path';
 import { makeTools } from './mcp-make.ts';
 import { obj, str, type McpTool, type McpServer } from './mcp-core.ts';
 
-export const INSTRUCTIONS = "Hawkes Gen: shared generative AI for the Hawkes Biomedical projects. Use hawkesgen_presets for a project's art direction before generating; GPU tools cost money while servers run.";
+export const INSTRUCTIONS = "Hawkes Gen: shared generative AI for the Hawkes Biomedical projects. Use hawkesgen_presets for a project's art direction before generating; GPU tools cost money while servers run. The making tools (generate_image, make_video and the rest) wait up to wait_seconds (default 240); a longer job comes back as state \"running\" with a task_id: call get_task with it until state is \"done\", then download its files.";
 
 /**
  * gen: a HawkesGen client (clients/js/hawkesgen.mjs).
@@ -64,7 +64,52 @@ export function genMcp(gen: any, { remote = false, filesUrl = '', account, fileL
     return { ...out, files };
   }
 
+  // ------------------------------------------------------------ results as tasks (the friendly tools and get_task)
+
+  const EXT: Record<string, string> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif', 'video/mp4': '.mp4', 'video/webm': '.webm', 'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/x-wav': '.wav', 'audio/ogg': '.ogg', 'model/gltf-binary': '.glb', 'application/json': '.json', 'application/zip': '.zip' };
+  /** A finished job's outputs as {url, filename, mime, title, asset} (an editor saves each file by its own name). */
+  async function fileObjects(job: any) {
+    const out: any[] = [];
+    for (const o of job.outputs ?? []) {
+      const stem = `${job.tool.replace(/\./g, '-')}-${o.title ? String(o.title).replace(/[^\w.-]+/g, '_') : o.asset}`;
+      const ext = EXT[o.mime] ?? '';
+      const filename = stem.toLowerCase().endsWith(ext) ? stem : `${stem}${ext}`;
+      const url = remote ? (fileLink ? fileLink(o.asset, filename) : `${filesUrl}/v1/files/${o.asset}`) : (await gen.asset(o.asset)).path;
+      out.push({ url, filename, mime: o.mime ?? null, title: o.title ?? null, asset: o.asset });
+    }
+    return out;
+  }
+  const running = (j: any) => ({
+    state: 'running', task_id: j.id, tool: j.tool, status: j.status, detail: j.detail ?? null,
+    progress: { message: j.detail ?? (j.status === 'queued' ? 'Waiting for a free server' : 'Working') },
+    next: 'Call get_task with this task_id (wait_seconds up to 60) until state is "done".',
+  });
+  /** Waits up to wait_seconds (default 240: under an editor's HTTP timeout) for a job; a failed one is an error. */
+  async function settle(job: any, waitSeconds?: unknown, fallback = 240) {
+    const s = waitSeconds === undefined || waitSeconds === null || waitSeconds === '' ? fallback : Number(waitSeconds);
+    const ms = Math.max(0, Math.min(1800, Number.isFinite(s) ? s : fallback)) * 1000;
+    let j: any;
+    try {
+      j = await gen.wait(job.id, { timeoutMs: ms, throwOnFail: false });
+    } catch (e: any) {
+      if (e?.kind === 'timeout' && e.job) return running(e.job);
+      throw e;
+    }
+    if (j.status !== 'done') throw new Error(j.status === 'cancelled' ? `${j.tool} was cancelled` : `${j.tool} failed: ${j.error ?? j.detail ?? 'no reason given'}`);
+    return { state: 'done', task_id: j.id, ...summarizeJob(j), files: await fileObjects(j) };
+  }
+
   const tools: McpTool[] = [
+    {
+      name: 'get_task',
+      description: 'A task a tool started that was still running (state "running"): waits up to wait_seconds, then returns it again: still running, or done with its files.',
+      inputSchema: obj({ task_id: str('The task_id a tool returned'), wait_seconds: { type: 'number', description: 'How long to wait for it (0-60, default 5)' } }, ['task_id']),
+      run: async (a) => {
+        const id = String(a.task_id ?? '');
+        if (!/^[\w-]{1,80}$/.test(id)) throw new Error('task_id is the id a tool returned');
+        return settle(await gen.job(id), Math.min(60, Math.max(0, Number(a.wait_seconds ?? 5) || 0)), 5);
+      },
+    },
     {
       name: 'hawkesgen_tools',
       description: 'List Hawkes Gen generation tools (images, video, 3D, music, voice, sound, Claude, local image tools) with their inputs and params. Give a tool id for its full details.',
@@ -291,6 +336,6 @@ export function genMcp(gen: any, { remote = false, filesUrl = '', account, fileL
   ];
 
   // The friendly tools (src/mcp-make.ts): what the app's Create tab makes, by plain name, run as the caller.
-  tools.push(...makeTools({ gen, account, remote, uploadLink, finish: async (job: any) => withFiles(await gen.wait(job.id, { timeoutMs: 30 * 60_000, throwOnFail: false })) }));
+  tools.push(...makeTools({ gen, account, remote, uploadLink, finish: (job: any, a: any) => settle(job, a?.wait_seconds) }));
   return { name: 'hawkesgen', version: '0.4.0', instructions: INSTRUCTIONS, tools };
 }

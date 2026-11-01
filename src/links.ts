@@ -82,5 +82,5 @@ export async function handleUpload(req: IncomingMessage, res: ServerResponse, ro
   const ext = (/\.([a-z0-9]{1,8})$/i.exec(m[2])?.[0] ?? '').toLowerCase();
   const sha = putBlob(Buffer.concat(chunks), ext);
   ownBlob(sha, { id: o.c, projects: o.p });
-  return reply(200, { blob: `blob:${sha}`, bytes: n, use: `Pass "blob:${sha}" as the tool's input` });
+  return reply(200, { blob: `blob:${sha}`, ref: `blob:${sha}`, bytes: n, use: `Pass "blob:${sha}" as the tool's input` });
 }
