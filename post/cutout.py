@@ -1,7 +1,7 @@
 """Cuts a subject out of an image with a segmentation model (rembg).
 Ported from Dose Of Destruction's tools/cutout.py.
 
-    python cutout.py <image> <out.png> [--mode birefnet|isnet|union] [--glow] [--no-crop] [--pad 16]
+    python cutout.py <image> <out.png> [--mode birefnet|isnet|union] [--glow] [--no-crop] [--pad 16] [--mask m.png]
 
 Modes:
   birefnet  BiRefNet: the cleanest edges and solid dark clothing (default)
@@ -9,6 +9,8 @@ Modes:
   union     both masks combined, for wispy edges that fade into the backdrop
 --glow      fire, lightning and glow on a black backdrop are light, not solid:
             their opacity comes from their brightness
+--mask      a mask already made elsewhere (BiRefNet on a GPU server, src/tools/cutout-gpu.ts): white is the subject,
+            or the alpha of an RGBA cutout. No model runs here; glow, crop and pad apply as usual.
 Prints the crop box and size as JSON, and the model that made the mask.
 
 BiRefNet needs about 8.5 GB of memory while it runs (measured 2026-11-01: 8.5 GB peak at 1024 px with onnxruntime's
@@ -119,10 +121,17 @@ def main():
     p.add_argument("--glow", action="store_true")
     p.add_argument("--no-crop", action="store_true")
     p.add_argument("--pad", type=int, default=16)
+    p.add_argument("--mask")
     o = p.parse_args()
     img = Image.open(o.src).convert("RGB")
-    mode, fallback = pick_mode(o.mode)
-    a = ImageChops.lighter(mask("birefnet", img), mask("isnet", img)) if mode == "union" else mask(mode, img)
+    fallback = None
+    if o.mask:
+        mode = o.mode
+        given = Image.open(o.mask)
+        a = given.getchannel("A") if given.mode in ("RGBA", "LA") else given.convert("L")
+    else:
+        mode, fallback = pick_mode(o.mode)
+        a = ImageChops.lighter(mask("birefnet", img), mask("isnet", img)) if mode == "union" else mask(mode, img)
     # Drop the faint haze a model leaves in empty backdrop.
     a = a.resize(img.size, Image.BILINEAR).point(lambda v: 0 if v < 10 else v)
     if o.glow:

@@ -179,3 +179,9 @@ Gen's credentials must be able to mint ID tokens for the services (`docs/cloudru
   it needs 16 GiB (`service.json`, then a deploy). Until then, and on Gen's own 4 GiB Cloud Run instance, `cutout.py`
   sees there isn't room (`HAWKESGEN_BIREFNET_GB`, default 9) and makes the mask with ISNet, saying so in the job's log
   and the output's `meta.fallback`, instead of being killed mid-run (beta, 2026-11-01: every cutout failed that way).
+- **BiRefNet on the GPU instead** (J, 2026-11-01): when a GPU provider can take it now (RunPod, Modal or a Cloud Run GPU
+  service in `settings.gpu`; the AWS fleet doesn't count), `image.cutout` in BiRefNet mode hands the call to
+  `image.cutout-gpu` at submit (`src/tools/cutout-gpu.ts`). The GPU makes only the mask (the image.remove-background
+  workflow's graph, family `birefnet`); glow, crop and pad run on Gen in `cutout.py --mask`, so the result is the same.
+  A GPU failure other than "can't take it now" (which moves the job to the next provider) makes the cutout on the CPU
+  in the same job, as before. ISNet and union stay on the CPU. `HAWKESGEN_CUTOUT_GPU=0` turns it off.
