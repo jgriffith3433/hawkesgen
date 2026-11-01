@@ -259,3 +259,32 @@ test('the image workflow builds the same context as Cloud Run\'s L4 image, and p
   assert.ok(!fs.readFileSync(path.join(out, 'package.json'), 'utf8').includes('__PW_VERSION__'));
   fs.rmSync(out, { recursive: true, force: true });
 });
+
+test('the RunPod lane follows the endpoint\'s own workers.max once read; settings when unknown or stale', async () => {
+  const cap = await import('../src/providers/playtester/runpodcap.ts');
+  const base = { ...SETTINGS_DEFAULTS.playtest, backend: 'runpod' as const, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, url: RP, maxInstances: 2, tabsPerInstance: 2 } };
+  cap.setRunpodEndpointMax(null);
+  assert.equal(pc.cloudLanes(pc.cloudPlaytestsFor('x', { playtest: base })[0]), 4, 'unknown: settings (2 x 2)');
+  let asked = '';
+  const fetcher = (async (u: string, init: any) => {
+    asked = `${u} ${init.headers.Authorization}`;
+    return new Response(JSON.stringify({ id: 'wi67a2gkuwi9o5', workers: { min: 0, max: 6, idleTimeout: 60 } }), { status: 200 });
+  }) as any;
+  const got = await cap.checkRunpodEndpointMax(RP, (k) => (ENV as any)[k], fetcher);
+  assert.equal(got?.max, 6);
+  assert.equal(asked, 'https://api.runpod.io/v2/serverless/wi67a2gkuwi9o5 Bearer rp_key');
+  assert.equal(pc.cloudLanes(pc.cloudPlaytestsFor('x', { playtest: base })[0]), 12, 'raised on RunPod: 6 workers x 2 tabs');
+  // Another endpoint in settings, a stale reading, a Pod, no key, or an error: settings decide.
+  assert.equal(cap.runpodEndpointMax('https://other1234.api.runpod.ai'), null);
+  assert.equal(cap.runpodEndpointMax(RP, () => Date.now() + 16 * 60_000), null);
+  assert.equal(cap.runpodEndpointMax(POD), null);
+  assert.equal(await cap.checkRunpodEndpointMax(RP, () => undefined, fetcher), null);
+  assert.equal(await cap.checkRunpodEndpointMax(POD, (k) => (ENV as any)[k], fetcher), null);
+  const failing = (async () => new Response('{"title":"nope"}', { status: 500 })) as any;
+  cap.setRunpodEndpointMax(null);
+  assert.equal(await cap.checkRunpodEndpointMax(RP, (k) => (ENV as any)[k], failing), null);
+  // Absurd values are capped.
+  const huge = (async () => new Response(JSON.stringify({ workers: { max: 500 } }), { status: 200 })) as any;
+  assert.equal((await cap.checkRunpodEndpointMax(RP, (k) => (ENV as any)[k], huge))?.max, cap.MAX_WORKERS);
+  cap.setRunpodEndpointMax(null);
+});

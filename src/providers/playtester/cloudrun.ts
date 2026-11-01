@@ -23,6 +23,7 @@ import path from 'node:path';
 import { paths, type Settings, type PlaytestBackend } from '../../config.ts';
 import { gcpTokens } from '../gcp/gcs.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
+import { runpodEndpointMax } from './runpodcap.ts';
 import { loadServiceMap, pricePerSecond } from '../cloudrun/services.ts';
 import type { PlaytestHost } from '../comfy/playtestHost.ts';
 
@@ -82,7 +83,9 @@ export function cloudPlaytestsFor(project: string | null | undefined, settings: 
   const out: CloudPlaytest[] = [];
   for (const v of order) {
     if (v === 'runpod') {
-      if (t.runpod?.url) out.push(runpodPlaytest({ ...t.runpod, url: t.runpod.url }));
+      // The endpoint's own workers.max once Gen has read it (runpodcap.ts), so raising the endpoint raises the lane.
+      const live = runpodEndpointMax(t.runpod?.url);
+      if (t.runpod?.url) out.push(runpodPlaytest({ ...t.runpod, url: t.runpod.url, ...(live ? { maxInstances: live } : {}) }));
       continue;
     }
     const conf = v === 'cpu' ? t.cloudrunCpu : t.cloudrun;

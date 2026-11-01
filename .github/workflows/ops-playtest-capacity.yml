@@ -1,0 +1,52 @@
+# How many playtest browsers run at once: the RunPod playtest endpoint's workers.max (tools/playtest-runpod/capacity.mjs,
+# docs/playtest-runpod.md "Lane"). Changes only workers.max (never the image, template, GPU list or token); Gen reads it
+# back within 2 minutes, so its lane is workers.max x 2 browsers. RunPod bills per worker second while one runs and
+# workers min stays 0, so this moves the same queue faster rather than adding a standing cost. Dry run unless apply.
+# The RunPod key is read from Secret Manager as ops-reader (keyless) and masked. Gen's WIF trusts main and beta only.
+#   gh workflow run ops-playtest-capacity.yml --repo jgriffith3433/hawkesgen --ref beta -f max=6 -f apply=true
+name: ops-playtest-capacity
+on:
+  workflow_dispatch:
+    inputs:
+      max:
+        description: RunPod playtest workers at most (1 to 10; 2 browsers each)
+        type: number
+        default: 6
+      apply:
+        description: Change it (false prints what would change)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-playtest-capacity
+  cancel-in-progress: false
+jobs:
+  capacity:
+    name: Playtest browsers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check the inputs
+        env:
+          MAX: ${{ inputs.max }}
+        run: |
+          [[ "$MAX" =~ ^([1-9]|10)$ ]] || { echo "max must be 1 to 10"; exit 1; }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-gen
+          service_account: ops-reader@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: RunPod playtest endpoint
+        env:
+          MAX: ${{ inputs.max }}
+          APPLY: ${{ inputs.apply && '--apply' || '' }}
+        run: |
+          key=$(gcloud secrets versions access latest --secret=gen-runpod-api-key --project "${{ vars.GCP_PROJECT }}")
+          echo "::add-mask::$key"
+          RUNPOD_API_KEY="$key" node tools/playtest-runpod/capacity.mjs --max "$MAX" $APPLY | tee -a "$GITHUB_STEP_SUMMARY"
