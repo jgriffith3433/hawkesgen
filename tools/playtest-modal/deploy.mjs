@@ -24,6 +24,14 @@ export const CORES = 4;
 export const MEMORY_GIB = 16;
 export const pricePerHour = (gpu) => Math.round(((GPU_PER_S[gpu] ?? 0) + CORES * 0.0000131 + MEMORY_GIB * 0.00000222) * 3600 * 100) / 100;
 
+/**
+ * A moving tag (:latest, or none) is pulled again on every deploy: Modal builds a registry image once and keeps it, so a
+ * redeploy with the same app file said "no changes detected" and kept serving the old :latest (2026-11-02: the
+ * WebSocket-compression fix was on GHCR's :latest at 04:18, but the 04:52 deploy kept the 02:59 image, and Studio's
+ * playtests on Modal still closed at page.goto). A pinned tag (playtest-image.yml's pw<version>-<hash>) needs no rebuild.
+ */
+export const movingTag = (image) => !/:[A-Za-z0-9._-]+$/.test(image.split('/').pop() ?? '') || /:latest$/.test(image);
+
 export function playtestApp({ image, app, gpu, max, tabs, idle, token }) {
   return `# Made by hawkesgen tools/playtest-modal/deploy.mjs: Gen's playtest browser (server/playtest-cloudrun/server.mjs) as a
 # Modal web endpoint on a GPU. Scale to zero (no warm containers); each container plays ${tabs} browsers.
@@ -32,7 +40,7 @@ import subprocess
 
 import modal
 
-image = modal.Image.from_registry(${JSON.stringify(image)}, add_python="3.12").env({
+image = modal.Image.from_registry(${JSON.stringify(image)}, add_python="3.12"${movingTag(image) ? ', force_build=True' : ''}).env({
     "PORT": "8080", "HAWKES_TABS": "${tabs}",
     # The image fetches the driver's graphics libraries when the host mounts only compute ones (gpu.mjs).
     "NVIDIA_DRIVER_CAPABILITIES": "all", "NVIDIA_VISIBLE_DEVICES": "all",
