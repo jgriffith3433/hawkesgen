@@ -46,6 +46,21 @@ export function shareLink(base: string, assetId: string, name = assetId, now = D
   return `${base.replace(/\/+$/, '')}/dl/${sign({ k: 'dl', a: assetId, v: 1, exp: now + SHARE_TTL })}/${safeName(name)}`;
 }
 
+/** A plain /v1/files link that opens in a browser with no session: `?exp=<ms>&sig=<hmac of asset+exp>`. Bound to one asset. */
+export const FILE_TTL = 7 * 24 * 3600 * 1000;
+export const FILE_TTL_MAX = 30 * 24 * 3600 * 1000;
+const fileMac = (assetId: string, exp: number) => signPayload(`file:${assetId}:${exp}`);
+export function signedFileUrl(base: string, assetId: string, ttl = FILE_TTL, now = Date.now()) {
+  const exp = now + Math.min(Math.max(ttl, 60_000), FILE_TTL_MAX);
+  return { url: `${base.replace(/\/+$/, '')}/v1/files/${assetId}?exp=${exp}&sig=${fileMac(assetId, exp)}`, expires: exp };
+}
+export function verifyFileSig(assetId: string, exp: string | null | undefined, sig: string | null | undefined, now = Date.now()): boolean {
+  const e = Number(exp);
+  if (!sig || !Number.isFinite(e) || e <= now) return false;
+  const want = fileMac(assetId, e);
+  return sig.length === want.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(want));
+}
+
 /** A one-time upload link (curl -T file <url>) whose blob belongs to this caller. */
 export function uploadLink(base: string, owner: { id: string; projects: string[] }, filename: string, now = Date.now()) {
   return `${base.replace(/\/+$/, '')}/up/${sign({ k: 'up', c: owner.id, p: owner.projects, n: crypto.randomBytes(9).toString('base64url'), exp: now + UP_TTL })}/${safeName(filename)}`;
