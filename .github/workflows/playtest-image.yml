@@ -1,23 +1,47 @@
-# The playtest browser image on GHCR, for RunPod (docs/playtest-runpod.md). Push a tag playtest-image-<anything> (or run
-# it by hand) and GitHub builds server/playtest-cloudrun (the GPU variant, Gen's Playwright version) and pushes
-# ghcr.io/jgriffith3433/hawkes-gen-playtest:pw<version>-<context hash> and :latest. The same image is also pushed as
-# ghcr.io/jgriffith3433/hawkes-gen-gpu:playtest-pw<version>-<hash>: that package is already public, so RunPod can pull it
-# before hawkes-gen-playtest is made public (GitHub makes a new package private). GitHub's own token writes both: no
-# secret. The image has Playwright, Chromium, ffmpeg and the service only (no keys).
+# The playtest browser image on GHCR, for RunPod and Modal (docs/playtest-runpod.md). GitHub builds server/playtest-cloudrun
+# (the GPU variant, Gen's Playwright version) and pushes ghcr.io/jgriffith3433/hawkes-gen-playtest:pw<version>-<context hash>
+# and :latest. The same image is also pushed as ghcr.io/jgriffith3433/hawkes-gen-gpu:playtest-pw<version>-<hash>: that
+# package is already public, so RunPod can pull it before hawkes-gen-playtest is made public (GitHub makes a new package
+# private). GitHub's own token writes both: no secret. The image has Playwright, Chromium, ffmpeg and the service only (no keys).
+#
+# When it runs:
+# - A push to main that touches what goes into the image (server/playtest-cloudrun, the context code, package-lock.json for
+#   the Playwright version) or the Modal app (tools/playtest-modal, these workflows): it builds the image unless that exact
+#   tag is already on GHCR, then redeploys Modal's playtest app with that pinned tag (ops-modal-playtest-deploy.yml, called
+#   here, production environment). So the browser ships with Gen's go-live (Studio fast-forwards main to beta) and nobody
+#   runs the Modal deploy by hand. It deploys only when the image is new or the Modal app's code changed. Never on beta.
+# - A tag playtest-image-<anything>, or by hand: it builds and pushes, as before, and deploys nothing.
 name: Playtest image
 on:
   push:
+    branches: [main]
     tags: ['playtest-image-*']
+    # GitHub doesn't apply paths to tag pushes: a playtest-image-* tag always builds.
+    paths:
+      - server/playtest-cloudrun/**
+      - tools/playtest-cloudrun/lib.mjs
+      - tools/playtest-runpod/image-context.mjs
+      - tools/playtest-modal/**
+      - package-lock.json
+      - .github/workflows/playtest-image.yml
+      - .github/workflows/ops-modal-playtest-deploy.yml
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: playtest-image-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      image: ${{ steps.out.outputs.image }}
+      deploy: ${{ steps.out.outputs.deploy }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,7 +55,20 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # On main, an image already pushed for this exact context isn't built again (tags and hand runs always build).
+      - name: Already on GHCR?
+        id: have
+        run: |
+          tag="${{ steps.ctx.outputs.TAG }}"
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ] \
+             && docker manifest inspect "ghcr.io/jgriffith3433/hawkes-gen-playtest:$tag" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "ghcr.io/jgriffith3433/hawkes-gen-playtest:$tag is already on GHCR: not built again" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build and push
+        if: steps.have.outputs.exists != 'true'
         run: |
           img=ghcr.io/jgriffith3433/hawkes-gen-playtest
           gpu=ghcr.io/jgriffith3433/hawkes-gen-gpu
@@ -43,3 +80,35 @@ jobs:
           docker push "$img:latest"
           docker push "$gpu:playtest-$tag"
           echo "Pushed $img:$tag and $gpu:playtest-$tag" >> "$GITHUB_STEP_SUMMARY"
+      # Deploy Modal on a push to main when the image is new, or when the Modal app's own code (or these workflows)
+      # changed in this push. A push whose diff can't be read (a new branch, a forced push) deploys, to be safe.
+      - name: Deploy to Modal?
+        id: out
+        env:
+          BEFORE: ${{ github.event.before }}
+          EXISTS: ${{ steps.have.outputs.exists }}
+        run: |
+          echo "image=ghcr.io/jgriffith3433/hawkes-gen-playtest:${{ steps.ctx.outputs.TAG }}" >> "$GITHUB_OUTPUT"
+          deploy=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ]; then
+            if [ "$EXISTS" != true ]; then
+              deploy=true
+            elif [[ "$BEFORE" =~ ^0+$ ]] || ! git fetch --quiet --depth=1 origin "$BEFORE" 2>/dev/null; then
+              deploy=true
+            elif git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -qE '^(tools/playtest-modal/|\.github/workflows/(ops-modal-playtest-deploy|playtest-image)\.yml$)'; then
+              deploy=true
+            fi
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+          echo "Deploy to Modal: $deploy" >> "$GITHUB_STEP_SUMMARY"
+
+  modal:
+    name: Deploy the playtest browser to Modal
+    needs: image
+    if: needs.image.outputs.deploy == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ops-modal-playtest-deploy.yml
+    with:
+      image: ${{ needs.image.outputs.image }}
+    secrets: inherit

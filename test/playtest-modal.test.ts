@@ -228,3 +228,29 @@ test('behind Modal the browser server is never offered permessage-deflate (Modal
   const on: string[] = gpu.browserHandshake(raw, 4321, { deflate: true });
   assert.ok(on.includes('Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits'), 'elsewhere the offer is passed on');
 });
+
+test('main redeploys Modal by itself: playtest-image.yml builds on main and calls the deploy with the pinned tag', () => {
+  const dir = path.join(import.meta.dirname, '..', '.github', 'workflows');
+  const image = fs.readFileSync(path.join(dir, 'playtest-image.yml'), 'utf8');
+  const deploy = fs.readFileSync(path.join(dir, 'ops-modal-playtest-deploy.yml'), 'utf8');
+  // Triggers: main (by paths), the old tags and the hand run; never beta.
+  assert.match(image, /branches: \[main\]/);
+  assert.ok(!/branches:.*beta/.test(image), 'never on beta');
+  assert.ok(!/pull_request/.test(image), 'never on pull requests');
+  assert.match(image, /tags: \['playtest-image-\*'\]/);
+  assert.match(image, /workflow_dispatch:/);
+  for (const p of ['server/playtest-cloudrun/**', 'tools/playtest-cloudrun/lib.mjs', 'tools/playtest-runpod/image-context.mjs', 'tools/playtest-modal/**', 'package-lock.json']) {
+    assert.ok(image.includes(`- ${p}`), `paths include ${p}`);
+  }
+  // An existing tag isn't built again, and the deploy gets the exact tag, not :latest.
+  assert.match(image, /docker manifest inspect/);
+  assert.match(image, /uses: \.\/\.github\/workflows\/ops-modal-playtest-deploy\.yml/);
+  assert.match(image, /image: \$\{\{ needs\.image\.outputs\.image \}\}/);
+  assert.match(image, /hawkes-gen-playtest:\$\{\{ steps\.ctx\.outputs\.TAG \}\}/);
+  assert.match(image, /github\.ref == 'refs\/heads\/main'/);
+  // The deploy is reusable, keeps its hand run and inputs, and stays in the production environment.
+  assert.match(deploy, /workflow_call:/);
+  assert.match(deploy, /workflow_dispatch:/);
+  assert.match(deploy, /environment: production/);
+  assert.match(deploy, /default: ghcr\.io\/jgriffith3433\/hawkes-gen-playtest:latest/);
+});
