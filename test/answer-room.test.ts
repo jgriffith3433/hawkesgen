@@ -61,3 +61,11 @@ test('the app never shows an error page or a cut-off answer as words', async () 
   assert.doesNotMatch(plainError('<!DOCTYPE html>\n<html>'), /</);
   assert.equal(plainError('That answer got too long'), 'That answer got too long');
 });
+
+test("a signed-out call to a Gen route the portal lacks gets Gen's 401, not the portal's JSON 404", async () => {
+  const res = await withFetch((async (u: any) => new URL(String(u)).hostname === 'gen.run.app'
+    ? new Response('{"error":"Send an API key"}', { status: 401, headers: { 'Content-Type': 'application/json' } })
+    : new Response('{"error":"Not found"}', { status: 404, headers: { 'Content-Type': 'application/json' } })) as typeof fetch,
+  () => worker.fetch(new Request('https://hawkesgen.ai/v1/editor/tools'), env));
+  assert.equal(res.status, 401);
+});
