@@ -19,7 +19,14 @@
     "PORTAL_ORIGIN": "https://hawkesgames.com",
     "PORTAL_HOSTS": "hawkesgen.ai,www.hawkesgen.ai"
   },
-  "observability": { "enabled": true },
+  // Workers Logs (2026-11-02: an email said the account was at 75% of its Workers Logs allowance): no log line per
+  // request (invocation_logs off; Cloudflare's own request metrics stay), traces sampled at 1%, and every console.error
+  // line kept (logs.head_sampling_rate 1), so errors and Gen's 5xx are all still visible. Nothing logs a routine hit.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.01,
+    "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 }
+  },
   "env": {
     "beta": {
       "routes": [
