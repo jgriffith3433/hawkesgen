@@ -1,7 +1,9 @@
 // Hawkes Gen — Authenticated Creator Studio Web App (/app)
-// Covers all 6 Creation Studios, Live Credit Quoting, SSE + Polling Job Feed,
+// Covers all 6 Creation Studios, Live Credit Quoting, a live job feed over SSE,
 // My Generations Gallery with 'Use in...' actions, Stripe Credit Wallet & Ledger,
 // and Personal API / Unity / MCP Key management.
+
+import { openStream } from '/gen/stream.js';
 
 const STUDIOS = {
   image: {
@@ -379,7 +381,6 @@ const state = {
   galleryQuery: '',
   quoteTimer: null,
   eventSource: null,
-  pollTimer: null,
 };
 
 // ============================================================================
@@ -922,7 +923,7 @@ function renderMotionBrowser() {
 }
 
 // ============================================================================
-// REAL-TIME JOB FEED (SSE /v1/events + Polling Fallback)
+// REAL-TIME JOB FEED (SSE /v1/events, reopened after a drop)
 // ============================================================================
 
 async function loadJobs() {
@@ -933,33 +934,21 @@ async function loadJobs() {
   renderJobsFeed();
 }
 
+// Reopened with a growing wait after a restart or a deploy (/gen/stream.js), then the list is fetched once to catch up.
+// No polling (J, 2026-11-01): the stream is the only thing that asks while it's up.
 function connectEventStream() {
-  if (state.eventSource) state.eventSource.close();
-  try {
-    const es = new EventSource('/v1/events');
-    state.eventSource = es;
-    es.addEventListener('job', (ev) => {
-      try {
-        const job = JSON.parse(ev.data);
-        const idx = state.jobs.findIndex((j) => j.id === job.id);
-        if (idx >= 0) state.jobs[idx] = { ...state.jobs[idx], ...job };
-        else state.jobs.unshift(job);
-        renderJobsFeed();
-        if (['done', 'failed', 'cancelled'].includes(job.status)) {
-          loadAssets();
-          refreshProfileCredits();
-        }
-      } catch {}
-    });
-  } catch {}
-
-  if (!state.pollTimer) {
-    state.pollTimer = setInterval(() => {
-      if (state.jobs.some((j) => j.status === 'queued' || j.status === 'running')) {
-        loadJobs();
-      }
-    }, 4000);
-  }
+  state.eventSource?.close();
+  state.eventSource = openStream({ job: (job) => {
+    if (!job?.id) return;
+    const idx = state.jobs.findIndex((j) => j.id === job.id);
+    if (idx >= 0) state.jobs[idx] = { ...state.jobs[idx], ...job };
+    else state.jobs.unshift(job);
+    renderJobsFeed();
+    if (['done', 'failed', 'cancelled'].includes(job.status)) {
+      loadAssets();
+      refreshProfileCredits();
+    }
+  } }, { onReconnect: loadJobs });
 }
 
 function renderJobsFeed() {

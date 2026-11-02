@@ -34,12 +34,50 @@ export function unreachable(request: Request): Response {
     : new Response(`Hawkes Gen is restarting. Please reload in a few seconds.`, { status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
 }
 
+/**
+ * Gen restarting, by the answer: Google's own HTML error page from Cloud Run (500 "could not start", 503 "readiness"),
+ * or Gen's stand-in for a deploy's old copy (server/gen-cloudrun/standby.mjs, X-Hawkes-Restarting). During a deploy the
+ * old copy hands the database to the new one and for about half a minute nothing else answers (2026-11-02: the app's
+ * live stream got Google's "Server Error" page and the browser gave up on it).
+ */
+export const restarting = (r: Response) => r.headers.get('X-Hawkes-Restarting') === '1' || (r.status >= 500 && /text\/html/i.test(r.headers.get('Content-Type') ?? ''));
+
+/** The waits between tries of a read while Gen restarts: about 25 s in all, a deploy's handover. */
+export const RETRY_WAITS = [1000, 2000, 3000, 4000, 5000, 5000, 5000];
+let wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** For tests: no real waiting. */
+export function setWait(fn: (ms: number) => Promise<void>) { wait = fn; }
+
+/** What a caller gets when Gen is still restarting after the waits: Gen's JSON error shape, or a short plain page. */
+export function stillRestarting(request: Request): Response {
+  const path = new URL(request.url).pathname;
+  // An event stream that ends normally after `retry:` is opened again by the browser itself, in 5 s.
+  if (path === '/v1/events') return new Response('retry: 5000\n: Gen is restarting\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } });
+  const error = 'Gen is restarting (a new version is starting up). Please try again in a few seconds.';
+  return isApi(path)
+    ? new Response(JSON.stringify({ error, kind: 'restarting' }), { status: 503, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '5' } })
+    : new Response('Hawkes Gen is restarting. Please reload in a few seconds.', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+}
+
 async function forward(request: Request, target: string, body: BodyInit | null): Promise<Response> {
-  try {
-    return await send(request, target, body);
-  } catch (e) {
-    console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname} to ${new URL(target).hostname} failed: ${(e as Error)?.message ?? e}`);
-    return unreachable(request);
+  // A read is asked again while Gen restarts, so the caller waits a little instead of seeing an error; a write (it may
+  // have happened) never is.
+  const read = request.method === 'GET' || request.method === 'HEAD';
+  for (let i = 0; ; i++) {
+    let r: Response;
+    try {
+      r = await send(request, target, body);
+    } catch (e) {
+      console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname} to ${new URL(target).hostname} failed: ${(e as Error)?.message ?? e}`);
+      return unreachable(request);
+    }
+    if (!restarting(r)) return r;
+    if (!read || i >= RETRY_WAITS.length) {
+      console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname}: Gen restarting (${r.status})${read ? ' after the waits' : ''}`);
+      return stillRestarting(request);
+    }
+    await r.body?.cancel();
+    await wait(RETRY_WAITS[i]);
   }
 }
 

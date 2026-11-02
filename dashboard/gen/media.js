@@ -7,6 +7,7 @@ import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
 import { touchDrag } from './dragdrop.js';
+import { openStream } from './stream.js';
 
 // picked: the tiles the person picked, by asset id with what the AI is told about each (J, 2026-10-30: they were
 // dropped whenever Media refreshed, and the AI didn't know about them).
@@ -67,12 +68,8 @@ function followJobs() {
   const want = Boolean(state.user) && !document.hidden;
   if (!want) { stream?.close(); stream = null; return; }
   if (stream) return;
-  stream = new EventSource('/v1/events');
-  stream.addEventListener('job', (e) => {
-    let j = null;
-    try { j = JSON.parse(e.data); } catch { return; }
-    if (j?.status === 'done') loadMediaSoon();
-  });
+  // Reopened after a restart or a deploy (stream.js); what finished meanwhile shows on the reload after it.
+  stream = openStream({ job: (j) => { if (j?.status === 'done') loadMediaSoon(); } }, { onReconnect: loadMediaSoon });
 }
 let soonT = 0;
 const loadMediaSoon = () => { clearTimeout(soonT); soonT = setTimeout(loadMedia, 700); };

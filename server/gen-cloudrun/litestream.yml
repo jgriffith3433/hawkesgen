@@ -8,6 +8,9 @@ dbs:
         bucket: ${HAWKESGEN_STATE_BUCKET}
         path: db/hawkesgen.db
         sync-interval: 1s
+        # A fresh snapshot every 15 min, so a new instance (a deploy) restores one snapshot and at most 15 min of WAL
+        # instead of every segment since the last instance started (2026-11-02: 14 s of WAL replay in the handover).
+        snapshot-interval: 15m
         retention: 168h
   - path: /data/analytics.db
     replicas:

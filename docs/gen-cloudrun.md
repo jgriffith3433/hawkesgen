@@ -25,7 +25,16 @@ database and library stayed on AWS.
     its state files and exits; Litestream syncs one last time (it runs in the background, not `exec`, with a TERM trap)
     and `entrypoint.sh` writes the release (`cloudlease.ts release`).
   - An older revision (by its number in `K_REVISION`) never claims from a newer one: its claim exits 3 and the instance
-    logs "stays down" and stops.
+    logs "stays down" and runs `server/gen-cloudrun/standby.mjs` instead of Gen: it opens no database and answers every
+    request with a 503 "restarting" (JSON on the API, `X-Hawkes-Restarting: 1`; on `/v1/events` a stream that says
+    `retry:`), and stops itself after 30 s with no requests.
+  - **The handover gap** (2026-11-02): from the old holder's exit until the new revision is ready and takes the traffic
+    (restore, then start, about 30 s), the traffic still goes to the old revision. Before the stand-in, its new instances
+    exited and Cloud Run answered with Google's HTML "500 Server Error" page; the app's live stream (`/v1/events`) got
+    it and the browser's EventSource gave up for good. Now the hawkesgen.ai Worker (`server/gen-edge`) asks a read
+    again for up to about 25 s while Gen answers "restarting" (or Google's page), the app reopens its stream with a
+    growing wait and catches up once it's back (`dashboard/gen/stream.js`), and Litestream snapshots `hawkesgen.db`
+    every 15 min so a restore replays less WAL.
   - Nothing the claim imports opens a database (an empty one would make `restore -if-db-not-exists` skip). Test
     `test/cloud-lease.test.ts`. In the logs a clean deploy reads `[lease] {..."how":"released","generation":{...}}`.
   - **The first deploy with the lease can't hand over:** the running revision has no lease, so the new one claims
