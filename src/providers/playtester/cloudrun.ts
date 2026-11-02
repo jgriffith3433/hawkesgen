@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
+import { paths, liveRegionLast, SETTINGS_DEFAULTS, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
 import { gcpTokens } from '../gcp/gcs.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { isDown } from '../gpu/health.ts';
@@ -76,8 +76,10 @@ export const CPU_SOFTWARE_WHY = 'played on the Cloud Run CPU service (gen-playte
  * The Cloud Run services this project's playtests try, in order: "cloudrun" is the L4 service, then the CPU service
  * when it is deployed (a missing L4 falls back to software WebGL before the playtesters); "cloudrun-cpu" is the CPU
  * service only; "ec2" is none. Empty: the playtesters (and their own fallbacks) as before.
+ * The CPU service's regions are tried with the live services' region (settings.unityBuild.gcp.liveRegion) last: its
+ * 4 vCPU instances otherwise take the regional CPU quota live Gen and Studio need to start (2026-11-02).
  */
-export function cloudPlaytestsFor(project: string | null | undefined, settings: Pick<Settings, 'playtest'>, specs: { gpu?: ServiceSpec; cpu?: ServiceSpec } = {}): CloudPlaytest[] {
+export function cloudPlaytestsFor(project: string | null | undefined, settings: Pick<Settings, 'playtest'> & { unityBuild?: { gcp?: { liveRegion?: string } } }, specs: { gpu?: ServiceSpec; cpu?: ServiceSpec } = {}): CloudPlaytest[] {
   const t = settings.playtest;
   const order = playtestVariantsFor(project, t);
   const out: CloudPlaytest[] = [];
@@ -97,9 +99,11 @@ export function cloudPlaytestsFor(project: string | null | undefined, settings: 
     const spec = specs[v] ?? loadSpec(SPEC_FILE(v));
     const one = { ...conf, url: conf.url, pricePerSecond: specPricePerSecond(spec), region: spec.region, name: spec.name, variant: v,
       slow: v === 'cpu' ? Math.max(1, Number(spec.slow) || 2) : 1, software: v === 'cpu' ? CPU_SOFTWARE_WHY : null };
-    out.push(one);
-    // The CPU service's other regions, in order: each has its own Cloud Run CPU quota (settings.playtest.cloudrunCpu.extra).
-    if (v === 'cpu') for (const x of t.cloudrunCpu.extra ?? []) out.push({ ...one, url: x.url, region: x.region, maxInstances: x.maxInstances });
+    if (v !== 'cpu') { out.push(one); continue; }
+    // The CPU service's other regions: each has its own Cloud Run CPU quota (settings.playtest.cloudrunCpu.extra).
+    const cpus = [one, ...(t.cloudrunCpu.extra ?? []).map((x) => ({ ...one, url: x.url, region: x.region, maxInstances: x.maxInstances }))];
+    const live = settings.unityBuild?.gcp?.liveRegion ?? SETTINGS_DEFAULTS.unityBuild.gcp.liveRegion;
+    out.push(...liveRegionLast(cpus, live, (c) => c.region));
   }
   return out;
 }

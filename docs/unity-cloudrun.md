@@ -237,7 +237,7 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
 | `concurrency` | 2 | Cloud Run builds at once (their own queue lane, `builder-cloud`; VM builds `builder-vm` and the Windows box one at a time) |
 | `vmAt` | 0.85 | A Cloud Run build peaking over this share of its memory moves its project to `vm` (0: never) |
-| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off), `regions` (`["us-central1"]`: more regions with the same jobs, below) |
+| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off), `regions` (`["us-central1"]`: more regions with the same jobs, below), `liveRegion` (us-east4: where live Gen and Studio run, tried last; `""` turns that off) |
 | `vm` | | `zone` (us-east4-a), `machineType` (n2-standard-8), `pricePerHour` (0.10, for usage) |
 
 **When a region is full** (J, 2026-10-31: a build waited for Google's "unknown quota capacity" in us-east4 with our quota
@@ -251,6 +251,13 @@ since 2026-10-31). Adding a Unity version means its job in every region. **Check
 jobs and images (exit 1 when they differ); `--image <image> --apply` runs deploy-job and customer-setup in every one
 (2026-10-31: live Gen's main region was us-west1, set up long before by hand, with no customer job). A customer build
 only runs where its customer job is there and checks out, skipping the rest.
+
+**The live services' region goes last** (2026-11-02: 8 vCPU builds and CPU playtests used up hawkes-staging's Cloud
+Run CPU quota in us-east4, and live Studio couldn't start a new revision). Cloud Run's CPU quota ("Total CPU allocation,
+per project per region") is shared by every service and job in a region, so `gcp.liveRegion` (us-east4, where gen,
+studio and the customer studios run) is tried after every other region a build has: `region` us-east4 with `regions`
+`["us-central1", "us-west1"]` builds in us-central1, then us-west1, then us-east4. With only the live region a build
+still runs there. The CPU playtest service orders its regions the same way (docs/playtest-cloudrun.md).
 
 The tool params `backend` (auto/builder/cloudrun/vm), `cache` (a cache name) and `clean` (no cache) override per job.
 `unity.test` with an `fbx` input always runs on the build server (the FBX is placed in the project folder here).

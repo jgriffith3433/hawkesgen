@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, loadSettings, saveSettings } from '../../config.ts';
+import { paths, loadSettings, saveSettings, liveRegionLast } from '../../config.ts';
 import { GenError } from '../../util.ts';
 import {
   type BuildSpec, type BuildHooks, UNITY_EXCLUDE, SITE_EXCLUDE, standIn, unityVersionOf, localPackages, repoOf, walk, localGit,
@@ -290,17 +290,25 @@ export function progressFollower(hooks: BuildHooks) {
 /** How long a build waits for a machine in one region before trying the next. */
 const CAPACITY_WAIT_MS = 3 * 60_000;
 
-/** The build's regions in order: the main one, then settings.unityBuild.gcp.regions. */
-export const regionsOf = (cfg: { gcp: { region: string; regions?: string[] } }) => [cfg.gcp.region, ...(cfg.gcp.regions ?? []).filter((r) => r !== cfg.gcp.region)];
+/** The build's regions in order: the main one, then settings.unityBuild.gcp.regions, with the live services' region
+ *  (gcp.liveRegion) last so bursts of 8 vCPU builds never take the CPU quota live Gen and Studio need to start. */
+export const regionsOf = (cfg: { gcp: { region: string; regions?: string[]; liveRegion?: string } }) =>
+  liveRegionLast([cfg.gcp.region, ...(cfg.gcp.regions ?? []).filter((r) => r !== cfg.gcp.region)], cfg.gcp.liveRegion, (r) => r);
 
-/** The regions whose customer job is there and safe (checkCustomerJob), in order; none: the first region's reason. */
+/** The regions whose customer job is there and safe (checkCustomerJob), in order; none: the first region's setup problem
+ *  (a refusal with its fix), else the first region's reason (the live region, often the main one, may come last). */
 export async function customerRegions(all: string[], target: CloudRunTarget, hooks: BuildHooks, check: (t: CloudRunTarget) => Promise<void> = checkCustomerJob): Promise<string[]> {
   const ok: string[] = [];
   let first: unknown = null;
+  let setup: unknown = null;
   for (const r of all) {
-    try { await check({ ...target, region: r }); ok.push(r); } catch (e: any) { first ??= e; hooks.log(`(${r}: ${e.message.split(':')[0]}; skipped)`); }
+    try { await check({ ...target, region: r }); ok.push(r); } catch (e: any) {
+      first ??= e;
+      if (e?.kind === 'config') setup ??= e;
+      hooks.log(`(${r}: ${e.message.split(':')[0]}; skipped)`);
+    }
   }
-  if (!ok.length) throw first;
+  if (!ok.length) throw setup ?? first;
   return ok;
 }
 
@@ -311,8 +319,11 @@ async function startInRegion(regions: string[], from: number, target: CloudRunTa
   for (let i = from; i < regions.length; i++) {
     const t = { ...target, region: regions[i] };
     try {
-      if (i > 0 && !(await jobExists(t))) { hooks.log(`(${regions[i]} has no ${t.job} job; skipped)`); continue; }
-      if (customer && i > 0) await checkCustomerJob(t);
+      // The main region (settings' gcp.region) is taken to have the job; any other is checked first (it may come first
+      // now: the live services' region goes last, regionsOf).
+      const other = regions[i] !== target.region;
+      if (other && !(await jobExists(t))) { hooks.log(`(${regions[i]} has no ${t.job} job; skipped)`); continue; }
+      if (customer && other) await checkCustomerJob(t);
       return { name: await runJob(t, envs, (timeoutMinutes + 15) * 60) };
     } catch (e: any) {
       last = e;
