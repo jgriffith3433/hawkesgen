@@ -54,7 +54,9 @@ test('the provider order: known ids once, software WebGL always last', () => {
 test('cloudPlaytestsFor: the order when set (disabled ones out), else the backend; a project\'s own backend wins', () => {
   const base = { ...SETTINGS_DEFAULTS.playtest, backend: 'runpod' as const, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, url: RP }, modal: { ...SETTINGS_DEFAULTS.playtest.modal, url: MODAL }, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, url: L4_URL }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, url: CPU_URL } };
   const variants = (t: any, project: string | null = null) => pc.cloudPlaytestsFor(project, { playtest: t }, specs).map((c) => c.variant);
-  assert.deepEqual(variants(base), ['runpod', 'cpu'], 'no order: the backend rule as before');
+  assert.deepEqual(variants(base), ['runpod', 'modal', 'cpu'], 'no order: the backend rule, with Modal as the second GPU provider');
+  assert.deepEqual(variants({ ...base, modal: { ...base.modal, url: null } }), ['runpod', 'cpu'], 'no order, Modal not deployed: as before');
+  assert.deepEqual(variants({ ...base, backend: 'cloudrun' }), ['gpu', 'modal', 'cpu']);
   assert.deepEqual(variants({ ...base, order: ['runpod', 'modal', 'cloudrun-cpu'] }), ['runpod', 'modal', 'cpu']);
   assert.deepEqual(variants({ ...base, order: ['modal', 'runpod', 'cloudrun', 'cloudrun-cpu'], disabled: ['runpod'] }), ['modal', 'gpu', 'cpu']);
   assert.deepEqual(variants({ ...base, order: ['modal', 'cloudrun-cpu'], modal: { ...base.modal, url: null } }), ['cpu'], 'Modal not deployed: skipped');

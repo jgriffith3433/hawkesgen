@@ -114,8 +114,10 @@ export const providerOfVariant = (v: Variant | undefined): PlaytestProvider => (
 /**
  * The browser services a web playtest of this project tries, in order, as variants. A project's own backend
  * (settings.playtest.projects) keeps today's rule; else settings.playtest.order (Studio's provider order) when it is
- * set, without the disabled ones; else the default backend's rule (runpod: RunPod then the CPU service; cloudrun: the L4
- * then the CPU service; cloudrun-cpu: the CPU service; ec2: none). Software WebGL is always last.
+ * set, without the disabled ones; else the default backend's rule (runpod: RunPod, then Modal, then the CPU service;
+ * cloudrun: the L4, then Modal, then the CPU service; cloudrun-cpu: the CPU service; ec2: none). Modal is skipped while
+ * it has no URL (not deployed), so a GPU provider that is out of credit or full falls to the other GPU provider before
+ * software. Software WebGL is always last.
  */
 export function playtestVariantsFor(project: string | null | undefined, t: Settings['playtest']): Variant[] {
   const own = project ? t.projects[project] : undefined;
@@ -124,7 +126,7 @@ export function playtestVariantsFor(project: string | null | undefined, t: Setti
     return t.order.filter((id) => !off.has(id)).map((id) => VARIANT_OF[id]);
   }
   const backend = own ?? t.backend;
-  return backend === 'runpod' ? ['runpod', 'cpu'] : backend === 'cloudrun' ? ['gpu', 'cpu'] : backend === 'cloudrun-cpu' ? ['cpu'] : [];
+  return backend === 'runpod' ? ['runpod', 'modal', 'cpu'] : backend === 'cloudrun' ? ['gpu', 'modal', 'cpu'] : backend === 'cloudrun-cpu' ? ['cpu'] : [];
 }
 
 /** A web playtest provider's cooldown key after it refused us (gpu/health.ts), for providers not listed as runners. */

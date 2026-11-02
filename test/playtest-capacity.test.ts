@@ -58,8 +58,8 @@ test('GET: browsers now, the most the account allows, and every provider with wh
   assert.equal(c.workers, 5);
   assert.equal(c.perWorker, 2);
   assert.equal(c.maxBrowsers, 10, 'quota 10 minus 2 + 3 on the other endpoints = 5 workers');
-  assert.deepEqual(c.order, ['runpod', 'cloudrun-cpu'], 'no order set: the backend rule');
-  assert.deepEqual(c.providers.map((p) => p.id), ['runpod', 'cloudrun-cpu', 'modal', 'cloudrun', 'aws']);
+  assert.deepEqual(c.order, ['runpod', 'modal', 'cloudrun-cpu'], 'no order set: the backend rule, Modal as the second GPU provider');
+  assert.deepEqual(c.providers.map((p) => p.id), ['runpod', 'modal', 'cloudrun-cpu', 'cloudrun', 'aws']);
   const rp = c.providers[0];
   assert.equal(rp.enabled, true);
   assert.equal(rp.ok, false);
@@ -67,7 +67,8 @@ test('GET: browsers now, the most the account allows, and every provider with wh
   assert.deepEqual(rp.credit, { ok: false, balance: -0.006 });
   assert.equal(rp.maxBrowsers, 10);
   const modal = c.providers.find((p) => p.id === 'modal')!;
-  assert.equal(modal.enabled, false);
+  assert.equal(modal.enabled, true, 'in the default order, after RunPod');
+  assert.equal(modal.ok, false);
   assert.match(modal.reason!, /not deployed/);
   const aws = c.providers.find((p) => p.id === 'aws')!;
   assert.equal(aws.selectable, false);
