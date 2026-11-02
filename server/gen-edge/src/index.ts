@@ -21,7 +21,29 @@ const genOnly = (p: string) => p === '/mcp' || p.startsWith('/mcp/') || p.starts
 /** The largest body kept to send again to the portal (its own limit for an upload in a request is 30 MB). */
 const REPLAY_MAX = 32 * 1024 * 1024;
 
-function forward(request: Request, target: string, body: BodyInit | null): Promise<Response> {
+/**
+ * When Gen can't be reached or drops the connection part way (a restart or a deploy while an AI answer is being written),
+ * fetch() throws and Cloudflare would answer with its own HTML error page, which the app then printed as the AI's reply
+ * (2026-11-02). The API gets Gen's own JSON error shape instead; a page gets a short plain page.
+ */
+export function unreachable(request: Request): Response {
+  const api = isApi(new URL(request.url).pathname);
+  const error = 'Gen was interrupted before it could answer (it may have just restarted). Nothing was lost: please try again.';
+  return api
+    ? new Response(JSON.stringify({ error, kind: 'unreachable' }), { status: 502, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '5' } })
+    : new Response(`Hawkes Gen is restarting. Please reload in a few seconds.`, { status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+}
+
+async function forward(request: Request, target: string, body: BodyInit | null): Promise<Response> {
+  try {
+    return await send(request, target, body);
+  } catch (e) {
+    console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname} to ${new URL(target).hostname} failed: ${(e as Error)?.message ?? e}`);
+    return unreachable(request);
+  }
+}
+
+function send(request: Request, target: string, body: BodyInit | null): Promise<Response> {
   const url = new URL(request.url);
   const to = new URL(target);
   url.protocol = to.protocol;
@@ -57,7 +79,10 @@ async function onPortalHost(request: Request, env: Env & { PORTAL_ORIGIN: string
   if (!(gen.status === 404 || (gen.status === 401 && isApi(url.pathname)))) return gen;
   const page = (request.method === 'GET' || request.method === 'HEAD') && !isApi(url.pathname) && /text\/html/.test(request.headers.get('Accept') ?? '');
   if (page) return Response.redirect(`${env.PORTAL_ORIGIN}${url.pathname}${url.search}`, 301);
-  return forward(request, env.PORTAL_ORIGIN, body);
+  const portal = await forward(request, env.PORTAL_ORIGIN, body);
+  // An API call the portal doesn't have either comes back as its HTML 404 page: Gen's own JSON answer says more.
+  if (isApi(url.pathname) && !portal.ok && /text\/html/i.test(portal.headers.get('Content-Type') ?? '')) return gen;
+  return portal;
 }
 
 export default {

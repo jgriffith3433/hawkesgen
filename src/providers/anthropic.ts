@@ -16,6 +16,8 @@ import { houseRoute, houseCanFallBack } from '../houseai.ts';
 import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
 import * as bedrock from './bedrock.ts';
+import { outputBudget, TOO_LONG } from './budget.ts';
+export { outputBudget, TOO_LONG, STREAMED_FLOOR } from './budget.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { orgSecret } from '../orgsecrets.ts';
 import { GenError, mimeOf } from '../util.ts';
@@ -167,7 +169,7 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
   try {
     const stream = anthropic(apiKey).beta.messages.stream({
       model,
-      max_tokens: maxTokens,
+      max_tokens: outputBudget(maxTokens),
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
       // Structured output only takes closed schemas; an open one (the assistants' free-form ops, shots and docs) is left to
@@ -196,7 +198,10 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
     throw e;
   }
   if (response.stop_reason === 'refusal') throw new GenError(`Claude declined this request${response.stop_details?.category ? ` (${response.stop_details.category})` : ''}.`, { status: 422, kind: 'refusal' });
-  if (response.stop_reason === 'max_tokens') throw new GenError('The answer ran out of room before it finished. Raise maxTokens.', { status: 422 });
+  if (response.stop_reason === 'max_tokens') {
+    console.warn(`[claude] ${model} stopped at max_tokens (${outputBudget(maxTokens)}; asked ${maxTokens}, effort ${effort}, ${response.usage?.output_tokens ?? '?'} written)`);
+    throw new GenError(TOO_LONG, { status: 422, kind: 'too-long' });
+  }
   const text = response.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
   return { text, model: response.model as string, usage: response.usage, cost: costOf(response.model, response.usage), billing: 'api' as const };
 }
