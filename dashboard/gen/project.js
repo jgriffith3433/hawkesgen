@@ -438,29 +438,26 @@ export function watchJobs() {
     followJob(c.job).catch(() => {}).finally(() => watching.delete(c.job));
   }
 }
+/** A waiting clip's job, through the page's live stream (jobwatch.js): its progress as it comes, filled in when it ends. */
 async function followJob(jobId) {
-  for (;;) {
-    let j;
-    try { j = await api(`/v1/jobs/${jobId}`); } catch { await new Promise((r) => setTimeout(r, 4000)); continue; }
-    const mine = P.doc.clips.filter((c) => c.job === jobId && c.pending);
-    if (!mine.length) return;
-    if (j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') {
-      for (const c of mine) {
-        if (j.status === 'done') {
-          const want = c.kind === 'audio' ? ['audio'] : c.kind === 'image' ? ['image', 'video'] : ['video', 'image'];
-          const out = j.outputs.find((o) => want.includes(o.kind) && !/mask/i.test(o.title ?? '')) ?? j.outputs.find((o) => want.includes(o.kind)) ?? j.outputs[0];
-          if (out) { c.asset = out.asset; if (isVisual(c) && (out.kind === 'image' || out.kind === 'video')) c.kind = out.kind; } else c.failed = 'The job made nothing';
-        } else c.failed = plainError(j.error ?? j.status);
-        delete c.pending;
-      }
-      changed();
-      bus.emit('jobDone', j);
-      return;
-    }
-    PROGRESS.set(jobId, jobStatusText(j));
-    bus.emit('jobProgress', { job: jobId, status: j.status, detail: j.detail, ahead: j.queue?.ahead, step: PROGRESS.get(jobId) });
-    await new Promise((r) => setTimeout(r, 2500));
+  const { jobWatch } = await import('./jobwatch.js');
+  const w = await jobWatch();
+  const j = await w.follow(jobId, (x) => {
+    PROGRESS.set(jobId, jobStatusText(x));
+    bus.emit('jobProgress', { job: jobId, status: x.status, detail: x.detail, ahead: x.queue?.ahead, step: PROGRESS.get(jobId) });
+  });
+  const mine = P.doc.clips.filter((c) => c.job === jobId && c.pending);
+  if (!mine.length) return;
+  for (const c of mine) {
+    if (j.status === 'done') {
+      const want = c.kind === 'audio' ? ['audio'] : c.kind === 'image' ? ['image', 'video'] : ['video', 'image'];
+      const out = j.outputs.find((o) => want.includes(o.kind) && !/mask/i.test(o.title ?? '')) ?? j.outputs.find((o) => want.includes(o.kind)) ?? j.outputs[0];
+      if (out) { c.asset = out.asset; if (isVisual(c) && (out.kind === 'image' || out.kind === 'video')) c.kind = out.kind; } else c.failed = 'The job made nothing';
+    } else c.failed = plainError(j.error ?? j.status);
+    delete c.pending;
   }
+  changed();
+  bus.emit('jobDone', j);
 }
 
 export function startSync() {
