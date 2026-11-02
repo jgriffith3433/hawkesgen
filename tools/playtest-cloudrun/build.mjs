@@ -48,13 +48,28 @@ fs.mkdirSync(dir, { recursive: true });
 for (const [name, data] of Object.entries(ctx.files)) fs.writeFileSync(path.join(dir, name), data);
 console.log(`\nBuild context written to ${dir} (${Object.keys(ctx.files).join(', ')})`);
 
-gcloud(args, [
+const submit = [
   'builds', 'submit', dir, `--project=${args.project}`, `--region=${args.region}`, `--tag=${tag}`,
   ...(machine === 'default' ? [] : [`--machine-type=${machine}`]), '--timeout=1800s',
   // As tools/gen-cloudrun/build.mjs: a named staging folder, so gcloud doesn't check the default bucket's owner. Without it
   // gen-deployer (GitHub's deploys) was refused "forbidden from accessing the bucket [hawkes-staging_cloudbuild]" (2026-11-02).
   `--gcs-source-staging-dir=gs://${args.project}_cloudbuild/source`,
-]);
+];
+if (process.env.CI && args.apply) {
+  // As tools/gen-cloudrun/build.mjs in CI: start the build without waiting and read its status every 15 s. gcloud's own
+  // wait streams the logs, which needs project Viewer: gen-deployer's wait ended in an error while the build ran on
+  // (run 41497791110).
+  const id = gcloud(args, [...submit, '--async', '--format=value(id)'], { read: true });
+  if (!id) throw new Error('Cloud Build gave no build id (gcloud builds submit --async failed)');
+  console.log(`  build ${id}`);
+  for (let last = '';;) {
+    await new Promise((r) => setTimeout(r, 15_000));
+    const st = gcloud(args, ['builds', 'describe', id, `--project=${args.project}`, `--region=${args.region}`, '--format=value(status)'], { read: true });
+    if (st && st !== last) console.log(`  ${(last = st)}`);
+    if (st === 'SUCCESS') break;
+    if (['FAILURE', 'INTERNAL_ERROR', 'TIMEOUT', 'CANCELLED', 'EXPIRED'].includes(st)) throw new Error(`Build ${id}: ${st}`);
+  }
+} else gcloud(args, submit);
 if (!args.apply) {
   console.log('\nDry run: nothing built. Add --apply to build (Cloud Build minutes, J\'s OK).');
   process.exit(0);
