@@ -197,6 +197,24 @@ test('the deploy script: a scale-to-zero GPU web endpoint behind proxy auth, wit
   assert.equal(pricePerHour('L4'), 1.12);
 });
 
+test('Modal out of L4s: the browser may start on a cheaper graphics card, never a dearer one unless asked', async () => {
+  const { playtestApp, gpuChoices, listPricePerHour, pricePerHour } = await import('../tools/playtest-modal/deploy.mjs' as any);
+  assert.deepEqual(gpuChoices('L4'), ['L4', 'T4'], 'the asked card first, then the cheaper ones');
+  assert.deepEqual(gpuChoices('T4'), ['T4'], 'nothing is cheaper than a T4');
+  assert.deepEqual(gpuChoices('L4', 'none'), ['L4']);
+  assert.deepEqual(gpuChoices('L4', 'T4,A10'), ['L4', 'T4', 'A10'], 'a named list is taken as it is');
+  assert.throws(() => gpuChoices('L4', 'H100'), /fallback H100/);
+  assert.equal(listPricePerHour(['L4', 'T4']), pricePerHour('L4'), 'the price shown is the dearest card in the list');
+  const py: string = playtestApp({ image: 'ghcr.io/jgriffith3433/hawkes-gen-playtest:pw1.64.1-70ef888099', app: 'hawkes-gen-playtest', gpu: gpuChoices('L4'), max: 2, tabs: 2, idle: 60, token: '' });
+  assert.match(py, /gpu=\["L4", "T4"\]/);
+});
+
+test('a cold container\'s first browser waits for the self-test instead of a 503', () => {
+  const src = fs.readFileSync(path.join(process.cwd(), 'server/playtest-cloudrun/server.mjs'), 'utf8');
+  const wait = src.indexOf('if (!report && testing) await');
+  assert.ok(wait > 0 && wait < src.indexOf("refuse(503, 'Starting')"), 'the upgrade waits on the running self-test before it refuses');
+});
+
 test('RunPod out of credit with no other GPU set up: the runner router says which GPU providers are missing', async () => {
   const { runnerCandidates, resetRunners } = await import('../src/providers/playtester/runners.ts');
   resetRunners();

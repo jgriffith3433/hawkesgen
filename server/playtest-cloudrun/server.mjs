@@ -194,6 +194,10 @@ server.on('upgrade', async (req, socket, head) => {
   if (!tokenOk(req)) return refuse(401, 'Unauthorized');
   if (url.pathname === '/encode') return encoder.handleUpgrade(req, socket, head, (ws) => encodeSession(ws, url));
   if (url.pathname !== '/pw') return refuse(404, 'Not Found');
+  // A cold container's first browsers arrive while the self-test runs (about 2 s on an L4): wait for it here rather
+  // than send them away with 503, which Modal's relay logs as a failed handshake and Gen retries after a pause.
+  if (!report && testing) await Promise.race([testing.catch(() => {}), new Promise((r) => setTimeout(r, 60_000).unref())]);
+  if (socket.destroyed) return;
   if (!report) return refuse(503, 'Starting');
   if (!report.gl.ok && !ALLOW_SOFTWARE) return refuse(412, MODE === 'software' ? 'No WebGL' : 'No GPU');
   // Cloud Run's concurrency already caps connections per instance; this guards a misconfigured deploy.
