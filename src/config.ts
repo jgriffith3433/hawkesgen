@@ -434,7 +434,11 @@ function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['
     modal: (() => {
       const r: Partial<Settings['playtest']['modal']> = t?.modal ?? {};
       // A Modal web endpoint (https://<workspace>--<app>-<function>[.<region>].modal.run), or the container on this machine.
-      const url = typeof r.url === 'string' && (MODAL_ENDPOINT.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
+      // The deploy sets PLAYTEST_MODAL_URL (ci.yml) to the endpoint ops-modal-playtest-deploy made, and it wins, so nobody
+      // has to copy the address into settings; switching Modal off is Studio's provider order, not a missing URL.
+      const fromDeploy = (env('PLAYTEST_MODAL_URL') ?? '').trim();
+      const own = typeof r.url === 'string' && (MODAL_ENDPOINT.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
+      const url = MODAL_ENDPOINT.test(fromDeploy) ? fromDeploy.replace(/\/$/, '') : own;
       const price = Number(r.pricePerHour);
       return {
         ...service(r, d.modal),

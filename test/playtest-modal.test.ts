@@ -39,6 +39,12 @@ test('settings.playtest.modal: off by default; only a modal.run endpoint or a lo
   for (const bad of ['https://evil.example.com', 'http://x--y.modal.run', 'https://x.modal.run.evil.com', 'https://a.b.modal.run', 'https://a.us-east.b.modal.run', 'https://a.us-east.modal.run.evil.com']) {
     assert.equal(saveSettings({ playtest: { modal: { url: bad } } } as any).playtest.modal.url, null, bad);
   }
+  // The deploy's PLAYTEST_MODAL_URL wins over the saved one; a bad one is ignored.
+  process.env.PLAYTEST_MODAL_URL = 'https://ws--hawkes-gen-playtest-browser.us-east.modal.run/';
+  assert.equal(saveSettings({ playtest: { modal: { url: null } } } as any).playtest.modal.url, 'https://ws--hawkes-gen-playtest-browser.us-east.modal.run');
+  process.env.PLAYTEST_MODAL_URL = 'https://evil.example.com';
+  assert.equal(saveSettings({ playtest: { modal: { url: null } } } as any).playtest.modal.url, null);
+  delete process.env.PLAYTEST_MODAL_URL;
   // A partial patch keeps the rest.
   saveSettings({ playtest: { modal: { url: MODAL } } } as any);
   assert.equal(saveSettings({ playtest: { runpod: { url: RP } } } as any).playtest.modal.url, MODAL);
