@@ -93,7 +93,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
     process.stdout.write(r.stdout ?? '');
     process.stderr.write(r.stderr ?? '');
     if (r.status !== 0) process.exit(r.status ?? 1);
-    const url = /https:\/\/[a-z0-9-]+\.modal\.run/.exec(`${r.stdout}\n${r.stderr}`)?.[0];
+    const url = /https:\/\/[a-z0-9-]+(\.[a-z]{2}-[a-z]+[0-9]?)?\.modal\.run/.exec(`${r.stdout}\n${r.stderr}`)?.[0];
     header('Then tell Gen (owner key): its playtests try Modal in the provider order');
     say(JSON.stringify({ modal: { url: url ?? '<the web endpoint URL above>', gpu, maxInstances: max, tabsPerInstance: tabs, pricePerHour: perHour, idleSeconds: idle } }, null, 2));
     say('PUT https://hawkesgen.ai/v1/playtest/capacity with that body (or POST /v1/settings {"playtest": {...}}).');

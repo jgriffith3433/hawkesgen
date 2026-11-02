@@ -316,6 +316,9 @@ export type PlaytestRunner = {
 
 /** The browser providers a web playtest may play on, for settings.playtest.order (GPU ones first, software last). */
 export type PlaytestProvider = 'runpod' | 'modal' | 'cloudrun' | 'cloudrun-cpu';
+/** A Modal web endpoint: https://<workspace>--<app>-<function>.modal.run, or with the region Modal now puts before
+ *  modal.run (https://<workspace>--<app>-<function>.us-east.modal.run). Nothing else under modal.run, nothing else at all. */
+export const MODAL_ENDPOINT = /^https:\/\/[a-z0-9-]+(\.[a-z]{2}-[a-z]+[0-9]?)?\.modal\.run\/?$/;
 export const PLAYTEST_PROVIDERS: readonly PlaytestProvider[] = ['runpod', 'modal', 'cloudrun', 'cloudrun-cpu'];
 /** settings.playtest.order, checked: known ids once each, software WebGL (cloudrun-cpu) moved last. */
 export function cleanPlaytestOrder(v: unknown): PlaytestProvider[] {
@@ -430,8 +433,8 @@ function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['
     })(),
     modal: (() => {
       const r: Partial<Settings['playtest']['modal']> = t?.modal ?? {};
-      // A Modal web endpoint (https://<workspace>--<app>-<function>.modal.run), or the container on this machine.
-      const url = typeof r.url === 'string' && (/^https:\/\/[a-z0-9-]+\.modal\.run\/?$/.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
+      // A Modal web endpoint (https://<workspace>--<app>-<function>[.<region>].modal.run), or the container on this machine.
+      const url = typeof r.url === 'string' && (MODAL_ENDPOINT.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
       const price = Number(r.pricePerHour);
       return {
         ...service(r, d.modal),
