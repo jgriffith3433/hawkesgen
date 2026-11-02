@@ -54,9 +54,9 @@ test('cloudPlaytestsFor: runpod tries the RunPod GPU, then the CPU service; its 
   assert.equal(pc.cloudLanes(rp), 4);
   assert.equal(pc.cloudLaneKey(rp), 'playtest-runpod');
   assert.ok(Math.abs(rp.pricePerSecond * 3600 - 0.58) < 1e-9);
-  // No endpoint: straight to the CPU service. "cloudrun" never tries RunPod.
+  // No endpoint: straight to the CPU service. "cloudrun" with no L4 service falls back to RunPod's GPU before software.
   assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: { ...base, runpod: { ...base.runpod, url: null } } }).map((c) => c.variant), ['cpu']);
-  assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: { ...base, backend: 'cloudrun' } }).map((c) => c.variant), ['cpu']);
+  assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: { ...base, backend: 'cloudrun' } }).map((c) => c.variant), ['runpod', 'cpu']);
   // Per product.
   assert.deepEqual(pc.cloudPlaytestsFor('dod', { playtest: { ...base, backend: 'ec2', projects: { dod: 'runpod' } } }).map((c) => c.variant), ['runpod', 'cpu']);
   // A Pod's proxy gets its pod id as the name.

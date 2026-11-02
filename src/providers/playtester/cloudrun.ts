@@ -114,8 +114,11 @@ export const providerOfVariant = (v: Variant | undefined): PlaytestProvider => (
 /**
  * The browser services a web playtest of this project tries, in order, as variants. A project's own backend
  * (settings.playtest.projects) keeps today's rule; else settings.playtest.order (Studio's provider order) when it is
- * set, without the disabled ones; else the default backend's rule (runpod: RunPod then the CPU service; cloudrun: the L4
- * then the CPU service; cloudrun-cpu: the CPU service; ec2: none). Software WebGL is always last.
+ * set, without the disabled ones; else the default backend's rule: its own GPU service first, then every other GPU
+ * provider, then the CPU service (runpod: RunPod, Modal, the L4, CPU; cloudrun: the L4, RunPod, Modal, CPU;
+ * cloudrun-cpu: the CPU service; ec2: none). Software WebGL is always last. The other GPU providers are the fallback when
+ * the first is out of credit or refuses us (J, 2026-11-02: "Why doesn't it fallback to our other GPU providers?"); one
+ * that isn't set up (no URL) is left out by cloudPlaytestsFor, so listing it costs nothing.
  */
 export function playtestVariantsFor(project: string | null | undefined, t: Settings['playtest']): Variant[] {
   const own = project ? t.projects[project] : undefined;
@@ -124,7 +127,19 @@ export function playtestVariantsFor(project: string | null | undefined, t: Setti
     return t.order.filter((id) => !off.has(id)).map((id) => VARIANT_OF[id]);
   }
   const backend = own ?? t.backend;
-  return backend === 'runpod' ? ['runpod', 'cpu'] : backend === 'cloudrun' ? ['gpu', 'cpu'] : backend === 'cloudrun-cpu' ? ['cpu'] : [];
+  return backend === 'runpod' ? ['runpod', 'modal', 'gpu', 'cpu'] : backend === 'cloudrun' ? ['gpu', 'runpod', 'modal', 'cpu'] : backend === 'cloudrun-cpu' ? ['cpu'] : [];
+}
+
+/**
+ * GPU providers that could play a web playtest but have no playtest browser set up (no URL), as runner-router skip
+ * lines ("modal: ..."), so a run that lands in software says there was nowhere else to go and what would fix it.
+ */
+export function gpuProvidersNotSetUp(t: Settings['playtest']): string[] {
+  const out: string[] = [];
+  if (!t.runpod?.url) out.push('runpod: no RunPod playtest endpoint set up (settings.playtest.runpod.url)');
+  if (!t.modal?.url) out.push('modal: no Modal playtest browser deployed (ops-modal-playtest-deploy.yml, then settings.playtest.modal.url)');
+  if (!t.cloudrun?.url) out.push('cloudrun: no L4 Cloud Run playtest service deployed (settings.playtest.cloudrun.url)');
+  return out;
 }
 
 /** A web playtest provider's cooldown key after it refused us (gpu/health.ts), for providers not listed as runners. */

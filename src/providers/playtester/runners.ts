@@ -10,7 +10,7 @@ import type { PlaytestRunner, PlaytestTarget, Settings } from '../../config.ts';
 import { env } from '../../config.ts';
 import { isDown } from '../gpu/health.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
-import { cloudPlaytestsFor, runpodPlaytest, modalPlaytest, providerOfVariant, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
+import { cloudPlaytestsFor, gpuProvidersNotSetUp, runpodPlaytest, modalPlaytest, providerOfVariant, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
 
 export type Lane = 'studio' | 'customer';
 export type RunnerChoice =
@@ -123,6 +123,8 @@ export function runnerCandidates(
   const tried = new Set(runnersTried(job.labels));
   const list = runnersFor(job.project, settings, specs);
   if (!list.length) skipped.push(settings.playtest.runners?.length ? 'no runners' : 'no runners in settings.playtest.runners and no browser service set up');
+  // Today's browser services (no web runner listed): say which GPU providers aren't set up, for the software note.
+  if (target === 'web' && !(settings.playtest.runners ?? []).some((r) => r.targets.includes('web'))) skipped.push(...gpuProvidersNotSetUp(settings.playtest));
   for (const { runner: r, cloud } of list) {
     if (!r.enabled) { skipped.push(`${r.id}: turned off`); continue; }
     if (!r.targets.includes(target)) { skipped.push(`${r.id}: doesn't play ${target}`); continue; }

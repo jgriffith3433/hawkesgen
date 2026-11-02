@@ -81,8 +81,14 @@ export async function readRunpodAccount(t: Settings['playtest'], key: string, fe
   };
 }
 
-/** The effective order: settings.playtest.order (or the backend's rule), switched-off ones out. */
-const effectiveOrder = (t: Settings['playtest']): PlaytestProvider[] => [...new Set(playtestVariantsFor(null, t).map((v) => providerOfVariant(v)))];
+/** The effective order: settings.playtest.order (or the backend's rule, without the providers not set up: it lists
+ *  every GPU provider as a fallback, and one with no URL is skipped anyway), switched-off ones out. */
+const effectiveOrder = (t: Settings['playtest']): PlaytestProvider[] => {
+  const ids = [...new Set(playtestVariantsFor(null, t).map((v) => providerOfVariant(v)))];
+  if (t.order?.length) return ids;
+  const url = (id: PlaytestProvider) => (id === 'runpod' ? t.runpod : id === 'modal' ? t.modal : id === 'cloudrun' ? t.cloudrun : t.cloudrunCpu)?.url;
+  return ids.filter((id) => id === 'cloudrun-cpu' || url(id));
+};
 
 /** Everything Studio's setting shows. Reads RunPod once (its endpoints) when it has a key and an endpoint. */
 export async function playtestCapacity(settings: Pick<Settings, 'playtest'>, { get = env, fetcher = fetch, now = Date.now }: Deps = {}): Promise<Capacity> {
