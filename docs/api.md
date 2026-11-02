@@ -376,3 +376,10 @@ Events: `/v1/events` sends `production` events (`{ id, status, progress, out: { 
 | `GET /v1/providers/anthropic/models` | Claude models the tools accept |
 | `GET/POST /v1/settings` | Service settings (owner to change) |
 | `GET/POST /v1/clients`, `POST /v1/clients/:id/disable\|enable` | API keys (owner). Roles: owner, admin, user; `projects` limits which projects a key sees |
+
+## Signed file links
+
+`POST /v1/assets/:id?sign=1[&ttl=<days>]` (needs access to the asset's project) returns `{ url, expires }`: a relative
+`/v1/files/<id>?exp=<ms>&sig=<hmac>` that opens in any browser with no session (default 7 days, max 30). The signature
+covers that one asset id and the expiry; a bad, tampered or expired one is 401, and another asset's signature never
+opens this one. Without `sig` the normal key/session check applies. Code: `src/links.ts` `signedFileUrl`/`verifyFileSig`.

@@ -48,7 +48,7 @@ import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { genOAuth } from './genoauth.ts';
-import { handleUpload, downloadTarget, linkTarget, shareLink } from './links.ts';
+import { handleUpload, downloadTarget, linkTarget, shareLink, signedFileUrl, verifyFileSig } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
@@ -302,6 +302,17 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!fs.existsSync(a.path) && !(await storage.ensureLocal({ path: a.path, sha256: a.sha256 } as any))) return send(res, 404, { error: 'The file is missing' });
     // A share link (the app's Share) plays in the browser; an editor's download link downloads.
     return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=300', 'Content-Disposition': `${link!.view ? 'inline' : 'attachment'}; filename="${route.split('/').pop()}"` });
+  }
+
+  // A signed file link (src/links.ts signedFileUrl): /v1/files/<id>?exp=&sig= opens in a browser with no session. Bound to
+  // that one asset and its expiry; a bad or expired signature is 401. Without ?sig the normal credential check applies.
+  const sf = (method === 'GET' || method === 'HEAD') && url.searchParams.has('sig') ? /^\/v1\/files\/(a_[0-9a-f]+)$/.exec(route) : null;
+  if (sf) {
+    if (!verifyFileSig(sf[1], q('exp'), q('sig'))) return send(res, 401, { error: 'This link is invalid or expired: ask for a new one' });
+    const a = getAsset(sf[1]);
+    if (!a) return send(res, 404, { error: 'No such asset' });
+    if (!fs.existsSync(a.path) && !(await storage.ensureLocal({ path: a.path, sha256: a.sha256 } as any))) return send(res, 404, { error: 'The file is missing' });
+    return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=300' });
   }
 
   // Player analytics from every product's pages: public, with its own CORS for the registered origins (src/analytics/).
@@ -1565,6 +1576,11 @@ data: ${JSON.stringify(e)}
         if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
         const title = String(q('name') || a.title || a.id).replace(/[^\w .-]+/g, '').trim() || a.id;
         return send(res, 200, { url: shareLink('', a.id, `${title}${path.extname(a.path)}`), expires: Date.now() + 7 * 24 * 3600 * 1000 });
+      }
+      // A signed link to the file for a browser with no session (Studio's playtest videos and screenshots): ?ttl= days (max 30).
+      if (m[1] === 'assets' && !m[3] && method === 'POST' && q('sign') != null) {
+        if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
+        return send(res, 200, signedFileUrl('', a.id, Number(q('ttl') || 7) * 24 * 3600 * 1000));
       }
       if (method === 'GET') return send(res, 200, { ...a, inS3: storage.inS3(a.sha256), ...cdnField(a.sha256), lods: lodSummary(a.id) });
       if (method === 'PATCH') {
