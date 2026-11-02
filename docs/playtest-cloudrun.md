@@ -235,7 +235,10 @@ So the first playtest after an idle spell waits about **30-90 s** for its browse
 **More regions** (J, 2026-10-29: "can't we utilize both regions? What if I wanted to scale"): Cloud Run's CPU quota is per
 region (20 vCPU each on a free-trial account, about 5 playtests at once), so the same service can run in several.
 `deploy-cpu.ps1 -Apply -Region us-central1` deploys another; add it to `settings.playtest.cloudrunCpu.extra`
-(`[{ "url": ..., "region": "us-central1", "maxInstances": 4 }]`). Gen tries the first service, then each extra one, ~40 s
+(`[{ "url": ..., "region": "us-central1", "maxInstances": 4 }]`). Gen tries the services in that order, except that
+the one in the live services' region (`settings.unityBuild.gcp.liveRegion`, us-east4, where gen and studio run) goes
+last (2026-11-02: four 4 vCPU playtest instances there helped use up the region's CPU quota, and live Studio couldn't
+start), ~40 s
 each when there are several (a full region is skipped, not waited on), round again for up to 6 minutes; the queue's
 lane holds all their tabs together. Each lane can also use its own region (beta in one, live in another).
 

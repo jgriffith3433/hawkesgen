@@ -434,7 +434,12 @@ test("J's own builds are untouched: his job, only HAWKES_SPEC, no job check, no 
   assert.ok(run, 'it ran');
   assert.match(run!.url, /jobs\/hawkes-unity-build:run$/);
   assert.deepEqual(JSON.parse(run!.body).overrides.containerOverrides[0].env.map((e: any) => e.name), ['HAWKES_SPEC']);
-  assert.ok(!g.calls.some((c) => c.method === 'GET' && /\/jobs\/[^/:]+$/.test(c.url)), 'no customer job check');
+  assert.ok(!g.calls.some((c) => c.method === 'GET' && /\/jobs\/[^/:]+-customer$/.test(c.url)), 'no customer job check');
+  // us-east4 runs the live services (settings' liveRegion): the fallback region us-central1 is tried first (its job
+  // is checked: this fake cloud has none there), and the build lands in us-east4 only after it.
+  const central = g.calls.findIndex((c) => c.method === 'GET' && c.url.endsWith('/locations/us-central1/jobs/hawkes-unity-build'));
+  assert.ok(central >= 0 && central < g.calls.indexOf(run!), 'us-central1 first');
+  assert.match(run!.url, /locations\/us-east4\//);
 });
 
 const { spawnSync } = await import('node:child_process');
@@ -476,6 +481,20 @@ test('the fallback regions are cleaned: valid, unique, never the main region', (
     withGcp({});
   }
   assert.deepEqual(loadSettings().unityBuild.gcp.regions, ['us-central1'], 'the default');
+});
+
+test("the live services' region is cleaned: a region name, \"\" to turn it off, else us-east4", () => {
+  assert.equal(loadSettings().unityBuild.gcp.liveRegion, 'us-east4', 'the default');
+  try {
+    withGcp({ liveRegion: 'us-west1' });
+    assert.equal(loadSettings().unityBuild.gcp.liveRegion, 'us-west1');
+    withGcp({ liveRegion: '' });
+    assert.equal(loadSettings().unityBuild.gcp.liveRegion, '');
+    withGcp({ liveRegion: 'nope!' });
+    assert.equal(loadSettings().unityBuild.gcp.liveRegion, 'us-east4');
+  } finally {
+    withGcp({});
+  }
 });
 
 test("GitHub's longer tokens pass the check; a bad one is named by its shape, never echoed", async () => {

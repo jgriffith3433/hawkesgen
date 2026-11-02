@@ -177,6 +177,10 @@ export type Settings = {
      * plus "-customer". Empty: customer builds are refused. tools/unity-cloudrun/customer-setup.mjs makes them.
      * `regions`: more regions with the same jobs, tried in order when `region` has no machine free (J, 2026-10-31: Google
      * left a build waiting for "unknown quota capacity" in us-east4). A region without the job is skipped.
+     * `liveRegion`: where Gen's and Studio's always-on live services run (us-east4). Cloud Run's CPU quota is per project
+     * per region, so builds (8 vCPU each) and CPU playtests try it last, after every other region they have
+     * (2026-11-02: builds and playtests used up hawkes-staging's us-east4 quota and live Studio couldn't start a
+     * revision). Alone, it is still used. "" turns this off.
      */
     /**
      * `sizes`: the machine sizes a customer build may ask for (unity.build param `machine`; docs/unity-cloudrun.md,
@@ -185,7 +189,7 @@ export type Settings = {
      * half the cost of xl; J, 2026-11-01: "make it cheap if we don't need all that"). A build out of memory is built
      * again once a size up.
      */
-    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[]; sizes: MachineSizes; customerSize: string };
+    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[]; liveRegion: string; sizes: MachineSizes; customerSize: string };
     /** The build VMs: one per project, named hawkes-unity-<project>, made by tools/unity-cloudrun/vm.mjs. */
     vm: { zone: string; machineType: string; pricePerHour: number };
   };
@@ -343,7 +347,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
-    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'], sizes: { ...DEFAULT_SIZES }, customerSize: DEFAULT_CUSTOMER_SIZE },
+    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'], liveRegion: 'us-east4', sizes: { ...DEFAULT_SIZES }, customerSize: DEFAULT_CUSTOMER_SIZE },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
@@ -619,10 +623,19 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
       regions: Array.isArray(g.regions)
         ? [...new Set(g.regions.filter((r: unknown): r is string => typeof r === 'string' && /^[a-z]+-[a-z]+\d+$/.test(r)))].filter((r) => r !== word(g.region, /^[a-z]+-[a-z]+\d+$/, d.gcp.region)).slice(0, 5)
         : d.gcp.regions,
+      liveRegion: g.liveRegion === '' ? '' : word(g.liveRegion, /^[a-z]+-[a-z]+\d+$/, d.gcp.liveRegion),
       sizes,
       customerSize: cleanCustomerSize(g.customerSize, sizes),
     },
   };
+}
+
+/** `items` with those in the live services' region (settings.unityBuild.gcp.liveRegion) moved last, the rest in their
+ *  order. Unchanged when every item is there (it is still used) or there is no live region. */
+export function liveRegionLast<T>(items: T[], live: string | null | undefined, regionOf: (x: T) => string | null | undefined): T[] {
+  if (!live) return items;
+  const others = items.filter((x) => regionOf(x) !== live);
+  return others.length ? [...others, ...items.filter((x) => regionOf(x) === live)] : items;
 }
 
 export function loadSettings(): Settings {

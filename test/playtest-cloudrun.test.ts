@@ -448,7 +448,7 @@ test('CPU service settings: the cloudrun-cpu backend, its own URL and sizes, a l
   saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null } } } as any);
 });
 
-test('the CPU service in more regions: extra entries follow the first in order, each with its region and size; bad ones are dropped', () => {
+test('the CPU service in more regions: extra entries come in order, each with its region and size, the live region last; bad ones are dropped', () => {
   const C2 = 'https://gen-playtest-cpu-388576319982.us-central1.run.app';
   try {
   const s = saveSettings({ playtest: { backend: 'cloudrun-cpu', cloudrunCpu: { url: CPU_URL, maxInstances: 4, tabsPerInstance: 1, extra: [
@@ -458,10 +458,16 @@ test('the CPU service in more regions: extra entries follow the first in order, 
   ] } } } as any);
   assert.deepEqual(s.playtest.cloudrunCpu.extra, [{ url: C2, region: 'us-central1', maxInstances: 5 }]);
   const list = pc.cloudPlaytestsFor('x', s);
-  assert.deepEqual(list.map((c) => [c.url, c.region, c.maxInstances]), [[CPU_URL, 'us-east4', 4], [C2, 'us-central1', 5]]);
+  // us-east4 runs live Gen and Studio (settings.unityBuild.gcp.liveRegion): playtests take its CPU quota last.
+  assert.deepEqual(list.map((c) => [c.url, c.region, c.maxInstances]), [[C2, 'us-central1', 5], [CPU_URL, 'us-east4', 4]]);
   assert.ok(list.every((c) => c.variant === 'cpu' && c.slow === 2));
   // The queue's lane is every region's tabs together: 4 + 5.
   assert.equal(list.reduce((n, c) => n + pc.cloudLanes(c), 0), 9);
+  // No live region: the first service, then the extra ones, as configured.
+  assert.deepEqual(pc.cloudPlaytestsFor('x', { ...s, unityBuild: { ...s.unityBuild, gcp: { ...s.unityBuild.gcp, liveRegion: '' } } }).map((c) => c.region), ['us-east4', 'us-central1']);
+  // The GPU services keep their place before software WebGL.
+  const withL4 = pc.cloudPlaytestsFor('x', { ...s, playtest: { ...s.playtest, backend: 'cloudrun', cloudrun: { ...s.playtest.cloudrun, url: URL_ } } });
+  assert.deepEqual(withL4.map((c) => [c.name, c.region]), [['gen-playtest', withL4[0].region], ['gen-playtest-cpu', 'us-central1'], ['gen-playtest-cpu', 'us-east4']]);
   } finally {
     saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null, extra: [] } } } as any);
   }
