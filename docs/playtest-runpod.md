@@ -106,7 +106,13 @@ L4: `tools/playtest-modal/deploy.mjs` writes the app (`@modal.web_server(8080, r
 `ops-modal-playtest-deploy.yml` (production environment, main only; the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` that
 `ops-modal-deploy.yml` uses, and `GPU_WORKER_TOKEN` as the image's `HAWKES_TOKEN`) runs it and prints the endpoint URL.
 Gen calls it with the Modal proxy token it already has for GPU jobs (`MODAL_PROXY_KEY` / `MODAL_PROXY_SECRET`) and
-`X-Hawkes-Token` (`PLAYTEST_MODAL_TOKEN`, else `GPU_WORKER_TOKEN`). Then set `settings.playtest.modal.url` (and put `modal`
+`X-Hawkes-Token` (`PLAYTEST_MODAL_TOKEN`, else `GPU_WORKER_TOKEN`). **It deploys on main by itself** (2026-11-02): a push
+to main that changes the image's inputs (`server/playtest-cloudrun/`, `tools/playtest-cloudrun/lib.mjs`,
+`tools/playtest-runpod/image-context.mjs`, the Playwright version in `package-lock.json`) or the Modal app
+(`tools/playtest-modal/`) runs `playtest-image.yml`, which builds the image (skipped when that `pw<version>-<hash>` tag is
+already on GHCR) and calls `ops-modal-playtest-deploy.yml` with that exact pinned tag, so the browser ships with Gen's
+go-live (Studio fast-forwards main to beta). It deploys only when the image is new or the app's code changed; beta and pull
+requests never deploy. The hand run above still works for another GPU or size. Then set `settings.playtest.modal.url` (and put `modal`
 in the order): `PUT /v1/playtest/capacity {"modal": {"url": "https://<workspace>--hawkes-gen-playtest-browser.modal.run"}}`.
 Check it with `GET /v1/playtester/cloud?variant=modal&selftest=1` (starts a container: about $0.02). About $1.12/hour per
 container while one runs (L4 $0.80, 4 cores, 16 GiB), two browsers each; usage rows are `modal-playtest`.
