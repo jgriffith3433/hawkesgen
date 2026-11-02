@@ -7,7 +7,7 @@
 //   node tools/playtest-modal/deploy.mjs                  write .data/modal/playtest_app.py and print the plan
 //   node tools/playtest-modal/deploy.mjs --apply          also: the token secret, modal deploy
 //   options: --image ghcr.io/jgriffith3433/hawkes-gen-playtest:latest  --gpu L4  --max 2  --tabs 2  --idle 60
-//            --fallback auto (the next card with at least --gpu's memory: L4, then A10), none, or a list like A10,L40S
+//            --fallback auto (the cheap playtest cards, cheapest first: T4, L4, A10), none (only --gpu), or a list
 //            --app hawkes-gen-playtest
 //
 // Needs the modal CLI with MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in the environment (the ops-modal-playtest-deploy
@@ -21,8 +21,14 @@ import { APPLY, ROOT, arg, secret, say, header, redact } from '../gpu-providers/
 
 // modal.com/pricing on 2026-10-28, per second. Graphics-capable cards only (Chromium needs EGL/Vulkan, not just CUDA).
 export const GPU_PER_S = { T4: 0.000164, L4: 0.000222, A10: 0.000306, L40S: 0.000542 };
-/** Each card's memory (GB). The playtest browser never goes below the asked card's: Jaycee, 2026-11-02, "our workflows require a certain amount of VRAM". */
+/** Each card's memory (GB), for the plan's text. */
 export const GPU_VRAM_GB = { T4: 16, L4: 24, A10: 24, L40S: 48 };
+/**
+ * The cards a playtest browser may start on, cheapest first (Jaycee, 2026-11-02: "we should be using cheap GPUs for
+ * playtests on all providers. The expensive GPUs are just for Gen's actual AI gen jobs"). Chromium only needs a card with
+ * graphics and NVENC: a T4 has both (the old EC2 playtesters were T4s). L40S stays for generation (hawkes-gen-gpu).
+ */
+export const PLAYTEST_CARDS = ['T4', 'L4', 'A10'];
 export const CORES = 4;
 export const MEMORY_GIB = 16;
 export const pricePerHour = (gpu) => Math.round(((GPU_PER_S[gpu] ?? 0) + CORES * 0.0000131 + MEMORY_GIB * 0.00000222) * 3600 * 100) / 100;
@@ -36,24 +42,18 @@ export const pricePerHour = (gpu) => Math.round(((GPU_PER_S[gpu] ?? 0) + CORES *
 export const movingTag = (image) => !/:[A-Za-z0-9._-]+$/.test(image.split('/').pop() ?? '') || /:latest$/.test(image);
 
 /**
- * The cards Modal may start the browser on, in order. Modal ran out of L4s for 40 minutes on 2026-11-02 (its log: "waiting
- * to be scheduled on a GPU_L4 worker ... acquiring more capacity"), and every playtest waited out its 12 minutes for a
- * container that never came. With a list Modal takes the first card it has. Never a card with less memory than the asked
- * one (an L4 has 24 GB, so never a T4): by default the asked card, then the cheapest card with at least its memory (L4,
- * then A10, both 24 GB). `fallback` 'none' keeps one card; a list (A10,L40S) names them and is refused below that memory.
+ * The cards Modal may start the browser on, in order: Modal takes the first one it has free. Modal ran out of L4s for 40
+ * minutes on 2026-11-02 (its log: "waiting to be scheduled on a GPU_L4 worker ... acquiring more capacity"), and every
+ * playtest waited out its 12 minutes for a container that never came. `auto` (the default): the cheap playtest cards and
+ * --gpu, cheapest first. `none`: only --gpu. A list (T4,L4): --gpu, then those.
  */
 export function gpuChoices(gpu, fallback = 'auto') {
   const f = String(fallback ?? 'auto').trim();
   if (f === 'none' || f === '') return [gpu];
-  const floor = GPU_VRAM_GB[gpu] ?? 0;
-  const more = f === 'auto'
-    ? Object.keys(GPU_PER_S).filter((g) => g !== gpu && GPU_VRAM_GB[g] >= floor && GPU_PER_S[g] > GPU_PER_S[gpu]).sort((a, b) => GPU_PER_S[a] - GPU_PER_S[b]).slice(0, 1)
-    : f.split(',').map((g) => g.trim()).filter(Boolean);
-  for (const g of more) {
-    if (!GPU_PER_S[g]) throw new Error(`--fallback ${g}: one of ${Object.keys(GPU_PER_S).join(', ')}`);
-    if (GPU_VRAM_GB[g] < floor) throw new Error(`--fallback ${g}: ${GPU_VRAM_GB[g]} GB, less than ${gpu}'s ${floor} GB`);
-  }
-  return [gpu, ...more.filter((g) => g !== gpu)].filter((g, i, a) => a.indexOf(g) === i);
+  if (f === 'auto') return [...new Set([...PLAYTEST_CARDS, gpu])].sort((a, b) => GPU_PER_S[a] - GPU_PER_S[b]);
+  const more = f.split(',').map((g) => g.trim()).filter(Boolean);
+  for (const g of more) if (!GPU_PER_S[g]) throw new Error(`--fallback ${g}: one of ${Object.keys(GPU_PER_S).join(', ')}`);
+  return [gpu, ...more].filter((g, i, a) => a.indexOf(g) === i);
 }
 
 /** The price to show and tell Gen: the dearest card the list may start on. */
@@ -120,8 +120,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   header(`Modal app ${app} (${file})`);
   say(py);
   say(`HAWKES_TOKEN: ${redact(token)} (PLAYTEST_MODAL_TOKEN, else GPU_WORKER_TOKEN; goes into the Modal secret hawkes-gen-playtest)`);
-  const perHour = listPricePerHour(gpus);
-  say(`About $${perHour}/hour at most while a container runs (${gpus.join(', then ')}, ${CORES} cores, ${MEMORY_GIB} GiB), ${tabs} browsers each; nothing while none runs.`);
+  const perHour = pricePerHour(gpus[0]);
+  say(`About $${perHour}/hour while a container runs on ${gpus[0]} (${gpus.map((g) => `${g} ${GPU_VRAM_GB[g]} GB $${pricePerHour(g)}/h`).join(', then ')}; ${CORES} cores, ${MEMORY_GIB} GiB), ${tabs} browsers each; nothing while none runs.`);
 
   if (APPLY) {
     const modal = (args, quiet = false) => spawnSync('modal', args, { stdio: quiet ? ['ignore', 'ignore', 'inherit'] : 'inherit', shell: process.platform === 'win32' });

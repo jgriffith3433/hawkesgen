@@ -100,8 +100,8 @@ playtest browser set up in its reason ("modal: no Modal playtest browser deploye
 limit, 401/403) cools down for 30 minutes (`playtest:<id>` in `gpu/health.ts`), so the next playtests go straight to the
 next provider. The queue's lane follows the first provider a run will actually use.
 
-**Modal** runs the same image (`ghcr.io/jgriffith3433/hawkes-gen-playtest:latest`, public) as a Modal web endpoint on an
-L4: `tools/playtest-modal/deploy.mjs` writes the app (`@modal.web_server(8080, requires_proxy_auth=True)`, `max_containers`,
+**Modal** runs the same image (`ghcr.io/jgriffith3433/hawkes-gen-playtest:latest`, public) as a Modal web endpoint on the
+cheapest card Modal has free (T4, else L4, else A10): `tools/playtest-modal/deploy.mjs` writes the app (`@modal.web_server(8080, requires_proxy_auth=True)`, `max_containers`,
 `scaledown_window=60`, no warm containers: scale to zero) and `--apply` deploys it. The workflow
 `ops-modal-playtest-deploy.yml` (production environment, main only; the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` that
 `ops-modal-deploy.yml` uses, and `GPU_WORKER_TOKEN` as the image's `HAWKES_TOKEN`) runs it and prints the endpoint URL.
@@ -114,8 +114,13 @@ already on GHCR) and calls `ops-modal-playtest-deploy.yml` with that exact pinne
 go-live (Studio fast-forwards main to beta). It deploys only when the image is new or the app's code changed; beta and pull
 requests never deploy. The hand run above still works for another GPU or size. Then set `settings.playtest.modal.url` (and put `modal`
 in the order): `PUT /v1/playtest/capacity {"modal": {"url": "https://<workspace>--hawkes-gen-playtest-browser.modal.run"}}`.
-Check it with `GET /v1/playtester/cloud?variant=modal&selftest=1` (starts a container: about $0.02). About $1.12/hour per
-container while one runs (L4 $0.80, 4 cores, 16 GiB), two browsers each; usage rows are `modal-playtest`.
+Check it with `GET /v1/playtester/cloud?variant=modal&selftest=1` (starts a container: about $0.02). About $0.91/hour per
+container on a T4 ($1.12 on an L4, $1.42 on an A10; 4 cores, 16 GiB), two browsers each; usage rows are `modal-playtest`.
+**Cheap cards for playtests** (Jaycee, 2026-11-02: "we should be using cheap GPUs for playtests on all providers. The
+expensive GPUs are just for Gen's actual AI gen jobs"): Chromium needs graphics and NVENC, not memory, so the app asks for
+`gpu=["T4", "L4", "A10"]` and Modal starts the first it has (it ran out of L4s for 40 minutes that day and every playtest
+waited out its 12 minutes). RunPod's playtest endpoint already takes AMPERE_16 ($0.58/h) before AMPERE_24 ($0.69/h);
+the Cloud Run service is on an L4, the cheapest GPU Cloud Run offers. Generation stays on its own L40S app (hawkes-gen-gpu).
 **No WebSocket compression behind Modal** (2026-11-02): Modal's relay forwards the client's `permessage-deflate` offer to
 the container but never negotiates it with the client, so the first compressed frame from Playwright's browser server
 (any message over 10 KB: a screencast frame, the page's events) made it close the connection, and every Modal playtest
