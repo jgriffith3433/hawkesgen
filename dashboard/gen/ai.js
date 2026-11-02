@@ -17,6 +17,7 @@ import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorM
 import { activeKind, activeScene, activeEditor } from './scenes.js';
 import { pickedMedia, clearPicked } from './media.js';
 import { card as productionCard } from './showrunner.js';
+import { aiView } from './aiview.js';
 
 /** What's picked in Media, added to any AI's selection (J, 2026-10-30: "use this" with a Media tile picked). */
 const withMedia = (sel = {}) => { const m = pickedMedia(); return m.length ? { ...sel, media: m } : sel; };
@@ -175,17 +176,18 @@ function drawTips() { $('#aiSuggest').hidden = msgs().some((m) => m.role === 'us
 function drawMessages() {
   drawTips();
   const list = $('#aiMessages');
-  if (!msgs().length && directorOpen()) {
+  const view = aiView({ director: directorOpen(), scene: other(), count: msgs().length });
+  if (view === 'director-hello') {
     list.replaceChildren(h('div', { class: 'ai-hello' }, icon('film', 'ico big'), h('h3', {}, 'What\'s the shot?'),
       h('p', { class: 'muted' }, 'Describe it like a director: who\'s in it, where they are, what happens, how the camera moves. "Two knights face off in the rain, low angle, slow push-in."')));
     return;
   }
-  if (!msgs().length && other()) {
+  if (view === 'scene-hello') {
     const words = { image: ['What should it look like?', 'Layers, text, light, mood: say it and the AI builds it, using every image tool Gen has.'], audio: ['What should it sound like?', 'Music, voices, effects, the mix: say it and the AI lays it out on the tracks.'], character: ['Who are they?', 'Describe them: the AI writes their look, picks a voice, and makes their pictures and 3D model.'], world: ['What is this world?', 'Say it in a sentence: the AI writes its rules and its look, and brings in its first characters, places and a story.'], place: ['What is this place?', 'Describe it: the AI makes its panorama, its views and its sound.'], prop: ['What is it?', 'Describe it: the AI makes its sheet, and its 3D model when you want one.'], story: ['What happens?', 'The AI writes it top down: the logline, the beats, the script, then the shot list, keeping track of who wears and holds what.'] }[activeKind()];
     list.replaceChildren(h('div', { class: 'ai-hello' }, icon(activeEditor()?.icon ?? 'sparkle', 'ico big'), h('h3', {}, words[0]), h('p', { class: 'muted' }, words[1])));
     return;
   }
-  if (!A.messages.length && !directorOpen()) {
+  if (view === 'project-hello') {
     const words = {
       image: ['What should it look like?', 'Layers, text, light, mood: say it and the AI builds it on the tracks, using every image tool Gen has. The frame at the playhead is the picture.'],
       audio: ['What should it sound like?', 'Music, voices, effects, the mix: say it and the AI lays it out on the tracks.'],
@@ -193,7 +195,9 @@ function drawMessages() {
     list.replaceChildren(h('div', { class: 'ai-hello' }, icon(P.kind === 'audio' ? 'music' : P.kind === 'image' ? 'image' : 'sparkle', 'ico big'), h('h3', {}, words[0]), h('p', { class: 'muted' }, words[1])));
     return;
   }
-  list.replaceChildren(...msgs().map(msgEl), ...A.queue.map((t, i) => h('div', { class: 'msg user queued' }, t,
+  // One message that can't be drawn never hides the rest: it shows as plain words.
+  const safe = (m) => { try { return msgEl(m); } catch (err) { console.warn('[ai] message not drawn', err); return h('div', { class: `msg ${m.role === 'user' ? 'user' : 'ai'}` }, String(m.text ?? '')); } };
+  list.replaceChildren(...msgs().map(safe), ...A.queue.map((t, i) => h('div', { class: 'msg user queued' }, t,
     h('div', { class: 'msg-ctx' }, 'Next, when the AI is free · ', h('button', { class: 'link small', onclick: () => { A.queue.splice(i, 1); drawMessages(); } }, 'Remove')))));
   list.scrollTop = list.scrollHeight;
 }
