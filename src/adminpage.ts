@@ -40,7 +40,7 @@ export function isAdminViewer(req: IncomingMessage) {
 
 /** The sign-in page a non-admin sees at /admin: Google for the listed admins, or an admin key; nothing else. */
 export const ADMIN_SIGNIN = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"><script src="/gen/nozoom.js"></script>
 <title>Hawkes Gen admin</title><link rel="icon" href="/favicon.svg"><meta name="robots" content="noindex">
 <style>
 :root{color-scheme:dark;--bg:#0b0c0f;--card:#15171c;--text:#eceef2;--muted:#9aa0ab;--line:#262a31;--err:#ff7a7a}

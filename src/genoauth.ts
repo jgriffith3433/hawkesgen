@@ -27,7 +27,7 @@ function signIn(_req: IncomingMessage, res: ServerResponse, next: string) {
   const clientId = googleClientIdAny() ?? '';
   const back = /^\/oauth\/authorize\?/.test(next) ? next : '/';
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY' });
-  res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in to Hawkes Gen</title>
+  res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"><script src="/gen/nozoom.js"></script><title>Sign in to Hawkes Gen</title>
 <script src="https://accounts.google.com/gsi/client" async></script>
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:#f4f2ed;color:#1a1915}
 @media (prefers-color-scheme:dark){body{background:#141413;color:#ecebe6}.card{background:#1f1e1c!important;border-color:#33312d!important}.muted{color:#a6a39a!important}}
