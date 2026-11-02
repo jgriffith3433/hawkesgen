@@ -10,7 +10,7 @@
 // (runpodcap.ts). The provider order is settings.playtest.order / disabled (cloudrun.ts playtestVariantsFor). AWS is listed
 // switched off: the account is suspended (2026-10-28).
 import type { PlaytestProvider, Settings } from '../../config.ts';
-import { env, saveSettings, cleanPlaytestOrder, PLAYTEST_PROVIDERS } from '../../config.ts';
+import { env, saveSettings, cleanPlaytestOrder, PLAYTEST_PROVIDERS, MODAL_ENDPOINT } from '../../config.ts';
 import type { Secrets } from '../gpu/auth.ts';
 import { missingSecrets } from '../gpu/auth.ts';
 import { runpodCredit, runpodCreditProblem } from '../gpu/credit.ts';
@@ -181,7 +181,7 @@ export async function setPlaytestCapacity(body: any, settings: Pick<Settings, 'p
   if (body.modal !== undefined) {
     if (!body.modal || typeof body.modal !== 'object') throw new CapacityError('modal: { url, maxInstances?, tabsPerInstance?, gpu?, pricePerHour?, idleSeconds? }');
     const u = body.modal.url;
-    if (u !== undefined && u !== null && !(typeof u === 'string' && /^https:\/\/[a-z0-9-]+\.modal\.run\/?$/.test(u))) throw new CapacityError('modal.url: a Modal web endpoint (https://<workspace>--<app>-<function>.modal.run), or null');
+    if (u !== undefined && u !== null && !(typeof u === 'string' && MODAL_ENDPOINT.test(u))) throw new CapacityError('modal.url: a Modal web endpoint (https://<workspace>--<app>-<function>.modal.run), or null');
     patch.modal = { ...t.modal, ...body.modal };
   }
   if (body.runpod?.workerQuota !== undefined) {

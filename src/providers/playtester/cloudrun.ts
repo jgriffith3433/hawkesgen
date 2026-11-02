@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, liveRegionLast, SETTINGS_DEFAULTS, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
+import { paths, liveRegionLast, SETTINGS_DEFAULTS, MODAL_ENDPOINT, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
 import { gcpTokens } from '../gcp/gcs.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { isDown } from '../gpu/health.ts';
@@ -149,7 +149,7 @@ export const providerDown = (c: Pick<CloudPlaytest, 'variant' | 'runner'>, now =
 
 /** The Modal web endpoint as a playtest service: a GPU container per `tabsPerInstance` browsers, billed per second. */
 export function modalPlaytest(m: Settings['playtest']['modal'] & { url: string }): CloudPlaytest {
-  const app = /^https:\/\/[a-z0-9-]+?--([a-z0-9-]+)\.modal\.run/.exec(m.url)?.[1] ?? 'local';
+  const app = /^https:\/\/[a-z0-9-]+?--([a-z0-9-]+)(\.[a-z]{2}-[a-z]+[0-9]?)?\.modal\.run/.exec(m.url)?.[1] ?? 'local';
   return { ...m, url: m.url, pricePerSecond: m.pricePerHour / 3600, region: 'Modal', name: `modal ${app}`, variant: 'modal', slow: 1, software: null };
 }
 
@@ -200,7 +200,7 @@ export function runpodHeaders(url: string, env: Record<string, string | undefine
  */
 export function modalHeaders(url: string, env: Record<string, string | undefined> = process.env): Record<string, string> {
   const token = env.PLAYTEST_MODAL_TOKEN || env.GPU_WORKER_TOKEN || '';
-  const gateway = /^https:\/\/[a-z0-9-]+\.modal\.run\/?$/.test(url) && env.MODAL_PROXY_KEY && env.MODAL_PROXY_SECRET;
+  const gateway = MODAL_ENDPOINT.test(url) && env.MODAL_PROXY_KEY && env.MODAL_PROXY_SECRET;
   return { ...(gateway ? { 'Modal-Key': env.MODAL_PROXY_KEY!, 'Modal-Secret': env.MODAL_PROXY_SECRET! } : {}), ...(token ? { 'X-Hawkes-Token': token } : {}) };
 }
 

@@ -32,7 +32,11 @@ test('settings.playtest.modal: off by default; only a modal.run endpoint or a lo
   assert.equal(s.playtest.modal.url, MODAL);
   assert.equal(s.playtest.modal.maxInstances, 20);
   assert.equal(saveSettings({ playtest: { modal: { url: 'http://127.0.0.1:8095' } } } as any).playtest.modal.url, 'http://127.0.0.1:8095');
-  for (const bad of ['https://evil.example.com', 'http://x--y.modal.run', 'https://x.modal.run.evil.com', 'https://a.b.modal.run']) {
+  // Modal's endpoints now name their region before modal.run.
+  const REGIONAL = 'https://ws--hawkes-gen-playtest-browser.us-east.modal.run';
+  assert.equal(saveSettings({ playtest: { modal: { url: REGIONAL } } } as any).playtest.modal.url, REGIONAL);
+  assert.equal(pc.modalPlaytest({ ...SETTINGS_DEFAULTS.playtest.modal, url: REGIONAL }).name, 'modal hawkes-gen-playtest-browser');
+  for (const bad of ['https://evil.example.com', 'http://x--y.modal.run', 'https://x.modal.run.evil.com', 'https://a.b.modal.run', 'https://a.us-east.b.modal.run', 'https://a.us-east.modal.run.evil.com']) {
     assert.equal(saveSettings({ playtest: { modal: { url: bad } } } as any).playtest.modal.url, null, bad);
   }
   // A partial patch keeps the rest.
@@ -74,6 +78,8 @@ test('cloudPlaytestsFor: the order when set (disabled ones out), else the backen
 test('Modal\'s headers: the proxy token only to *.modal.run, the image\'s token always', async () => {
   assert.deepEqual(pc.modalHeaders(MODAL, ENV), { 'Modal-Key': 'wk-1', 'Modal-Secret': 'ws-1', 'X-Hawkes-Token': 'gw_token' });
   assert.deepEqual(pc.modalHeaders('http://127.0.0.1:8095', ENV), { 'X-Hawkes-Token': 'gw_token' }, 'a local container never sees the proxy token');
+  assert.equal(pc.modalHeaders('https://ws--app-browser.us-east.modal.run', ENV)['Modal-Key'], 'wk-1', 'a regional endpoint is Modal too');
+  assert.equal(pc.modalHeaders('https://ws--app-browser.us-east.modal.run.evil.com', ENV)['Modal-Key'], undefined);
   assert.deepEqual(pc.modalHeaders(MODAL, { ...ENV, PLAYTEST_MODAL_TOKEN: 'own' })['X-Hawkes-Token'], 'own');
   assert.deepEqual(pc.modalHeaders(MODAL, { GPU_WORKER_TOKEN: 'gw' }), { 'X-Hawkes-Token': 'gw' }, 'no proxy token: none sent');
   assert.deepEqual(await pc.headersFor({ url: MODAL, variant: 'modal' }, async () => 'never', ENV), pc.modalHeaders(MODAL, ENV));
