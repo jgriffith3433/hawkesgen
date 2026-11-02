@@ -7,6 +7,7 @@
 //   node tools/playtest-modal/deploy.mjs                  write .data/modal/playtest_app.py and print the plan
 //   node tools/playtest-modal/deploy.mjs --apply          also: the token secret, modal deploy
 //   options: --image ghcr.io/jgriffith3433/hawkes-gen-playtest:latest  --gpu L4  --max 2  --tabs 2  --idle 60
+//            --fallback auto (the cheaper graphics cards after --gpu, or none, or a list like T4)
 //            --app hawkes-gen-playtest
 //
 // Needs the modal CLI with MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in the environment (the ops-modal-playtest-deploy
@@ -32,7 +33,28 @@ export const pricePerHour = (gpu) => Math.round(((GPU_PER_S[gpu] ?? 0) + CORES *
  */
 export const movingTag = (image) => !/:[A-Za-z0-9._-]+$/.test(image.split('/').pop() ?? '') || /:latest$/.test(image);
 
+/**
+ * The cards Modal may start the browser on, in order. Modal ran out of L4s for 40 minutes on 2026-11-02 (its log: "waiting
+ * to be scheduled on a GPU_L4 worker ... acquiring more capacity"), and every playtest waited out its 12 minutes for a
+ * container that never came. With a list Modal takes the first card it has: by default the asked card, then the cheaper
+ * graphics cards (L4, then T4: a T4 plays WebGL and has NVENC, it is what the EC2 playtesters were), so a fallback
+ * never costs more than the price shown. `fallback` 'none' keeps one card; a list (T4,A10) names them.
+ */
+export function gpuChoices(gpu, fallback = 'auto') {
+  const f = String(fallback ?? 'auto').trim();
+  if (f === 'none' || f === '') return [gpu];
+  const more = f === 'auto'
+    ? Object.keys(GPU_PER_S).filter((g) => GPU_PER_S[g] < GPU_PER_S[gpu]).sort((a, b) => GPU_PER_S[b] - GPU_PER_S[a])
+    : f.split(',').map((g) => g.trim()).filter(Boolean);
+  for (const g of more) if (!GPU_PER_S[g]) throw new Error(`--fallback ${g}: one of ${Object.keys(GPU_PER_S).join(', ')}`);
+  return [gpu, ...more.filter((g) => g !== gpu)].filter((g, i, a) => a.indexOf(g) === i);
+}
+
+/** The price to show and tell Gen: the dearest card the list may start on. */
+export const listPricePerHour = (gpus) => Math.max(...[].concat(gpus).map(pricePerHour));
+
 export function playtestApp({ image, app, gpu, max, tabs, idle, token }) {
+  const gpus = [].concat(gpu);
   return `# Made by hawkesgen tools/playtest-modal/deploy.mjs: Gen's playtest browser (server/playtest-cloudrun/server.mjs) as a
 # Modal web endpoint on a GPU. Scale to zero (no warm containers); each container plays ${tabs} browsers.
 import os
@@ -52,7 +74,8 @@ app = modal.App(${JSON.stringify(app)})
 
 @app.function(
     image=image,
-    gpu=${JSON.stringify(gpu)},
+    # Modal starts the first card in this list it has free (gpuChoices in deploy.mjs).
+    gpu=${gpus.length > 1 ? JSON.stringify(gpus).replace(/,/g, ', ') : JSON.stringify(gpus[0])},
     cpu=${CORES}.0,
     memory=${MEMORY_GIB * 1024},
     # One playtest holds its connection for minutes: an hour is the most a run takes.
@@ -81,7 +104,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   if (!/^[a-z0-9][a-z0-9.-]*(\/[a-z0-9._-]+)+(:[A-Za-z0-9._-]+)?$/.test(image)) { console.error(`--image ${image}: not an image reference`); process.exit(1); }
   if (!/^[a-z0-9-]{3,40}$/.test(app)) { console.error(`--app ${app}: lower-case letters, digits and dashes`); process.exit(1); }
 
-  const py = playtestApp({ image, app, gpu, max, tabs, idle, token });
+  let gpus;
+  try { gpus = gpuChoices(gpu, arg('fallback', 'auto')); } catch (e) { console.error(e.message); process.exit(1); }
+  const py = playtestApp({ image, app, gpu: gpus, max, tabs, idle, token });
   const dir = path.join(ROOT, '.data', 'modal');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'playtest_app.py');
@@ -89,8 +114,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   header(`Modal app ${app} (${file})`);
   say(py);
   say(`HAWKES_TOKEN: ${redact(token)} (PLAYTEST_MODAL_TOKEN, else GPU_WORKER_TOKEN; goes into the Modal secret hawkes-gen-playtest)`);
-  const perHour = pricePerHour(gpu);
-  say(`About $${perHour}/hour while a container runs (${gpu}, ${CORES} cores, ${MEMORY_GIB} GiB), ${tabs} browsers each; nothing while none runs.`);
+  const perHour = listPricePerHour(gpus);
+  say(`About $${perHour}/hour at most while a container runs (${gpus.join(', then ')}, ${CORES} cores, ${MEMORY_GIB} GiB), ${tabs} browsers each; nothing while none runs.`);
 
   if (APPLY) {
     const modal = (args, quiet = false) => spawnSync('modal', args, { stdio: quiet ? ['ignore', 'ignore', 'inherit'] : 'inherit', shell: process.platform === 'win32' });
@@ -105,7 +130,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
     if (r.status !== 0) process.exit(r.status ?? 1);
     const url = /https:\/\/[a-z0-9-]+(\.[a-z]{2}-[a-z]+[0-9]?)?\.modal\.run/.exec(`${r.stdout}\n${r.stderr}`)?.[0];
     header('Then tell Gen (owner key): its playtests try Modal in the provider order');
-    say(JSON.stringify({ modal: { url: url ?? '<the web endpoint URL above>', gpu, maxInstances: max, tabsPerInstance: tabs, pricePerHour: perHour, idleSeconds: idle } }, null, 2));
+    say(JSON.stringify({ modal: { url: url ?? '<the web endpoint URL above>', gpu: gpus.join(','), maxInstances: max, tabsPerInstance: tabs, pricePerHour: perHour, idleSeconds: idle } }, null, 2));
     say('PUT https://hawkesgen.ai/v1/playtest/capacity with that body (or POST /v1/settings {"playtest": {...}}).');
   } else {
     say('\n(dry run: --apply creates the secret and runs modal deploy)');
