@@ -1,0 +1,89 @@
+# Read-only: how much Gen's Cloudflare Workers are used, per worker per hour over the last 48 hours, from Cloudflare's
+# GraphQL Analytics API (dataset workersInvocationsAdaptive: requests, errors, subrequests, CPU time p50/p99).
+# Prints a table to the job log and the run's summary. Changes nothing. The token needs Account Analytics read; without
+# it the run prints only the API's error message.
+#   gh workflow run ops-cf-usage.yml --repo jgriffith3433/hawkesgen --ref beta
+# beta-automerge starts every dispatchable push-to-beta workflow after its merges; those runs (as github-actions[bot])
+# are skipped, so this runs only when started by hand or when this file changes.
+name: ops-cf-usage
+on:
+  push:
+    branches: [beta]
+    paths:
+      - .github/workflows/ops-cf-usage.yml
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: Hours back (at most 168)
+        default: "48"
+permissions:
+  contents: read
+concurrency:
+  group: ops-cf-usage
+  cancel-in-progress: true
+jobs:
+  usage:
+    name: Workers usage
+    if: github.event_name == 'push' || github.triggering_actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: beta
+    steps:
+      - name: Query Cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          HOURS: ${{ inputs.hours || '48' }}
+        run: |
+          cat > /tmp/cfusage.py <<'PY'
+          import json, os, sys, urllib.request, urllib.error
+          from datetime import datetime, timedelta, timezone
+          token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+          account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+          if not token or not account:
+              print("CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set in the beta environment"); sys.exit(1)
+          hours = max(1, min(168, int(os.environ.get("HOURS") or "48")))
+          end = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+          start = end - timedelta(hours=hours + 1)
+          Q = """query($a: string!, $s: Time!, $e: Time!) { viewer { accounts(filter: {accountTag: $a}) {
+            workersInvocationsAdaptive(limit: 10000, filter: {datetime_geq: $s, datetime_lt: $e}, orderBy: [datetimeHour_ASC]) {
+              dimensions { scriptName datetimeHour } sum { requests errors subrequests } quantiles { cpuTimeP50 cpuTimeP99 } } } } }"""
+          def ask(s, e):
+              body = json.dumps({"query": Q, "variables": {"a": account, "s": s.isoformat().replace("+00:00", "Z"), "e": e.isoformat().replace("+00:00", "Z")}}).encode()
+              req = urllib.request.Request("https://api.cloudflare.com/client/v4/graphql", data=body,
+                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r: d = json.load(r)
+              except urllib.error.HTTPError as err:
+                  try: d = json.load(err)
+                  except Exception: print(f"Cloudflare answered HTTP {err.code}"); sys.exit(1)
+              errs = d.get("errors") or []
+              if errs:
+                  print("Cloudflare's error: " + "; ".join(str(x.get("message", "")) for x in errs)); sys.exit(1)
+              accts = ((d.get("data") or {}).get("viewer") or {}).get("accounts") or []
+              return accts[0]["workersInvocationsAdaptive"] if accts else []
+          rows, s = [], start
+          while s < end:  # a day at a time: the dataset limits how long one query may span
+              e = min(end, s + timedelta(hours=24)); rows += ask(s, e); s = e
+          per = {}
+          for r in rows:
+              w = r["dimensions"]["scriptName"]; h = r["dimensions"]["datetimeHour"][:13].replace("T", " ") + "Z"
+              x = per.setdefault(w, {}).setdefault(h, {"req": 0, "err": 0, "sub": 0, "p50": 0.0, "p99": 0.0})
+              x["req"] += r["sum"]["requests"]; x["err"] += r["sum"]["errors"]; x["sub"] += r["sum"]["subrequests"]
+              x["p50"] = max(x["p50"], r["quantiles"]["cpuTimeP50"]); x["p99"] = max(x["p99"], r["quantiles"]["cpuTimeP99"])
+          head = [f"## Workers usage, last {hours} h (UTC hours, {start:%Y-%m-%d %H}Z to {end:%Y-%m-%d %H}Z)", ""]
+          if not per: head.append("No invocations in that window.")
+          summ = ["| worker | requests | errors | subrequests | avg req/h | peak hour | peak req |", "|---|---:|---:|---:|---:|---|---:|"]
+          for w in sorted(per):
+              hs = per[w]; t = sum(v["req"] for v in hs.values()); pk = max(hs, key=lambda k: hs[k]["req"])
+              summ.append(f"| {w} | {t} | {sum(v['err'] for v in hs.values())} | {sum(v['sub'] for v in hs.values())} | {t / hours:.0f} | {pk} | {hs[pk]['req']} |")
+          out = []
+          for w in sorted(per):
+              out += ["", f"### {w}", "", "| hour | req | err | sub | cpu p50 ms | cpu p99 ms |", "|---|---:|---:|---:|---:|---:|"]
+              for h in sorted(per[w]):
+                  v = per[w][h]; out.append(f"| {h} | {v['req']} | {v['err']} | {v['sub']} | {v['p50'] / 1000:.1f} | {v['p99'] / 1000:.1f} |")
+          text = "\n".join(head + summ + out); print("\n".join(head + out + ["", "Totals:"] + summ))
+          p = os.environ.get("GITHUB_STEP_SUMMARY")
+          if p: open(p, "a").write(text + "\n")
+          PY
+          python3 /tmp/cfusage.py
