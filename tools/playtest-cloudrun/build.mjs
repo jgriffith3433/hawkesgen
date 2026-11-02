@@ -51,6 +51,9 @@ console.log(`\nBuild context written to ${dir} (${Object.keys(ctx.files).join(',
 gcloud(args, [
   'builds', 'submit', dir, `--project=${args.project}`, `--region=${args.region}`, `--tag=${tag}`,
   ...(machine === 'default' ? [] : [`--machine-type=${machine}`]), '--timeout=1800s',
+  // As tools/gen-cloudrun/build.mjs: a named staging folder, so gcloud doesn't check the default bucket's owner. Without it
+  // gen-deployer (GitHub's deploys) was refused "forbidden from accessing the bucket [hawkes-staging_cloudbuild]" (2026-11-02).
+  `--gcs-source-staging-dir=gs://${args.project}_cloudbuild/source`,
 ]);
 if (!args.apply) {
   console.log('\nDry run: nothing built. Add --apply to build (Cloud Build minutes, J\'s OK).');
