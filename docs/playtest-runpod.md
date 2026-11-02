@@ -92,7 +92,10 @@ connection, the video encoded on the worker (NVENC) over `/encode`. Only the hea
 Web playtests try browser providers in `settings.playtest.order` (Studio's playtest setting writes it through
 `PUT /v1/playtest/capacity`): `runpod`, `modal`, `cloudrun` (the L4 service), `cloudrun-cpu` (software WebGL). Software is
 always moved last, so a game takes any GPU first; ids in `settings.playtest.disabled` are left out; a project's own backend
-(`settings.playtest.projects`) still wins. Empty order: `backend` decides as before. A provider that is out of credit
+(`settings.playtest.projects`) still wins. Empty order: `backend`'s own GPU first, then every other GPU provider that is set
+up (runpod: RunPod, Modal, the L4, then software; cloudrun: the L4, RunPod, Modal, then software), so a second GPU is
+the fallback without setting an order (2026-11-02). A run that still lands in software lists the GPU providers with no
+playtest browser set up in its reason ("modal: no Modal playtest browser deployed ..."). A provider that is out of credit
 (RunPod's balance, `gpu/credit.ts`) is skipped with the reason, and one that refused us for money or a key (a 402, a spend
 limit, 401/403) cools down for 30 minutes (`playtest:<id>` in `gpu/health.ts`), so the next playtests go straight to the
 next provider. The queue's lane follows the first provider a run will actually use.

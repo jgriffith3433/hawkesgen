@@ -54,7 +54,8 @@ test('the provider order: known ids once, software WebGL always last', () => {
 test('cloudPlaytestsFor: the order when set (disabled ones out), else the backend; a project\'s own backend wins', () => {
   const base = { ...SETTINGS_DEFAULTS.playtest, backend: 'runpod' as const, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, url: RP }, modal: { ...SETTINGS_DEFAULTS.playtest.modal, url: MODAL }, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, url: L4_URL }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, url: CPU_URL } };
   const variants = (t: any, project: string | null = null) => pc.cloudPlaytestsFor(project, { playtest: t }, specs).map((c) => c.variant);
-  assert.deepEqual(variants(base), ['runpod', 'cpu'], 'no order: the backend rule as before');
+  assert.deepEqual(variants(base), ['runpod', 'modal', 'gpu', 'cpu'], 'no order: the backend\'s GPU first, then every other GPU provider set up, then software');
+  assert.deepEqual(variants({ ...base, backend: 'cloudrun' }), ['gpu', 'runpod', 'modal', 'cpu'], 'the L4 backend falls back to the other GPUs too');
   assert.deepEqual(variants({ ...base, order: ['runpod', 'modal', 'cloudrun-cpu'] }), ['runpod', 'modal', 'cpu']);
   assert.deepEqual(variants({ ...base, order: ['modal', 'runpod', 'cloudrun', 'cloudrun-cpu'], disabled: ['runpod'] }), ['modal', 'gpu', 'cpu']);
   assert.deepEqual(variants({ ...base, order: ['modal', 'cloudrun-cpu'], modal: { ...base.modal, url: null } }), ['cpu'], 'Modal not deployed: skipped');
@@ -177,4 +178,22 @@ test('the deploy script: a scale-to-zero GPU web endpoint behind proxy auth, wit
   assert.match(py, /modal\.Secret\.from_name\("hawkes-gen-playtest"\)/);
   assert.doesNotMatch(py, /min_containers|keep_warm|secret-value/);
   assert.equal(pricePerHour('L4'), 1.12);
+});
+
+test('RunPod out of credit with no other GPU set up: the runner router says which GPU providers are missing', async () => {
+  const { runnerCandidates, resetRunners } = await import('../src/providers/playtester/runners.ts');
+  resetRunners();
+  resetHealth();
+  setRunpodCredit({ balance: -0.006, at: Date.now() });
+  const t = { ...SETTINGS_DEFAULTS.playtest, backend: 'runpod' as const, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, url: RP }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, url: CPU_URL } };
+  const get = (k: string) => (ENV as Record<string, string>)[k];
+  const c = runnerCandidates({ project: null }, 'web', 'studio', { playtest: t }, { get, specs });
+  assert.deepEqual(c.choices.map((x) => x.runner.provider), ['cloudrun-cpu'], 'only software is left');
+  assert.ok(c.skipped.some((s) => /^runpod.*out of credit/.test(s)), c.skipped.join(' | '));
+  assert.ok(c.skipped.some((s) => /^modal: no Modal playtest browser deployed/.test(s)), c.skipped.join(' | '));
+  assert.ok(c.skipped.some((s) => /^cloudrun: no L4/.test(s)), c.skipped.join(' | '));
+  // With Modal deployed, it is the fallback before software, without setting an order.
+  const withModal = runnerCandidates({ project: null }, 'web', 'studio', { playtest: { ...t, modal: { ...t.modal, url: MODAL } } }, { get, specs });
+  assert.deepEqual(withModal.choices.map((x) => x.runner.provider), ['modal', 'cloudrun-cpu']);
+  setRunpodCredit(null);
 });
