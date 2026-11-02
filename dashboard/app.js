@@ -2,6 +2,7 @@
 // /v1/events (server-sent events).
 
 import { benchTab } from './bench.js';
+import { openStream } from '/gen/stream.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -101,18 +102,17 @@ window.addEventListener('hashchange', () => { const t = location.hash.slice(1); 
 const state = { jobs: new Map(), tools: [], projects: new Set() };
 
 // ---------------------------------------------------------------- live
+// Reopened with a growing wait after a restart or a deploy (/gen/stream.js); the open tab redraws once it's back.
 function connect() {
-  const es = new EventSource('/v1/events');
-  es.onopen = () => { $('#live').textContent = 'live'; $('#live').className = 'pill ok'; };
-  es.onerror = () => { $('#live').textContent = 'reconnecting…'; $('#live').className = 'pill warn'; };
-  es.addEventListener('job', (e) => {
-    const j = JSON.parse(e.data);
+  const pill = (s) => { $('#live').textContent = s === 'live' ? 'live' : 'reconnecting…'; $('#live').className = s === 'live' ? 'pill ok' : 'pill warn'; };
+  openStream({ job: (j) => {
+    if (!j?.id) return;
     state.jobs.set(j.id, j);
     state.projects.add(j.project);
     if (current === 'jobs' || current === 'overview' || (current === 'playtests' && j.tool === 'playtest.run')) scheduleRender();
     const open = $('#modalBody [data-job]');
     if (open?.dataset.job === j.id && $('#modal').open) showJob(j.id, true);
-  });
+  } }, { onState: pill, onReconnect: scheduleRender });
 }
 let pending = null;
 function scheduleRender() {

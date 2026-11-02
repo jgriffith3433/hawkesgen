@@ -10,8 +10,10 @@ mkdir -p /data
 # old revision lives on for a while) has stopped writing and made its last sync, then restore what it left.
 LEASE=0
 node --disable-warning=ExperimentalWarning src/cloudlease.ts claim || LEASE=$?
-# A newer revision holds the databases (this is a stray instance of an old one): don't start, don't write.
-if [ "$LEASE" = 3 ]; then echo "[lease] a newer revision holds the database: this old one stays down"; exit 0; fi
+# A newer revision holds the databases (this is a stray instance of an old one): don't start Gen, don't write. Answer
+# "restarting" until Cloud Run moves the traffic and stops this copy (standby.mjs); exiting made every request in a
+# deploy's handover Google's HTML error page.
+if [ "$LEASE" = 3 ]; then echo "[lease] a newer revision holds the database: this old one stays down (standby)"; exec node server/gen-cloudrun/standby.mjs; fi
 for db in hawkesgen.db analytics.db; do
   GEN=$(cat "/tmp/hawkes-restore-generation-$db" 2>/dev/null || true)
   litestream restore -config /etc/litestream.yml -if-db-not-exists -if-replica-exists ${GEN:+-generation "$GEN"} "/data/$db"
