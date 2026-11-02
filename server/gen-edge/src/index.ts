@@ -71,7 +71,11 @@ async function forward(request: Request, target: string, body: BodyInit | null):
       console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname} to ${new URL(target).hostname} failed: ${(e as Error)?.message ?? e}`);
       return unreachable(request);
     }
-    if (!restarting(r)) return r;
+    if (!restarting(r)) {
+      // Workers Logs keep only error lines (wrangler.jsonc): a 5xx from Gen is one, a routine hit is never logged.
+      if (r.status >= 500) console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname}: ${r.status} from ${new URL(target).hostname}`);
+      return r;
+    }
     if (!read || i >= RETRY_WAITS.length) {
       console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname}: Gen restarting (${r.status})${read ? ' after the waits' : ''}`);
       return stillRestarting(request);

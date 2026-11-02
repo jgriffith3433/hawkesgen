@@ -7,7 +7,7 @@ import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
 import { touchDrag } from './dragdrop.js';
-import { openStream } from './stream.js';
+import { jobWatch } from './jobwatch.js';
 
 // picked: the tiles the person picked, by asset id with what the AI is told about each (J, 2026-10-30: they were
 // dropped whenever Media refreshed, and the AI didn't know about them).
@@ -63,13 +63,14 @@ export function showPane(name) {
  * Gen's job stream (GET /v1/events, this account's jobs only) while the page is on screen: a job that finishes
  * reloads Media. Closed while the page is hidden, so an open tab in the background never keeps Gen awake.
  */
-let stream = null;
+let stopJobs = null;
 function followJobs() {
   const want = Boolean(state.user) && !document.hidden;
-  if (!want) { stream?.close(); stream = null; return; }
-  if (stream) return;
-  // Reopened after a restart or a deploy (stream.js); what finished meanwhile shows on the reload after it.
-  stream = openStream({ job: (j) => { if (j?.status === 'done') loadMediaSoon(); } }, { onReconnect: loadMediaSoon });
+  if (!want) { stopJobs?.(); stopJobs = null; return; }
+  if (stopJobs) return;
+  // The page's one stream (jobwatch.js), reopened after a restart or a deploy; what finished meanwhile shows on the reload.
+  const asked = jobWatch().then((w) => w.listen((j) => { if (j?.status === 'done') loadMediaSoon(); }, loadMediaSoon));
+  stopJobs = () => { void asked.then((stop) => stop()); };
 }
 let soonT = 0;
 const loadMediaSoon = () => { clearTimeout(soonT); soonT = setTimeout(loadMedia, 700); };
@@ -268,14 +269,11 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart, 
     }
   }, 'login'));
 }
+/** Waits for a job through the page's live stream (jobwatch.js): no asking on a timer. */
 export async function waitJob(id, onStep) {
-  for (;;) {
-    const j = await api(`/v1/jobs/${id}`);
-    if (j.status === 'done') return j;
-    if (j.status === 'failed' || j.status === 'cancelled') throw new ApiError(j.error || `The job was ${j.status}`, 0);
-    onStep?.(jobStatusText(j));
-    await new Promise((r) => setTimeout(r, 1500));
-  }
+  const j = await (await jobWatch()).follow(id, onStep ? (x) => onStep(jobStatusText(x)) : undefined);
+  if (j.status === 'done') return j;
+  throw new ApiError(j.error || `The job was ${j.status}`, 0);
 }
 export async function quote(tool, params) {
   if (!state.user) return null;

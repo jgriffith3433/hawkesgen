@@ -200,3 +200,13 @@ test('a Unity customer build is charged its flat price (per machine size) the sa
   assert.equal(big.status, 200, JSON.stringify(big.body));
   assert.equal(charges().at(-1).body.credits, 100);
 });
+
+test("Studio's public names are called on Cloud Run directly, never through Cloudflare", async () => {
+  const { directControlUrl } = await import('../src/orgcredits.ts');
+  assert.equal(directControlUrl('https://studio.hawkesgen.ai'), 'https://studio-388576319982.us-east4.run.app');
+  assert.equal(directControlUrl('https://studio-beta.hawkesgen.ai'), 'https://studio-beta-388576319982.us-central1.run.app');
+  assert.equal(directControlUrl('http://127.0.0.1:9'), 'http://127.0.0.1:9');
+  process.env.HAWKESGEN_ORG_CREDITS_DIRECT = '0';
+  try { assert.equal(directControlUrl('https://studio.hawkesgen.ai'), 'https://studio.hawkesgen.ai'); }
+  finally { delete process.env.HAWKESGEN_ORG_CREDITS_DIRECT; }
+});

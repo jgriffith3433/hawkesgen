@@ -26,9 +26,22 @@ const ORG_ID = /^org_[0-9a-f]{8,32}$/;
 
 export type OrgCharge = { org: string; credits: number };
 
+/**
+ * Studio's public names (Cloudflare Workers, server/studio-edge in hawkesstudio) and the Cloud Run services behind them.
+ * Gen calls the control plane for every charged job and refund: server to server, so straight to Cloud Run and never
+ * through a Cloudflare Worker (2026-11-02: Workers usage must grow with people, not with Gen's own calls). Studio's gate
+ * lets /api/cells/gen/charge and /refund through on its own address too (hawkesstudio src/cloudauth.ts). Settings keep
+ * the public name (what people read); HAWKESGEN_ORG_CREDITS_DIRECT=0 calls it as written.
+ */
+const STUDIO_DIRECT: Record<string, string> = {
+  'https://studio.hawkesgen.ai': 'https://studio-388576319982.us-east4.run.app',
+  'https://studio-beta.hawkesgen.ai': 'https://studio-beta-388576319982.us-central1.run.app',
+};
+export const directControlUrl = (url: string) => (env('HAWKESGEN_ORG_CREDITS_DIRECT') === '0' ? url : STUDIO_DIRECT[url.toLowerCase()] ?? url);
+
 /** The control plane's address and key, or null when Gen doesn't charge orgs (older setup: the cell charges itself). */
 export function orgCreditsConfig(): { url: string; key: string } | null {
-  const url = (loadSettings().orgCredits?.url || env('HAWKESGEN_ORG_CREDITS_URL') || '').trim().replace(/\/+$/, '');
+  const url = directControlUrl((loadSettings().orgCredits?.url || env('HAWKESGEN_ORG_CREDITS_URL') || '').trim().replace(/\/+$/, ''));
   const key = (env('HAWKESGEN_ORG_CREDITS_KEY') || '').trim();
   return url && key ? { url, key } : null;
 }
