@@ -1,0 +1,90 @@
+# Read-only: what the Modal playtest browser is doing. The app's deploy state, its containers, its logs for a minute or
+# two, and (probe=true) one request each to its /healthz, /ready and /selftest through Modal's proxy auth while the logs
+# are read, so a cold start's own output (the server, the GPU self-test, a crash) is in the run. A probe may start one
+# container until it scales down (about a minute on an L4: a couple of cents); without it nothing starts.
+# Production environment (the Modal token is there), like ops-modal-playtest-deploy. Changes nothing.
+#   gh workflow run ops-modal-status.yml --repo jgriffith3433/hawkesgen --ref main -f probe=true
+name: ops-modal-status
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: The Modal app
+        type: string
+        default: hawkes-gen-playtest
+      url:
+        description: The web endpoint to probe (tools/playtest-modal/deploy.mjs prints it)
+        type: string
+        default: https://piercehawkes3--hawkes-gen-playtest-browser.us-east.modal.run
+      seconds:
+        description: How long to read the logs (30 to 600)
+        type: number
+        default: 240
+      probe:
+        description: Also request /healthz, /ready and /selftest (may start one container)
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: ops-modal-status
+  cancel-in-progress: true
+jobs:
+  status:
+    name: Modal playtest browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Check the inputs
+        env:
+          APP: ${{ inputs.app }}
+          URL: ${{ inputs.url }}
+          SECS: ${{ inputs.seconds }}
+        run: |
+          [[ "$APP" =~ ^[a-z0-9-]{3,40}$ ]] || { echo "app: lower-case letters, digits and dashes"; exit 1; }
+          [[ "$URL" =~ ^https://[a-z0-9-]+--[a-z0-9-]+(\.[a-z]{2}-[a-z]+[0-9]?)?\.modal\.run$ ]] || { echo "url must be a modal.run web endpoint"; exit 1; }
+          [[ "$SECS" =~ ^[0-9]+$ ]] && (( SECS >= 30 && SECS <= 600 )) || { echo "seconds: 30 to 600"; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet modal
+      - name: The app and its containers
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          [ -n "$MODAL_TOKEN_ID" ] || { echo "MODAL_TOKEN_ID is not set in the production environment"; exit 1; }
+          echo '### modal app list' | tee -a "$GITHUB_STEP_SUMMARY"
+          modal app list 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '### modal container list' | tee -a "$GITHUB_STEP_SUMMARY"
+          modal container list 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: Logs (and the probe while they are read)
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          MODAL_PROXY_KEY: ${{ secrets.MODAL_PROXY_KEY }}
+          MODAL_PROXY_SECRET: ${{ secrets.MODAL_PROXY_SECRET }}
+          HAWKES_TOKEN: ${{ secrets.GPU_WORKER_TOKEN }}
+          APP: ${{ inputs.app }}
+          URL: ${{ inputs.url }}
+          SECS: ${{ inputs.seconds }}
+          PROBE: ${{ inputs.probe }}
+        run: |
+          timeout "$SECS" modal app logs "$APP" --timestamps > logs.txt 2>&1 &
+          logs=$!
+          if [ "$PROBE" = true ]; then
+            [ -n "$MODAL_PROXY_KEY" ] || echo "MODAL_PROXY_KEY is not set here: Modal's gateway will refuse the probe (401)"
+            for p in healthz ready selftest; do
+              code=$(curl -s -o body.txt -w '%{http_code} in %{time_total} s' --max-time $(( SECS - 20 > 30 ? SECS - 20 : 30 )) \
+                -H "Modal-Key: $MODAL_PROXY_KEY" -H "Modal-Secret: $MODAL_PROXY_SECRET" -H "X-Hawkes-Token: $HAWKES_TOKEN" "$URL/$p" || echo "no answer")
+              echo "GET /$p: $code" | tee -a "$GITHUB_STEP_SUMMARY"
+              head -c 3000 body.txt | tee -a "$GITHUB_STEP_SUMMARY"; echo | tee -a "$GITHUB_STEP_SUMMARY"
+            done
+            rm -f body.txt
+          fi
+          wait "$logs" || true
+          echo '### Logs' >> "$GITHUB_STEP_SUMMARY"
+          echo "$(wc -l < logs.txt) lines"
+          cat logs.txt
+          { echo '```'; tail -n 200 logs.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
