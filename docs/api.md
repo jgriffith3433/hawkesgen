@@ -106,7 +106,7 @@ only on runners that take customers' builds (never in a browser on Gen's machine
 | `PATCH /v1/versions/:id` | `{ status: current \| take \| old \| discarded, note? }` |
 
 Job inputs and chain steps take `slot:<project>/<slug>/<slot>[@n|@latest]` and, in an entity's own recipes, `slot:./<slot>`.
-`GET /v1/events` also streams `library` events.
+`GET /v1/events` also streams `library` events. It also sends `scene` (`{ id, project, kind, version }`: a scene was saved; read it if yours is older), and, to admins only, `machines` (`{ at }`: a reading was taken) and `bench` (`{ run }`: a run or a result moved on). Pages use these instead of asking on a timer; the stream sends `retry: 5000` and a `: ping` every 20 s, with `Cache-Control: no-transform` and `X-Accel-Buffering: no`, so nothing on the way holds it back (the gen-edge Worker streams it through; test/no-polling.test.ts).
 
 ## Levels of detail (src/lod.ts)
 

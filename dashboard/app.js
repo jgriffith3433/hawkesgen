@@ -112,7 +112,19 @@ function connect() {
     if (current === 'jobs' || current === 'overview' || (current === 'playtests' && j.tool === 'playtest.run')) scheduleRender();
     const open = $('#modalBody [data-job]');
     if (open?.dataset.job === j.id && $('#modal').open) showJob(j.id, true);
-  } }, { onState: pill, onReconnect: scheduleRender });
+  },
+  // The Fleet and Machines tabs redraw when the server took a reading (about every minute while machines run); the Bench
+  // tab when a run moved on. Nothing asks on a timer (J, 2026-11-02: no polling).
+  machines: () => { if (['fleet', 'machines'].includes(current) && !$('#modal').open) redrawMachines(); },
+  bench: () => document.dispatchEvent(new CustomEvent('gen:bench')),
+  }, { onState: pill, onReconnect: () => { scheduleRender(); redrawMachines(); document.dispatchEvent(new CustomEvent('gen:bench')); } });
+}
+/** The open Fleet or Machines tab, from the reading the server just took (no new measuring over SSH). */
+let lastMachines = 0;
+function redrawMachines() {
+  if (!['fleet', 'machines'].includes(current) || $('#modal').open || Date.now() - lastMachines < 2000) return;
+  lastMachines = Date.now();
+  render[current](false).catch(() => {});
 }
 let pending = null;
 function scheduleRender() {
@@ -613,16 +625,17 @@ function machineCard(m, h1, h24) {
   return `<div class="card">${head}<div class="small muted">${esc(m.id)}${facts.length ? ` · ${facts.join(' · ')}` : ''}</div>${connect}${jobs}${err}${table}</div>`;
 }
 
-render.machines = async () => {
-  const [r, h1, h24] = await Promise.all([api('/machines?live=1'), api('/machines/history?hours=1&points=60'), api('/machines/history?hours=24&points=96')]);
+render.machines = async (live = true) => {
+  lastMachines = Date.now();
+  const [r, h1, h24] = await Promise.all([api(live ? '/machines?live=1' : '/machines'), api('/machines/history?hours=1&points=60'), api('/machines/history?hours=24&points=96')]);
   const order = { gpu: 0, builder: 1, playtester: 2 };
   const list = [...r.machines].sort((a, b) => (a.state === 'running' ? 0 : 1) - (b.state === 'running' ? 0 : 1) || order[a.kind] - order[b.kind]);
   const running = list.filter((m) => m.state === 'running');
   const perHour = running.reduce((n, m) => n + m.pricePerHour, 0);
-  $('#machines').innerHTML = `<div class="row spread"><h2>Machines <span class="small muted">${running.length} running · ${money(perHour)}/hr</span></h2><span class="small muted">measured ${esc(new Date(r.at).toLocaleTimeString())} · refreshes every 15 s</span></div>
+  $('#machines').innerHTML = `<div class="row spread"><h2>Machines <span class="small muted">${running.length} running · ${money(perHour)}/hr</span></h2><span class="small muted">measured ${esc(new Date(r.at).toLocaleTimeString())} · updates as the server measures</span></div>
     <div class="card"><h3>Needs action</h3>${r.alerts.length ? `<table><thead><tr><th>What</th></tr></thead><tbody>${r.alerts.map((a) => `<tr><td><b style="color:var(--${a.level})">${esc(a.text)}</b></td></tr>`).join('')}</tbody></table>` : '<p class="small muted">Nothing: every running machine answers, no disk over 90%, nothing idle for 30 minutes.</p>'}</div>
     ${list.map((m) => machineCard(m, h1.machines[m.id], h24.machines[m.id])).join('')}
-    <p class="small muted">Running machines are measured over SSH every minute (kept 7 days) and every 15 s while this page is open. Stopped machines are never started to measure them. The control server itself is on Studio's Resources page.</p>`;
+    <p class="small muted">Running machines are measured over SSH every minute (kept 7 days); this page redraws when the server takes a reading. Stopped machines are never started to measure them. The control server itself is on Studio's Resources page.</p>`;
   for (const b of document.querySelectorAll('#machines [data-m-rdp]')) b.onclick = () => remoteDesktop(() => render.machines()).catch(fail);
   for (const b of document.querySelectorAll('#machines [data-m-pw]')) b.onclick = () => showBuilderPassword().catch(fail);
   for (const b of document.querySelectorAll('#machines [data-m-ssh]')) b.onclick = () => copySsh(b.dataset.mSsh).catch(fail);
@@ -1088,4 +1101,3 @@ api('/tools').then((r) => { state.tools = r.tools; }).catch(() => {}).finally(()
 // ---------------------------------------------------------------- bench: Gen Bench (dashboard/bench.js, docs/bench.md)
 render.bench = benchTab({ $, esc, ago, api, post, toast, fail, modal, mediaTag, me: () => api('/me') });
 
-setInterval(() => { if (['fleet', 'machines'].includes(current) && !$('#modal').open) render[current]().catch(() => {}); }, 15000);

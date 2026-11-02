@@ -460,14 +460,21 @@ async function followJob(jobId) {
   bus.emit('jobDone', j);
 }
 
+/** Reads the open project once and takes it when someone else saved a newer one (the AI, MCP, another tab). */
+async function catchUp() {
+  if (!P.id || !P.active || document.hidden || P.dirty || P.saving) return;
+  try {
+    const p = await api(`/v1/editor/projects/${P.id}`);
+    if (p.id === P.id && p.version > P.version && !P.dirty) { take(p); toast('Updated with changes made elsewhere.'); }
+  } catch { /* offline: the next event or reconnect reads it */ }
+}
+
 export function startSync() {
-  setInterval(async () => {
-    if (!P.id || !P.active || document.hidden || P.dirty || P.saving) return;
-    try {
-      const p = await api(`/v1/editor/projects/${P.id}`);
-      if (p.id === P.id && p.version > P.version && !P.dirty) { take(p); toast('Updated with changes made elsewhere.'); }
-    } catch { /* offline: try later */ }
-  }, 8000);
+  // Edits made elsewhere arrive as `scene` events on the page's one stream (GET /v1/events): nothing asks on a timer.
+  // One read when the stream comes back from a drop or the page is shown again, for what was missed.
+  import('./jobwatch.js').then(({ jobWatch }) => jobWatch()).then((w) => w.on('scene', (e) => {
+    if (e?.id === P.id && e.version > P.version) catchUp();
+  }, catchUp));
   bus.on('doc', watchJobs);
   // Clips that were already waiting when the page opened are followed now, not at the next change.
   watchJobs();

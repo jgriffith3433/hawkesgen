@@ -2,6 +2,7 @@
 // "baseline"), J's ratings, and the cast's reference pictures.
 
 import { db } from '../db.ts';
+import { events } from '../bus.ts';
 import { id } from '../util.ts';
 import type { QualityReport } from '../quality/index.ts';
 
@@ -99,6 +100,7 @@ export function updateRun(runId: string, patch: Partial<Pick<RunRow, 'status' | 
   const row: Record<string, any> = { id: runId };
   for (const [k, v] of Object.entries(patch)) row[k] = k === 'summary' ? JSON.stringify(v) : v ?? null;
   db.prepare(`UPDATE bench_runs SET ${sets.join(', ')} WHERE id = :id`).run(row);
+  events.emit('bench', { run: runId });
 }
 
 /** The baseline's run for a label ("Kling 3 + Nano Banana"): one per label, made on first upload. */
@@ -115,6 +117,7 @@ export function addResult(r: { run: string; brief: string; briefVersion?: number
   const resultId = id('bx', 6);
   db.prepare('INSERT INTO bench_results (id, run, brief, brief_version, source, asset, kind, status, credits, cost, seconds, error, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(resultId, r.run, r.brief, r.briefVersion ?? 1, r.source, r.asset, r.kind, r.error ? 'failed' : 'scoring', r.credits ?? 0, r.cost ?? 0, r.seconds ?? 0, r.error ?? null, Date.now());
+  events.emit('bench', { run: r.run });
   return getResult(resultId)!;
 }
 
@@ -131,10 +134,18 @@ export function scoreResult(resultId: string, report: QualityReport) {
     report.checklist && !report.checklist.skipped ? report.checklist.score : null,
     report.style?.score ?? null, report.faults ? report.faults.faults.length : null, resultId,
   );
+  tellBench(resultId);
+}
+
+/** The admin Bench tab hears of a result that moved on (GET /v1/events, event `bench`). */
+function tellBench(resultId: string) {
+  const row = db.prepare('SELECT run FROM bench_results WHERE id = ?').get(resultId) as any;
+  if (row) events.emit('bench', { run: row.run });
 }
 
 export function failResult(resultId: string, error: string) {
   db.prepare("UPDATE bench_results SET status = 'failed', error = ? WHERE id = ?").run(error.slice(0, 500), resultId);
+  tellBench(resultId);
 }
 
 export function listResults(q: { run?: string; brief?: string; source?: 'gen' | 'baseline'; rated?: boolean } = {}): ResultRow[] {

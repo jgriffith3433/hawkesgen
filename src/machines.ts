@@ -5,6 +5,7 @@
 // days in machine_samples) and more often while someone has the page open (live=1).
 
 import { db } from './db.ts';
+import { events } from './bus.ts';
 import { getJob, listJobs, queue } from './jobs.ts';
 import * as fleet from './providers/comfy/fleet.ts';
 import * as builder from './providers/builder/builder.ts';
@@ -278,7 +279,7 @@ async function collect(maxAge: number): Promise<Machine[]> {
         latest.set(m.id, { metrics: null, error: String(e?.message ?? e).slice(0, 300), at: Date.now() });
       }
     }));
-    if (!fresh) lastRound = Date.now();
+    if (!fresh) { lastRound = Date.now(); events.emit('machines', { at: lastRound }); } // open admin tabs redraw on GET /v1/events
     return list.map(({ found, lookup, ...m }) => {
       const r = m.state === 'running' ? latest.get(m.id) : undefined;
       return { ...m, metrics: r?.metrics ?? null, error: lookup ?? r?.error ?? null, idle: m.state === 'running' ? idleOf(r?.metrics ?? null, m.disposable, m.jobs.length > 0) : null };

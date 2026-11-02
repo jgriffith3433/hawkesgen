@@ -18,6 +18,8 @@ export function createJobWatch({ fetchJob, openStream = realOpenStream, hidden =
   const following = new Map();
   /** { onJob, onReconnect } */
   const listeners = new Set();
+  /** event name -> Set of { fn, onReconnect }: the stream's other events (scene, production ...) for pages that want them */
+  const topics = new Map();
   let stream = null;
 
   function finish(id, j) {
@@ -51,13 +53,20 @@ export function createJobWatch({ fetchJob, openStream = realOpenStream, hidden =
     if (ended(merged)) { void read(j.id); return; }
     tell(w, merged);
   }
+  function onTopic(name) {
+    return (data) => { for (const t of topics.get(name) ?? []) { try { t.fn(data); } catch { /* as above */ } } };
+  }
+  function topicsOpen() { return [...topics.values()].some((set) => set.size > 0); }
   function readAll() { for (const id of [...following.keys()]) void read(id); }
-  function tellReconnect() { for (const l of listeners) { try { l.onReconnect?.(); } catch { /* as above */ } } }
+  function tellReconnect() {
+    for (const l of listeners) { try { l.onReconnect?.(); } catch { /* as above */ } }
+    for (const set of topics.values()) for (const t of set) { try { t.onReconnect?.(); } catch { /* as above */ } }
+  }
   function update() {
-    const want = !hidden() && (following.size > 0 || listeners.size > 0);
+    const want = !hidden() && (following.size > 0 || listeners.size > 0 || topicsOpen());
     if (!want) { stream?.close(); stream = null; return; }
     // Each time the stream opens (the first time too) the followed jobs are read once: an end that came before it is seen.
-    if (!stream) stream = openStream({ job: onJob }, { onState: (st) => { if (st === 'live') readAll(); }, onReconnect: tellReconnect });
+    if (!stream) stream = openStream({ job: onJob, scene: onTopic('scene'), production: onTopic('production') }, { onState: (st) => { if (st === 'live') readAll(); }, onReconnect: tellReconnect });
   }
   let wasHidden = hidden();
   onVisible(() => {
@@ -99,6 +108,17 @@ export function createJobWatch({ fetchJob, openStream = realOpenStream, hidden =
       listeners.add(l);
       update();
       return () => { listeners.delete(l); update(); };
+    },
+    /**
+     * One of the stream's other events ('scene': { id, project, kind, version }; 'production') while the page is on screen.
+     * onReconnect after a drop or coming back on screen: read what you show once. Returns stop.
+     */
+    on(name, fn, onReconnect) {
+      const t = { fn, onReconnect };
+      if (!topics.has(name)) topics.set(name, new Set());
+      topics.get(name).add(t);
+      update();
+      return () => { topics.get(name)?.delete(t); update(); };
     },
     /** For tests and the page: how many jobs are followed, and whether the stream is open. */
     get following() { return following.size; },
