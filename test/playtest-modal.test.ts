@@ -258,3 +258,16 @@ test('main redeploys Modal by itself: playtest-image.yml builds on main and call
   assert.match(deploy, /environment: production/);
   assert.match(deploy, /default: ghcr\.io\/jgriffith3433\/hawkes-gen-playtest:latest/);
 });
+
+test('a gateway that never gave a browser in its whole first wait cools down; later short tries and runners do not', async () => {
+  const { providerCooldownMs, GATEWAY_STUCK_COOLDOWN_MS } = await import('../src/providers/comfy/playtestHost.ts');
+  const deps = { refusedForMoney: (w: string) => /\b402\b/.test(w), runnerCooldown: (w: string) => (/401/.test(w) ? 30 * 60_000 : 10 * 60_000) };
+  const stuck = 'Modal playtest service: browserType.connect: Timeout 110995ms exceeded.';
+  assert.equal(providerCooldownMs({ variant: 'modal' }, stuck, deps), GATEWAY_STUCK_COOLDOWN_MS);
+  assert.equal(providerCooldownMs({ variant: 'runpod' }, stuck, deps), GATEWAY_STUCK_COOLDOWN_MS);
+  assert.equal(providerCooldownMs({ variant: 'modal' }, stuck, { ...deps, round: 2 }), null, 'a later round tries for 40 s only');
+  assert.equal(providerCooldownMs({ variant: 'modal', runner: 'modal-a' }, stuck, deps), null, 'a runner cools down under its own key');
+  assert.equal(providerCooldownMs({ variant: 'cpu' }, stuck, deps), null);
+  assert.equal(providerCooldownMs({ variant: 'modal' }, 'Modal playtest service: 402 Payment Required', deps), 30 * 60_000);
+  assert.equal(providerCooldownMs({ variant: 'modal' }, 'Modal playtest service: 503 Service Unavailable', deps), null);
+});

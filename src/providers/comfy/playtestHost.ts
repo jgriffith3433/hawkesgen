@@ -97,6 +97,22 @@ export function connectWaitMs(cloud: { variant?: string }, round: number, { many
   return many ? 40_000 : undefined;
 }
 
+/**
+ * How long a GPU browser provider is skipped after it failed us, when it isn't a router's runner (null: not at all).
+ * Out of credit or refusing our key: the runner cooldowns. A RunPod or Modal gateway that held every handshake for the
+ * whole cold-start wait and never gave a browser (2026-11-02: Modal timed out at connect on every playtest for hours,
+ * each one waiting 12 minutes before software WebGL): 30 minutes, so the playtests after it go to the next provider at
+ * once and one run tries the provider again when the cooldown ends. Only the first round's full wait counts: a later
+ * round's short try (40 s) timing out says nothing about the provider.
+ */
+export const GATEWAY_STUCK_COOLDOWN_MS = 30 * 60_000;
+export function providerCooldownMs(cloud: { variant?: string; runner?: string }, why: string, { refusedForMoney, runnerCooldown, round = 1 }: { refusedForMoney: (w: string) => boolean; runnerCooldown: (w: string) => number; round?: number }): number | null {
+  if (cloud.runner || !cloud.variant || cloud.variant === 'cpu') return null;
+  if (refusedForMoney(why) || /\b(401|403)\b|Unauthorized|Forbidden/i.test(why)) return runnerCooldown(refusedForMoney(why) ? '401' : why);
+  if (round === 1 && (cloud.variant === 'runpod' || cloud.variant === 'modal') && /Timeout \d+ ?ms exceeded/i.test(why)) return GATEWAY_STUCK_COOLDOWN_MS;
+  return null;
+}
+
 /** A run in software says why no GPU browser played it (the CPU service's own note after the reasons). */
 export const softwareWhy = (base: string, passedOver: string[]) => `no GPU browser (${passedOver.join('; ')}), so it ${base}`.slice(0, 600);
 
@@ -167,7 +183,11 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
         if (cloud.runner && round === 1 && !/Build Failed/.test(why)) markDown(runnerHealthKey(cloud.runner), why.slice(0, 200), runnerCooldown(why));
         // A provider out of credit or refusing our key cools down too when it isn't a router's runner, so the next
         // playtests go straight to the next provider (RunPod's balance is read on its own: gpu/credit.ts).
-        else if (!cloud.runner && cloud.variant !== 'cpu' && (refusedForMoney(why) || /\b(401|403)\b|Unauthorized|Forbidden/i.test(why))) markDown(providerHealthKey(cloud.variant), why.slice(0, 200), runnerCooldown(refusedForMoney(why) ? '401' : why));
+        // A gateway that held every handshake through the whole cold-start wait cools down as well (providerCooldownMs).
+        else {
+          const ms = providerCooldownMs(cloud, why, { refusedForMoney, runnerCooldown, round });
+          if (ms) markDown(providerHealthKey(cloud.variant), why.slice(0, 200), ms);
+        }
         const nxt = clouds[i + 1] ?? (many && Date.now() < end ? clouds[0] : null);
         step(`no browser on ${cloud.name} in ${cloud.region} (${why.slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : fallback ? 'using the playtesters' : 'no other runner'}`);
       }
