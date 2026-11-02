@@ -60,7 +60,10 @@ fs.mkdirSync(STATE_DIR, { recursive: true });
 fs.writeFileSync(file, JSON.stringify(yaml, null, 2));
 console.log(`service definition: ${file}`);
 gcloud(args, ['run', 'services', 'replace', file, `--project=${args.project}`, `--region=${args.region}`]);
-gcloud(args, ['run', 'services', 'add-iam-policy-binding', spec.name, `--project=${args.project}`, `--region=${args.region}`, `--member=serviceAccount:${genSa}`, '--role=roles/run.invoker']);
+const bind = ['run', 'services', 'add-iam-policy-binding', spec.name, `--project=${args.project}`, `--region=${args.region}`, `--member=serviceAccount:${genSa}`, '--role=roles/run.invoker'];
+// GitHub's deployer (roles/run.developer) may not set a service's IAM policy: the service is up either way, and the line
+// below says what its owner runs once so Gen may call it.
+try { gcloud(args, bind); } catch (e) { console.log(`WARNING: ${e.message}. Gen can't call ${spec.name} until the project's owner runs once: gcloud ${bind.join(' ')}`); }
 const policy = gcloud(args, ['run', 'services', 'get-iam-policy', spec.name, `--project=${args.project}`, `--region=${args.region}`, '--format=json'], { read: true });
 if (policy && /allUsers|allAuthenticatedUsers/.test(policy)) console.log(`WARNING: ${spec.name} is open to allUsers/allAuthenticatedUsers: remove that binding (only Gen's account may call it)`);
 const url = gcloud(args, ['run', 'services', 'describe', spec.name, `--project=${args.project}`, `--region=${args.region}`, '--format=value(status.url)'], { read: true });
