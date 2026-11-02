@@ -189,6 +189,10 @@ test('the deploy script: a scale-to-zero GPU web endpoint behind proxy auth, wit
   assert.match(py, /"HAWKES_TABS": "2"/);
   assert.match(py, /"HAWKES_WS_DEFLATE": "0"/, 'no WebSocket compression behind Modal\'s relay');
   assert.match(py, /modal\.Secret\.from_name\("hawkes-gen-playtest"\)/);
+  // :latest is pulled again on every deploy (Modal keeps a registry image it built); a pinned tag is not rebuilt.
+  assert.match(py, /from_registry\("ghcr\.io\/jgriffith3433\/hawkes-gen-playtest:latest", add_python="3\.12", force_build=True\)/);
+  const pinned: string = playtestApp({ image: 'ghcr.io/jgriffith3433/hawkes-gen-playtest:pw1.64.1-70ef888099', app: 'hawkes-gen-playtest', gpu: 'L4', max: 2, tabs: 2, idle: 60, token: '' });
+  assert.doesNotMatch(pinned, /force_build/);
   assert.doesNotMatch(py, /min_containers|keep_warm|secret-value/);
   assert.equal(pricePerHour('L4'), 1.12);
 });
