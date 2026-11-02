@@ -7,7 +7,7 @@
 //   node tools/playtest-modal/deploy.mjs                  write .data/modal/playtest_app.py and print the plan
 //   node tools/playtest-modal/deploy.mjs --apply          also: the token secret, modal deploy
 //   options: --image ghcr.io/jgriffith3433/hawkes-gen-playtest:latest  --gpu L4  --max 2  --tabs 2  --idle 60
-//            --fallback auto (the cheaper graphics cards after --gpu, or none, or a list like T4)
+//            --fallback auto (the next card with at least --gpu's memory: L4, then A10), none, or a list like A10,L40S
 //            --app hawkes-gen-playtest
 //
 // Needs the modal CLI with MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in the environment (the ops-modal-playtest-deploy
@@ -21,6 +21,8 @@ import { APPLY, ROOT, arg, secret, say, header, redact } from '../gpu-providers/
 
 // modal.com/pricing on 2026-10-28, per second. Graphics-capable cards only (Chromium needs EGL/Vulkan, not just CUDA).
 export const GPU_PER_S = { T4: 0.000164, L4: 0.000222, A10: 0.000306, L40S: 0.000542 };
+/** Each card's memory (GB). The playtest browser never goes below the asked card's: Jaycee, 2026-11-02, "our workflows require a certain amount of VRAM". */
+export const GPU_VRAM_GB = { T4: 16, L4: 24, A10: 24, L40S: 48 };
 export const CORES = 4;
 export const MEMORY_GIB = 16;
 export const pricePerHour = (gpu) => Math.round(((GPU_PER_S[gpu] ?? 0) + CORES * 0.0000131 + MEMORY_GIB * 0.00000222) * 3600 * 100) / 100;
@@ -36,17 +38,21 @@ export const movingTag = (image) => !/:[A-Za-z0-9._-]+$/.test(image.split('/').p
 /**
  * The cards Modal may start the browser on, in order. Modal ran out of L4s for 40 minutes on 2026-11-02 (its log: "waiting
  * to be scheduled on a GPU_L4 worker ... acquiring more capacity"), and every playtest waited out its 12 minutes for a
- * container that never came. With a list Modal takes the first card it has: by default the asked card, then the cheaper
- * graphics cards (L4, then T4: a T4 plays WebGL and has NVENC, it is what the EC2 playtesters were), so a fallback
- * never costs more than the price shown. `fallback` 'none' keeps one card; a list (T4,A10) names them.
+ * container that never came. With a list Modal takes the first card it has. Never a card with less memory than the asked
+ * one (an L4 has 24 GB, so never a T4): by default the asked card, then the cheapest card with at least its memory (L4,
+ * then A10, both 24 GB). `fallback` 'none' keeps one card; a list (A10,L40S) names them and is refused below that memory.
  */
 export function gpuChoices(gpu, fallback = 'auto') {
   const f = String(fallback ?? 'auto').trim();
   if (f === 'none' || f === '') return [gpu];
+  const floor = GPU_VRAM_GB[gpu] ?? 0;
   const more = f === 'auto'
-    ? Object.keys(GPU_PER_S).filter((g) => GPU_PER_S[g] < GPU_PER_S[gpu]).sort((a, b) => GPU_PER_S[b] - GPU_PER_S[a])
+    ? Object.keys(GPU_PER_S).filter((g) => g !== gpu && GPU_VRAM_GB[g] >= floor && GPU_PER_S[g] > GPU_PER_S[gpu]).sort((a, b) => GPU_PER_S[a] - GPU_PER_S[b]).slice(0, 1)
     : f.split(',').map((g) => g.trim()).filter(Boolean);
-  for (const g of more) if (!GPU_PER_S[g]) throw new Error(`--fallback ${g}: one of ${Object.keys(GPU_PER_S).join(', ')}`);
+  for (const g of more) {
+    if (!GPU_PER_S[g]) throw new Error(`--fallback ${g}: one of ${Object.keys(GPU_PER_S).join(', ')}`);
+    if (GPU_VRAM_GB[g] < floor) throw new Error(`--fallback ${g}: ${GPU_VRAM_GB[g]} GB, less than ${gpu}'s ${floor} GB`);
+  }
   return [gpu, ...more.filter((g) => g !== gpu)].filter((g, i, a) => a.indexOf(g) === i);
 }
 
