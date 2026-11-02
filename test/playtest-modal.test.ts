@@ -187,6 +187,7 @@ test('the deploy script: a scale-to-zero GPU web endpoint behind proxy auth, wit
   assert.match(py, /max_containers=2/);
   assert.match(py, /scaledown_window=60/);
   assert.match(py, /"HAWKES_TABS": "2"/);
+  assert.match(py, /"HAWKES_WS_DEFLATE": "0"/, 'no WebSocket compression behind Modal\'s relay');
   assert.match(py, /modal\.Secret\.from_name\("hawkes-gen-playtest"\)/);
   assert.doesNotMatch(py, /min_containers|keep_warm|secret-value/);
   assert.equal(pricePerHour('L4'), 1.12);
@@ -208,4 +209,22 @@ test('RunPod out of credit with no other GPU set up: the runner router says whic
   const withModal = runnerCandidates({ project: null }, 'web', 'studio', { playtest: { ...t, modal: { ...t.modal, url: MODAL } } }, { get, specs });
   assert.deepEqual(withModal.choices.map((x) => x.runner.provider), ['modal', 'cloudrun-cpu']);
   setRunpodCredit(null);
+});
+
+test('behind Modal the browser server is never offered permessage-deflate (Modal\'s relay closes on a compressed frame)', async () => {
+  const gpu = await import('../server/playtest-cloudrun/gpu.mjs' as any);
+  assert.equal(gpu.wsDeflateAllowed({}), true, 'Cloud Run and RunPod keep compression');
+  assert.equal(gpu.wsDeflateAllowed({ MODAL_TASK_ID: 'ta-1' }), false, 'a Modal container turns it off by itself');
+  assert.equal(gpu.wsDeflateAllowed({ HAWKES_WS_DEFLATE: '0' }), false);
+  assert.equal(gpu.wsDeflateAllowed({ MODAL_TASK_ID: 'ta-1', HAWKES_WS_DEFLATE: '1' }), true, 'an explicit 1 wins');
+  const raw = ['Host', 'x--hawkes-gen-playtest-browser.modal.run', 'Upgrade', 'websocket', 'Connection', 'Upgrade', 'Sec-WebSocket-Key', 'k==',
+    'Sec-WebSocket-Version', '13', 'Sec-WebSocket-Extensions', 'permessage-deflate; client_max_window_bits', 'X-Hawkes-Token', 't',
+    'Modal-Key', 'mk', 'Modal-Secret', 'ms', 'Authorization', 'Bearer x', 'X-Hawkes-Job', 'j_1'];
+  const off: string[] = gpu.browserHandshake(raw, 4321, { deflate: false });
+  assert.ok(off.includes('Host: 127.0.0.1:4321'));
+  assert.ok(off.includes('Sec-WebSocket-Key: k==') && off.includes('Upgrade: websocket') && off.includes('X-Hawkes-Job: j_1'));
+  assert.ok(!off.some((l) => /^sec-websocket-extensions:/i.test(l)), 'no deflate offer reaches the browser server');
+  assert.ok(!off.some((l) => /^(x-hawkes-token|modal-key|modal-secret|authorization):/i.test(l)), 'no credentials either');
+  const on: string[] = gpu.browserHandshake(raw, 4321, { deflate: true });
+  assert.ok(on.includes('Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits'), 'elsewhere the offer is passed on');
 });

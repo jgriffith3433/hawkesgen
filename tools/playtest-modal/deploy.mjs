@@ -36,6 +36,8 @@ image = modal.Image.from_registry(${JSON.stringify(image)}, add_python="3.12").e
     "PORT": "8080", "HAWKES_TABS": "${tabs}",
     # The image fetches the driver's graphics libraries when the host mounts only compute ones (gpu.mjs).
     "NVIDIA_DRIVER_CAPABILITIES": "all", "NVIDIA_VISIBLE_DEVICES": "all",
+    # Modal's WebSocket relay can't read permessage-deflate frames and closes the connection on the first one (gpu.mjs).
+    "HAWKES_WS_DEFLATE": "0",
 }).entrypoint([])  # Modal runs an image's ENTRYPOINT with its runner as arguments: the function starts the server itself.
 app = modal.App(${JSON.stringify(app)})
 

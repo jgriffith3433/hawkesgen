@@ -110,6 +110,12 @@ Gen calls it with the Modal proxy token it already has for GPU jobs (`MODAL_PROX
 in the order): `PUT /v1/playtest/capacity {"modal": {"url": "https://<workspace>--hawkes-gen-playtest-browser.modal.run"}}`.
 Check it with `GET /v1/playtester/cloud?variant=modal&selftest=1` (starts a container: about $0.02). About $1.12/hour per
 container while one runs (L4 $0.80, 4 cores, 16 GiB), two browsers each; usage rows are `modal-playtest`.
+**No WebSocket compression behind Modal** (2026-11-02): Modal's relay forwards the client's `permessage-deflate` offer to
+the container but never negotiates it with the client, so the first compressed frame from Playwright's browser server
+(any message over 10 KB: a screencast frame, the page's events) made it close the connection, and every Modal playtest
+ended about a minute in with "page.goto: Target page, context or browser has been closed" (modal-labs/modal-client#4150).
+The image's server drops `Sec-WebSocket-Extensions` from the browser's handshake in a Modal container (`MODAL_TASK_ID`,
+or `HAWKES_WS_DEFLATE=0`, which the Modal app sets); Cloud Run and RunPod keep compression (`gpu.mjs wsDeflateAllowed`).
 Not verified yet: whether Modal's GPU sandbox gives Chromium a graphics path (EGL/Vulkan). If it doesn't, the image's
 self-test fails, `/pw` answers 412 "No GPU" and the run moves on to the next provider.
 
