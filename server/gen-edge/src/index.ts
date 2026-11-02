@@ -122,8 +122,9 @@ async function onPortalHost(request: Request, env: Env & { PORTAL_ORIGIN: string
   const page = (request.method === 'GET' || request.method === 'HEAD') && !isApi(url.pathname) && /text\/html/.test(request.headers.get('Accept') ?? '');
   if (page) return Response.redirect(`${env.PORTAL_ORIGIN}${url.pathname}${url.search}`, 301);
   const portal = await forward(request, env.PORTAL_ORIGIN, body);
-  // An API call the portal doesn't have either comes back as its HTML 404 page: Gen's own JSON answer says more.
-  if (isApi(url.pathname) && !portal.ok && /text\/html/i.test(portal.headers.get('Content-Type') ?? '')) return gen;
+  // An API call the portal doesn't have either comes back as its 404 (HTML page or JSON): Gen's own answer says more. A
+  // signed-out call to Gen's own route (GET /v1/editor/tools) is Gen's 401, not the portal's "not found" (2026-11-02).
+  if (isApi(url.pathname) && !portal.ok && (portal.status === 404 || /text\/html/i.test(portal.headers.get('Content-Type') ?? ''))) return gen;
   return portal;
 }
 
