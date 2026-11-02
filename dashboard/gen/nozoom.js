@@ -5,7 +5,13 @@
 (function () {
   // Double-tap zoom: touch-action: manipulation on the page. :where() keeps it weaker than gen.css's stricter pan-x pan-y.
   var st = document.createElement('style');
-  st.textContent = ':where(html, body) { touch-action: manipulation; }';
+  // App feel (J, 2026-11-02): no pull-to-refresh or rubber-banding on the page (panels that scroll keep their own),
+  // no grey tap flash, and buttons and bars aren't text to select. :where() keeps every rule weaker than a page's own CSS,
+  // so inputs, editable text and copyable text (messages, legal pages, recipes) stay selectable.
+  st.textContent = ':where(html, body) { touch-action: manipulation; overscroll-behavior: none; }' +
+    ':where(*) { -webkit-tap-highlight-color: transparent; }' +
+    ':where(button, [role=button], [role=tab], [role=menuitem], summary, nav, header, .menu, .toolbar) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }' +
+    ':where(input, textarea, select, [contenteditable=""], [contenteditable="true"]) { -webkit-user-select: text; user-select: text; }';
   (document.head || document.documentElement).appendChild(st);
   var opt = { passive: false, capture: true };
   var stop = function (e) { if (e.cancelable) e.preventDefault(); };
