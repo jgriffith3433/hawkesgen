@@ -91,6 +91,8 @@ export async function child(ctx: RunContext, gen: Gen, name: string, spec: Child
   const job = await gen.submit(spec.tool, { params: spec.params, inputs: spec.inputs, labels: { parent: ctx.job.id, step: name }, key: `${ctx.job.id}:${name}`, reuse: true });
   ctx.log(`${name}: ${job.tool} (${job.id}${job.reused ? ', from the library' : ''})`);
   const done = job.status === 'done' ? job : await gen.wait(job.id, { throwOnFail: false, signal: ctx.signal, onUpdate: (j: any) => ctx.step(`${name}: ${j.detail}`) });
+  // A step no GPU could run says so in the same plain words (src/providers/gpu/nogpu.ts): that is the whole story.
+  if (done.status === 'failed' && /^No GPU /.test(String(done.error ?? ''))) throw new GenError(String(done.error));
   if (done.status !== 'done') throw new GenError(`${name} (${done.tool}) ${done.status}: ${done.error ?? done.detail}`);
   return done;
 }

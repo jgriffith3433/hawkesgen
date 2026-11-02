@@ -140,6 +140,7 @@ export const assetMakeTool: Tool = {
     };
     const waitStep = async (i: number, job: any) => {
       const done = job.status === 'done' ? job : await gen.wait(job.id, { throwOnFail: false, onUpdate: (j: any) => ctx.step(`step ${i + 1}/${steps.length} ${j.tool}: ${j.detail}`), signal: ctx.signal });
+      if (done.status === 'failed' && /^No GPU /.test(String(done.error ?? ''))) throw new GenError(String(done.error));
       if (done.status !== 'done') throw new GenError(`step ${i + 1} (${done.tool}) ${done.status}: ${done.error ?? done.detail}`);
       return done;
     };

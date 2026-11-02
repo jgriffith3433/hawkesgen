@@ -105,6 +105,32 @@ A job's `server` names where it ran (`runpod:runpod`, `cloudrun:gen-z-image`). I
 `<provider>-gpu` (`runpod-gpu`, `modal-gpu`, `http-gpu`) or `gcp-gpu`, priced at the endpoint's `pricePerHour` for the
 seconds the runs took.
 
+## When no GPU can run a job
+
+A job never waits with no end, and nothing leaves a job "running" with nothing running it (J, 2026-11-02: "This should
+NEVER happen"; a video edit sat at "starting" for 20 minutes, picked up again after five restarts, with RunPod out of
+credit and AWS refusing Gen's keys). `src/providers/gpu/nogpu.ts` decides, each time the queue looks at a GPU job that
+has nowhere to run (`gpuCandidates` gave no provider, or the fleet has no server and nothing else is listed for it):
+
+| Why nothing can take it | What happens |
+|---|---|
+| Every provider is out for a reason that won't clear by itself: RunPod out of credit, a key missing, a key refused or AWS refusing Gen (a 30-minute cooldown), the bucket or public URL not set, the endpoint turned off, no provider runs the family, a graph past every limit, nothing in the order | Fails at once: "No GPU is available right now, so this couldn't start. Nothing was charged. Please try again later." Its credits are returned; the providers' reasons are in its log. |
+| Something may come free: a provider cooling down after "no GPU free" or unreachable, fleet servers booting, AWS out of machines, this job already failed on each (it tries them again) | Waits, at most `settings.queue.gpuWaitMinutes` (default 15, 1 to 240) from when it first had nowhere to run, then fails with "No GPU came free in 15 minutes...". The clock is the job's `gpuWaitSince` label, so a restart doesn't reset it (customers never see `gpu*` labels). |
+| A GPU exists but is busy: a server running another job, a provider's lane full, the project's fair share | Waits in line, no limit: that is the line moving. |
+
+Around it:
+
+- **Nothing breaks outside a run.** `runJob` restores a job's input files and hashes them inside the run's own error
+  handling; an input that can't come back fails the job ("The video file this job uses is no longer available. Add it
+  again and run the job again.") and anything else that breaks fails it too. Before 2026-11-02 a missing input threw
+  before that, the job stayed "running" at "starting" until the next restart, and the restart did the same again.
+- **Restarts end.** A running job is picked up again after a restart at most `MAX_RESUMES` (5) times; then it fails
+  with a reason instead of starting over. A job picked up again starts a new GPU wait (it had a GPU when it was cut off).
+- **Steps stop with their job.** Cancelling or failing a pipeline job (video.change, audio.revoice, asset.make) cancels
+  its queued and running steps (`labels.parent`), so none waits for a GPU, or spends one, for a job nobody wants.
+- **The reason carries through.** A step that failed for want of a GPU fails its pipeline with the same plain words.
+- No polling: the queue looks again when something changes and on its own timer (the server's, not a page's).
+
 ## Files: the broker (no Google credentials elsewhere)
 
 A worker on RunPod or Modal has no Google identity, and none is given to it. Each request names the run and carries:

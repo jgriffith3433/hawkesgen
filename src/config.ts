@@ -97,7 +97,10 @@ export type Settings = {
   /** Fair sharing of the GPU between customers (src/jobs.ts `fairOrder`): `perProjectGpu` is the most GPU jobs one customer
    *  project runs at once, `perProjectLane` the most slots one takes in each API or local lane (playtests count browser
    *  tabs), `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
-  queue: { perProjectGpu: number; perProjectLane: number; projects: string[] };
+  /** gpuWaitMinutes: how long a GPU job may wait while no GPU provider can take it at all (none set up, all busy
+   *  refusing, booting) before it fails with a plain reason (src/providers/gpu/nogpu.ts). Waiting behind other jobs on a
+   *  GPU that exists has no limit. */
+  queue: { perProjectGpu: number; perProjectLane: number; projects: string[]; gpuWaitMinutes: number };
   /** Platform tokens from the portal (src/platform.ts): `issuer` the portal this lane trusts (empty: hawkesgames.com, or
    *  beta.hawkesgames.com on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
    *  (design partners, J's own). */
@@ -337,7 +340,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
   lod: { projects: ['usr_*', 'ubeta_*'] },
-  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'] },
+  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'], gpuWaitMinutes: 15 },
   platform: { issuer: '', freeOrgs: [] },
   orgCredits: { url: '' },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
@@ -555,6 +558,7 @@ function clean(s: Settings): Settings {
       perProjectGpu: n(s.queue?.perProjectGpu, 1, 16, SETTINGS_DEFAULTS.queue.perProjectGpu),
       perProjectLane: n(s.queue?.perProjectLane, 1, 64, SETTINGS_DEFAULTS.queue.perProjectLane),
       projects: Array.isArray(s.queue?.projects) ? s.queue!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.queue.projects,
+      gpuWaitMinutes: n(s.queue?.gpuWaitMinutes, 1, 240, SETTINGS_DEFAULTS.queue.gpuWaitMinutes),
     },
     platform: {
       issuer: typeof s.platform?.issuer === 'string' && /^https?:\/\/[^\s]+$/.test(s.platform.issuer) ? s.platform.issuer : '',
