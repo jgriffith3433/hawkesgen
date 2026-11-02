@@ -17,6 +17,7 @@
 
 import crypto from 'node:crypto';
 import { db } from './db.ts';
+import { events } from './bus.ts';
 import { GenError } from './util.ts';
 import { getJob } from './jobs.ts';
 
@@ -131,7 +132,10 @@ export function saveScene(s: Scene, doc: unknown, version?: number): Scene {
     if (!cur) throw new GenError('No such scene', { status: 404 });
     throw Object.assign(new GenError('This scene changed somewhere else', { status: 409 }), { scene: fromRow(cur) });
   }
-  return fromRow(rowOf(s.id)!);
+  const saved = fromRow(rowOf(s.id)!);
+  // Open editors hear of it on GET /v1/events instead of asking again (the event carries no document).
+  events.emit('scene', { id: saved.id, project: saved.project, kind: saved.kind, version: saved.version, at: now });
+  return saved;
 }
 
 export function deleteScene(id: string, canSee: (project: string) => boolean, kind?: Kind) {

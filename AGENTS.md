@@ -50,6 +50,8 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `DESIGN.md` has J's decisions and the roadmap.
 - `CLAUDE.md` just imports this file; edit this one.
 
+**No polling:** use server push (`GET /v1/events`) or on-demand fetches. A new `setInterval`/`setTimeout` that fetches needs a written reason. (J, 2026-11-02: "Please stop implementing polling if at all possible it causes all the problems"; polling through the Cloudflare edge burned 100k requests on 2026-11-01.) Pages open `GET /v1/events` once (`dashboard/gen/stream.js`, shared by `jobwatch.js` `on`/`listen`) and hear `job`, `library`, `production`, `scene` and, for admins, `machines` and `bench`; everything else is fetched on page open, on a user action or on an event, and an idle page makes zero requests. To tell pages about a new kind of change, `events.emit(...)` on the bus (`src/bus.ts`) and send it in the `/v1/events` handler in `src/api.ts`. `test/no-polling.test.ts` fails on a new `setInterval` in `dashboard/` unless it makes no request and is listed there with its reason.
+
 **Deploys:** this folder is the private repo `jgriffith3433/hawkesgen`. Every push to `main` deploys it to the cloud
 (hawkesgen.ai): CI (`.github/workflows/ci.yml`: typecheck and tests) must pass, then the control server pulls it
 within a few minutes, waiting while jobs run (`hawkesstudio/deploy/hawkes-pull.mjs`). Push to main only with J's OK,

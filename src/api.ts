@@ -1387,8 +1387,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     // --------------------------------------------------------------- events
     if (route === '/v1/events' && method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-      res.write(': hello\n\n');
+      // No buffering anywhere on the way (the gen-edge Worker streams it through, Cloud Run too): no-transform and
+      // X-Accel-Buffering keep proxies from holding events back; the 20 s ping below keeps idle connections open.
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write('retry: 5000\n: hello\n\n');
       const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(publicJob(j, isCustomer(client)))}\n\n`);
       // Library changes (src/entities.ts): an entity edited, a take filed, picked or discarded.
       const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
@@ -1400,11 +1402,23 @@ data: ${JSON.stringify(e)}
 
 `);
       events.on('production', onProduction);
+      // A scene saved (src/scenes.ts): an open editor, character sheet or world picks up edits made elsewhere (the AI, MCP,
+      // another tab) and fills in finished jobs without asking on a timer. Only ids and versions; the page reads the scene.
+      const onScene = (e: any) => canProject(client, String(e.project)) && res.write(`event: scene\ndata: ${JSON.stringify(e)}\n\n`);
+      events.on('scene', onScene);
+      // The studio's machinery (admins only): a machines reading was taken, or a bench run moved on. The page reads what it shows.
+      const ops = !isCustomer(client);
+      const onMachines = (e: any) => res.write(`event: machines\ndata: ${JSON.stringify(e)}\n\n`);
+      const onBench = (e: any) => res.write(`event: bench\ndata: ${JSON.stringify(e)}\n\n`);
+      if (ops) { events.on('machines', onMachines); events.on('bench', onBench); }
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => {
         events.off('job', onJob);
         events.off('library', onLibrary);
         events.off('production', onProduction);
+        events.off('scene', onScene);
+        events.off('machines', onMachines);
+        events.off('bench', onBench);
         clearInterval(ping);
       });
       return;

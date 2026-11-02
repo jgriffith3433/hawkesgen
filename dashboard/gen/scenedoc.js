@@ -19,7 +19,7 @@ function giveIds(o) {
 }
 
 export function sceneDoc({ onChange }) {
-  const S = { scene: null, doc: null, version: 0, back: [], fwd: [], dirty: false, saving: false, timer: 0, poll: 0 };
+  const S = { scene: null, doc: null, version: 0, back: [], fwd: [], dirty: false, saving: false, timer: 0, unlisten: null, stale: false };
   const snap = () => JSON.stringify(S.doc);
 
   function take(scene, { keepHistory = false } = {}) {
@@ -80,21 +80,34 @@ export function sceneDoc({ onChange }) {
     }
   }
 
-  /** While anything waits on a job, Gen is asked again every few seconds (it fills them in when the jobs end). */
+  /**
+   * While anything waits on a job, this listens on the page's live stream (GET /v1/events, jobwatch.js): when one of the
+   * jobs it waits on ends, the scene is read once (Gen fills finished jobs in on read). No timer asks meanwhile; coming
+   * back from a dropped stream or a hidden page reads it once too.
+   */
+  function pendingJobs() { return new Set([...JSON.stringify(S.doc ?? {}).matchAll(/"pending":"([^"]+)"/g)].map((m) => m[1])); }
+  async function readScene() {
+    if (!S.scene) return;
+    // Unsaved changes (or a save under way) come first: the read happens when they are saved (follow() runs after a save).
+    if (S.dirty || S.saving) { S.stale = true; return; }
+    S.stale = false;
+    try {
+      const r = await api(`/v1/scenes/${S.scene.id}`);
+      if (S.scene && r.id === S.scene.id && r.version > S.version && !S.dirty) { take(r, { keepHistory: true }); bus.emit('jobDone'); }
+    } catch { /* the next event or reconnect reads it */ }
+    follow();
+  }
   function follow() {
-    clearTimeout(S.poll);
-    if (!S.scene || !JSON.stringify(S.doc).includes('"pending"')) return;
-    S.poll = setTimeout(async () => {
-      if (!S.scene || S.dirty || S.saving) return follow();
-      try {
-        const r = await api(`/v1/scenes/${S.scene.id}`);
-        if (r.version > S.version && !S.dirty) { take(r, { keepHistory: true }); bus.emit('jobDone'); }
-        else follow();
-      } catch { follow(); }
-    }, 3000);
+    if (!S.scene || !pendingJobs().size) { S.unlisten?.(); S.unlisten = null; S.stale = false; return; }
+    if (S.stale && !S.dirty && !S.saving) { void readScene(); return; }
+    if (S.unlisten) return;
+    const asked = import('./jobwatch.js').then(({ jobWatch, ended }) => jobWatch().then((w) => w.listen((j) => {
+      if (j?.id && ended(j) && pendingJobs().has(j.id)) void readScene();
+    }, () => { if (pendingJobs().size) void readScene(); })));
+    S.unlisten = () => { void asked.then((stop) => stop()); };
   }
 
-  function stop() { clearTimeout(S.timer); clearTimeout(S.poll); }
+  function stop() { clearTimeout(S.timer); S.unlisten?.(); S.unlisten = null; }
 
   return {
     get scene() { return S.scene; }, get doc() { return S.doc; },
