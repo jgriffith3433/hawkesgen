@@ -150,7 +150,7 @@ export async function runCustomerBuild(ctx: RunContext) {
     if (!started) {
       // Customer builds run only on their own job (its account reaches nothing): refused at once when there is none.
       assertCustomerBuildsOn(cfg.gcp);
-      token = customerToken(b);
+      token = customerToken(b, undefined, ctx.log);
       ctx.step('reading the project from GitHub');
       probe = await probeProject(b, token, ghFetch.fetch as typeof fetch);
       baseJob = customerJobFor(jobForVersion(probe.version, unityImages(cfg.gcp)), cfg.gcp);
