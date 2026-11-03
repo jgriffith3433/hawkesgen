@@ -272,7 +272,7 @@ test('a project on a Unity version Gen has no image for fails before anything st
   }
 });
 
-test('the other version picks its own job; a lost token says to submit again', async () => {
+test('the other version picks its own job; a lost token says to submit again, before anything starts', async () => {
   const g = fakeCloud({ version: '6000.0.40f1', result: { ok: true, unity: '6000.0.40f1', output: { object: 'unity-builds/j_cust3/artifact.tgz', bytes: 10, files: 1 } } });
   try {
     const { ctx } = ctxFor('j_cust3', { ...C.admitCustomer(good()), method: 'Acme.Build.Web' });
@@ -282,7 +282,7 @@ test('the other version picks its own job; a lost token says to submit again', a
     assert.equal(s.method, 'Acme.Build.Web');
     assert.equal(s.customer.defaultMethod, false);
     const lost = ctxFor('j_cust4', { ...C.admitCustomer(good(), () => 'tok_' + 'f'.repeat(24)) });
-    await assert.rejects(() => runCustomerBuild(lost.ctx), /token for this build is gone/);
+    await assert.rejects(() => runCustomerBuild(lost.ctx), /no longer has the GitHub token/);
   } finally {
     g.restore();
   }
@@ -613,4 +613,43 @@ test('machine sizes: out of memory on xl (the biggest) is not built again', asyn
   } finally {
     g.restore();
   }
+});
+
+test('the token vault survives a restart (encrypted at rest), and an expired or missing one fails before any build time', async () => {
+  const intake = await import('../src/providers/playtester/intake.ts');
+  process.env.HAWKESGEN_SECRETS_KEY = crypto.randomBytes(32).toString('base64');
+  const logs: string[] = [];
+  const ref = intake.holdToken(TOKEN);
+  const row = db.prepare('SELECT * FROM held_tokens WHERE ref = ?').get(ref) as any;
+  assert.ok(row);
+  assert.ok(!JSON.stringify(row).includes(TOKEN), 'the token is never stored in clear');
+  intake.forgetMemoryTokens(); // Gen restarted
+  const b = { tokenRef: ref } as any;
+  assert.equal(C.customerToken(b, undefined, (m) => logs.push(m)), TOKEN);
+  assert.match(logs.join('\n'), /restored from the encrypted store/);
+  assert.equal(C.customerToken(b, undefined, (m) => logs.push(m)), TOKEN);
+  assert.match(logs[logs.length - 1], /found in memory/);
+  // Expired: past its time, in memory or only in the store.
+  const old = intake.holdToken(TOKEN, Date.now() - 13 * 3600_000);
+  for (const restart of [false, true]) {
+    if (restart) intake.forgetMemoryTokens();
+    const e = (() => { try { C.customerToken({ tokenRef: old } as any, undefined, (m) => logs.push(m)); } catch (x) { return x as any; } })();
+    assert.equal(e?.kind, 'token');
+    assert.match(e.message, /expired.*Nothing was built/);
+  }
+  assert.match(logs.join('\n'), /expired.*asking Studio/);
+  // Dropped: gone from both.
+  intake.dropToken(ref);
+  intake.forgetMemoryTokens();
+  assert.equal(intake.tokenFor(ref), null);
+  assert.equal(db.prepare('SELECT 1 FROM held_tokens WHERE ref = ?').get(ref), undefined);
+  assert.throws(() => C.customerToken(b, undefined, (m) => logs.push(m)), (e: any) => e.kind === 'token' && /no longer has/.test(e.message));
+  assert.match(logs[logs.length - 1], /not found in memory or the store/);
+  delete process.env.HAWKESGEN_SECRETS_KEY;
+});
+
+test('GitHub refusing the token (401) is a token failure, 403 stays a source one', async () => {
+  const f = (status: number) => (async () => new Response('{}', { status })) as unknown as typeof fetch;
+  await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(401)), (e: any) => e.kind === 'token' && /fresh token/.test(e.message));
+  await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(403)), (e: any) => e.kind === 'source');
 });

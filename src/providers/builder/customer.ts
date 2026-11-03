@@ -6,8 +6,9 @@ import crypto from 'node:crypto';
 //   params: { github: { repo, commit, token, ref? }, path?, method?, target: "web", out: "artifact" }
 //
 // The token is a short-lived GitHub installation token that Studio passes per job. It is moved into the in-memory token
-// vault at submit (src/providers/playtester/intake.ts holdToken: the job's params keep only its tok_ reference), read
-// once when the build starts, handed to that one Cloud Run execution as an env override (HAWKES_GITHUB_TOKEN), and used
+// vault at submit (src/providers/playtester/intake.ts holdToken: the job's params keep only its tok_ reference; the vault
+// is memory backed by an encrypted row, so a restarted Gen still has it), read once when the build starts (a missing or
+// expired one fails the job at once, before any Unity time: kind 'token', Studio resubmits with a fresh one), handed to that one Cloud Run execution as an env override (HAWKES_GITHUB_TOKEN), and used
 // there only as an http.extraheader for the fetch. It is never in the stored params, spec.json, the log, the library
 // recipe or any row. Gen's own GitHub secret is never used for a customer: the container unsets it in this mode.
 //
@@ -22,7 +23,7 @@ import crypto from 'node:crypto';
 // version Gen has no image for fails at once (kind 'config'), naming the project's version and the supported ones.
 
 import { GenError } from '../../util.ts';
-import { holdToken, tokenFor } from '../playtester/intake.ts';
+import { holdToken, lookupToken, type TokenLookup } from '../playtester/intake.ts';
 import { cacheName } from './cache.ts';
 import { gapi, type CloudRunTarget } from './gcp.ts';
 import { resolveMachine, storedMachine, type MachineSizes } from './sizes.ts';
@@ -149,11 +150,31 @@ export function customerBuildOf(params: Record<string, any>): CustomerBuild {
   };
 }
 
-/** The token behind a customer build, or a clear error (Gen restarted since the job was submitted, or it expired). */
-export function customerToken(b: CustomerBuild, lookup: (ref: string) => string | null = tokenFor): string {
-  const t = lookup(b.tokenRef);
-  if (!t) throw new GenError('The GitHub token for this build is gone (Gen restarted, or it expired): submit the build again with a fresh token', { status: 400, kind: 'source' });
-  return t;
+/** The kind a failure carries when Studio must send a fresh GitHub token (the build never started: nothing was spent). */
+export const TOKEN_KIND = 'token';
+
+/**
+ * The token behind a customer build: memory first, then the encrypted store (so a recycled Gen instance doesn't lose
+ * it). Missing or expired: a 'token' failure at once, before any Unity time is spent, saying which it was and that
+ * Studio should resubmit with a fresh token (installation tokens last an hour, so a long queue can outlive one). The
+ * log line says whether it came from memory, came back from the store after a restart, expired, or was never found.
+ */
+export function customerToken(b: CustomerBuild, lookup: (ref: string) => TokenLookup | string | null = lookupToken, log: (m: string) => void = console.log): string {
+  const raw = lookup(b.tokenRef);
+  const r: TokenLookup = typeof raw === 'string' ? { token: raw, ageSeconds: 0, from: 'memory' } : raw ?? { token: null, why: 'missing' };
+  if (r.token !== null) {
+    log(`customer build token: ${r.from === 'store' ? 'restored from the encrypted store (Gen restarted since submit)' : 'found in memory'}, ${r.ageSeconds}s since submit`);
+    return r.token;
+  }
+  const age = r.ageSeconds !== undefined ? ` (held ${Math.round(r.ageSeconds / 60)} min)` : '';
+  log(r.why === 'expired'
+    ? `customer build token: expired${age}; asking Studio for a fresh one`
+    : 'customer build token: not found in memory or the store (dropped, never held, or Gen restarted with no secrets key); asking Studio for a fresh one');
+  throw new GenError(
+    r.why === 'expired'
+      ? `The GitHub token for this build expired${age} before the build could start. Nothing was built: resubmit it with a fresh token.`
+      : 'Hawkes Gen no longer has the GitHub token for this build (it was dropped, or Gen restarted and could not restore it). Nothing was built: resubmit it with a fresh token.',
+    { status: 400, kind: TOKEN_KIND });
 }
 
 // ------------------------------------------------------------------ images by Unity version
@@ -188,7 +209,9 @@ function ghHeaders(token: string, raw = false) {
 }
 
 async function ghFail(r: Response, what: string): Promise<never> {
-  if (r.status === 401 || r.status === 403) throw new GenError(`GitHub refused ${what} (${r.status}): the token can't read the repo`, { status: 400, kind: 'source' });
+  // 401: GitHub no longer takes the token (an installation token lasts an hour): Studio sends a fresh one.
+  if (r.status === 401) throw new GenError(`GitHub refused ${what} (401): the token has expired or was revoked. Nothing was built: resubmit it with a fresh token.`, { status: 400, kind: TOKEN_KIND });
+  if (r.status === 403) throw new GenError(`GitHub refused ${what} (${r.status}): the token can't read the repo`, { status: 400, kind: 'source' });
   if (r.status === 404 || r.status === 422) throw new GenError(`GitHub has no ${what} (${r.status}): is the commit pushed, and can the token read the repo?`, { status: 400, kind: 'source' });
   throw new GenError(`GitHub answered ${r.status} for ${what}`, { status: 502, kind: 'source' });
 }
