@@ -22,7 +22,7 @@
   --shadow: 0 16px 50px rgba(0, 0, 0, .45);
   --left: 300px;
   --right: 360px;
-  --tl: min(270px, 34dvh);
+  --tl: min(300px, 40dvh);
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -209,7 +209,9 @@ input.num { width: 70px; }
 /* AI pane */
 .ai-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }
 .ai-head .ico-wrap { color: var(--accent); }
-.ai-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ai-messages { flex: 1 1 0; overflow-y: auto; padding: 0 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ai-messages > :first-child { margin-top: 12px; }
+.ai-messages > :last-child { margin-bottom: 12px; }
 .ai-hello { margin: auto 0; text-align: center; color: var(--muted); padding: 10px; }
 .ai-hello .ico { color: var(--accent); margin: 0 auto 10px; }
 .ai-hello h3 { color: var(--text); text-transform: none; letter-spacing: 0; font-size: 17px; margin: 0 0 6px; }
@@ -223,11 +225,11 @@ input.num { width: 70px; }
 .msg-ops .bad { color: var(--danger); }
 .proposal { margin-top: 10px; padding: 10px; border-radius: 10px; background: var(--panel-3); white-space: normal; font-size: 13px; }
 .proposal ul { margin: 6px 0 8px; padding-left: 18px; color: var(--muted); }
-.ai-gate { padding: 12px 14px; border-top: 1px solid var(--line); font-size: 13px; flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.ai-gate { padding: 8px 14px 0; border-top: 1px solid var(--line); font-size: 13px; flex: 0 5 auto; min-height: 0; overflow-y: auto; }
 .pane.right { overflow: hidden; }
 .ai-gate p { margin: 0 0 10px; }
 .ai-head, .ai-context, .ai-form { flex: none; }
-.ai-suggest { padding: 8px 14px 0; flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.ai-suggest { padding: 8px 14px 0; flex: 0 10 auto; min-height: 0; overflow-y: auto; }
 .ai-suggest .chip { font-size: 12px; text-align: left; }
 .ai-context { display: flex; align-items: center; gap: 4px; padding: 8px 14px 0; }
 .ctx-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); background: var(--panel-2); border: 1px dashed var(--line-2); border-radius: 999px; padding: 3px 10px; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
