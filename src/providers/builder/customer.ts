@@ -56,13 +56,21 @@ export type CustomerBuild = {
   /** -executeMethod; null: Gen's own HawkesBuild.Build (every enabled scene to WebGL). */
   method: string | null;
   tokenRef: string;
+  /** A compile-only check (check.ts): Unity imports and compiles, nothing is built or kept. */
+  check: boolean;
   /** The machine size asked for (sizes.ts): a size name, { cpu, memoryGiB }, or null for settings' customerSize. */
   machine: string | { cpu: number; memoryGiB: number } | null;
 };
 
-/** Whether unity.build params ask for customer mode: a GitHub token (or, stored, its reference) and out "artifact". */
+/** Whether `out` is what a compile-only check takes: absent or "none" (it makes no artifact). */
+const noOut = (out: unknown) => out === undefined || out === null || out === '' || out === 'none';
+
+/** Whether unity.build params ask for customer mode: a GitHub token (or, stored, its reference) and out "artifact", or
+ *  `check` (with out absent or "none"). A `check` of any type counts, so a wrong one is refused by admit, not as a stranger's. */
 export function isCustomerMode(params: Record<string, any> | undefined): boolean {
-  if (!params || params.out !== 'artifact') return false;
+  if (!params) return false;
+  const asksCheck = params.check !== undefined && params.check !== null;
+  if (!(params.out === 'artifact' || (asksCheck && noOut(params.out)))) return false;
   let g = params.github;
   if (typeof g === 'string') { try { g = JSON.parse(g); } catch { return false; } }
   if (!g || typeof g !== 'object' || Array.isArray(g)) return false;
@@ -80,8 +88,15 @@ export function customerTarget(target: unknown): 'WebGL' {
  * Checks customer-mode params at submit and moves the token into the vault. Returns the params to store: github has
  * tokenRef in place of token; siteRepo, branch, site, projectDir, siteDir and the rest of J's mode are refused.
  */
-export function admitCustomer(params: Record<string, any>, hold: (token: string) => string = holdToken, gcp: { sizes: MachineSizes; customerSize: string } = loadSettings().unityBuild.gcp): Record<string, any> {
+export function admitCustomer(params: Record<string, any>, hold: (token: string) => string = holdToken, gcp: { sizes: MachineSizes; customerSize: string; checkSize?: string } = loadSettings().unityBuild.gcp): Record<string, any> {
   const p = { ...params };
+  // check: a compile-only run (check.ts). A boolean only; it builds nothing, so no out, no method.
+  if (p.check !== undefined && p.check !== null && typeof p.check !== 'boolean') throw bad('check must be true or false (a compile-only run: Unity imports and compiles the project, nothing is built)');
+  const check = p.check === true;
+  if (check) {
+    if (p.out !== undefined && !noOut(p.out)) throw bad('a check builds nothing, so it takes no out "artifact": leave out unset (or "none")');
+    if (p.method) throw bad("a check runs no build method: leave method out (it only imports and compiles the project)");
+  } else if (p.out !== 'artifact') throw bad('customer builds take out "artifact" (or check: true for a compile-only run)');
   let g = p.github;
   if (typeof g === 'string') { try { g = JSON.parse(g); } catch { throw bad('github must be an object: { repo, commit, token, ref? }'); } }
   if (!g || typeof g !== 'object' || Array.isArray(g)) throw bad('github must be an object: { repo, commit, token, ref? }');
@@ -115,13 +130,13 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   if (ref) stored.ref = ref;
   p.github = stored;
   p.target = 'web';
-  p.out = 'artifact';
+  if (check) { p.check = true; p.out = 'none'; } else { delete p.check; p.out = 'artifact'; }
   if (path) p.path = path; else delete p.path;
   if (method) p.method = method; else delete p.method;
   if (!env || !Object.keys(env).length) delete p.env;
   // The machine size (sizes.ts): checked here, stored as its name (or { cpu, memoryGiB }); absent: settings' default.
   if (p.machine === undefined || p.machine === null || p.machine === '') delete p.machine;
-  else p.machine = storedMachine(resolveMachine(p.machine, gcp), gcp.sizes);
+  else p.machine = storedMachine(resolveMachine(p.machine, { sizes: gcp.sizes, customerSize: check ? gcp.checkSize ?? gcp.customerSize : gcp.customerSize }), gcp.sizes);
   for (const k of ['site', 'projectDir', 'siteDir', 'cache', 'args', 'clean', 'project']) delete p[k];
   // Always Cloud Run (the queue's builder-cloud lane): never the build server or a project's VM.
   p.backend = 'cloudrun';
@@ -144,7 +159,7 @@ export function customerBuildOf(params: Record<string, any>): CustomerBuild {
   if (!SLUG_RE.test(repo) || !SHA_RE.test(commit)) throw bad('github.repo and github.commit are needed');
   if (!TOKEN_REF_RE.test(String(g.tokenRef ?? ''))) throw bad('this customer build has no token (submit it again with github.token)');
   return {
-    repo, commit, ref: g.ref ? String(g.ref) : null, tokenRef: String(g.tokenRef),
+    repo, commit, ref: g.ref ? String(g.ref) : null, tokenRef: String(g.tokenRef), check: params.check === true,
     path: params.path ? normalPath(String(params.path)) : null, method: params.method ? String(params.method) : null,
     machine: params.machine === undefined || params.machine === null || params.machine === '' ? null : params.machine,
   };
@@ -356,6 +371,8 @@ const KEY_RE = /^[A-Za-z0-9_.-]+$/;
 export async function customerSignedUrls(o: {
   bucket: string; prefix: string; cachePrefix: string; restore: string[]; save: string | null;
   sign: (method: 'GET' | 'PUT', key: string) => Promise<string>;
+  /** A compile-only check (check.ts) hands back no artifact: no URL to write one. */
+  artifact?: boolean;
 }): Promise<SignedUrls> {
   const no = (m: string) => new GenError(m, { status: 500, kind: 'builder' });
   if (!BUILD_PREFIX_RE.test(o.prefix)) throw no(`not a build's prefix: ${o.prefix}`);
@@ -364,6 +381,6 @@ export async function customerSignedUrls(o: {
   const get: Record<string, string> = {};
   const put: Record<string, string> = {};
   for (const k of [`${o.prefix}/spec.json`, ...o.restore.flatMap((r) => [`${o.cachePrefix}/${r}.tar.zst`, `${o.cachePrefix}/${r}.json`])]) get[k] = await o.sign('GET', k);
-  for (const k of [`${o.prefix}/artifact.tgz`, `${o.prefix}/unity.log`, `${o.prefix}/result.json`, ...(o.save ? [`${o.cachePrefix}/${o.save}.tar.zst`, `${o.cachePrefix}/${o.save}.json`] : [])]) put[k] = await o.sign('PUT', k);
+  for (const k of [...(o.artifact === false ? [] : [`${o.prefix}/artifact.tgz`]), `${o.prefix}/unity.log`, `${o.prefix}/result.json`, ...(o.save ? [`${o.cachePrefix}/${o.save}.tar.zst`, `${o.cachePrefix}/${o.save}.json`] : [])]) put[k] = await o.sign('PUT', k);
   return { bucket: o.bucket, get, put };
 }
