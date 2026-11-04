@@ -122,7 +122,19 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   It is handed to the one Cloud Run execution as the env override `HAWKES_GITHUB_TOKEN`, used there only as the git
   `http.extraheader` of the fetch, and dropped from the vault when the job ends. Gen restarted before the build started:
   the job fails saying to submit again. Gen's own GitHub secret is never used: the container drops `GITHUB_TOKEN` and
-  `R2_BUILDS_TOKEN` in this mode.
+  `R2_BUILDS_TOKEN` in this mode. GitHub ends an installation token an hour after it is made, so a new execution is
+  started only with one held under 45 minutes (`customer.ts TOKEN_MAX_AGE_SECONDS`); an older one fails at once, kind
+  `token` ("expired ... resubmit it with a fresh token"). A running build needs it only for the fetch at its start, so a
+  long Unity build never outlives it.
+- **One job, one build** (sick-of-it-unity j_bb4c57cd1cf3, 2026-11-03: built five times, reported as a fetch error with
+  the earlier build's last Unity line). Every execution of a job writes the same names under `unity-builds/<job>/`, so:
+  the note (`cloud-job.json`) and `artifact.tgz` stay until the job has kept the output (`releaseCloudBuild`, called by
+  `runCustomerBuild` after the emit), and a Gen that goes down before then follows the same finished execution again on
+  its restart. With no note, an earlier success whose artifact is still there is finished from (`earlierRun`, result
+  `recovered`), never built again; anything else an earlier execution left is deleted before a new one starts. Gen reads
+  a Unity log only when the execution's result names it (`result.log`). The artifact goes into the library by moving its
+  file (`Output.file`, `putAsset fromFile`): Gen's disk on Cloud Run is memory, and a 1 GB build held as a Buffer beside
+  its temp file and its library copy took the 4 GiB instance down.
 - **Before anything starts**, Gen asks GitHub (with that token) for the project folder (the tree, when `path` is not
   given) and its `ProjectVersion.txt`. A version without an image fails at once, kind `config`, naming the project's
   version and the supported ones. **The supported versions are `gcp.images`** (`{ "<version>": "<Cloud Run job>" }`; a

@@ -171,6 +171,8 @@ export async function runCustomerBuild(ctx: RunContext) {
     if (up) {
       const from: Machine = r.machine ?? machine;
       fs.rmSync(r.tmp, { recursive: true, force: true });
+      // The first execution's notes go, or the second build would follow the first (finished) execution again.
+      await r.release?.();
       ctx.log(`the build ran out of memory on ${from.name} (${from.cpu} vCPU, ${from.memoryGiB} GiB): building again on ${up.name} (${up.cpu} vCPU, ${up.memoryGiB} GiB)`);
       ctx.usage({ provider: 'gcp-cloudrun', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${b.repo} ${b.commit.slice(0, 7)} (out of memory on ${from.name})` });
       await onSize(up);
@@ -186,7 +188,9 @@ export async function runCustomerBuild(ctx: RunContext) {
       await ctx.emit({ data: r.log, ext: 'log', mime: 'text/plain', title: `Unity log (${b.repo})` });
       let artifact: { asset: string; url: string; bytes: number; files: number } | null = null;
       if (r.ok && r.artifact) {
-        await ctx.emit({ data: fs.readFileSync(r.artifact.file), ext: 'tar.gz', mime: 'application/gzip', title: `WebGL build (${b.repo} ${b.commit.slice(0, 7)})`, meta: { repo: b.repo, commit: b.commit, unity: r.unity ?? probe.version, files: r.artifact.files } });
+        // Moved into the library from its file, never read into memory: about 1 GB for Sick Of It, and on Cloud Run the
+        // disk is memory too (a Buffer beside the file and its library copy took Gen down, j_bb4c57cd1cf3).
+        await ctx.emit({ data: Buffer.alloc(0), file: r.artifact.file, ext: 'tar.gz', mime: 'application/gzip', title: `WebGL build (${b.repo} ${b.commit.slice(0, 7)})`, meta: { repo: b.repo, commit: b.commit, unity: r.unity ?? probe.version, files: r.artifact.files } });
         const asset = ctx.outputs[ctx.outputs.length - 1] as { asset?: string };
         artifact = { asset: String(asset.asset), url: `/v1/assets/${asset.asset}/file`, bytes: r.artifact.bytes, files: r.artifact.files };
       }
@@ -200,7 +204,10 @@ export async function runCustomerBuild(ctx: RunContext) {
         machine: { name: ran.name, cpu: ran.cpu, memoryGiB: ran.memoryGiB }, machineAsked: asked.name,
         ...(retried ? { retried: { reason: 'out of memory', from: retried.from.name, to: retried.to.name, note: `ran out of memory on ${retried.from.name} (${retried.from.cpu} vCPU, ${retried.from.memoryGiB} GiB); built again on ${retried.to.name} (${retried.to.cpu} vCPU, ${retried.to.memoryGiB} GiB)` }, totalSeconds: Math.round(spent.seconds), totalCost: Math.round(spent.cost * 1000) / 1000 } : {}),
         ...(warning ? { warnings: [warning] } : {}),
+        ...(r.recovered ? { recovered: 'kept from an earlier execution of this job that had already built it' } : {}),
       });
+      // Kept: the build's notes and its copy in the bucket can go (until now a restart would have finished from them).
+      await r.release?.();
       if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });
       ctx.log(`built in ${Math.round(r.seconds / 60)} min on ${ran.name} (${ran.cpu} vCPU, ${ran.memoryGiB} GiB): ${artifact?.files ?? 0} files, about $${r.cost.toFixed(2)}`);
     } finally {

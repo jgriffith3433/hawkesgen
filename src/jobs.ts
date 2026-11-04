@@ -1148,7 +1148,7 @@ class Queue {
       tmp: (name) => path.join(tmpDir, name),
       emit: async (out: Output) => {
         const asset = putAsset({
-          data: out.data, mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
+          data: out.data, fromFile: out.file, mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
           seed: out.seed ?? null, recipe: { ...baseRecipe, params: { ...job.params, seed: out.seed ?? job.params.seed } }, labels: job.labels, title: out.title, meta: out.meta,
         });
         job.outputs.push({ asset: asset.id, seed: asset.seed, mime: asset.mime, kind: asset.kind, title: asset.title });

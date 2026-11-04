@@ -154,6 +154,15 @@ export function customerBuildOf(params: Record<string, any>): CustomerBuild {
 export const TOKEN_KIND = 'token';
 
 /**
+ * The oldest a held token may be when a NEW execution is started with it. GitHub ends an installation token an hour after
+ * it is made (Studio makes it just before it submits), while the vault keeps it 12 hours (intake.ts TOKEN_TTL_MS), and
+ * the container fetches with it only after the machine has started (minutes; a region move waits 3 more). An older one
+ * fails here, kind 'token', before any machine or license is spent: sick-of-it-unity j_117f8b115491 (2026-11-03) was
+ * started again after each Gen restart with its submit-time token until GitHub answered 401 at 65 minutes.
+ */
+export const TOKEN_MAX_AGE_SECONDS = 45 * 60;
+
+/**
  * The token behind a customer build: memory first, then the encrypted store (so a recycled Gen instance doesn't lose
  * it). Missing or expired: a 'token' failure at once, before any Unity time is spent, saying which it was and that
  * Studio should resubmit with a fresh token (installation tokens last an hour, so a long queue can outlive one). The
@@ -162,6 +171,12 @@ export const TOKEN_KIND = 'token';
 export function customerToken(b: CustomerBuild, lookup: (ref: string) => TokenLookup | string | null = lookupToken, log: (m: string) => void = console.log): string {
   const raw = lookup(b.tokenRef);
   const r: TokenLookup = typeof raw === 'string' ? { token: raw, ageSeconds: 0, from: 'memory' } : raw ?? { token: null, why: 'missing' };
+  if (r.token !== null && r.ageSeconds > TOKEN_MAX_AGE_SECONDS) {
+    log(`customer build token: held ${Math.round(r.ageSeconds / 60)} min, too close to GitHub's one-hour limit to start a build with; asking Studio for a fresh one`);
+    throw new GenError(
+      `The GitHub token for this build expired: it was given ${Math.round(r.ageSeconds / 60)} min ago and GitHub ends these after an hour, before the build could fetch the code. Nothing was built: resubmit it with a fresh token.`,
+      { status: 400, kind: TOKEN_KIND });
+  }
   if (r.token !== null) {
     log(`customer build token: ${r.from === 'store' ? 'restored from the encrypted store (Gen restarted since submit)' : 'found in memory'}, ${r.ageSeconds}s since submit`);
     return r.token;

@@ -11,6 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { db, parseRow, J } from './db.ts';
 import { paths } from './config.ts';
 import { id, sha256, kindOf, mimeOf, extOf, stableStringify, GenError } from './util.ts';
@@ -42,8 +43,37 @@ export function recipeKey(r: Recipe): string {
   return sha256(stableStringify({ ...rest, params }));
 }
 
+/** A file's sha256 without holding it in memory (4 MB at a time). */
+export function sha256FileSync(file: string): string {
+  const h = crypto.createHash('sha256');
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(4 * 1024 * 1024);
+    for (let n; (n = fs.readSync(fd, buf, 0, buf.length, null)) > 0; ) h.update(buf.subarray(0, n));
+  } finally {
+    fs.closeSync(fd);
+  }
+  return h.digest('hex');
+}
+
+/** Moves a file into place (a rename on one disk; across disks a copy, then the original goes). */
+function moveFile(from: string, to: string) {
+  try {
+    fs.renameSync(from, to);
+  } catch {
+    fs.copyFileSync(from, to);
+    fs.rmSync(from, { force: true });
+  }
+}
+
+/**
+ * Keeps an output in the library. `fromFile` (instead of `data`): the file is MOVED in and hashed in chunks, never read
+ * into memory. A customer's Unity build is about 1 GB packed, and on Cloud Run the disk is memory too: holding it as a
+ * Buffer beside its temp file and its library copy took Gen (4 GiB) down, and every restart built it again
+ * (sick-of-it-unity j_bb4c57cd1cf3, 2026-11-03).
+ */
 export function putAsset(a: {
-  data: Buffer; mime?: string; ext?: string; job?: string | null; client: string; project: string; tool: string;
+  data: Buffer; fromFile?: string; mime?: string; ext?: string; job?: string | null; client: string; project: string; tool: string;
   seed?: number | null; recipe: Recipe; labels?: Record<string, unknown>; title?: string; meta?: Record<string, unknown>;
 }): Asset {
   const assetId = id('a', 8);
@@ -53,11 +83,14 @@ export function putAsset(a: {
   const dir = path.join(paths.library, month);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${assetId}${ext}`);
-  fs.writeFileSync(file, a.data);
+  if (a.fromFile) moveFile(a.fromFile, file);
+  else fs.writeFileSync(file, a.data);
+  const bytes = a.fromFile ? fs.statSync(file).size : a.data.length;
+  const hash = a.fromFile ? sha256FileSync(file) : sha256(a.data);
   const recipe = { ...a.recipe, seed: a.seed ?? a.recipe.seed ?? null };
   const row = {
     id: assetId, job: a.job ?? null, client: a.client, project: a.project, tool: a.tool, kind: kindOf(mime), mime,
-    path: file, bytes: a.data.length, sha256: sha256(a.data), seed: recipe.seed, recipe: J(recipe), recipe_key: recipeKey(recipe),
+    path: file, bytes, sha256: hash, seed: recipe.seed, recipe: J(recipe), recipe_key: recipeKey(recipe),
     labels: J(a.labels ?? {}), tags: '[]', title: a.title ?? null, starred: 0, meta: J(a.meta ?? {}), created: Date.now(),
   };
   db.prepare(`INSERT INTO assets (id, job, client, project, tool, kind, mime, path, bytes, sha256, seed, recipe, recipe_key, labels, tags, title, starred, meta, created)

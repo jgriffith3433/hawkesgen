@@ -37,6 +37,9 @@ export type InputSpec = {
 
 export type Output = {
   data: Buffer;
+  /** A file to keep instead of `data` (pass an empty Buffer as data): moved into the library, never read into memory.
+   *  For outputs of a GB (a customer's Unity build). Only the queue's own emit takes it (not the CPU service's). */
+  file?: string;
   mime?: string;
   ext?: string;
   seed?: number | null;

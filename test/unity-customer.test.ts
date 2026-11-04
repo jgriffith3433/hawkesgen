@@ -168,6 +168,7 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
       if (method === 'DELETE') { writes.delete(key); return new Response(null, { status: 204 }); }
       if (key.endsWith('/cloud-job.json') && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
+      if (key.endsWith('/spec.json') && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
       if (key.endsWith('/result.json')) {
         const v = typeof result === 'function' ? (result as (n: number) => unknown)(runs) : result;
         return v === null ? new Response('not found', { status: 404 }) : new Response(JSON.stringify(v));
@@ -652,4 +653,98 @@ test('GitHub refusing the token (401) is a token failure, 403 stays a source one
   const f = (status: number) => (async () => new Response('{}', { status })) as unknown as typeof fetch;
   await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(401)), (e: any) => e.kind === 'token' && /fresh token/.test(e.message));
   await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(403)), (e: any) => e.kind === 'source');
+});
+
+
+// ------------------------------------------------------------------ one job, one build (sick-of-it-unity j_bb4c57cd1cf3)
+// 2026-11-03: the build succeeded, Gen went down while keeping its 1 GB output (a Buffer beside its temp file and its
+// library copy on a 4 GiB instance whose disk is memory), the note and the bucket's artifact were already deleted, so each
+// restart built the game again; the fifth execution failed at the fetch, overwrote result.json, and Gen read the earlier
+// execution's unity.log as its own ("couldn't fetch ...: ##utp:{MemoryLeaks ...}").
+
+const okResult = (job: string) => ({ ok: true, stage: 'end', exitCode: 0, unity: '6000.3.7f1', seconds: { unity: 300 }, cache: { restoredFrom: 'build', saved: true, savedKey: 'build' },
+  output: { object: `unity-builds/${job}/artifact.tgz`, bytes: 52_000_000, files: 12, changed: [], deleted: [] }, log: `unity-builds/${job}/unity.log` });
+
+test('Gen going down while it keeps the build: the restart keeps the same build, it never builds again', async () => {
+  const g = fakeCloud({ result: okResult('j_keep1') });
+  try {
+    const params = C.admitCustomer(good());
+    const first = ctxFor('j_keep1', params);
+    // The first run gets as far as the log, then Gen goes down while keeping the artifact.
+    first.ctx.emit = async (o: any) => { if (o.mime === 'application/gzip') throw new Error('Gen went down (out of memory)'); first.outputs.push({ asset: 'a_log', mime: o.mime }); };
+    await assert.rejects(() => runCustomerBuild(first.ctx), /went down/);
+    assert.equal(g.runs(), 1);
+    assert.ok(g.writes.has('unity-builds/j_keep1/cloud-job.json'), 'the note stays until the output is kept');
+    assert.ok(!g.calls.some((c) => c.method === 'DELETE' && c.url.includes('artifact.tgz')), "the bucket's artifact stays until it is kept");
+    // A new instance (no local note): it follows the same finished execution and keeps its output.
+    fs.rmSync(path.join(data, 'builder', 'cloud-jobs', 'j_keep1.json'), { force: true });
+    const again = ctxFor('j_keep1', params);
+    await runCustomerBuild(again.ctx);
+    assert.equal(g.runs(), 1, 'no second execution');
+    assert.equal(again.ctx.value.ok, true);
+    assert.equal(again.outputs[1].mime, 'application/gzip');
+    assert.ok(!g.writes.has('unity-builds/j_keep1/cloud-job.json'), 'kept: the note goes');
+    assert.ok(g.calls.some((c) => c.method === 'DELETE' && c.url.includes('unity-builds%2Fj_keep1%2Fartifact.tgz')), "kept: the bucket's copy goes");
+  } finally {
+    g.restore();
+  }
+});
+
+test("a lost note and an earlier execution's success still in the bucket: kept from it, nothing runs again", async () => {
+  const job = 'j_keep2';
+  const g = fakeCloud({ result: okResult(job), cacheObjects: [`unity-builds/${job}/result.json`, `unity-builds/${job}/unity.log`, `unity-builds/${job}/artifact.tgz`, `unity-builds/${job}/spec.json`] });
+  g.writes.set(`unity-builds/${job}/spec.json`, Buffer.from(JSON.stringify({ job, cache: { prefix: 'unity-cache/cust--usr_acme--acme--rocket-game-0123456789', restore: ['build'], save: 'build', clean: false } })));
+  try {
+    // Started (the note was written) by a run long gone; the token is past GitHub's hour: nothing may need it.
+    const { ctx, logs, outputs } = ctxFor(job, C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    assert.equal(g.runs(), 0, 'not built again');
+    assert.equal(ctx.value.ok, true);
+    assert.match(ctx.value.recovered, /earlier execution/);
+    assert.equal(outputs[1].mime, 'application/gzip');
+    assert.match(logs.join('\n'), /already built it/);
+  } finally {
+    g.restore();
+  }
+});
+
+test("a new execution's failure is its own: the earlier one's result and Unity log are cleared first and never read as its own", async () => {
+  const job = 'j_own1';
+  const fetchFail = { ok: false, stage: 'source', kind: 'source', error: "couldn't fetch acme/rocket-game at cccccccccccc (is the commit pushed, and can the GitHub token read the repo?): git said: fatal: remote error: upload-pack: not our ref", exitCode: null, seconds: { license: 7, source: 0, total: 10 }, cache: { restoredFrom: null, saved: false }, output: null, log: null };
+  const earlier = { ...okResult(job), ok: false, kind: 'build', error: 'Unity exited with code 1' };
+  const g = fakeCloud({ result: (runs: number) => (runs === 0 ? earlier : fetchFail), cacheObjects: [`unity-builds/${job}/result.json`, `unity-builds/${job}/unity.log`] });
+  try {
+    const { ctx } = ctxFor(job, C.admitCustomer(good()));
+    await assert.rejects(() => runCustomerBuild(ctx), (e: any) => e.kind === 'source' && e.message === fetchFail.error);
+    const del = (k: string) => g.calls.findIndex((c) => c.method === 'DELETE' && c.url.includes(`unity-builds%2F${job}%2F${k}`));
+    const run = g.calls.findIndex((c) => c.url.endsWith(':run'));
+    assert.ok(del('result.json') >= 0 && del('result.json') < run, "the earlier result is cleared before the new execution starts");
+    assert.ok(del('unity.log') >= 0 && del('unity.log') < run, "the earlier Unity log too");
+    assert.equal(ctx.value.logTail, '', 'no Unity log: this execution never ran Unity');
+    assert.ok(!g.calls.some((c) => c.method === 'GET' && c.url.includes(`${job}%2Funity.log`) && g.calls.indexOf(c) > run), 'the old unity.log is never read');
+  } finally {
+    g.restore();
+  }
+});
+
+test('a held token close to GitHub\'s hour starts no new build: kind token, in words Studio reads as "get a fresh one"', () => {
+  const logs: string[] = [];
+  const at = (min: number) => () => ({ token: TOKEN, ageSeconds: min * 60, from: 'store' as const });
+  assert.equal(C.customerToken({ tokenRef: 'tok_' + '2'.repeat(24) } as any, at(10), (m) => logs.push(m)), TOKEN);
+  const e = (() => { try { C.customerToken({ tokenRef: 'tok_' + '2'.repeat(24) } as any, at(54), (m) => logs.push(m)); } catch (x) { return x as any; } })();
+  assert.equal(e?.kind, 'token');
+  assert.match(e.message, /token for this build expired.*Nothing was built: resubmit it with a fresh token/);
+  assert.match(logs[logs.length - 1], /held 54 min/);
+});
+
+test('a big output is moved into the library, never read into memory', async () => {
+  const { putAsset } = await import('../src/library.ts');
+  const tmp = path.join(data, 'big-artifact.tgz');
+  const bytes = crypto.randomBytes(5 * 1024 * 1024 + 7);
+  fs.writeFileSync(tmp, bytes);
+  const a = putAsset({ data: Buffer.alloc(0), fromFile: tmp, ext: '.tgz', mime: 'application/gzip', client: 'cust', project: 'usr_acme', tool: 'unity.build', recipe: { tool: 'unity.build', version: 1, params: {}, inputs: {} } });
+  assert.equal(fs.existsSync(tmp), false, 'moved, not copied');
+  assert.equal(a.bytes, bytes.length);
+  assert.equal(a.sha256, crypto.createHash('sha256').update(bytes).digest('hex'));
+  assert.ok(fs.readFileSync(a.path).equals(bytes));
 });
