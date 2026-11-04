@@ -3,6 +3,7 @@
 // back), undo and redo, saving to Gen (with a version, so edits from the AI or MCP elsewhere aren't lost), waiting clips
 // filled in when their jobs end, and changes made elsewhere picked up.
 
+import { state } from './account.js';
 import { api, bus, toast, plainError, jobStatusText, sendFeedback } from './lib.js';
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
@@ -469,7 +470,16 @@ async function catchUp() {
   } catch { /* offline: the next event or reconnect reads it */ }
 }
 
+let syncing = false;
 export function startSync() {
+  // The stream is for accounts: signed out it would answer 401 on every anonymous load. It starts at sign-in instead.
+  if (!state.user) { if (!syncing) { syncing = true; bus.on('signedIn', (u) => { if (u) openSync(); }); } return; }
+  openSync();
+}
+let opened = false;
+function openSync() {
+  if (opened) return;
+  opened = true;
   // Edits made elsewhere arrive as `scene` events on the page's one stream (GET /v1/events): nothing asks on a timer.
   // One read when the stream comes back from a drop or the page is shown again, for what was missed.
   import('./jobwatch.js').then(({ jobWatch }) => jobWatch()).then((w) => w.on('scene', (e) => {

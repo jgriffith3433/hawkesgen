@@ -101,6 +101,8 @@ export function initStudio() {
 }
 
 async function loadCatalog() {
+  // No session, no catalog (it answers 401): the list shows its sign-in note without asking.
+  if (!state.user) { S.loaded = 'signedOut'; drawGroups(); drawList(); return; }
   try {
     const { tools } = await api('/v1/editor/catalog');
     S.tools = new Map(tools.map((t) => [t.id, t]));

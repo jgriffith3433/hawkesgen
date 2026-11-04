@@ -13,6 +13,7 @@ import { toolsTaking } from './studio.js';
 
 let available = new Set();
 export async function loadAvailable() {
+  if (!state.user) { drawToolbar(); return; } // signed out: /v1/editor/tools would answer 401
   try { available = new Set((await api('/v1/editor/tools')).tools.map((t) => t.tool)); } catch { available = new Set(['image.generate', 'image.edit', 'image.cutout', 'image.upscale', 'video.i2v', 'audio.music', 'audio.voice', 'audio.sfx', 'video.compose']); }
   drawToolbar();
 }
