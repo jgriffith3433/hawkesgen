@@ -330,3 +330,19 @@ if [ -e "$P/hawkesgen/src" ]; then echo SPARSE-BROKEN; fi
     fs.rmSync(fake.root, { recursive: true, force: true });
   }
 });
+
+test('github.sh: a failed fetch says why, and a refused token asks for a fresh one', { skip: !hasJq }, () => {
+  const fake = fakeGitHub();
+  try {
+    // A commit the repo hasn't got: git's own words come back, kind source.
+    const missing = sh(fake, {}, `fetch_repo o/site site ${'9'.repeat(40)} && echo FETCHED; printf '[%s]' "$(fetch_failure)"`);
+    assert.doesNotMatch(missing.out, /FETCHED/);
+    assert.match(missing.out, /\[source\t[^\]]*\S[^\]]*\]/, missing.out);
+    assert.ok(!missing.out.includes(TOKEN), 'the token never appears');
+    // GitHub refusing the token (sick-of-it-unity v13, 2026-11-03, an hour's installation token outlived): kind token.
+    const refused = sh(fake, {}, `printf 'remote: Invalid username or password.\\nfatal: Authentication failed for https://github.com/o/site.git/\\n' > "$WORK/fetch.err"; printf '[%s]' "$(fetch_failure)"`);
+    assert.match(refused.out, /\[token\tfatal: Authentication failed/, refused.out);
+  } finally {
+    fs.rmSync(fake.root, { recursive: true, force: true });
+  }
+});

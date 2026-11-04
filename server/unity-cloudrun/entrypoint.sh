@@ -313,7 +313,13 @@ for ((i = 0; i < n; i++)); do
   slug=$(jq -r ".repos[$i].slug" "$S"); top=$(jq -r ".repos[$i].top" "$S"); commit=$(jq -r ".repos[$i].commit" "$S")
   mapfile -t sparse < <(jq -r ".repos[$i].sparse[]" "$S")
   log "fetching $slug at ${commit:0:12} into $top"
-  fetch_repo "$slug" "$top" "$commit" "${sparse[@]}" || die source "couldn't fetch $slug at ${commit:0:12} (is the commit pushed, and can the GitHub token read the repo?)"
+  if ! fetch_repo "$slug" "$top" "$commit" "${sparse[@]}"; then
+    ff=$(fetch_failure); fkind=${ff%%$'\t'*}; fwhy=${ff#*$'\t'}
+    if [ "$fkind" = token ]; then
+      die token "The GitHub token for this build expired or was refused when $slug was fetched${fwhy:+ ($fwhy)}: submit the build again with a fresh token"
+    fi
+    die source "couldn't fetch $slug at ${commit:0:12} (is the commit pushed, and can the GitHub token read the repo?)${fwhy:+: git said: $fwhy}"
+  fi
   if [ "$PROJECT" = "$top" ] || [[ "$PROJECT" == "$top/"* ]]; then PROJECT_COMMIT=$(git -C "$P/$top" rev-parse HEAD); PROJECT_TOP="$top"; fi
 done
 OVERLAY=$(j .overlay)
