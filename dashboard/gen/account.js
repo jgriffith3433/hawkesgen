@@ -7,7 +7,9 @@ export const state = { user: null, admin: false, ai: null };
 
 export async function loadMe() {
   try { state.user = (await api('/v1/users/me')).user; } catch { state.user = null; }
-  try { const c = await api('/v1/me'); state.admin = c.role === 'owner' || c.role === 'admin'; } catch { state.admin = false; }
+  // Signed out there is nothing to ask: /v1/me would only answer 401 (a console error on every anonymous load).
+  state.admin = false;
+  if (state.user) { try { const c = await api('/v1/me'); state.admin = c.role === 'owner' || c.role === 'admin'; } catch { state.admin = false; } }
   showMe();
   if (state.user) loadAi();
 }
