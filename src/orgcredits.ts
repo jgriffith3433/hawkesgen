@@ -102,11 +102,14 @@ export async function chargeOrg(org: string, job: string, credits: number, tool:
 }
 
 /** Gives a job's charge back (it failed, was cancelled, or never got made). Once; retried later when unreachable. */
-export async function refundOrgCharge(job: string, reason = 'Job failed or cancelled'): Promise<number> {
+export async function refundOrgCharge(job: string, reason = 'Job failed or cancelled', credits?: number): Promise<number> {
   const row = db.prepare('SELECT * FROM org_charges WHERE job = ? AND refunded IS NULL').get(job) as { job: string; org: string; credits: number } | undefined;
   if (!row) return 0;
+  // A part of it (a compile-only check settled by its machine time): never more than was charged.
+  const amount = credits === undefined ? row.credits : Math.min(row.credits, Math.max(0, Math.round(credits)));
+  if (!amount) { db.prepare('UPDATE org_charges SET refunded = 0 WHERE job = ?').run(job); return 0; }
   try {
-    const r = await control('refund', { genOrg: row.org, job: row.job, credits: row.credits, reason: String(reason).slice(0, 200) });
+    const r = await control('refund', { genOrg: row.org, job: row.job, credits: amount, reason: String(reason).slice(0, 200) });
     // 404: the control plane has no such charge (nothing to give back).
     if (r.status !== 200 && r.status !== 404) throw new Error(`the control plane answered ${r.status}`);
     db.prepare('UPDATE org_charges SET refunded = ?, refund_error = NULL WHERE job = ?').run(Date.now(), row.job);

@@ -456,7 +456,7 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
 export function keepsCharge(job: { tool: string; started?: number | null }, e: { kind?: string } | null, cancelled: boolean, now = Date.now()) {
   if (job.tool !== 'unity.build') return false;
   if (cancelled) return Boolean(job.started) && now - Number(job.started) > 2 * 60_000;
-  return ['build', 'output', 'timeout'].includes(String(e?.kind ?? ''));
+  return ['build', 'output', 'timeout', 'compile'].includes(String(e?.kind ?? ''));
 }
 
 /** A failed or cancelled job's credits back: a Gen account's reservation, and a customer Studio's charge. */

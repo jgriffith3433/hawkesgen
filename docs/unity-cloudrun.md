@@ -249,6 +249,46 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   every other job of that key (AGENTS.md, "Customers' Studios pay from their Studio balance"; `src/orgcredits.ts`).
 - Always Cloud Run (`backend` is set to `cloudrun`; the queue's `builder-cloud` lane), never the build server or a VM.
 
+### Compile-only check
+
+`check: true` (customer mode only; Studio sends it next to `github { repo, commit, token, ref }`, `path` and `machine`)
+asks one question of a commit: does the project compile? `src/providers/builder/check.ts` (the log parser and the
+credits), `src/tools/build.ts runCustomerBuild`, `server/unity-cloudrun/entrypoint.sh` (`unity_args`).
+
+```jsonc
+{ "tool": "unity.build", "project": "<the key's Gen project>", "params": {
+  "github": { "repo": "owner/name", "commit": "<sha>", "token": "<installation token>", "ref": "refs/heads/agent/x" },
+  "path": "Game", "machine": "m",   // both optional; a check's default machine is settings.unityBuild.gcp.checkSize (m)
+  "check": true                     // a boolean: anything else is refused. `out` is absent or "none"; "artifact" and `method` are refused
+} }
+```
+
+- **The same container as a build:** the project's own Unity version (probed from GitHub, its image, its customer job
+  and size twin), the customer's Library cache `unity-cache/cust--...` **restored** (`cache.restore`), and Gen's licence
+  (the customer job's own Unity account; nothing from the customer: no licence, no workflow).
+- **What runs:** `unity-editor -batchmode -nographics -quit -projectPath <p> -logFile -`. No `-buildTarget`, no
+  `-executeMethod` (so `HawkesBuild.cs` isn't added either), no `-runTests`: Unity imports, compiles every script and
+  exits, non-zero on compiler errors (`test/unity-customer.test.ts` runs the script's `unity_args` for both modes).
+- **Nothing is kept and the cache is never written:** `spec.cache.save` is `null` (the container says "a compile-only check
+  restores the Library cache and never saves it"), the signed URLs have no `artifact.tgz` and no cache key to PUT (only
+  `unity.log` and `result.json`), no output is packed or uploaded, no `.tar.gz` asset is made (the Unity log is still kept
+  as one), a check never starts clean because of earlier builds' failures, and its outcome is not recorded in the
+  cache's state, so a check can't poison the build cache.
+- **The result:** `{ ok, check: true, seconds, cost, unity, errors: [{ file, line, col, code, message }], logTail?,
+  machine, cloud, credits: { used, refunded }, artifact: null }`. `cloud.stages` has the stage seconds (cache restore
+  included) and `cloud.ranSeconds` the machine time. `errors` are the `Assets/.../X.cs(12,34): error CS1503: ...` lines
+  of Unity's log, unique and at most 100. `ok: false` with kind `compile` (the job fails with it) when there are any:
+  the message is the count and the first error. Other failures keep their kinds (`license`, `source`, `token`, `config`,
+  `timeout`...), and the container may also say `compile` itself.
+- **Priced by time, not the flat build price:** `UNITY_CHECK_CREDITS` (default 15, 1 credit = $0.01) is reserved at
+  submit (a Gen account's reservation, or a studio's charge); when it ends the machine time is worth `cost` (Cloud Run
+  at the machine's vCPU and GiB per second) times the margin, at least 1 credit, and the rest is refunded
+  (`billing.ts refundJobCreditsDown`, `orgcredits.ts refundOrgCharge` with an amount). A check that ends on compiler errors
+  keeps that settled charge (`keepsCharge`); one that ends on Gen's own failure is refunded in full. `seconds` and `cost`
+  (USD) are in the result and the job's log (`compiled: no errors, 96 s on m (...), about $0.010, 1 credits`), so Studio
+  shows time and cost per run. A check that runs past its reservation isn't charged the difference yet: the build's
+  time limit bounds it.
+
 ## Settings
 
 `settings.unityBuild` (POST `/v1/settings`, owner):
@@ -261,7 +301,7 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
 | `concurrency` | 2 | Cloud Run builds at once (their own queue lane, `builder-cloud`; VM builds `builder-vm` and the Windows box one at a time) |
 | `vmAt` | 0.85 | A Cloud Run build peaking over this share of its memory moves its project to `vm` (0: never) |
-| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off), `regions` (`["us-central1"]`: more regions with the same jobs, below), `liveRegion` (us-east4: where live Gen and Studio run, tried last; `""` turns that off) |
+| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `checkSize` (m: a compile-only check's default machine), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off), `regions` (`["us-central1"]`: more regions with the same jobs, below), `liveRegion` (us-east4: where live Gen and Studio run, tried last; `""` turns that off) |
 | `vm` | | `zone` (us-east4-a), `machineType` (n2-standard-8), `pricePerHour` (0.10, for usage) |
 
 **When a region is full** (J, 2026-10-31: a build waited for Google's "unknown quota capacity" in us-east4 with our quota

@@ -14,6 +14,7 @@ import { getUserById, type UserRow } from './users.ts';
 import { id, GenError } from './util.ts';
 import { subscriptionEvent } from './subscriptions.ts';
 import { isCustomerMode } from './providers/builder/customer.ts';
+import { checkCreditsReserved } from './providers/builder/check.ts';
 import { resolveMachine, type Machine } from './providers/builder/sizes.ts';
 
 const STRIPE_CONFIG_FILE = path.join(DATA_DIR, 'stripe.json');
@@ -257,10 +258,43 @@ export function unityBuildCredits(m: { cpu: number; memoryGiB: number }, full: {
 export function buildCost(toolId: string, params: Record<string, any>): { usd: number; floor: number; basis: string } | null {
   if (toolId !== 'unity.build' || !isCustomerMode(params)) return null;
   const gcp = loadSettings().unityBuild.gcp;
+  // A compile-only check reserves a small flat amount and is settled by the machine-minutes it used (settleCheckCredits).
+  if (params.check !== undefined && params.check !== null) {
+    const credits = checkCreditsReserved();
+    return { usd: credits / 100 / COMMERCIAL_MARGIN, floor: credits, basis: `Unity compile-only check, ${credits} credits reserved, settled by machine-minutes (provisional)` };
+  }
   let m: Machine;
   try { m = resolveMachine(params.machine, gcp); } catch { m = resolveMachine(undefined, gcp); }
   const credits = unityBuildCredits(m, { cpu: gcp.cpu, memoryGiB: gcp.memoryGiB });
   return { usd: credits / 100 / COMMERCIAL_MARGIN, floor: credits, basis: `Unity cloud build on ${m.name} (${m.cpu} vCPU, ${m.memoryGiB} GiB), flat ${credits} credits (provisional)` };
+}
+
+/** The credits a check's machine time is worth: its Cloud Run cost with the margin (1 credit = $0.01), at least 1. */
+export function checkCreditsUsed(costUsd: number): number {
+  return Math.max(1, Math.ceil(costUsd * COMMERCIAL_MARGIN * 100 - 1e-9));
+}
+
+/**
+ * Gives back what a check reserved beyond what its machine time was worth (a Gen account's reservation here; a Studio's
+ * charge is settled by `settleCheckCharge` in orgcredits.ts). Once. Returns the credits given back.
+ */
+export function refundJobCreditsDown(jobId: string, keep: number, reason: string): number {
+  const row = db.prepare("SELECT * FROM credit_ledger WHERE job_id = ? AND kind = 'job_reserve' LIMIT 1").get(jobId) as CreditLedgerEntry | undefined;
+  if (!row) return 0;
+  const back = Math.abs(row.delta) - Math.max(0, Math.round(keep));
+  if (back <= 0) return 0;
+  if (db.prepare("SELECT 1 FROM credit_ledger WHERE job_id = ? AND kind = 'job_refund' LIMIT 1").get(jobId)) return 0;
+  const user = getUserById(row.user_id);
+  if (!user) return 0;
+  db.exec('BEGIN');
+  try {
+    const next = user.credits + back;
+    db.prepare('UPDATE users SET credits = ? WHERE id = ?').run(next, user.id);
+    db.prepare(`INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, detail, job_id, stripe_session_id, created)
+                VALUES (?, ?, ?, ?, 'job_refund', ?, ?, NULL, ?)`).run(id('tx', 6), user.id, back, next, `${reason} (${jobId})`, jobId, Date.now());
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return back;
 }
 
 export function listCreditPacks(): CreditPack[] {
