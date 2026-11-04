@@ -123,6 +123,30 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   `http.extraheader` of the fetch, and dropped from the vault when the job ends. Gen restarted before the build started:
   the job fails saying to submit again. Gen's own GitHub secret is never used: the container drops `GITHUB_TOKEN` and
   `R2_BUILDS_TOKEN` in this mode.
+- **A token older than 45 minutes starts no new build** (`customer.ts TOKEN_MAX_AGE_SECONDS`). GitHub's installation tokens
+  last an hour and the container fetches its source after the queue, the machine and the image, so an older one would
+  die at the fetch with Cloud Run time spent. The job fails at once, kind `token`, "resubmit it with a fresh token".
+  The vault still keeps tokens 12 hours so a restarted Gen can read them; the age check is what decides. A build that
+  ran out of memory is made again on a bigger machine only if its token is still under 45 minutes old.
+- **One build per job, across restarts** (2026-11-04, Sick of It v13, `j_bb4c57cd1cf3`: Unity built the game, Gen died
+  keeping the ~1 GB output, and each restart built it again, five times; the fifth failed at the fetch and replaced the
+  result). Now:
+  - The moment the execution ends, Gen notes it in the bucket (`unity-builds/<job>/done.json`: the execution, its
+    run time, Cloud Run's message), before the output is downloaded. A Gen that starts the job again finds the note
+    and takes that execution's `result.json` and `artifact.tgz` ("the cloud build already finished ... not building
+    again"), success or failure, instead of starting another execution.
+  - `artifact.tgz` and `done.json` stay in the bucket until the build output is a library asset
+    (`releaseFinishedBuild`); a job that resumes with the asset already in its outputs finishes from it without
+    touching the bucket. An out-of-memory build made again on a bigger machine clears the note first
+    (`forgetFinishedBuild`).
+  - **Streamed, not read.** The archive is downloaded to a file (`gcsDownload` streams) and kept with
+    `ctx.emitFile` -> `library.ts putAssetFile`, which copies and hashes it in chunks. `fs.readFileSync` of the ~1 GB
+    archive was what ran the 4 GiB instance out of memory.
+  - **Each execution's log is its own.** Before a new execution starts, Gen deletes the job's `unity.log` and
+    `result.json` from the bucket, so one that stops before Unity runs (the fetch) can't be shown with an earlier
+    execution's last Unity line, and its "git said:" text is git's.
+  - If the result says the build stopped before the cache step (`license`, `source`), the log says
+    `Library cache: not reached (the build stopped at "source")` instead of "none restored".
 - **Before anything starts**, Gen asks GitHub (with that token) for the project folder (the tree, when `path` is not
   given) and its `ProjectVersion.txt`. A version without an image fails at once, kind `config`, naming the project's
   version and the supported ones. **The supported versions are `gcp.images`** (`{ "<version>": "<Cloud Run job>" }`; a
