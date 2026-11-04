@@ -36,8 +36,10 @@ fetch_repo() {
     else
       git config core.sparseCheckout false
     fi
-    git fetch -q --depth 1 --filter=blob:none origin "$commit" || exit 2
-    git checkout -q -f --detach FETCH_HEAD || exit 3
+    # git's own words go to $WORK/fetch.err, so a failure says why (an expired token, a missing commit, LFS) instead of
+    # only "couldn't fetch" (sick-of-it-unity v13, 2026-11-03: no reason anywhere, called a compile error by Studio).
+    git fetch -q --depth 1 --filter=blob:none origin "$commit" 2>"$WORK/fetch.err" || exit 2
+    git checkout -q -f --detach FETCH_HEAD 2>>"$WORK/fetch.err" || exit 3
     # Submodules (a shared package, art in its own repo), while the token is still on: the build has the whole project
     # (2026-10-31 review). The token must reach those repos too; one it can't is said and the build carries on.
     if [ -f .gitmodules ]; then
@@ -48,6 +50,18 @@ fetch_repo() {
     gh_auth_off
     rm -rf .git/lfs/objects   # LFS files are in the working tree now; their second copy only costs memory
   )
+}
+
+# Why the last fetch_repo failed, from git's own words: "token" when GitHub refused the token (an installation token
+# lasts an hour and a long queue can outlive it: the caller then asks for a fresh one), else "source". Prints the kind,
+# a tab, and git's last line (no token is ever in it: the token rides an extra header, not the URL).
+fetch_failure() {
+  local why; why=$(grep -v '^\s*$' "$WORK/fetch.err" 2>/dev/null | tail -n 1 | tr -d '\r' | cut -c1-240)
+  if grep -qiE "Authentication failed|could not read Username|Invalid username or password|Bad credentials|returned error: 40[13]|HTTP 40[13]|Repository not found|access denied|terminal prompts disabled" "$WORK/fetch.err" 2>/dev/null; then
+    printf 'token\t%s' "$why"
+  else
+    printf 'source\t%s' "$why"
+  fi
 }
 
 # The repos of the project's local file: packages (file:C:/Projects/<repo>/<path> in Packages/manifest.json), each at
