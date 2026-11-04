@@ -134,7 +134,8 @@ const customerJobResource = (over: Record<string, any> = {}) => ({
   } },
 });
 
-function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [], executions = [], canCreate = false }: {
+function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [], executions = [], canCreate = false, noLog = false }: {
+  /** No Unity log in the bucket unless a test puts one there. */ noLog?: boolean;
   version?: string; result: unknown | ((run: number) => unknown); jobs?: Record<string, unknown>; cacheObjects?: string[];
   /** The execution resources of the 1st, 2nd... run (default: a success). */ executions?: unknown[];
   /** Whether Gen may create a job (POST jobs?jobId=): the made ones are kept in `created`. */ canCreate?: boolean;
@@ -167,12 +168,12 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
     if (url.startsWith('https://storage.googleapis.com/storage/v1/b/')) {
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
       if (method === 'DELETE') { writes.delete(key); return new Response(null, { status: 204 }); }
-      if (key.endsWith('/cloud-job.json') && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
+      if ((key.endsWith('/cloud-job.json') || key.endsWith('/done.json') || key.endsWith('/unity.log')) && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
       if (key.endsWith('/result.json')) {
         const v = typeof result === 'function' ? (result as (n: number) => unknown)(runs) : result;
         return v === null ? new Response('not found', { status: 404 }) : new Response(JSON.stringify(v));
       }
-      if (key.endsWith('/unity.log')) return new Response('[Hawkes] stage: unity\n[Hawkes] built 2 scene(s)\n');
+      if (key.endsWith('/unity.log')) return noLog ? new Response('not found', { status: 404 }) : new Response('[Hawkes] stage: unity\n[Hawkes] built 2 scene(s)\n');
       if (key.endsWith('/artifact.tgz')) return new Response(Buffer.from('fake tar.gz bytes') as unknown as BodyInit);
       return new Response('not found', { status: 404 });
     }
@@ -201,13 +202,14 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
 }
 
 /** A RunContext for runCustomerBuild: emits become fake assets, the result is kept. */
-function ctxFor(jobId: string, params: Record<string, any>) {
-  const outputs: any[] = [];
+function ctxFor(jobId: string, params: Record<string, any>, hooks: { emitFile?: (o: any) => Promise<void>; outputs?: any[] } = {}) {
+  const outputs: any[] = hooks.outputs ?? [];
   const logs: string[] = [];
   const ctx: any = {
     job: { id: jobId, client: 'cust', project: 'usr_acme', tool: 'unity.build', labels: {} }, params, inputs: {}, done: 0, outputs,
     signal: new AbortController().signal, step: (s: string) => logs.push(s), log: (s: string) => logs.push(s), tmp: (n: string) => path.join(data, n),
     emit: async (o: any) => { outputs.push({ asset: `a_${outputs.length + 1}`, mime: o.mime, title: o.title, bytes: o.data.length }); },
+    emitFile: hooks.emitFile ?? (async (o: any) => { outputs.push({ asset: `a_${outputs.length + 1}`, mime: o.mime, title: o.title, bytes: fs.statSync(o.file).size, streamed: true }); }),
     result: (v: unknown) => { ctx.value = v; }, seed: () => 1, usage: () => {}, python: async () => '',
   };
   return { ctx, logs, outputs };
@@ -652,4 +654,128 @@ test('GitHub refusing the token (401) is a token failure, 403 stays a source one
   const f = (status: number) => (async () => new Response('{}', { status })) as unknown as typeof fetch;
   await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(401)), (e: any) => e.kind === 'token' && /fresh token/.test(e.message));
   await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(403)), (e: any) => e.kind === 'source');
+});
+
+
+// ------------------------------------------------------------------ one build per job, kept by streaming (2026-11-04)
+// Sick of It v13 (j_bb4c57cd1cf3): Unity built the game, Gen died keeping the ~1 GB output (it read the whole file into a
+// 4 GiB instance), every restart built the game again, and the 5th execution failed at the git fetch and overwrote the
+// result, with the 4th's Unity log as its "git said".
+
+test('a token older than 45 minutes starts no build: Studio sends a fresh one before any Unity time is spent', async () => {
+  const intake = await import('../src/providers/playtester/intake.ts');
+  const now = Date.now();
+  const young = intake.holdToken(TOKEN, now - 40 * 60_000);
+  assert.equal(C.customerToken({ tokenRef: young } as any, undefined, () => {}), TOKEN);
+  const old = intake.holdToken(TOKEN, now - 50 * 60_000);
+  const logs: string[] = [];
+  assert.throws(() => C.customerToken({ tokenRef: old } as any, undefined, (m) => logs.push(m)), (e: any) => e.kind === 'token' && /50 minutes old.*Nothing was built.*fresh token/.test(e.message));
+  assert.match(logs.join('\n'), /50 min old/);
+  intake.dropToken(young); intake.dropToken(old);
+});
+
+test('the output is streamed into the library: same bytes and hash, no Buffer of the file', async () => {
+  const lib = await import('../src/library.ts');
+  const big = path.join(data, 'big.tgz');
+  const chunk = crypto.randomBytes(1024 * 1024);
+  const fd = fs.openSync(big, 'w');
+  for (let i = 0; i < 20; i++) fs.writeSync(fd, chunk);
+  fs.closeSync(fd);
+  const want = crypto.createHash('sha256').update(fs.readFileSync(big)).digest('hex');
+  const read = fs.readFileSync;
+  const wholeReads: string[] = [];
+  (fs as any).readFileSync = (f: any, ...a: any[]) => { if (String(f) === big) wholeReads.push(String(f)); return (read as any)(f, ...a); };
+  try {
+    const asset = await lib.putAssetFile({ file: big, ext: 'tar.gz', mime: 'application/gzip', client: 'cust', project: 'usr_acme', tool: 'unity.build', recipe: { tool: 'unity.build', version: 1, params: {}, inputs: {} }, title: 'WebGL build' });
+    assert.equal(asset.bytes, 20 * 1024 * 1024);
+    assert.equal(asset.sha256, want);
+    assert.equal(fs.statSync(asset.path).size, asset.bytes);
+    assert.deepEqual(wholeReads, [], 'never read whole');
+  } finally {
+    (fs as any).readFileSync = read;
+  }
+});
+
+test('a customer build hands its archive to emitFile by path: the tool never reads it into memory', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_big1') });
+  const read = fs.readFileSync;
+  const reads: string[] = [];
+  (fs as any).readFileSync = (f: any, ...a: any[]) => { if (/artifact\.tgz$/.test(String(f))) reads.push(String(f)); return (read as any)(f, ...a); };
+  try {
+    const { ctx, outputs } = ctxFor('j_big1', C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    assert.equal(outputs[1].streamed, true);
+    assert.equal(outputs[1].mime, 'application/gzip');
+    assert.deepEqual(reads, []);
+    assert.equal(ctx.value.artifact.asset, 'a_2');
+  } finally {
+    (fs as any).readFileSync = read;
+    g.restore();
+  }
+});
+
+test('a Gen that dies keeping the output does not build the game again: the finished build is taken as it is', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_dies1') });
+  try {
+    // First run: the instance dies as the output is kept.
+    const boom = ctxFor('j_dies1', C.admitCustomer(good()), { emitFile: async () => { throw new Error('out of memory'); } });
+    await assert.rejects(() => runCustomerBuild(boom.ctx), /out of memory/);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 1);
+    assert.ok(g.writes.has('unity-builds/j_dies1/done.json'), 'the finished build is noted before its output is downloaded');
+    // The next try (a fresh token, the same job): no second execution, the same result, the output kept.
+    const { ctx, logs, outputs } = ctxFor('j_dies1', C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 1, 'built once');
+    assert.equal(ctx.value.ok, true);
+    assert.equal(outputs.find((o) => o.mime === 'application/gzip')?.streamed, true);
+    assert.ok(logs.some((l) => /already finished.*not building again/.test(l)));
+    assert.ok(!g.writes.has('unity-builds/j_dies1/done.json'), 'the note goes once the output is kept');
+  } finally {
+    g.restore();
+  }
+});
+
+test('a build whose output is already kept is not built or kept again when the job resumes', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_kept1') });
+  const lib = await import('../src/library.ts');
+  try {
+    const f = path.join(data, 'kept.tgz');
+    fs.writeFileSync(f, 'archive');
+    const a = await lib.putAssetFile({ file: f, ext: 'tar.gz', mime: 'application/gzip', client: 'cust', project: 'usr_acme', tool: 'unity.build', recipe: { tool: 'unity.build', version: 1, params: {}, inputs: {} }, meta: { files: 7, unity: '6000.3.7f1' } });
+    const { ctx } = ctxFor('j_kept1', C.admitCustomer(good()), { outputs: [{ asset: 'a_log', mime: 'text/plain' }, { asset: a.id, mime: 'application/gzip' }] });
+    await runCustomerBuild(ctx);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 0, 'no execution');
+    assert.equal(ctx.value.ok, true);
+    assert.deepEqual(ctx.value.artifact, { asset: a.id, url: `/v1/assets/${a.id}/file`, bytes: 7, files: 7 });
+  } finally {
+    g.restore();
+  }
+});
+
+test("a failed fetch never shows an earlier execution's Unity log (the 'git said' text is git's)", async () => {
+  const g = fakeCloud({ noLog: true, result: { ok: false, stage: 'source', kind: 'source', error: "couldn't fetch acme/rocket-game at cccccccccccc (is the commit pushed, and can the GitHub token read the repo?): git said: fatal: Authentication failed", exitCode: 1, cache: { restoredFrom: null, saved: false, savedKey: null, skipped: null }, seconds: {}, output: null, errors: [], results: null, log: null, memoryPeakBytes: null } });
+  // Left in the bucket by an earlier execution of this job (the 4th, which got as far as Unity).
+  g.writes.set('unity-builds/j_stale1/unity.log', Buffer.from('Build completed with a result of Succeeded\n[GameDeploy] CLOUD BUILD COMPLETE\n'));
+  try {
+    const { ctx, logs } = ctxFor('j_stale1', C.admitCustomer(good()));
+    await assert.rejects(() => runCustomerBuild(ctx), (e: any) => /git said: fatal: Authentication failed/.test(e.message) && !/CLOUD BUILD COMPLETE/.test(e.message));
+    assert.ok(!/CLOUD BUILD COMPLETE/.test(JSON.stringify(ctx.value ?? {})), 'the result carries no stranger\'s log tail');
+    assert.ok(logs.some((l) => /Library cache: not reached \(the build stopped at "source"\)/.test(l)), 'the cache line says it was never reached');
+  } finally {
+    g.restore();
+  }
+});
+
+test('a build that ran out of memory and is made again on a bigger machine is not mistaken for the finished one', async () => {
+  const oom = { startTime: '2026-10-31T10:00:00Z', completionTime: '2026-10-31T10:03:00Z', succeededCount: 0, failedCount: 1,
+    conditions: [{ type: 'Completed', state: 'CONDITION_FAILED', message: 'Task j-x failed: Memory limit of 8192 MiB exceeded with 8400 MiB used.' }] };
+  const g = fakeCloud({ result: (run) => (run === 1 ? null : OK_RESULT('j_oomdone')), executions: [oom], canCreate: true });
+  try {
+    const { ctx } = ctxFor('j_oomdone', C.admitCustomer({ ...good(), machine: 's' }));
+    await runCustomerBuild(ctx);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 2, 'the retry really builds');
+    assert.equal(ctx.value.ok, true);
+  } finally {
+    g.restore();
+  }
 });

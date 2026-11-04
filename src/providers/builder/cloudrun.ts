@@ -375,7 +375,9 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   // The regions this build may run in, in order (customer builds: only those with a checked customer job).
   let regions = regionsOf(cfg);
   const baseTarget = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
-  if (job && !finished) {
+  if (finished) {
+    // Nothing to start or follow.
+  } else if (job) {
     hooks.log(`the cloud build was already started (${job.execution.split('/').pop()}); following it`);
   } else {
     let p: Prepared;
@@ -414,6 +416,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     hooks.log(`cloud build started: ${execution.name.split('/').pop()} in ${regionOfExecution(execution.name)} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
   }
 
+  if (!job) throw fail('the cloud build has no execution to follow', 'builder');
   // Follow the execution and its log.
   const deadline = job.started + (cfg.timeoutMinutes + 25) * 60_000;
   let since = new Date(job.started - 60_000).toISOString();
