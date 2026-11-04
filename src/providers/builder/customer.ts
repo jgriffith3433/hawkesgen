@@ -154,6 +154,13 @@ export function customerBuildOf(params: Record<string, any>): CustomerBuild {
 export const TOKEN_KIND = 'token';
 
 /**
+ * A token older than this starts no new build. GitHub's installation tokens last an hour and a build fetches its source
+ * some minutes after it starts (a queue wait, the machine, the image), so one held 45 minutes would die at the fetch,
+ * after Cloud Run time was spent; the vault keeps tokens 12 hours (intake.ts) only so a restarted Gen still has them.
+ */
+export const TOKEN_MAX_AGE_SECONDS = 45 * 60;
+
+/**
  * The token behind a customer build: memory first, then the encrypted store (so a recycled Gen instance doesn't lose
  * it). Missing or expired: a 'token' failure at once, before any Unity time is spent, saying which it was and that
  * Studio should resubmit with a fresh token (installation tokens last an hour, so a long queue can outlive one). The
@@ -162,6 +169,12 @@ export const TOKEN_KIND = 'token';
 export function customerToken(b: CustomerBuild, lookup: (ref: string) => TokenLookup | string | null = lookupToken, log: (m: string) => void = console.log): string {
   const raw = lookup(b.tokenRef);
   const r: TokenLookup = typeof raw === 'string' ? { token: raw, ageSeconds: 0, from: 'memory' } : raw ?? { token: null, why: 'missing' };
+  if (r.token !== null && r.ageSeconds > TOKEN_MAX_AGE_SECONDS) {
+    log(`customer build token: ${Math.round(r.ageSeconds / 60)} min old (GitHub's last an hour, a build needs it at its start); asking Studio for a fresh one`);
+    throw new GenError(
+      `The GitHub token for this build is ${Math.round(r.ageSeconds / 60)} minutes old, too old to start a build with (GitHub's installation tokens last an hour and the build fetches its source after it starts). Nothing was built: resubmit it with a fresh token.`,
+      { status: 400, kind: TOKEN_KIND });
+  }
   if (r.token !== null) {
     log(`customer build token: ${r.from === 'store' ? 'restored from the encrypted store (Gen restarted since submit)' : 'found in memory'}, ${r.ageSeconds}s since submit`);
     return r.token;

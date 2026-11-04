@@ -10,6 +10,8 @@
 // so "is there a current asset for this?" holds for every take.
 
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { db, parseRow, J } from './db.ts';
 import { paths } from './config.ts';
@@ -42,29 +44,58 @@ export function recipeKey(r: Recipe): string {
   return sha256(stableStringify({ ...rest, params }));
 }
 
-export function putAsset(a: {
-  data: Buffer; mime?: string; ext?: string; job?: string | null; client: string; project: string; tool: string;
+type NewAsset = {
+  mime?: string; ext?: string; job?: string | null; client: string; project: string; tool: string;
   seed?: number | null; recipe: Recipe; labels?: Record<string, unknown>; title?: string; meta?: Record<string, unknown>;
-}): Asset {
+};
+
+/** Where an asset's file goes, and its mime. */
+function assetTarget(a: NewAsset) {
   const assetId = id('a', 8);
   const mime = a.mime ?? (a.ext ? mimeOf(`x${a.ext}`) : 'application/octet-stream');
   const ext = a.ext ?? extOf(mime);
-  const month = new Date().toISOString().slice(0, 7);
-  const dir = path.join(paths.library, month);
+  const dir = path.join(paths.library, new Date().toISOString().slice(0, 7));
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${assetId}${ext}`);
-  fs.writeFileSync(file, a.data);
+  return { assetId, mime, file: path.join(dir, `${assetId}${ext}`) };
+}
+
+/** Writes the row for a file that is in the library folder, and queues its backup. */
+function insertAsset(a: NewAsset, t: { assetId: string; mime: string; file: string }, bytes: number, hash: string): Asset {
   const recipe = { ...a.recipe, seed: a.seed ?? a.recipe.seed ?? null };
   const row = {
-    id: assetId, job: a.job ?? null, client: a.client, project: a.project, tool: a.tool, kind: kindOf(mime), mime,
-    path: file, bytes: a.data.length, sha256: sha256(a.data), seed: recipe.seed, recipe: J(recipe), recipe_key: recipeKey(recipe),
+    id: t.assetId, job: a.job ?? null, client: a.client, project: a.project, tool: a.tool, kind: kindOf(t.mime), mime: t.mime,
+    path: t.file, bytes, sha256: hash, seed: recipe.seed, recipe: J(recipe), recipe_key: recipeKey(recipe),
     labels: J(a.labels ?? {}), tags: '[]', title: a.title ?? null, starred: 0, meta: J(a.meta ?? {}), created: Date.now(),
   };
   db.prepare(`INSERT INTO assets (id, job, client, project, tool, kind, mime, path, bytes, sha256, seed, recipe, recipe_key, labels, tags, title, starred, meta, created)
               VALUES (:id, :job, :client, :project, :tool, :kind, :mime, :path, :bytes, :sha256, :seed, :recipe, :recipe_key, :labels, :tags, :title, :starred, :meta, :created)`).run(row);
   // Also to S3 (in the background), so the library survives this disk (src/storage.ts).
-  backup({ sha256: row.sha256, path: file, bytes: row.bytes, mime });
-  return getAsset(assetId)!;
+  backup({ sha256: row.sha256, path: t.file, bytes: row.bytes, mime: t.mime });
+  return getAsset(t.assetId)!;
+}
+
+export function putAsset(a: NewAsset & { data: Buffer }): Asset {
+  const t = assetTarget(a);
+  fs.writeFileSync(t.file, a.data);
+  return insertAsset(a, t, a.data.length, sha256(a.data));
+}
+
+/**
+ * Keeps a file that is already on this disk as an asset by streaming it into the library (hashing as it goes), so a
+ * build output of a gigabyte never sits in memory (a 4 GiB Cloud Run instance died reading one whole, 2026-11-04).
+ */
+export async function putAssetFile(a: NewAsset & { file: string }): Promise<Asset> {
+  const t = assetTarget(a);
+  const hash = crypto.createHash('sha256');
+  const src = fs.createReadStream(a.file);
+  src.on('data', (c) => hash.update(c));
+  try {
+    await pipeline(src, fs.createWriteStream(t.file));
+  } catch (e) {
+    fs.rmSync(t.file, { force: true });
+    throw e;
+  }
+  return insertAsset(a, t, fs.statSync(t.file).size, hash.digest('hex'));
 }
 
 export function getAsset(assetId: string): Asset | null {

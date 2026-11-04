@@ -21,7 +21,7 @@ import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
-import { putAsset, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
 import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
@@ -1133,6 +1133,14 @@ class Queue {
     const inputHashes: Record<string, string | string[]> = {};
     const baseRecipe: Omit<Recipe, 'seed'> = { tool: tool.id, version: tool.version, params: job.params, inputs: inputHashes, models: tool.models?.(job.params) };
 
+    const assetOf = (out: Omit<Output, 'data'>) => ({
+      mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
+      seed: out.seed ?? null, recipe: { ...baseRecipe, params: { ...job.params, seed: out.seed ?? job.params.seed } }, labels: job.labels, title: out.title, meta: out.meta,
+    });
+    const keep = (asset: ReturnType<typeof putAsset>) => {
+      job.outputs.push({ asset: asset.id, seed: asset.seed, mime: asset.mime, kind: asset.kind, title: asset.title });
+      save(job, ['outputs']);
+    };
     const ctx: RunContext = {
       job: { id: job.id, client: job.client, project: job.project, tool: job.tool, labels: job.labels },
       params: job.params,
@@ -1146,14 +1154,8 @@ class Queue {
         save(job, ['log']);
       },
       tmp: (name) => path.join(tmpDir, name),
-      emit: async (out: Output) => {
-        const asset = putAsset({
-          data: out.data, mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
-          seed: out.seed ?? null, recipe: { ...baseRecipe, params: { ...job.params, seed: out.seed ?? job.params.seed } }, labels: job.labels, title: out.title, meta: out.meta,
-        });
-        job.outputs.push({ asset: asset.id, seed: asset.seed, mime: asset.mime, kind: asset.kind, title: asset.title });
-        save(job, ['outputs']);
-      },
+      emit: async (out: Output) => keep(putAsset({ ...assetOf(out), data: out.data })),
+      emitFile: async (out) => keep(await putAssetFile({ ...assetOf(out), file: out.file })),
       result: (value) => {
         job.result = value;
         save(job, ['result']);
