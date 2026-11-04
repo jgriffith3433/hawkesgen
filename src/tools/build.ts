@@ -2,12 +2,13 @@
 // (src/providers/builder/cloudrun.ts, docs/unity-cloudrun.md).
 
 import fs from 'node:fs';
+import { getAsset } from '../library.ts';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
-import { runCloudBuild, cloudConfig, cloudBuildStarted, regionsOf, type BuildOptions } from '../providers/builder/cloudrun.ts';
+import { runCloudBuild, cloudConfig, cloudBuildStarted, forgetFinishedBuild, releaseFinishedBuild, regionsOf, type BuildOptions } from '../providers/builder/cloudrun.ts';
 import { resolveMachine, nextBigger, customerJobForMachine, type Machine } from '../providers/builder/sizes.ts';
-import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
+import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, TOKEN_KIND, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
 import { dropToken } from '../providers/playtester/intake.ts';
 import type { RunContext } from './types.ts';
 import { runVmBuild } from '../providers/builder/vm.ts';
@@ -131,6 +132,18 @@ export async function runCustomerBuild(ctx: RunContext) {
   const b = customerBuildOf(ctx.params);
   const cfg = cloudConfig();
   try {
+    // The output was already kept (this job resumed after Gen died between keeping it and finishing): the build is done.
+    const kept = (ctx.outputs as { asset?: string; mime?: string }[]).find((o) => o.mime === 'application/gzip' && o.asset);
+    const keptAsset = kept ? getAsset(kept.asset!) : null;
+    if (keptAsset) {
+      ctx.log(`the build's output was already kept (${keptAsset.id}); not building again`);
+      ctx.result({
+        ok: true, exitCode: 0, resumed: true, artifact: { asset: keptAsset.id, url: `/v1/assets/${keptAsset.id}/file`, bytes: keptAsset.bytes, files: Number(keptAsset.meta?.files ?? 0) },
+        unity: keptAsset.meta?.unity ?? null, github: { repo: b.repo, commit: b.commit, ref: b.ref, path: b.path }, method: b.method, target: 'web', errors: [], backend: 'cloudrun',
+      });
+      await releaseFinishedBuild(ctx.job.id);
+      return;
+    }
     // A build already running (Gen restarted, or another instance took the job over) is followed, not asked about again.
     const started = await cloudBuildStarted(ctx.job.id);
     let probe = { path: b.path ?? '.', version: '' };
@@ -167,12 +180,21 @@ export async function runCustomerBuild(ctx: RunContext) {
     let retried: { from: Machine; to: Machine } | null = null;
     // Out of memory (Cloud Run's "Memory limit ... exceeded"): built again once, a size up (never past the biggest).
     // Only a build this run started (a resumed one has no token or job here).
-    const up = !r.ok && r.oom && token ? nextBigger(r.machine ?? machine, cfg.gcp.sizes) : null;
+    let up = !r.ok && r.oom && token ? nextBigger(r.machine ?? machine, cfg.gcp.sizes) : null;
+    if (up) {
+      // The build may have run for an hour: the token it started with must still be fresh enough to fetch with.
+      try { token = customerToken(b, undefined, ctx.log); } catch (e: any) {
+        if (e?.kind !== TOKEN_KIND) throw e;
+        ctx.log('the build ran out of memory, but its GitHub token is too old to build again; resubmit it with a fresh token');
+        up = null;
+      }
+    }
     if (up) {
       const from: Machine = r.machine ?? machine;
       fs.rmSync(r.tmp, { recursive: true, force: true });
       ctx.log(`the build ran out of memory on ${from.name} (${from.cpu} vCPU, ${from.memoryGiB} GiB): building again on ${up.name} (${up.cpu} vCPU, ${up.memoryGiB} GiB)`);
       ctx.usage({ provider: 'gcp-cloudrun', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${b.repo} ${b.commit.slice(0, 7)} (out of memory on ${from.name})` });
+      await forgetFinishedBuild(ctx.job.id);
       await onSize(up);
       ctx.step(`building again on ${machine.name}`);
       r = await build();
@@ -186,9 +208,11 @@ export async function runCustomerBuild(ctx: RunContext) {
       await ctx.emit({ data: r.log, ext: 'log', mime: 'text/plain', title: `Unity log (${b.repo})` });
       let artifact: { asset: string; url: string; bytes: number; files: number } | null = null;
       if (r.ok && r.artifact) {
-        await ctx.emit({ data: fs.readFileSync(r.artifact.file), ext: 'tar.gz', mime: 'application/gzip', title: `WebGL build (${b.repo} ${b.commit.slice(0, 7)})`, meta: { repo: b.repo, commit: b.commit, unity: r.unity ?? probe.version, files: r.artifact.files } });
+        // Streamed into the library: the archive can be a gigabyte, and the instance has 4 GiB.
+        await (ctx.emitFile ?? ((o) => ctx.emit({ ...o, data: fs.readFileSync(o.file) })))({ file: r.artifact.file, ext: 'tar.gz', mime: 'application/gzip', title: `WebGL build (${b.repo} ${b.commit.slice(0, 7)})`, meta: { repo: b.repo, commit: b.commit, unity: r.unity ?? probe.version, files: r.artifact.files } });
         const asset = ctx.outputs[ctx.outputs.length - 1] as { asset?: string };
         artifact = { asset: String(asset.asset), url: `/v1/assets/${asset.asset}/file`, bytes: r.artifact.bytes, files: r.artifact.files };
+        await releaseFinishedBuild(ctx.job.id);
       }
       ctx.result({
         ok: r.ok, exitCode: r.exitCode, seconds: r.seconds, cost: Math.round(r.cost * 1000) / 1000,

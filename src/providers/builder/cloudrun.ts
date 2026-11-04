@@ -157,6 +157,28 @@ async function saveJob(jobId: string, j: CloudJob, bucket?: string) {
   if (bucket) await gcsWrite(bucket, jobKey(jobId), Buffer.from(JSON.stringify(j)), 'application/json').catch(() => {});
 }
 
+// A finished customer build is noted in the bucket the moment its execution ends, before its output is downloaded and
+// kept: a Gen that dies from there on (2026-11-04: the 4 GiB instance ran out of memory keeping a 1 GB output, five
+// times) finds the note and takes the finished build's result and output, instead of building the game again and
+// letting a later failure overwrite result.json.
+type DoneNote = { job: CloudJob; ran: number; at: string; message?: string };
+const doneKey = (jobId: string) => `unity-builds/${jobId}/done.json`;
+async function loadDone(jobId: string, bucket: string): Promise<DoneNote | null> {
+  try { const b = await gcsRead(bucket, doneKey(jobId)); return b ? JSON.parse(b.toString('utf8')) : null; } catch { return null; }
+}
+
+/** Forgets that a job's build finished (an out-of-memory build that is made again on a bigger machine). */
+export async function forgetFinishedBuild(jobId: string) {
+  await gcsDelete(cloudConfig().gcp.bucket, doneKey(jobId)).catch(() => {});
+}
+
+/** The build's output has been kept as an asset: the archive in the bucket and the note aren't needed any more. */
+export async function releaseFinishedBuild(jobId: string) {
+  const bucket = cloudConfig().gcp.bucket;
+  await gcsDelete(bucket, `unity-builds/${jobId}/artifact.tgz`).catch(() => {});
+  await gcsDelete(bucket, doneKey(jobId)).catch(() => {});
+}
+
 /** Whether this job's cloud build was already started (noted here or in the bucket): it is followed, not started again. */
 export async function cloudBuildStarted(jobId: string) {
   return Boolean(await loadJob(jobId, cloudConfig().gcp.bucket));
@@ -342,12 +364,20 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   const tmp = fs.mkdtempSync(path.join(paths.tmp, 'cloudbuild-'));
 
   let job = await loadJob(jobId, cfg.gcp.bucket);
+  // Customer builds: one build per job, also across restarts. One that already finished is taken as it is.
+  const finished = !job && spec.customer ? await loadDone(jobId, cfg.gcp.bucket) : null;
+  if (finished) {
+    job = finished.job;
+    hooks.log(`the cloud build already finished (${job.execution.split('/').pop()}); taking its result, not building again`);
+  }
   // The env the build was started with, kept in memory only (a customer's token is in it) so a full region can hand it on.
   let startEnvs: Record<string, string> | null = null;
   // The regions this build may run in, in order (customer builds: only those with a checked customer job).
   let regions = regionsOf(cfg);
   const baseTarget = spec.customer ? { ...cfg.target, job: spec.customer.job } : cfg.target;
-  if (job) {
+  if (finished) {
+    // Nothing to start or follow.
+  } else if (job) {
     hooks.log(`the cloud build was already started (${job.execution.split('/').pop()}); following it`);
   } else {
     let p: Prepared;
@@ -377,19 +407,23 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
       envs.HAWKES_SIGNED = JSON.stringify(await customerSigned(cfg, p, sign!));
     }
     startEnvs = envs;
+    // A log or result left by an earlier execution of this job is never this one's: its Unity log would be read as the
+    // new one's when the new one stops before Unity runs (the fetch), and its "git said" text would be a stranger's.
+    for (const k of ['unity.log', 'result.json']) await gcsDelete(cfg.gcp.bucket, `${p.prefix}/${k}`).catch(() => {});
     const execution = await startInRegion(regions, 0, target, envs, cfg.timeoutMinutes, !!spec.customer, hooks);
     job = { execution: execution.name, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean, ...(spec.customer?.machine ? { machine: spec.customer.machine } : {}) };
     await saveJob(jobId, job, cfg.gcp.bucket);
     hooks.log(`cloud build started: ${execution.name.split('/').pop()} in ${regionOfExecution(execution.name)} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
   }
 
+  if (!job) throw fail('the cloud build has no execution to follow', 'builder');
   // Follow the execution and its log.
   const deadline = job.started + (cfg.timeoutMinutes + 25) * 60_000;
   let since = new Date(job.started - 60_000).toISOString();
   const follow = progressFollower(hooks);
-  let state = await getExecution(job.execution);
-  hooks.step('waiting for the cloud machine');
-  for (;;) {
+  let state: Awaited<ReturnType<typeof getExecution>> = finished ? ({ done: true, started: '', completed: '', message: finished.message ?? '', cancelled: false } as any) : await getExecution(job.execution);
+  if (!finished) hooks.step('waiting for the cloud machine');
+  while (!finished) {
     if (hooks.signal?.aborted) {
       await cancelExecution(job.execution);
       fs.rmSync(jobFile(jobId), { force: true });
@@ -450,10 +484,12 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
       hooks.log(`(couldn't reach Cloud Run: ${e.message}; retrying)`);
     }
   }
+  const ran = finished ? finished.ran : state.started && state.completed ? (Date.parse(state.completed) - Date.parse(state.started)) / 1000 : (Date.now() - job.started) / 1000;
+  // The finished note first (customer builds), then the running one goes: a Gen restarted between would build again.
+  if (spec.customer && !finished) await gcsWrite(cfg.gcp.bucket, doneKey(jobId), Buffer.from(JSON.stringify({ job, ran, at: new Date().toISOString(), message: state.message } satisfies DoneNote)), 'application/json').catch((e) => hooks.log(`(couldn't note the finished build: ${e.message})`));
   fs.rmSync(jobFile(jobId), { force: true });
-  // The bucket's note too: a Gen restarted after this would follow a finished execution whose artifact is gone.
+  // The bucket's note too: a Gen restarted after this would follow a finished execution.
   await gcsDelete(cfg.gcp.bucket, jobKey(jobId)).catch(() => {});
-  const ran = state.started && state.completed ? (Date.parse(state.completed) - Date.parse(state.started)) / 1000 : (Date.now() - job.started) / 1000;
   const oom = /memory limit|out of memory|OOM/i.test(state.message);
   // Priced at the machine it ran on: a customer build's size (sizes.ts), else the job's settings.
   const machine = job.machine ?? { name: 'base', cpu: cfg.gcp.cpu, memoryGiB: cfg.gcp.memoryGiB };
@@ -519,7 +555,10 @@ export async function finishBuildResult(jobId: string, spec: BuildSpec, hooks: B
     return { ...base, ok: false, error: `The build ended without a result (${o.noResult}; ${job.label}).`, kind: 'builder', errors: [] as string[], cloud: { ...where, memoryPeakBytes: null as number | null } };
   }
   const cloud = { ...where, cache: result.cache, stages: result.seconds, memoryPeakBytes: result.memoryPeakBytes, ranSeconds: Math.round(o.ran) };
-  if (result.cache.restoredFrom) hooks.log(`Library cache: restored ${result.cache.restoredFrom}${result.cache.restoredBytes ? ` (${mb(result.cache.restoredBytes)})` : ''}`);
+  // A build that stopped before the cache step (the fetch failed, the license) says so, instead of "none restored".
+  const cacheStages = ['license', 'source'];
+  if (!result.ok && cacheStages.includes(result.stage) && !result.cache.restoredFrom && !result.cache.saved) hooks.log(`Library cache: not reached (the build stopped at "${result.stage}")`);
+  else if (result.cache.restoredFrom) hooks.log(`Library cache: restored ${result.cache.restoredFrom}${result.cache.restoredBytes ? ` (${mb(result.cache.restoredBytes)})` : ''}`);
   else hooks.log(`Library cache: none restored${result.cache.reason ? ` (${result.cache.reason})` : ''}`);
   if (result.cache.saved) hooks.log(`Library cache: saved ${result.cache.savedKey} (${mb(result.cache.savedBytes)})`);
   else if (result.cache.skipped) hooks.log(`Library cache: not saved (${result.cache.skipped})`);
@@ -555,7 +594,8 @@ export async function finishBuildResult(jobId: string, spec: BuildSpec, hooks: B
     await gcsDownload(bucket, out.object, file);
     hooks.log(`build output: ${out.files ?? 0} files, ${mb(fs.statSync(file).size)} packed`);
     recordBuild(job.repo, job.stateKey, { ok: true, at, job: jobId, restored: result.cache.restoredFrom, clean: job.clean }, o.cleanAfter);
-    await gcsDelete(bucket, out.object).catch(() => {});
+    // The archive stays in the bucket until the tool has kept it as an asset (releaseFinishedBuild): a Gen that dies in
+    // between finds it again instead of building the game once more.
     return { ...base, exitCode: result.exitCode ?? 0, ok: true, error: null, kind: null, errors: [] as string[], artifact: { file, bytes: fs.statSync(file).size, files: out.files ?? 0, rawBytes: out.bytes }, unity: result.unity, cloud };
   }
 

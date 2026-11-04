@@ -76,6 +76,8 @@ export type RunContext = {
   tmp(name: string): string;
   /** Saves an output to the library as it is made. */
   emit(out: Output): Promise<void>;
+  /** Saves a file on this disk as an output by streaming it into the library: for big ones, never read whole into memory. */
+  emitFile?(out: Omit<Output, 'data'> & { file: string }): Promise<void>;
   /** A value the job returns (text, JSON) as well as or instead of files. */
   result(value: unknown): void;
   /** The seed for the n-th output: params.seed counting up, else random. */
