@@ -202,7 +202,7 @@ export function openDrawer(a) {
     row('Type', assetKindLabel(a.kind)), row('Made with', a.tool), row('Length', d ? fmt(d, 0) : ''),
     row('Size', a.meta?.width && a.meta?.height ? `${a.meta.width} × ${a.meta.height}` : ''), row('Made', made ? new Date(made).toLocaleString() : ''),
     h('div', { class: 'row dr-actions' },
-      onTimeline(a.kind) ? h('button', { class: 'primary small', id: 'drawerUse', onclick: async () => { const c = await placeAsset(assetLite(a)); if (c) { closeDrawer(); toast('Added to the timeline.'); } } }, icon('plus'), 'Use in timeline') : '',
+      onTimeline(a.kind) ? h('button', { class: 'primary small', id: 'drawerUse', onclick: async () => { const c = await placeAsset(assetLite(a)); if (c) { closeDrawer(); toast('Added to the timeline.'); } } }, icon('plus'), 'Use in timeline') : h('button', { class: 'primary small', id: 'drawerUse', disabled: true, title: 'A 3D model can\'t go on a timeline. Put it on a stage in the Director.' }, icon('plus'), 'Use in timeline'),
       h('button', { class: 'ghost small', onclick: () => { closeDrawer(); openAsset(a); } }, 'Show in center'),
       h('a', { class: 'ghost small btn', href: url, download: a.title || a.id }, 'Download')));
   const back = h('div', { class: 'media-drawer-back', onclick: closeDrawer });
