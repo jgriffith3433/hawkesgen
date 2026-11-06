@@ -1,0 +1,1 @@
+- lesson: Beta build failed on credits, not code — 'out of credits: playtest.run needs 6' means top up the balance; check the error text before editing code.
