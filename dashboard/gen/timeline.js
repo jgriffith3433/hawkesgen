@@ -80,6 +80,18 @@ export function initTimeline() {
   $('#tlRuler').addEventListener('pointerdown', scrub);
   $('#tlPlayhead .tl-playhead-cap')?.addEventListener('pointerdown', scrub);
   // Empty track area: select that track, move the playhead; with a mouse, drag to select a time range.
+  // Hover previews (mouse only): a thin line with the time under the pointer, and where a click would put the playhead.
+  const hover = h('div', { class: 'tl-hover' });
+  const hoverOff = () => hover.remove();
+  $('#tlTracks').addEventListener('pointermove', (e) => {
+    if (lender || e.pointerType !== 'mouse' || e.buttons) return hoverOff();
+    const t = Math.max(0, tOf(e.clientX - T.canvas.getBoundingClientRect().left));
+    hover.style.left = `${xOf(t)}px`;
+    hover.dataset.label = fmt(t, 1);
+    if (!hover.isConnected) $('#tlTracks').append(hover);
+  });
+  $('#tlTracks').addEventListener('pointerleave', hoverOff);
+  $('#tlTracks').addEventListener('pointerdown', hoverOff, true);
   $('#tlTracks').addEventListener('pointerdown', (e) => {
     if (lender || e.target.closest('.clip, .tl-join, .lane-item')) return;
     const r = T.canvas.getBoundingClientRect();
@@ -419,7 +431,7 @@ function clipEl(c) {
   const el = h('div', {
     class: `clip kind-${c.kind}${sel ? ' selected' : ''}${c.pending ? ' pending' : ''}${c.failed ? ' failed' : ''}${c.scene ? ' linked' : ''}`, 'data-id': c.id,
     style: { left: `${xOf(c.start)}px`, width: `${Math.max(6, xOf(clipLength(c)))}px`, ...(c.kind === 'fill' ? { '--fill': c.color ?? '#000' } : {}) },
-    title: c.failed ? `Couldn't make this: ${c.failed}` : c.label ?? c.text ?? '',
+    title: c.failed ? `Couldn't make this: ${c.failed}` : `${c.label ?? c.text ?? c.kind}\n${fmt(c.start, 1)} to ${fmt(clipEnd(c), 1)} (${fmt(clipLength(c), 1)})`,
   });
   const label = c.kind === 'text' ? c.text : c.kind === 'fill' ? `Color ${c.color ?? ''}` : c.pending ? `${PROGRESS.get(c.job) ?? 'Making'} · ${c.label ?? ''}` : c.failed ? `${c.failed} · ${c.label ?? ''}` : c.label ?? '';
   if (c.asset && (c.kind === 'video' || c.kind === 'image')) {
@@ -511,6 +523,24 @@ function snapT(t, except) {
   return best;
 }
 
+/** What snapping did, for the guide line and the playtest: how many times a drag caught a point, and which. */
+export const snapStats = { hits: 0, last: null, to: null };
+let guide = null;
+/** Snap while dragging: like snapT, and a guide line shows the point the edge caught (the playhead, 0 or a neighbour). */
+function snapGuide(t, except) {
+  const s = snapT(t, except);
+  if (T.snap && Math.abs(s - t) < 8 / T.z && (s !== t || [0, P.playhead].includes(s) || P.doc.clips.some((c) => c.id !== except && (c.start === s || clipEnd(c) === s)))) {
+    guide ??= h('div', { class: 'tl-snap' });
+    guide.style.left = `${xOf(s)}px`;
+    const what = s === P.playhead ? 'the playhead' : s === 0 ? 'the start' : 'the next clip';
+    guide.dataset.label = `Snapped to ${what}`;
+    if (!guide.isConnected) $('#tlTracks').append(guide);
+    if (snapStats.last !== s) { snapStats.hits++; snapStats.last = s; snapStats.to = what; }
+  }
+  return s;
+}
+function hideGuide(reset) { guide?.remove(); if (reset) snapStats.last = null; }
+
 /** A clip under the pointer: the body moves it (to any unlocked track; a magnetic one reorders), an edge trims it. */
 function clipPointer(e, c) {
   if (e.button > 0) return;
@@ -531,16 +561,17 @@ function clipPointer(e, c) {
     const dx = ev.clientX - x0;
     if (!active && Math.abs(dx) < 4 && Math.abs(ev.clientY - y0) < 6) return;
     active = true;
+    hideGuide();
     const dt = dx / T.z;
     if (handle === 'r') {
-      const end = Math.min(snapT(orig.start + (orig.out - orig.in) / sp + dt, c.id), isMagnetic(c.track) ? Infinity : room.after);
+      const end = Math.min(snapGuide(orig.start + (orig.out - orig.in) / sp + dt, c.id), isMagnetic(c.track) ? Infinity : room.after);
       c.out = Math.min(maxOut, Math.max(orig.in + 0.1, orig.in + (end - orig.start) * sp));
       el.style.width = `${xOf(clipLength(c))}px`;
       return;
     }
     if (handle === 'l') {
       const mag = isMagnetic(c.track);
-      let inn = orig.in + (mag ? dt : Math.max(room.before, snapT(orig.start + dt, c.id)) - orig.start) * sp;
+      let inn = orig.in + (mag ? dt : Math.max(room.before, snapGuide(orig.start + dt, c.id)) - orig.start) * sp;
       inn = Math.max(isStill(c) ? -Infinity : 0, Math.min(orig.out - 0.1, inn));
       if (isStill(c)) { c.in = 0; c.out = Math.max(0.1, orig.out - (inn - orig.in)); } else c.in = inn;
       if (!mag) c.start = Math.max(0, orig.start + (inn - orig.in) / sp);
@@ -565,8 +596,8 @@ function clipPointer(e, c) {
       el.parentElement.append(marker);
     } else {
       el.style.transform = '';
-      let s0 = Math.max(0, snapT(orig.start + dt, c.id));
-      const snapEnd = snapT(s0 + clipLength(c), c.id) - clipLength(c);
+      let s0 = Math.max(0, snapGuide(orig.start + dt, c.id));
+      const snapEnd = snapGuide(s0 + clipLength(c), c.id) - clipLength(c);
       if (snapEnd !== s0 && T.snap && Math.abs(snapEnd - s0) < 8 / T.z) s0 = Math.max(0, snapEnd);
       // Never inside another clip: it stops against its neighbours, or jumps to the nearest gap it fits.
       c.start = fitStart(targetTrack, s0, clipLength(c), c.id);
@@ -578,6 +609,7 @@ function clipPointer(e, c) {
     removeEventListener('pointerup', up);
     removeEventListener('pointercancel', up);
     marker?.remove();
+    hideGuide(true);
     if (!active) return;
     const now = { start: c.start, in: c.in, out: c.out };
     Object.assign(c, orig);

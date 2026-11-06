@@ -73,7 +73,7 @@ bus.on('inspect', () => {
 const SHORTCUTS = [
   ['Space', 'Play or pause'], ['S', 'Split at the playhead'], ['Delete', 'Delete what\'s selected'], ['Ctrl+C / X / V', 'Copy, cut, paste clips'],
   ['Ctrl+Z / Ctrl+Shift+Z', 'Undo, redo'], ['Ctrl+D', 'Duplicate'], ['Ctrl+S', 'Save now'], ['Ctrl+O', 'Open a scene'], ['T', 'Words at the playhead'],
-  ['I / O', 'Mark a stretch for the AI'], ['← →', 'Step a frame (Shift: a second)'], ['Ctrl+wheel, + / −', 'Zoom the timeline'], ['W / E / R', 'Move, turn, size (3D stage)'], ['Esc', 'Let go of the selection'],
+  ['I / O', 'Mark a stretch for the AI'], ['← →', 'Step a frame (Shift: a second)'], ['Ctrl+wheel, + / −', 'Zoom the timeline'], ['W / E / R', 'Move, turn, size (3D stage)'], ['Esc', 'Let go of the selection'], ['Click empty track', 'Clear the selection'], ['Snap button', 'Clips catch the playhead and each other'], ['?', 'Show or hide this list'],
 ];
 function shortcuts() {
   $('#shortcutsPop')?.remove();
@@ -95,7 +95,11 @@ $('#helpBtn').addEventListener('click', (e) => {
     h('div', { class: 'menu-links' }, h('a', { href: '/legal#terms', target: '_blank' }, 'Terms'), h('a', { href: '/legal#privacy', target: '_blank' }, 'Privacy'), h('a', { href: 'mailto:support@hawkesgen.ai' }, 'Contact')),
   ]);
 });
-addEventListener('keydown', (e) => { if (e.key === '?' && !e.target.closest?.('input, textarea, select, [contenteditable]')) { e.preventDefault(); shortcuts(); } });
+addEventListener('keydown', (e) => {
+  if (e.key !== '?' || e.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  if ($('#shortcutsPop')) $('#shortcutsPop').remove(); else shortcuts();
+});
 
 // ------------------------------------------------------------------ search everything, and what's being made
 $('#paletteBtn').addEventListener('click', () => openPalette());
