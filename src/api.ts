@@ -19,7 +19,7 @@ import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
-import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec, type Job } from './jobs.ts';
+import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, typicalRunSeconds, type JobSpec, type Job } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
@@ -1366,7 +1366,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
-      if (!m[2] && method === 'GET') return send(res, 200, publicJob({ ...j, queue: queuePosition(j) }, isCustomer(client)));
+      if (!m[2] && method === 'GET') return send(res, 200, publicJob({ ...j, queue: queuePosition(j), ...(j.status === 'queued' || j.status === 'running' ? { estimateSeconds: typicalRunSeconds(j.tool) } : {}) }, isCustomer(client)));
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
       if (m[2] === 'rerun' && method === 'POST') {
         const b = await readJson(req);

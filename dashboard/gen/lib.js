@@ -139,7 +139,14 @@ export function jobStatusText(j) {
     if (/no (stopped |free )?server|launching new ones is off|offline|no gpu|unavailable/i.test(why)) return 'Waiting for a free server';
     return j.queue?.ahead ?? j.ahead ? `In line (${j.queue?.ahead ?? j.ahead} ahead)` : 'In line';
   }
-  return j.detail ? plainWords(j.detail) : 'Working';
+  const doing = j.detail && j.detail !== 'running' ? plainWords(j.detail) : 'Working';
+  return j.estimateSeconds ? `${doing} · ${estimateText(j.estimateSeconds)}` : doing;
+}
+/** "about 40 s", "about 3 min": what the tool usually takes (the server's own run history), said once, never a ticking clock. */
+export function estimateText(sec) {
+  sec = Math.max(1, Math.round(sec));
+  if (sec < 90) return `about ${sec < 10 ? sec : Math.round(sec / 5) * 5} s`;
+  return `about ${Math.round(sec / 60)} min`;
 }
 
 /** 0:03.4, 1:02.0 */

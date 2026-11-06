@@ -15,6 +15,7 @@ import { isPlaying, playbackStats, resetPlaybackStats, pacingStats } from './pla
 import { activeScene, newScene } from './scenes.js';
 import { startGuide, guideOpen } from './guide.js';
 import { api } from './lib.js';
+import { runJob } from './media.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
@@ -39,6 +40,7 @@ installPlaytest({
     { id: 'signedout', title: 'Someone not signed in sees the welcome', seconds: 30 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
+    { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -101,6 +103,32 @@ installPlaytest({
       click('#guide [data-done]');
       t.metric('guideDismissed', guideOpen() ? 0 : 1);
       t.finish(finished && !guideOpen() ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'progress') {
+      t.scene('Progress and failure');
+      // Setup shortcut (named): a CPU-only transform with a step that does not exist, so it fails by itself. No GPU is used.
+      const pics = ((await api(`/v1/assets?${new URLSearchParams({ limit: '5', project: state.user.project, kind: 'image' })}`).catch(() => null))?.items ?? []);
+      if (!pics.length) { t.note('The test account has no picture in its library'); t.finish('done'); return; }
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest progress ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      runJob({ tool: 'image.transform', inputs: { image: `asset:${pics[0].id}` }, params: { ops: [{ op: 'nonsense' }] }, label: 'Playtest fix', place: { track: mainTrack().id, start: 0, seconds: 3 } }).catch(() => {});
+      const clip = () => P.doc.clips.find((c) => c.label === 'Playtest fix');
+      t.event('job-started');
+      const label = () => document.querySelector('#tlTracks .clip .clip-label')?.textContent ?? '';
+      if (await until(() => clip()?.pending && document.querySelector('#tlTracks .clip-act.stop'), 8000, 50)) { t.event('running-shows-stop'); t.note(`running: ${label()}`); }
+      const failed = await until(() => clip()?.failed && document.querySelector('#tlTracks .clip-act.retry'), 60000);
+      t.metric('failedShown', failed ? 1 : 0);
+      if (failed) { t.event('failed-shows-cause-and-retry'); t.note(`failed: ${clip().failed}`); }
+      if (failed) {
+        click('#tlTracks .clip-act.retry');
+        const again = await until(() => clip()?.pending, 8000, 50);
+        t.metric('retryStarted', again ? 1 : 0);
+        if (again) t.event('retry-started');
+        await until(() => clip()?.failed, 60000);
+      }
+      t.finish(failed ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback4') {

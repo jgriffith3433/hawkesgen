@@ -4,7 +4,7 @@
 // filled in when their jobs end, and changes made elsewhere picked up.
 
 import { state } from './account.js';
-import { api, bus, toast, plainError, jobStatusText, sendFeedback } from './lib.js';
+import { api, bus, toast, plainError, friendly, jobStatusText, sendFeedback } from './lib.js';
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -428,6 +428,21 @@ export async function stopClip(id) {
   P.doc.clips = P.doc.clips.filter((x) => x.id !== id);
   changed();
   undoable(`Stopped making "${c.label ?? 'it'}".`);
+}
+
+/** Tries a failed clip again: the same job again (a new one, same recipe); the clip waits for it like any other. */
+export async function retryClip(id) {
+  const c = byId(id);
+  if (!c?.job || !c.failed) return;
+  try {
+    const r = await api(`/v1/jobs/${c.job}/rerun`, { method: 'POST', body: {} });
+    const job = r.jobs?.[0] ?? r;
+    remember();
+    Object.assign(c, { job: job.id, pending: true });
+    delete c.failed;
+    changed();
+    watchJobs();
+  } catch (err) { toast(friendly(err).text); }
 }
 
 // Waiting clips: follow their jobs and fill them in. Edits made elsewhere: picked up while the page is visible.
