@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { Client } from '../auth.ts';
 import { assess, type AssessInput, type QualityReport } from '../quality/index.ts';
 import { ask, callScope } from '../providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from '../orgsecrets.ts';
+import { orgOfProject, isHouseProject } from '../orgsecrets.ts';
 import { submit, getJob, cancel } from '../jobs.ts';
 import { getAsset } from '../library.ts';
 import { quoteJobCredits, chargeCredits } from '../billing.ts';
@@ -49,7 +49,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hg-sr-'));
 
 const REAL: Deps = {
   async ask(project, p) {
-    const r = await callScope.run({ customer: true, org: orgOfProject(project), house: isGenAccountProject(project) }, () => ask(p));
+    const r = await callScope.run({ customer: true, org: orgOfProject(project), house: isHouseProject(project) }, () => ask(p));
     return { text: r.text, cost: r.cost ?? 0, house: !['byok', 'subscription'].includes(r.billing), model: r.model };
   },
   submit: (client, spec) => submit(client, spec),

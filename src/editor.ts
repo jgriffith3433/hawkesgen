@@ -17,7 +17,7 @@ import { isInternalOnlyTool } from './billing.ts';
 
 const TOOL_IDS = () => TOOLS.map((t) => t.id);
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 
 
 // The timeline document and its edits live in src/timeline.ts (one model under video, image and audio scenes).
@@ -243,6 +243,6 @@ export function assistantPrompt(a: TurnInput) {
  */
 export async function assistantTurn(a: TurnInput): Promise<{ say: string; ops: Op[]; model: string; house: boolean; cost: number }> {
   const org = orgOfProject(a.project);
-  const r = await callScope.run({ customer: true, org, house: isGenAccountProject(a.project) }, () => ask(assistantPrompt(a)));
+  const r = await callScope.run({ customer: true, org, house: isHouseProject(a.project) }, () => ask(assistantPrompt(a)));
   return { ...parseAnswer(r.text), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }

@@ -24,7 +24,7 @@ import { afterJob } from './lod.ts';
 import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
@@ -1220,7 +1220,7 @@ class Queue {
       if (!remote) {
         if (cpu) Object.assign(job, { server: null });
         // A customer's job never spends J's Max plan (providers/anthropic.ts callScope).
-        await callScope.run({ customer: !exemptCheck()(job), org: orgOfProject(job.project), house: isGenAccountProject(job.project) }, () => tool.run(ctx));
+        await callScope.run({ customer: !exemptCheck()(job), org: orgOfProject(job.project), house: isHouseProject(job.project) }, () => tool.run(ctx));
       }
       if (cloud) markUp(cloud.lane ?? cloud.name);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });

@@ -20,7 +20,7 @@ import { getTool } from './tools/index.ts';
 import { identityPack } from './identity.ts';
 import { normalizeWorld, normalizePlace, normalizeProp, continuityAt, type WorldDoc } from './worlddocs.ts';
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 
 export { continuityAt };
 
@@ -205,7 +205,7 @@ export async function canonCheck(world: Partial<WorldDoc> | Partial<WorldContext
     schema: CANON_SCHEMA, maxTokens: 2000, effort: 'low',
   };
   const call = opts.ask ?? ((q: any) => (opts.project
-    ? callScope.run({ customer: true, org: orgOfProject(opts.project), house: isGenAccountProject(opts.project) }, () => ask(q))
+    ? callScope.run({ customer: true, org: orgOfProject(opts.project), house: isHouseProject(opts.project) }, () => ask(q))
     : ask(q)));
   const r = await call(p);
   const breaks = parseCanon(r.text, rules);
