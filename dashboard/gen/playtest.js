@@ -43,6 +43,7 @@ installPlaytest({
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
+    { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -276,6 +277,53 @@ installPlaytest({
       t.event(`seek-resume max ${seeks.seekResumeMs}ms of ${seeks.seeks}`);
       t.progress(0.9);
       t.finish(through ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'library') {
+      t.scene('Library');
+      click('#paneTabs button[data-pane="media"]');
+      await until(() => document.querySelectorAll('#mediaGrid .tile:not(.busy)').length > 0 || document.querySelector('#mediaGrid .empty-note'), 15000);
+      const real = () => [...document.querySelectorAll('#mediaGrid .tile:not(.busy)')];
+      t.metric('tiles', real().length);
+      t.metric('thumbs', real().filter((x) => x.querySelector('img, video')).length);
+      t.event('grid');
+      // Each filter chip narrows the grid to its kind (real clicks on the chips).
+      const kinds = { image: 'kind-image', video: 'kind-video', audio: 'kind-audio', mesh: 'kind-mesh' };
+      for (const [k, cls] of Object.entries(kinds)) {
+        click(`#mediaFilter .chip[data-kind="${k}"]`);
+        await until(() => document.querySelector(`#mediaFilter .chip[data-kind="${k}"].on`), 3000);
+        await sleep(1200);
+        const tiles = real();
+        t.metric(`filter_${k}`, tiles.length);
+        t.metric(`filter_${k}_pure`, tiles.every((x) => x.classList.contains(cls)) ? 1 : 0);
+        t.event(`filtered-${k}`);
+      }
+      click('#mediaFilter .chip[data-kind="video"]');
+      await sleep(1200);
+      const vt = real().find((x) => x.querySelector('video'));
+      if (vt) {
+        const v = vt.querySelector('video');
+        vt.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        v.dispatchEvent(new MouseEvent('mouseenter'));
+        const playing = await until(() => !v.paused && v.currentTime > 0, 4000, 100);
+        t.metric('hoverPlays', playing ? 1 : 0);
+        t.event(playing ? 'hover-plays' : 'hover-no-play');
+        v.dispatchEvent(new MouseEvent('mouseleave'));
+      } else t.note('The test account has no clips to hover');
+      click('#mediaFilter .chip[data-kind=""]');
+      await sleep(1200);
+      const first = real()[0];
+      if (!first) { t.note('The library is empty: no asset to open'); t.finish('done'); return; }
+      first.focus();
+      press('Enter');
+      const open = await until(() => document.querySelector('#mediaDrawer .media-drawer'), 5000);
+      t.metric('drawerOpens', open ? 1 : 0);
+      t.metric('drawerPrompt', document.querySelector('#mediaDrawer .dr-prompt')?.textContent ? 1 : 0);
+      t.metric('drawerUse', document.querySelector('#drawerUse') ? 1 : 0);
+      t.event('drawer-open');
+      await sleep(800);
+      press('Escape');
+      t.finish(open ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback') {

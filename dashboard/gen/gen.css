@@ -1069,3 +1069,20 @@ html, body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 .tl-hover { background: color-mix(in srgb, var(--text) 35%, transparent); }
 .tl-snap::before, .tl-hover::before { content: attr(data-label); position: absolute; top: 2px; left: 5px; padding: 1px 5px; border-radius: 4px; font-size: 10.5px; white-space: nowrap; background: var(--panel); border: 1px solid var(--line-2); color: var(--text); }
 .tl-snap::before { color: var(--accent); border-color: var(--accent); }
+
+/* Media: the detail drawer and the tile's Details button */
+.tile-info { position: absolute; bottom: 24px; right: 5px; padding: 3px; border-radius: 7px; background: rgba(0,0,0,.6); color: #fff; opacity: 0; }
+.tile:hover .tile-info, .tile:focus-within .tile-info { opacity: 1; }
+.tile-info:hover { background: var(--accent); }
+@media (pointer: coarse) { .tile-info { opacity: 1; } }
+.media-drawer-wrap { position: fixed; inset: 0; z-index: 900; display: flex; justify-content: flex-start; }
+.media-drawer-back { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+.media-drawer { position: relative; width: min(380px, 100vw); height: 100%; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line-2); padding: 14px; display: flex; flex-direction: column; gap: 8px; outline: none; }
+.dr-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dr-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-media { background: var(--panel-2); border-radius: 10px; overflow: hidden; display: grid; place-items: center; min-height: 140px; }
+.dr-media img, .dr-media video { width: 100%; max-height: 40vh; object-fit: contain; display: block; }
+.dr-media audio { width: 100%; }
+.dr-prompt { white-space: pre-wrap; word-break: break-word; font-size: 13px; background: var(--panel-2); border-radius: 8px; padding: 8px 10px; max-height: 30vh; overflow-y: auto; }
+.dr-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.dr-actions { margin-top: 6px; flex-wrap: wrap; gap: 6px; }
