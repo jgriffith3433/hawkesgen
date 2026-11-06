@@ -257,12 +257,13 @@ function placeEmpty() { const el = $('#tlEmpty'); if (el && T.scroll) el.style.l
 function movePlayhead() {
   const el = $('#tlPlayhead');
   if (!el) return;
-  el.style.transform = `translateX(${xOf(ph())}px)`;
+  // Reads before the write, so the frame doesn't force a layout between them.
+  const playing = lender ? lender.playing?.() : isPlaying();
+  const x = xOf(ph());
+  const off = playing ? x - T.scroll.scrollLeft : 0, wide = playing ? T.scroll.clientWidth : 0;
+  el.style.transform = `translateX(${x}px)`;
   // Keep the playhead in view while playing.
-  if (lender ? lender.playing?.() : isPlaying()) {
-    const x = xOf(ph()) - T.scroll.scrollLeft;
-    if (x > T.scroll.clientWidth - 40 || x < 0) T.scroll.scrollLeft = xOf(ph()) - 60;
-  }
+  if (playing && (off > wide - 40 || off < 0)) T.scroll.scrollLeft = x - 60;
 }
 
 function drawRange() {

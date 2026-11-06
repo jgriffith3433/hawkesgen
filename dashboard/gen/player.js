@@ -41,7 +41,20 @@ const POOL_MAX = 24; // empty media elements of each kind blessed by a tap, for 
 // no picture (kept: the last picture stayed on screen; blank: it was drawn without one), and the clips warmed up early.
 const STATS = { holds: 0, holdMs: 0, maxHoldMs: 0, driftSeeks: 0, nudges: 0, keptFrames: 0, blankFrames: 0, primed: 0 };
 export const playbackStats = () => ({ ...STATS, holdMs: Math.round(STATS.holdMs), maxHoldMs: Math.round(STATS.maxHoldMs) });
-export function resetPlaybackStats() { for (const k of Object.keys(STATS)) STATS[k] = 0; }
+export function resetPlaybackStats() { for (const k of Object.keys(STATS)) STATS[k] = 0; FT.length = 0; FT.last = 0; SEEKS.length = 0; SEEKS.pending = null; }
+// Frame pacing while playing (J, 2026-11-06: "timeline playback smoothness pass"): the gap between drawn frames, kept so
+// the playtest can say fps and its 5th percentile (the slow end: what hitching is), and how long a seek took to get the
+// playhead moving again. Only recorded while playing; at most 4000 frames kept.
+const FT = []; FT.last = 0;
+const SEEKS = []; SEEKS.pending = null;
+export function pacingStats() {
+  const d = [...FT].sort((a, b) => a - b);
+  const n = d.length;
+  const at = (q) => (n ? d[Math.min(n - 1, Math.floor(q * n))] : 0);
+  const mean = n ? d.reduce((a, b) => a + b, 0) / n : 0;
+  const r = (x) => Math.round(x * 10) / 10;
+  return { frames: n, fps: mean ? r(1000 / mean) : 0, p5fps: at(0.95) ? r(1000 / at(0.95)) : 0, worstMs: r(d[n - 1] ?? 0), seeks: SEEKS.length, seekResumeMs: SEEKS.length ? Math.round(Math.max(...SEEKS)) : 0, seekPending: SEEKS.pending ? 1 : 0 };
+}
 const M = new Map(); // clip id -> { el, asset, src (MediaElementSource), gain }
 const IMGS = new Map(); // asset -> Image
 const PEAKS = new Map(); // asset -> peaks or 'loading'
@@ -78,6 +91,7 @@ function fitStage() {
   if (hh > box.height - 24) { hh = box.height - 24; w = hh * ar; }
   stage.style.width = `${Math.max(40, w)}px`;
   stage.style.height = `${Math.max(40, hh)}px`;
+  stageW = 0;
   if (canvas.width !== P.doc.width || canvas.height !== P.doc.height) { canvas.width = P.doc.width; canvas.height = P.doc.height; }
   sizeTag.textContent = S.source ? '' : `${P.doc.width} × ${P.doc.height}${P.kind === 'image' && !P.doc.background ? ' · transparent' : ''}`;
   if (painter) painter.fit();
@@ -145,13 +159,14 @@ function drawPlayBtn() { $('#playBtn').replaceChildren(icon(S.playing ? 'pause' 
 export function seek(t) {
   if (S.source) { if (S.source.el) S.source.el.currentTime = Math.max(0, t); return; }
   P.playhead = Math.max(0, Math.min(Math.max(docLength(), 0), t));
-  if (S.playing) { S.p0 = P.playhead; S.t0 = performance.now(); endWait(S.t0); S.lead = null; }
+  if (S.playing) { S.p0 = P.playhead; S.t0 = performance.now(); endWait(S.t0); S.lead = null; SEEKS.pending = { at: S.t0, from: P.playhead }; }
   syncMedia(P.playhead, S.playing, true);
   prepare();
   S.dirty = true;
   bus.emit('time', P.playhead);
 }
 
+let timecodeEl = null;
 /** One loop for everything: the clock while playing, the media kept in step, and the canvas drawn when something changed. */
 function frameLoop() {
   const tick = () => {
@@ -161,9 +176,16 @@ function frameLoop() {
       if (t >= end) {
         if (S.loop && !S.recording) { t = P.selection.range?.start ?? 0; S.p0 = t; S.t0 = performance.now(); S.lead = null; syncMedia(t, true, true); } else { P.playhead = end; pause(); S.recording?.done(); }
       }
-      if (S.playing) { const was = P.playhead; P.playhead = t; syncMedia(t, true); if (t !== was) bus.emit('time', t); }
+      if (S.playing) {
+        const was = P.playhead; P.playhead = t; syncMedia(t, true); if (t !== was) bus.emit('time', t);
+        const now = performance.now();
+        if (FT.last && FT.length < 4000) FT.push(now - FT.last);
+        FT.last = now;
+        // A seek while playing is over when the playhead moves on from where it landed.
+        if (SEEKS.pending && t > SEEKS.pending.from + 0.03) { SEEKS.push(now - SEEKS.pending.at); SEEKS.pending = null; }
+      } else FT.last = 0;
       S.dirty = true;
-    }
+    } else FT.last = 0;
     if (S.dirty && !S.source && canvas.isConnected) {
       // Playing into a clip that has no picture yet (the cut came before its first frame, or it's seeking with nothing
       // kept): the canvas keeps the last picture it drew, for as long as the clock would wait, instead of a blank tile.
@@ -176,7 +198,11 @@ function frameLoop() {
         draw(g, P.playhead, { live: true }); drawHandles();
       }
     }
-    $('#timecode').textContent = S.source ? $('#timecode').textContent : `${fmt(P.playhead, 2)} / ${fmt(docLength(), 2)}${S.buffering ? ' · buffering' : ''}`;
+    if (!S.source) {
+      const tc = timecodeEl ?? (timecodeEl = $('#timecode'));
+      const txt = `${fmt(P.playhead, 2)} / ${fmt(docLength(), 2)}${S.buffering ? ' · buffering' : ''}`;
+      if (tc.textContent !== txt) tc.textContent = txt;
+    }
     S.raf = requestAnimationFrame(tick);
   };
   S.raf = requestAnimationFrame(tick);
@@ -545,7 +571,19 @@ export function boxOf(c, ctx = g) {
  * centered ones center on it. Words never fall out of the frame: too wide, they shrink to fit; near an edge, they slide
  * in (unturned words only: a turned title may lean out on purpose).
  */
+const FITS = new Map();
 function textFit(c, ctx) {
+  // Measuring words is the costly part and they rarely change while playing: kept by what decides the answer.
+  const key = `${c.id}|${c.text}|${c.size}|${c.x}|${c.y}|${c.weight}|${c.font}|${c.align}|${c.rotation}|${c.box}|${c.color}|${P.doc.width}|${P.doc.height}`;
+  const hit = FITS.get(c.id);
+  if (hit?.key === key) return hit.fit;
+  const fit = textFitNow(c, ctx);
+  if (FITS.size > 200) FITS.clear();
+  FITS.set(c.id, { key, fit });
+  return fit;
+}
+if (typeof document !== 'undefined') document.fonts?.addEventListener?.('loadingdone', () => FITS.clear());
+function textFitNow(c, ctx) {
   const W = P.doc.width, H = P.doc.height, margin = W * 0.03;
   const st = textStyle(c);
   const lines = String(c.text ?? '').split('\n');
@@ -740,7 +778,9 @@ function drawSound(ctx, t, live) {
 }
 
 // ------------------------------------------------------------------ handles on the canvas
-const scale = () => stage.getBoundingClientRect().width / P.doc.width;
+// The stage's width is only read when it changes (fitStage), not every frame: reading it forces a layout.
+let stageW = 0;
+const scale = () => (stageW || (stageW = stage.getBoundingClientRect().width)) / P.doc.width;
 /** The one selected visual clip under the playhead, if it can be moved there. */
 function handled() {
   const cs = selectedClips();
@@ -749,13 +789,17 @@ function handled() {
   const tr = trackOf(c.track);
   return isVisual(c) && active(c, P.playhead) && !tr?.hidden && !tr?.locked ? c : null;
 }
+let handlesKey = '';
 function drawHandles() {
   if (!handles) return;
   const c = handled();
-  if (!c) { handles.hidden = true; return; }
+  if (!c) { if (!handles.hidden) handles.hidden = true; handlesKey = ''; return; }
   const b = boxOf(c);
   const s = scale();
+  const key = `${b.x}|${b.y}|${b.w}|${b.h}|${s}|${c.rotation ?? 0}`;
   handles.hidden = false;
+  if (key === handlesKey) return;
+  handlesKey = key;
   Object.assign(handles.style, { left: `${(b.x - b.w / 2) * s}px`, top: `${(b.y - b.h / 2) * s}px`, width: `${b.w * s}px`, height: `${b.h * s}px`, transform: `rotate(${c.rotation ?? 0}deg)` });
 }
 const toScene = (e) => { const r = canvas.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * P.doc.width, y: ((e.clientY - r.top) / r.height) * P.doc.height }; };

@@ -6,10 +6,12 @@
 //   signedout what someone who isn't signed in sees: the welcome, and Start free
 //   playback two or three of the library's clips cut together, played through the cuts and scrubbed back over them:
 //            how often and how long the clock waited for data, seeks while playing, frames with no picture
+//   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
+//            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state } from './account.js';
-import { P, addClip, setClip, mainTrack, docLength } from './project.js';
-import { isPlaying, playbackStats, resetPlaybackStats } from './player.js';
+import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
+import { isPlaying, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
 import { activeScene, newScene } from './scenes.js';
 import { startGuide, guideOpen } from './guide.js';
 import { api } from './lib.js';
@@ -36,6 +38,7 @@ installPlaytest({
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
     { id: 'signedout', title: 'Someone not signed in sees the welcome', seconds: 30 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
+    { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -98,6 +101,73 @@ installPlaytest({
       click('#guide [data-done]');
       t.metric('guideDismissed', guideOpen() ? 0 : 1);
       t.finish(finished && !guideOpen() ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'playback4') {
+      t.scene('Four tracks');
+      const list = async (kind) => ((await api(`/v1/assets?${new URLSearchParams({ limit: '40', project: state.user.project, kind })}`).catch(() => null))?.items ?? []).filter((a) => a.meta?.duration > 1 || kind === 'image');
+      const [vids, pics, sounds] = [await list('video'), await list('image'), await list('audio')];
+      t.metric('videos', vids.length); t.metric('pictures', pics.length); t.metric('sounds', sounds.length);
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video scene with four tracks filled for 30 s from the library; what the
+      // library lacks (no clips, no pictures, no sound) is stood in for by a color and words, never skipped.
+      made = await newScene('video', { title: `Playtest 4 tracks ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const SEC = 30, STEP = 5;
+      const main = mainTrack()?.id;
+      const over = addTrack({ name: 'Overlay', role: 'any' }).id;
+      const words = tracks().find((x) => x.role === 'text')?.id ?? addTrack({ name: 'Words', role: 'text' }).id;
+      const music = tracks().find((x) => x.role === 'audio')?.id;
+      for (let at = 0, i = 0; at < SEC; at += STEP, i++) {
+        if (vids.length) {
+          const a = vids[i % vids.length], len = Math.min(STEP, a.meta.duration);
+          const c = addClip({ track: main, asset: a.id, kind: 'video', duration: a.meta.duration, start: at, label: a.title || 'clip', history: false });
+          setClip(c.id, { start: at, out: len }, { history: false });
+        } else addClip({ track: main, kind: 'fill', color: ['#203a5c', '#5c2040', '#2c5c20'][i % 3], start: at, seconds: STEP, history: false });
+        // Overlay: a small picture in a corner (or a color panel), with words on the text track.
+        const pic = pics[i % Math.max(1, pics.length)];
+        const o = pic ? addClip({ track: over, asset: pic.id, kind: 'image', start: at, seconds: STEP, label: pic.title || 'picture', history: false }) : addClip({ track: over, kind: 'fill', color: '#ffffff', start: at, seconds: STEP, history: false });
+        setClip(o.id, { start: at, x: 0.8, y: 0.2, w: 0.25, opacity: 0.9 }, { history: false });
+        const w = addClip({ track: words, kind: 'text', text: `Shot ${i + 1}: a sentence of captions on screen`, start: at, seconds: STEP, history: false });
+        setClip(w.id, { start: at }, { history: false });
+      }
+      if (sounds.length && music) { const a = sounds[0]; const c = addClip({ track: music, asset: a.id, kind: 'audio', duration: a.meta.duration, start: 0, label: a.title || 'sound', history: false }); setClip(c.id, { start: 0, out: Math.min(SEC, a.meta.duration) }, { history: false }); }
+      const len = docLength();
+      t.metric('tracks', new Set(P.doc.clips.map((c) => c.track)).size);
+      t.metric('clips', P.doc.clips.length);
+      t.event('four-tracks-ready');
+      await sleep(2500); // let the clips load: the measure is playback, not first load
+      resetPlaybackStats();
+      press('Home');
+      press(' ');
+      t.event('play-30s');
+      const through = await until(() => P.playhead >= len - 0.1, Math.max(20000, len * 3000), 100);
+      if (isPlaying()) press(' ');
+      const run = pacingStats();
+      t.metric('fps', run.fps); t.metric('p5fps', run.p5fps); t.metric('worstFrameMs', run.worstMs); t.metric('frames', run.frames);
+      t.metric('playHolds', playbackStats().holds);
+      t.event(through ? `played-30s p5=${run.p5fps}fps` : 'play-stalled');
+      t.progress(0.6);
+      // Seek while playing, with the keys a person uses (Shift+Left/Right: a second each; Home: the start), then see
+      // how long the playhead took to move on each time.
+      resetPlaybackStats();
+      press('Home');
+      press(' ');
+      await sleep(1500);
+      const times = [];
+      for (const [key, shiftKey] of [['ArrowRight', true], ['ArrowRight', true], ['ArrowLeft', true], ['Home', false], ['ArrowRight', true]]) {
+        const before = pacingStats().seeks;
+        press(key, { shiftKey });
+        await until(() => pacingStats().seeks > before, 3000, 20);
+        times.push(pacingStats().seekResumeMs);
+        await sleep(1000);
+      }
+      if (isPlaying()) press(' ');
+      const seeks = pacingStats();
+      t.metric('seekResumeMs', seeks.seekResumeMs); t.metric('seeksResumed', seeks.seeks);
+      t.event(`seek-resume max ${seeks.seekResumeMs}ms of ${seeks.seeks}`);
+      t.progress(0.9);
+      t.finish(through ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback') {
