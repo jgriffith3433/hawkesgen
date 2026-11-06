@@ -289,6 +289,10 @@ portal and Studio use Gen in the back end with their own keys.
       now. Ctrl+O (or "+" > Open a scene…) opens a picker of every scene, fresh from Gen. The interface isn't selectable
       text (only fields and the AI's words). The center outlines the frame and shows its size.
     - **Media:** a click picks a tile, a double-click shows it in the center, the "+" adds it.
+    - **Browsing the library** (`media.js`): the grid shows thumbnails (clips play muted on hover), filter chips by image, video,
+      audio and 3D (`#mediaFilter`), a search box (`#mediaSearch`), and a detail drawer (`openDrawer`, `#mediaDrawer`: the
+      prompt, the recipe, **Use in timeline**; Enter or the tile's info button opens it, Esc closes). The `library` playtest
+      scenario (`playtest.js`) plays filters, hover, search and the drawer.
     - **First visit and first steps** (J, 2026-10-30: "When a user first enters the website if they aren't logged in then it
       should show a landing type of experience ... selling what it can do. Show 3 categories and highlight its strengths
       ... If it's a new account do a very quick tutorial, just show them 3 sections media, timeline and AI chat. Make it
