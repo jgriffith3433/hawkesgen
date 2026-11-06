@@ -159,14 +159,15 @@ function tileFor(a) {
   const el = h('div', { class: `tile kind-${a.kind}`, 'data-asset': a.id, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
 ` : ''}Double-click to look at it; drag it onto a track` },
     media,
+    h('button', { class: 'tile-info', title: 'Details', 'aria-label': 'Details', onclick: (e) => { e.stopPropagation(); openDrawer(now()); } }, icon('info')),
     d ? h('span', { class: 'badge' }, fmt(d, 0)) : '',
     h('div', { class: 'tile-cap' }, a.title || prompt || a.kind),
     onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(now())); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
   // One click picks a tile (Ctrl or Cmd adds to the picks; the "+" adds it to the timeline); a double-click looks at it in
   // the center (J, 2026-10-30). Picks are kept by id, so a refresh keeps them, and the AI is told about them.
   el.addEventListener('click', (e) => pickTile(now(), el, e.ctrlKey || e.metaKey));
-  el.addEventListener('dblclick', () => openAsset(now()));
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(now()); if (e.key === 'Escape') clearPicked(); });
+  el.addEventListener('dblclick', () => openDrawer(now()));
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openDrawer(now()); if (e.key === 'Escape') clearPicked(); });
   el.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('application/x-hg-asset', JSON.stringify(assetLite(now())));
     e.dataTransfer.effectAllowed = 'copy';
@@ -177,6 +178,41 @@ function tileFor(a) {
 }
 const onTimeline = (kind) => ['image', 'video', 'audio'].includes(kind);
 const assetLite = (a) => ({ id: a.id, kind: a.kind, title: a.title ?? a.recipe?.params?.prompt ?? '', prompt: a.recipe?.params?.prompt ?? '', duration: durationOf(a), width: a.meta?.width ?? a.recipe?.params?.width ?? null, height: a.meta?.height ?? a.recipe?.params?.height ?? null, tool: a.tool });
+
+/**
+ * The detail drawer: a bigger look at one library file with the words that made it, what made it and when, and
+ * Use in timeline (Esc or the backdrop closes it).
+ */
+export function openDrawer(a) {
+  closeDrawer();
+  const prompt = a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? '';
+  const url = fileUrl(a.id, a.sha256);
+  const big = a.kind === 'image' ? h('img', { src: url, alt: a.title || prompt || 'Image' })
+    : a.kind === 'video' ? h('video', { src: url, controls: true, playsinline: true, preload: 'metadata' })
+    : a.kind === 'audio' ? h('audio', { src: url, controls: true, preload: 'metadata' })
+    : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
+  const row = (k, v) => (v ? h('div', { class: 'dr-row' }, h('span', { class: 'muted' }, k), h('span', {}, String(v))) : '');
+  const d = durationOf(a);
+  const made = a.created ?? a.createdAt ?? a.created_at;
+  const drawer = h('aside', { class: 'media-drawer', role: 'dialog', 'aria-label': 'Asset details', 'data-asset': a.id },
+    h('div', { class: 'dr-head' }, h('strong', {}, a.title || assetKindLabel(a.kind)), h('button', { class: 'icon-btn', title: 'Close', 'aria-label': 'Close', onclick: closeDrawer }, icon('close'))),
+    h('div', { class: 'dr-media' }, big),
+    h('div', { class: 'dr-label muted small' }, 'Prompt'),
+    h('div', { class: 'dr-prompt' }, prompt || 'No prompt: it was uploaded or made without words.'),
+    row('Type', assetKindLabel(a.kind)), row('Made with', a.tool), row('Length', d ? fmt(d, 0) : ''),
+    row('Size', a.meta?.width && a.meta?.height ? `${a.meta.width} × ${a.meta.height}` : ''), row('Made', made ? new Date(made).toLocaleString() : ''),
+    h('div', { class: 'row dr-actions' },
+      onTimeline(a.kind) ? h('button', { class: 'primary small', id: 'drawerUse', onclick: async () => { const c = await placeAsset(assetLite(a)); if (c) { closeDrawer(); toast('Added to the timeline.'); } } }, icon('plus'), 'Use in timeline') : '',
+      h('button', { class: 'ghost small', onclick: () => { closeDrawer(); openAsset(a); } }, 'Show in center'),
+      h('a', { class: 'ghost small btn', href: url, download: a.title || a.id }, 'Download')));
+  const back = h('div', { class: 'media-drawer-back', onclick: closeDrawer });
+  const wrap = h('div', { class: 'media-drawer-wrap', id: 'mediaDrawer' }, back, drawer);
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeDrawer(); } });
+  document.body.append(wrap);
+  drawer.tabIndex = -1;
+  drawer.focus();
+}
+export function closeDrawer() { document.getElementById('mediaDrawer')?.remove(); }
 
 export async function openAsset(a) {
   const lite = a.id && a.kind ? { ...assetLite(a), tool: a.tool, recipe: a.recipe ?? null } : a;
