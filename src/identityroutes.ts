@@ -20,7 +20,7 @@ import { quoteJobCredits, chargeCredits } from './billing.ts';
 import { getUserForClient, getUserById } from './users.ts';
 import * as house from './houseai.ts';
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject, orgSecretInfo } from './orgsecrets.ts';
+import { orgOfProject, isGenAccountProject, isHouseProject, orgSecretInfo } from './orgsecrets.ts';
 import { identityPack, lookPlan, loraOffer, loraPlan, describeRequest, parseDescription, normalizeLock } from './identity.ts';
 import { assess, type QualityReport } from './quality/index.ts';
 
@@ -114,7 +114,7 @@ export async function handleIdentity(client: Client, route: string, method: stri
     const ownAi = Boolean(own && (orgSecretInfo(own, 'anthropic').set || orgSecretInfo(own, 'claude-subscription').set));
     const payer = user && isGenAccountProject(cur.project) && !ownAi ? user : null;
     if (payer) house.checkCanPay(getUserById(payer.id)?.credits ?? 0);
-    const r = await callScope.run({ customer: true, org: own, house: isGenAccountProject(cur.project) }, () => ask(describeRequest(doc, describeImages(doc))));
+    const r = await callScope.run({ customer: true, org: own, house: isHouseProject(cur.project) }, () => ask(describeRequest(doc, describeImages(doc))));
     const description = parseDescription(r.text);
     if (!description) throw new GenError('No description came back. Try again.', { status: 502 });
     const housePaid = !['byok', 'subscription'].includes(r.billing);

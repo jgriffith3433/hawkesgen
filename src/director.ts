@@ -30,7 +30,7 @@ import { db } from './db.ts';
 import { registerKind, listScenes, createScene, getScene, saveScene, deleteScene, sceneRef, kindOf, type Scene } from './scenes.ts';
 import { GenError } from './util.ts';
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 import { cinemaPass } from './film/recipes.ts';
 import { toolCraft } from './knowledge.ts';
 import './scenekinds.ts';
@@ -402,7 +402,7 @@ export function applyDirector(project: string, from: ShotRow, ans: DirectorAnswe
 
 /** One director turn, on the account's own Claude or the house AI (like the AI editor: src/houseai.ts). */
 export async function directorTurn(a: DirectorTurn) {
-  const r = await callScope.run({ customer: true, org: orgOfProject(a.project), house: isGenAccountProject(a.project) }, () => ask(directorPrompt(a)));
+  const r = await callScope.run({ customer: true, org: orgOfProject(a.project), house: isHouseProject(a.project) }, () => ask(directorPrompt(a)));
   return { answer: parseDirector(r.text, a.shot, a.shotId ?? null), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }
 

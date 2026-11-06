@@ -17,7 +17,7 @@
 
 import crypto from 'node:crypto';
 import { ask as askClaude, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 import { toolMap, toolCraft } from './knowledge.ts';
 import { aiCanUse, relevantTools, CRAFT_DOC } from './editor.ts';
 import { createScene, getScene, saveScene, kindOf, type Scene, type Kind } from './scenes.ts';
@@ -119,7 +119,7 @@ export function worldPrompt(a: WorldTurnInput) {
   };
 }
 
-const scoped = <T>(project: string, fn: () => Promise<T>) => callScope.run({ customer: true, org: orgOfProject(project), house: isGenAccountProject(project) }, fn);
+const scoped = <T>(project: string, fn: () => Promise<T>) => callScope.run({ customer: true, org: orgOfProject(project), house: isHouseProject(project) }, fn);
 
 export async function worldTurn(a: WorldTurnInput) {
   if (!DOCS[a.scene.kind]) throw new GenError(`No AI for ${a.scene.kind} scenes here`, { status: 400 });

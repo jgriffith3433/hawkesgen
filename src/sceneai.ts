@@ -7,7 +7,7 @@
 // proposal for one tap (applyScene with confirm).
 
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 import { toolMap, toolCraft } from './knowledge.ts';
 import { aiCanUse, relevantTools, CRAFT_DOC } from './editor.ts';
 import { kindOf, type Scene } from './scenes.ts';
@@ -84,7 +84,7 @@ export function scenePrompt(a: SceneTurnInput) {
 
 export async function sceneTurn(a: SceneTurnInput) {
   if (!DOCS[a.scene.kind]) throw new GenError(`No AI for ${a.scene.kind} scenes here`, { status: 400 });
-  const r = await callScope.run({ customer: true, org: orgOfProject(a.scene.project), house: isGenAccountProject(a.scene.project) }, () => ask(scenePrompt(a)));
+  const r = await callScope.run({ customer: true, org: orgOfProject(a.scene.project), house: isHouseProject(a.scene.project) }, () => ask(scenePrompt(a)));
   return { answer: parseScene(r.text, a.scene.doc), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }
 
