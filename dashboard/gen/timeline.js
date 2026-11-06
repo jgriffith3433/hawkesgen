@@ -7,7 +7,7 @@
 // and lines), drawn and dragged the same way.
 
 import { $, $$, h, fmt, bus, icon, thumb, peaks, toast, jobStatusText } from './lib.js';
-import { P, tracks, trackOf, isMagnetic, onTrack, clipLength, clipEnd, docLength, byId, remember, changed, addClip, setClip, isStill, mainTrack, addTrack, setTrack, removeTrack, moveTrack, hasSound, fitStart, neighbours, PROGRESS } from './project.js';
+import { P, tracks, trackOf, isMagnetic, onTrack, clipLength, clipEnd, docLength, byId, remember, changed, addClip, setClip, isStill, mainTrack, addTrack, setTrack, removeTrack, moveTrack, hasSound, fitStart, neighbours, PROGRESS, stopClip, retryClip } from './project.js';
 import { seek, isPlaying, pause } from './player.js';
 
 const T = { z: 60, snap: true, scroll: null, canvas: null, lanes: null, raf: 0 };
@@ -421,7 +421,7 @@ function clipEl(c) {
     style: { left: `${xOf(c.start)}px`, width: `${Math.max(6, xOf(clipLength(c)))}px`, ...(c.kind === 'fill' ? { '--fill': c.color ?? '#000' } : {}) },
     title: c.failed ? `Couldn't make this: ${c.failed}` : c.label ?? c.text ?? '',
   });
-  const label = c.kind === 'text' ? c.text : c.kind === 'fill' ? `Color ${c.color ?? ''}` : c.pending ? `${PROGRESS.get(c.job) ?? 'Making'} · ${c.label ?? ''}` : c.failed ? `Couldn't make it · ${c.label ?? ''}` : c.label ?? '';
+  const label = c.kind === 'text' ? c.text : c.kind === 'fill' ? `Color ${c.color ?? ''}` : c.pending ? `${PROGRESS.get(c.job) ?? 'Making'} · ${c.label ?? ''}` : c.failed ? `${c.failed} · ${c.label ?? ''}` : c.label ?? '';
   if (c.asset && (c.kind === 'video' || c.kind === 'image')) {
     const strip = h('div', { class: 'clip-thumbs' });
     thumb(c.asset, c.kind).then((u) => { if (u) strip.style.backgroundImage = `url("${u}")`; });
@@ -435,6 +435,9 @@ function clipEl(c) {
   if (c.fadeIn) el.append(h('span', { class: 'clip-fade in', style: { width: `${xOf(c.fadeIn)}px` } }));
   if (c.fadeOut) el.append(h('span', { class: 'clip-fade out', style: { width: `${xOf(c.fadeOut)}px` } }));
   el.append(h('div', { class: 'clip-label' }, c.scene ? '🔗 ' : '', (c.speed && c.speed !== 1) ? `${c.speed}× ` : '', c.muted ? '🔇 ' : '', label));
+  // A clip being made can be stopped, and one that failed can be tried again, right where it sits.
+  if (c.pending && c.job) el.append(h('button', { class: 'clip-act stop', title: 'Stop making it', onpointerdown: (e) => e.stopPropagation(), onclick: (e) => { e.stopPropagation(); stopClip(c.id); } }, 'Stop'));
+  if (c.failed && c.job) el.append(h('button', { class: 'clip-act retry', title: `Try again (${c.failed})`, onpointerdown: (e) => e.stopPropagation(), onclick: (e) => { e.stopPropagation(); retryClip(c.id); } }, 'Retry'));
   if (!c.pending && !tr?.locked) el.append(h('div', { class: 'h-l', title: 'Drag to trim the start' }), h('div', { class: 'h-r', title: 'Drag to trim the end' }));
   // Sound fades by dragging a dot at the top corners (no seconds to type).
   if (hasSound(c) && c.asset && !c.pending && !tr?.locked) {

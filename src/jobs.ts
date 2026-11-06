@@ -1421,6 +1421,9 @@ function recentRunSeconds(tool: string): number {
   return seconds;
 }
 
+/** How long a run of this tool usually takes (seconds, the mean of its last 20 finished jobs; 60 when none): the app's "about 40 s". */
+export function typicalRunSeconds(tool: string): number { return Math.round(recentRunSeconds(tool)); }
+
 export const queue = new Queue();
 
 /** Downloads models a family needs onto a server (exposed for the fleet sync action). */
