@@ -1046,3 +1046,16 @@ html, body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   /* An empty scene's start box fits a short picture: it scrolls rather than cutting off. */
   .stage-empty { overflow-y: auto; place-content: safe center; }
 }
+
+/* ---------------------------------------------------------------- The guided first project (guide.js) */
+.guide-card { position: fixed; z-index: 250; top: 64px; left: 50%; transform: translateX(-50%); width: min(380px, calc(100vw - 24px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; padding: 14px 16px 14px; box-shadow: var(--shadow); animation: tour-in .25s ease; }
+.guide-card h3 { margin: 4px 0 8px; font-size: 17px; text-transform: none; letter-spacing: -.01em; color: var(--text); }
+.guide-card p { margin: 10px 0; color: var(--muted); line-height: 1.5; font-size: 14px; }
+.guide-head { display: flex; align-items: center; justify-content: space-between; }
+.guide-x { color: var(--muted); padding: 2px; }
+.guide-card .tour-dots { margin: 0 0 6px; }
+.guide-card .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.guide-own { display: flex; gap: 6px; margin-top: 10px; }
+.guide-own input { flex: 1; min-width: 0; }
+.guide-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.guide-foot .quote { margin-right: auto; color: var(--muted); font-size: 12.5px; }

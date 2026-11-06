@@ -11,6 +11,7 @@ import { state } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength } from './project.js';
 import { isPlaying, playbackStats, resetPlaybackStats } from './player.js';
 import { activeScene, newScene } from './scenes.js';
+import { startGuide, guideOpen } from './guide.js';
 import { api } from './lib.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -34,6 +35,7 @@ installPlaytest({
     { id: 'smoke', title: 'Open the app, make a scene, add text, play it', seconds: 60, tags: ['smoke'] },
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
     { id: 'signedout', title: 'Someone not signed in sees the welcome', seconds: 30 },
+    { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -63,6 +65,39 @@ installPlaytest({
         t.event('picked');
       }
       t.finish(tiles ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'guide') {
+      t.scene('Guided first project');
+      // Setup shortcut (named): the guide opens as it does for a brand-new account (the test account is old).
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest guide ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      startGuide({ force: true });
+      const at = (n) => until(() => document.querySelector(`#guide[data-step="${n}"]`), 8000, 100);
+      if (!await at(0)) { t.note('the guide did not open'); t.finish('stuck'); return; }
+      t.event('guide-open');
+      click('#guide [data-idea]');                    // 1 pick an idea
+      await until(() => document.querySelector('#guide [data-next]'), 3000, 100);
+      click('#guide [data-next]');
+      t.event('guide-step-1-idea');
+      if (!await at(1)) { t.finish('stuck'); return; }
+      // 2 the picture: no GPU is spent in a playtest, so the library's own newest picture stands in (named shortcut)
+      click('#guide [data-media]');
+      if (!await at(2)) { t.note('The test account has no picture in its library: nothing to put on the timeline'); t.finish('done'); return; }
+      t.event('guide-step-2-picture');
+      click('#guide [data-add]');                     // 3 onto the timeline
+      if (!await at(3)) { t.finish('stuck'); return; }
+      t.metric('clips', P.doc.clips.length);
+      t.event('guide-step-3-timeline');
+      press('Home');
+      press(' ');                                     // 4 play, with the key a person would press
+      const finished = await at(4);
+      if (isPlaying()) press(' ');
+      t.event(finished ? 'guide-step-4-played' : 'guide-play-stalled');
+      click('#guide [data-done]');
+      t.metric('guideDismissed', guideOpen() ? 0 : 1);
+      t.finish(finished && !guideOpen() ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback') {

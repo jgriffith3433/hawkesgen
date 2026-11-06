@@ -16,6 +16,7 @@ import { popMenu, closeMenus } from './timeline.js';
 import { sceneDoc } from './scenedoc.js';
 import { dragging } from './dragdrop.js';
 import { fineTune, textField, memberCard, makePack } from './worldbits.js';
+import { guidePending } from './guide.js';
 
 const D = sceneDoc({ onChange: () => { draw(); refreshBar(); } });
 const Wd = { home: null, loading: false };
@@ -277,6 +278,7 @@ export function startWorld(idea = '') {
 
 /** A new account, after the tour: a world is the first thing offered (once, and only when they have none). */
 bus.on('tourDone', () => {
+  if (guidePending()) return; // a brand-new account's first project comes first (guide.js)
   try { if (localStorage.getItem(`hg.worldOffer.${state.user?.id ?? 'local'}`)) return; localStorage.setItem(`hg.worldOffer.${state.user?.id ?? 'local'}`, '1'); } catch { /* */ }
   if (!state.user || sceneList().some((s) => s.kind === 'world')) return;
   setTimeout(() => startWorld(), 300);

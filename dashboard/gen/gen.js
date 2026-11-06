@@ -20,6 +20,7 @@ import { initScenes, startWorkspace, activeKind, activeEditor, newScene } from '
 import { initEditor } from './editor.js';
 import { initLanding, show as showLanding } from './landing.js';
 import { initTour, startTour } from './tour.js';
+import { initGuide, startGuide } from './guide.js';
 import { openPalette } from './palette.js';
 import './character.js';
 import './world.js';
@@ -46,6 +47,7 @@ initEditor();
 initAi();
 initLanding();
 initTour();
+initGuide();
 
 const onTimelineScene = () => ['video', 'image', 'audio'].includes(activeKind());
 
@@ -86,6 +88,7 @@ $('#helpBtn').addEventListener('click', (e) => {
   const r = e.currentTarget.getBoundingClientRect();
   popMenu(r.right - 240, r.bottom + 6, [
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); startTour(); } }, h('span', { class: 'row' }, icon('sparkle'), 'Take the quick tour')),
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); startGuide({ force: true }); } }, h('span', { class: 'row' }, icon('film'), 'Guided first project')),
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); shortcuts(); } }, h('span', { class: 'row' }, icon('keyboard'), 'Keyboard shortcuts')),
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); showLanding({ browsing: true }); } }, h('span', { class: 'row' }, icon('help'), 'What Hawkes Gen does')),
     h('div', { class: 'menu-sep' }),
