@@ -24,6 +24,10 @@ function press(key, { shiftKey = false, ctrlKey = false } = {}) {
   const code = key === ' ' ? 'Space' : key.length === 1 ? `Key${key.toUpperCase()}` : key;
   for (const type of ['keydown', 'keyup']) window.dispatchEvent(new KeyboardEvent(type, { key, code, shiftKey, ctrlKey, bubbles: true, cancelable: true }));
 }
+/** A key press on one element (a focused tile or the drawer hear their own keys; it bubbles up to window like a real one). */
+function pressOn(el, key) {
+  for (const type of ['keydown', 'keyup']) el.dispatchEvent(new KeyboardEvent(type, { key, code: key, bubbles: true, cancelable: true }));
+}
 /** Waits for a condition, up to `ms`. */
 async function until(fn, ms = 15000, step = 200) {
   const end = performance.now() + ms;
@@ -314,15 +318,30 @@ installPlaytest({
       await sleep(1200);
       const first = real()[0];
       if (!first) { t.note('The library is empty: no asset to open'); t.finish('done'); return; }
-      first.focus();
-      press('Enter');
+      // Search: type the first tile's own first word (as the input event a keystroke fires), the grid keeps a match, then clear it.
+      const word = (first.querySelector('.tile-cap')?.textContent ?? '').split(/\s+/).find((w) => w.length > 3);
+      const box = document.querySelector('#mediaSearch');
+      if (word && box) {
+        box.value = word;
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        await sleep(1500);
+        t.metric('searchHits', real().length);
+        t.event('searched');
+        box.value = '';
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        await sleep(1500);
+      }
+      const target = real()[0] ?? first;
+      target.focus();
+      pressOn(target, 'Enter');
       const open = await until(() => document.querySelector('#mediaDrawer .media-drawer'), 5000);
       t.metric('drawerOpens', open ? 1 : 0);
       t.metric('drawerPrompt', document.querySelector('#mediaDrawer .dr-prompt')?.textContent ? 1 : 0);
       t.metric('drawerUse', document.querySelector('#drawerUse') ? 1 : 0);
       t.event('drawer-open');
       await sleep(800);
-      press('Escape');
+      pressOn(document.activeElement ?? document.body, 'Escape');
+      t.metric('drawerCloses', await until(() => !document.querySelector('#mediaDrawer'), 3000) ? 1 : 0);
       t.finish(open ? 'done' : 'stuck');
       return;
     }
