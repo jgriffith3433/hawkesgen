@@ -11,7 +11,8 @@
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
-import { isPlaying, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
+import { snapStats } from './timeline.js';
+import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
 import { activeScene, newScene } from './scenes.js';
 import { startGuide, guideOpen } from './guide.js';
 import { api } from './lib.js';
@@ -19,9 +20,9 @@ import { runJob } from './media.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
-function press(key, { shiftKey = false } = {}) {
+function press(key, { shiftKey = false, ctrlKey = false } = {}) {
   const code = key === ' ' ? 'Space' : key.length === 1 ? `Key${key.toUpperCase()}` : key;
-  for (const type of ['keydown', 'keyup']) window.dispatchEvent(new KeyboardEvent(type, { key, code, shiftKey, bubbles: true, cancelable: true }));
+  for (const type of ['keydown', 'keyup']) window.dispatchEvent(new KeyboardEvent(type, { key, code, shiftKey, ctrlKey, bubbles: true, cancelable: true }));
 }
 /** Waits for a condition, up to `ms`. */
 async function until(fn, ms = 15000, step = 200) {
@@ -41,6 +42,7 @@ installPlaytest({
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
+    { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -129,6 +131,84 @@ installPlaytest({
         await until(() => clip()?.failed, 60000);
       }
       t.finish(failed ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'editing') {
+      t.scene('Timeline editing');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video scene with two color clips on a free track. Everything after is pointer and keys.
+      made = await newScene('video', { title: `Playtest editing ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const track = addTrack({ name: 'Edit', role: 'any' }).id;
+      const A = addClip({ track, kind: 'fill', color: '#203a5c', start: 0, seconds: 3, history: false });
+      const B = addClip({ track, kind: 'fill', color: '#5c2040', start: 5, seconds: 3, history: false });
+      setClip(A.id, { start: 0 }, { history: false }); setClip(B.id, { start: 5 }, { history: false });
+      await until(() => document.querySelector(`#tlTracks .clip[data-id="${B.id}"]`), 5000, 50);
+      const clipOf = (c) => P.doc.clips.find((x) => x.id === c.id);
+      const elOf = (c) => document.querySelector(`#tlTracks .clip[data-id="${c.id}"]`);
+      const pxPerSec = () => { const e = elOf(A); return e.getBoundingClientRect().width / 3; };
+      /** A mouse drag by real pointer events: down on the element, moves in steps, up. */
+      const drag = async (el, dxPx, { handle } = {}) => {
+        const r = (handle ? el.querySelector(handle) : el).getBoundingClientRect();
+        const x0 = handle === '.h-r' ? r.left + r.width / 2 : handle ? r.left + r.width / 2 : r.left + r.width / 2, y0 = r.top + r.height / 2;
+        const ev = (type, x, target) => target.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y0, button: 0, pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
+        ev('pointerdown', x0, handle ? el.querySelector(handle) : el);
+        for (let i = 1; i <= 12; i++) { window.dispatchEvent(new PointerEvent('pointermove', { clientX: x0 + (dxPx * i) / 12, clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true })); await sleep(30); }
+        const lit = Boolean(document.querySelector('.tl-snap'));
+        window.dispatchEvent(new PointerEvent('pointerup', { clientX: x0 + dxPx, clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true }));
+        await sleep(150);
+        return lit;
+      };
+      // 1 Snap to a neighbour: B dragged to just short of where A ends (3 s) lands on it exactly.
+      const before = snapStats.hits;
+      const lit1 = await drag(elOf(B), (3.03 - 5) * pxPerSec());
+      t.metric('snapToNeighbour', clipOf(B).start === 3 ? 1 : 0);
+      t.metric('snapGuideShown', lit1 ? 1 : 0);
+      t.event(clipOf(B).start === 3 ? 'snapped-to-neighbour' : `no-snap-to-neighbour start=${clipOf(B).start}`);
+      // Snap to the playhead: park it at 9 s, drag B to just short of it.
+      seek(9);
+      const lit2 = await drag(elOf(B), (8.97 - 3) * pxPerSec());
+      t.metric('snapToPlayhead', clipOf(B).start === 9 ? 1 : 0);
+      t.event(clipOf(B).start === 9 ? 'snapped-to-playhead' : `no-snap-to-playhead start=${clipOf(B).start}`);
+      t.metric('snapHits', snapStats.hits - before);
+      t.metric('snapGuideShown2', lit2 ? 1 : 0);
+      const snapped = clipOf(B).start === 9 && snapStats.hits - before >= 2;
+      // 2 The shortcuts overlay: the ? key.
+      press('?', { shiftKey: true });
+      const overlay = await until(() => document.querySelector('#shortcutsPop kbd'), 3000, 50);
+      t.metric('shortcutsOverlay', overlay ? 1 : 0);
+      t.event(overlay ? 'shortcuts-overlay-open' : 'no-shortcuts-overlay');
+      await sleep(800);
+      press('?', { shiftKey: true });
+      await until(() => !document.querySelector('#shortcutsPop'), 3000, 50);
+      // 3 Undo and redo: move, trim, delete.
+      const at = () => clipOf(B).start;
+      press('z', { ctrlKey: true });
+      t.metric('undoMove', at() === 3 ? 1 : 0);
+      press('z', { ctrlKey: true, shiftKey: true });
+      t.metric('redoMove', at() === 9 ? 1 : 0);
+      t.event(`move undo/redo ${at() === 9 ? 'ok' : 'failed'}`);
+      const len0 = clipOf(B).out - clipOf(B).in;
+      await drag(elOf(B), -1 * pxPerSec(), { handle: '.h-r' });
+      const trimmed = clipOf(B).out - clipOf(B).in;
+      t.metric('trimmed', trimmed < len0 - 0.3 ? 1 : 0);
+      press('z', { ctrlKey: true });
+      t.metric('undoTrim', Math.abs(clipOf(B).out - clipOf(B).in - len0) < 0.01 ? 1 : 0);
+      press('z', { ctrlKey: true, shiftKey: true });
+      t.metric('redoTrim', Math.abs(clipOf(B).out - clipOf(B).in - trimmed) < 0.01 ? 1 : 0);
+      t.event('trim undo/redo');
+      await drag(elOf(B), 0);                      // a click selects it
+      press('Delete');
+      const gone = !clipOf(B);
+      t.metric('deleted', gone ? 1 : 0);
+      press('z', { ctrlKey: true });
+      const back = Boolean(clipOf(B));
+      t.metric('undoDelete', back ? 1 : 0);
+      press('z', { ctrlKey: true, shiftKey: true });
+      t.metric('redoDelete', !clipOf(B) ? 1 : 0);
+      t.event('delete undo/redo');
+      press('z', { ctrlKey: true });
+      t.finish(snapped && overlay && gone && back ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback4') {
