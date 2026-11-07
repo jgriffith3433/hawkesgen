@@ -23,7 +23,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv python3-dev python3-pil git curl ca-certificates ffmpeg xz-utils util-linux \
       software-properties-common gpg-agent build-essential libgl1 libglib2.0-0 libgomp1 sudo \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system --add safe.directory '*'
+# (The installers hand /opt/hawkes-* to the ubuntu user, as on the fleet; the build and the worker run as root, so git
+# must trust those checkouts.)
 
 COPY install-blender.sh /tmp/install-blender.sh
 RUN bash /tmp/install-blender.sh && rm -rf /var/lib/apt/lists/* /tmp/*.tar.xz
