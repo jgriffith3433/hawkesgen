@@ -42,7 +42,8 @@ installPlaytest({
   scenarios: [
     { id: 'smoke', title: 'Open the app, make a scene, add text, play it', seconds: 60, tags: ['smoke'] },
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
-    { id: 'signedout', title: 'Someone not signed in sees the welcome', seconds: 30 },
+    { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call but /v1/users/me', seconds: 30 },
+    { id: 'createprice', title: 'Every Create form shows its credit price when opened, and it changes when an option that changes the cost changes', seconds: 120 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
@@ -63,10 +64,54 @@ installPlaytest({
       t.scene('Welcome');
       const welcome = await until(() => document.querySelector('#landing:not([hidden]), .landing:not([hidden])'), 8000);
       t.metric('welcome', welcome ? 1 : 0);
+      if (welcome && !state.user) {
+        // What the first screen must say and show, and that it asked Gen for nothing but who's signed in.
+        const L = document.querySelector('#landing');
+        t.metric('signInWithGoogle', /Sign in with Google/.test(L.textContent) ? 1 : 0);
+        t.metric('examples', L.querySelectorAll('.ld-ex').length);
+        const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/') && p !== '/v1/users/me');
+        t.metric('v1CallsSignedOut', v1.length);
+        for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
+        t.event('welcome-checked');
+      }
       t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
       return;
     }
     if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
+    if (id === 'createprice') {
+      t.scene('Create prices');
+      click('#paneTabs button[data-pane="generate"]');
+      const rows0 = await until(() => document.querySelectorAll('#createList .cat .cat-row').length > 0, 15000);
+      if (!rows0) { t.note('the Create list did not load'); t.finish('stuck'); return; }
+      const n = document.querySelectorAll('#createList .cat .cat-row').length;
+      let priced = 0, changedCost = 0;
+      const priceOf = () => document.querySelector('#createBody .gen-foot .quote')?.textContent.trim() ?? '';
+      const isPrice = (x) => /credit|free/i.test(x);
+      for (let i = 0; i < n; i++) {
+        const row = document.querySelectorAll('#createList .cat .cat-row')[i];
+        if (!row || row.classList.contains('director-row')) continue;
+        row.click();
+        await sleep(200);
+        if (!document.querySelector('#createBody .gen-foot')) { click('#createBack'); continue; }
+        const ok = await until(() => isPrice(priceOf()), 5000, 150);
+        if (ok) priced++; else t.problem('bug', `Create form shows no price: "${priceOf()}"`);
+        t.event(`price-${i}`);
+        // Change an option (the first menu with another choice) and watch the price.
+        const sel = [...document.querySelectorAll('#createBody select')].find((x) => x.options.length > 1);
+        if (ok && sel) {
+          const before = priceOf();
+          sel.selectedIndex = sel.options.length - 1;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          await sleep(1200);
+          if (priceOf() !== before) { changedCost++; t.event('price-changed'); }
+        }
+        click('#createBack');
+        await sleep(100);
+      }
+      t.metric('forms', n); t.metric('formsPriced', priced); t.metric('priceChangedWithOption', changedCost);
+      t.finish(priced > 0 ? 'done' : 'stuck');
+      return;
+    }
     if (id === 'media') {
       t.scene('Media');
       click('#paneTabs button[data-pane="media"]');

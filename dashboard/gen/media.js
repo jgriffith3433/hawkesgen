@@ -259,6 +259,7 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart, 
     try {
       const r = await api('/v1/jobs', { body: { project: state.user.project, tool, params, inputs, labels: { title: label ?? tool, ...(P.id ? { editor: P.id } : {}), ...(frontScene ? { scene: frontScene } : {}), ...labels } } });
       const job = r.jobs[0];
+      refreshCredits(); // the pill follows the charge
       onStart?.(job.id);
       if (place?.replace) {
         const c = P.doc.clips.find((x) => x.id === place.replace);

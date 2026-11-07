@@ -34,7 +34,7 @@ function showMe() {
     // Running low: the pill says so before anything fails.
     const low = Number(u.credits ?? 0) < 25;
     $('#creditsPill').classList.toggle('low', low);
-    $('#creditsPill').title = low ? 'Running low: add credits (1 credit = 1 cent)' : 'Credits (1 credit = 1 cent)';
+    $('#creditsPill').title = low ? 'Running low: add credits, packs and plans (1 credit = 1 cent)' : 'Credits: packs and plans (1 credit = 1 cent)';
   }
 }
 export const refreshCredits = () => api('/v1/users/me').then((m) => { state.user = m.user; showMe(); }).catch(() => {});
