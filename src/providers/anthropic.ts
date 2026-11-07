@@ -17,6 +17,7 @@ import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
 import * as bedrock from './bedrock.ts';
 import { outputBudget, TOO_LONG } from './budget.ts';
+import { mockProvidersOn } from '../mockproviders.ts';
 export { outputBudget, TOO_LONG, STREAMED_FLOOR } from './budget.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { orgSecret } from '../orgsecrets.ts';
@@ -107,6 +108,12 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
   if (canned) {
     p.onText?.(canned.text);
     return { text: canned.text, model: canned.model, usage: { input_tokens: 0, output_tokens: 0 }, cost: canned.cost, billing: 'api' };
+  }
+  // HAWKESGEN_MOCK_PROVIDERS=1 (beta and local copies only): Claude answers at once, free (src/mockproviders.ts).
+  if (mockProvidersOn()) {
+    const text = p.schema ? '{}' : 'mock answer';
+    p.onText?.(text);
+    return { text, model: 'mock', usage: { input_tokens: 0, output_tokens: 0 }, cost: 0, billing: 'max-plan' };
   }
   const ownKey = org ? orgSecret(org, 'anthropic') : null;
   if (ownKey) {
