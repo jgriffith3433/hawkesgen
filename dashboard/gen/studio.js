@@ -209,7 +209,7 @@ function chainForm(c) {
     h('ol', { class: 'chain-steps muted small' }, ...c.steps('…').map((s) => h('li', {}, CURATED.get(s.tool)?.label ?? S.tools.get(s.tool)?.title ?? s.tool))),
     h('div', { class: 'gen-foot' }, q, run));
   const spec = () => ({ tool: 'asset.make', params: { steps: c.steps(p.value.trim() || 'x') } });
-  priced(form, q, () => (p.value.trim() ? spec() : null));
+  priced(form, q, spec);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     if (!p.value.trim()) return toast('Say what to make.');
@@ -300,12 +300,29 @@ function toolForm(t, prefill, prefillNodes) {
   return form;
 }
 
-/** Prices the form as it changes. */
+/**
+ * Prices the form as it changes: a price is on screen the moment the form opens ("Pricing…", then the credits, or
+ * "Free"), and again after each change to an option (the latest answer wins). If the quote can't be had it says the
+ * price is shown before anything is charged, never a blank.
+ */
 function priced(form, q, specOf) {
-  let timer = 0;
-  const refresh = async () => { const s = specOf(); q.textContent = s ? credits(await quote(s.tool, s.params)) : ''; };
-  form.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 350); });
-  form.addEventListener('change', () => { clearTimeout(timer); timer = setTimeout(refresh, 350); });
+  let timer = 0, seq = 0;
+  q.classList.add('quote');
+  q.setAttribute('aria-live', 'polite');
+  const show = (text, price = null) => { q.textContent = text; q.dataset.credits = price == null ? '' : String(price); };
+  const refresh = async () => {
+    const s = specOf();
+    if (!s) return show('Price shown once the form is filled in');
+    const mine = ++seq;
+    if (!q.dataset.credits) show('Pricing…');
+    const r = await quote(s.tool, s.params);
+    if (mine !== seq) return;
+    if (!r) return show('Price shown before it runs');
+    show(r.credits === 0 ? 'Free' : credits(r), r.credits);
+  };
+  const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 350); };
+  form.addEventListener('input', later);
+  form.addEventListener('change', later);
   refresh();
 }
 
