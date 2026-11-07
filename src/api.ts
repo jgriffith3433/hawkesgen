@@ -1253,7 +1253,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       if (!body.message) throw new GenError('message is required');
       const response = await assistant.processMessage(
-        user.id,
+        { client, project: user.project, payerId: user.id },
         body.gameContext || {},
         body.history || [],
         body.message
@@ -1273,7 +1273,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (client.role !== 'user') throw new GenError('Assistant is for user accounts only', { status: 403 });
       const body = await readJson(req);
       if (!body.intent) throw new GenError('intent is required');
-      const code = await assistant.getCodeSuggestions({
+      const user = getUserForClient(client);
+      const code = await assistant.getCodeSuggestions({ client, project: user?.project ?? client.projects.find((p) => p !== '*') ?? '', payerId: user?.id ?? null }, {
         intent: body.intent,
         currentCode: body.currentCode
       });

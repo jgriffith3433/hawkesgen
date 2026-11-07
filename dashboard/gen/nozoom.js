@@ -12,6 +12,15 @@
     ':where(*) { -webkit-tap-highlight-color: transparent; }' +
     ':where(button, [role=button], [role=tab], [role=menuitem], summary, nav, header, .menu, .toolbar) { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }' +
     ':where(input, textarea, select, [contenteditable=""], [contenteditable="true"]) { -webkit-user-select: text; user-select: text; }';
+  // Phone touch targets (J, 2026-11-07): where a finger is the pointer and the layout is the phone one, controls are at least
+  // 44 px tall (and icon-only buttons 44 wide). Desktop (mouse, or wider than 900 px) is untouched. The timeline's clip
+  // handles and per-track mini buttons are content, not controls: they stay as drawn. :where() keeps it weaker than page CSS.
+  st.textContent += '@media (pointer: coarse) and (max-width: 900px) {' +
+    ':where(button, [role=button], [role=tab], summary, select, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]):not([type=hidden]), .chip, .btn, a.link):where(:not(.tl-hb):not(.clip-act):not(.h-l):not(.h-r):not(.fade-h):not(.xf-h)) { min-height: 44px; box-sizing: border-box; }' +
+    ':where(.icon-btn, .icon-btn.small) { min-width: 44px; justify-content: center; }' +
+    ':where(.mobile-tabs button, .scene-tab, .scene-tab button) { min-height: 44px; }' +
+    ':where(html, body) { max-width: 100vw; }' +
+    '}';
   (document.head || document.documentElement).appendChild(st);
   var opt = { passive: false, capture: true };
   var stop = function (e) { if (e.cancelable) e.preventDefault(); };
