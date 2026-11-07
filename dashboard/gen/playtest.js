@@ -49,6 +49,7 @@ installPlaytest({
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
+    { id: 'phone', title: 'Phone (390x844, touch): every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -282,6 +283,85 @@ installPlaytest({
       t.event(`seek-resume max ${seeks.seekResumeMs}ms of ${seeks.seeks}`);
       t.progress(0.9);
       t.finish(through ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'phone') {
+      t.scene('Phone layout');
+      const W = () => window.innerWidth;
+      const visible = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !el.closest('[hidden]'); };
+      /** Is an ancestor clipping this element sideways (a scroller or overflow: hidden)? Then it can't make the page wider. */
+      const clipped = (el) => { for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) { const o = getComputedStyle(p).overflowX; if (o !== 'visible' && p.getBoundingClientRect().right <= W() + 1) return true; } return false; };
+      const label = (el) => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : ''} "${(el.textContent || el.title || '').trim().slice(0, 24)}"`;
+      /** The page's sideways overflow: the document wider than the screen, and visible elements poking past the right edge. */
+      const overflow = (root = document) => {
+        const out = [];
+        if (document.documentElement.scrollWidth > W() + 1) out.push(`page scrolls sideways (${document.documentElement.scrollWidth} > ${W()})`);
+        for (const el of root.querySelectorAll('body *')) {
+          if (el.closest('svg, #toast')) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width && r.height && r.right > W() + 1 && visible(el) && !clipped(el) && getComputedStyle(el).position !== 'fixed') out.push(`${label(el)} reaches ${Math.round(r.right)} of ${W()}`);
+          if (out.length >= 6) break;
+        }
+        return out;
+      };
+      const inView = (el) => { const r = el.getBoundingClientRect(); return r.left >= -1 && r.right <= W() + 1 && r.top >= -1 && r.bottom <= window.innerHeight + 1; };
+      /** Controls under 44 px tall in the open screen (timeline handles and mini buttons are content). */
+      const small = (root) => [...root.querySelectorAll('button, select, summary, [role=tab], .chip, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]):not([type=hidden])')]
+        .filter((el) => visible(el) && !el.closest('#tlTracks, .tl-heads') && !el.matches('.tl-hb, .clip-act') && el.getBoundingClientRect().height < 43.5);
+      let bad = 0;
+      const visit = async (name, root = () => document, primary = () => []) => {
+        await sleep(700);
+        const r = root() ?? document;
+        const of = overflow(r === document ? document : r);
+        const off = primary().filter((el) => el && visible(el) && !inView(el));
+        const tiny = small(r === document ? document.body : r).filter((el) => visible(el));
+        t.metric(`${name}_overflow`, of.length); t.metric(`${name}_offscreenPrimary`, off.length); t.metric(`${name}_under44`, tiny.length);
+        t.event(`screen-${name}`);
+        for (const m of of) { bad++; t.problem('bug', `${name}: horizontal overflow: ${m}`); }
+        for (const el of off) { bad++; t.problem('bug', `${name}: primary button not fully on screen: ${label(el)}`); }
+        for (const el of tiny.slice(0, 5)) { bad++; t.problem('minor', `${name}: control under 44 px tall (${Math.round(el.getBoundingClientRect().height)}): ${label(el)}`); }
+      };
+      if (W() > 900) { t.note('Not a phone-sized screen: run this scenario with mobile: true (390x844, touch)'); t.finish('stuck'); return; }
+      t.metric('viewportWidth', W());
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest phone ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const tab = async (m) => { click(`#mobileTabs button[data-m="${m}"]`); await until(() => document.querySelector(`#mobileTabs button[data-m="${m}"].on`), 3000, 100); };
+      await visit('edit', () => document, () => [document.querySelector('#sceneAction')].filter((b) => b && !b.hidden));
+      await tab('media'); await visit('media', () => document, () => []);
+      const tile = document.querySelector('#mediaGrid .tile:not(.busy)');
+      if (tile) { tile.focus(); pressOn(tile, 'Enter'); if (await until(() => document.querySelector('#mediaDrawer .media-drawer'), 4000)) { await visit('drawer', () => document.querySelector('#mediaDrawer .media-drawer'), () => [document.querySelector('#drawerUse')]); pressOn(document.activeElement ?? document.body, 'Escape'); await until(() => !document.querySelector('#mediaDrawer'), 3000); } }
+      else t.note('The test account has no media: the detail drawer was not visited');
+      await tab('generate'); await visit('create', () => document, () => []);
+      const row = document.querySelector('#createList .cat .cat-row:not(.director-row)');
+      if (row) { row.click(); await sleep(600); await visit('create-form', () => document, () => [...document.querySelectorAll('.pane.left button.primary')]); await tab('generate'); }
+      await tab('scenes'); await visit('scenes');
+      await tab('kind'); await visit('inspector');
+      await tab('ai'); await visit('ai', () => document, () => [document.querySelector('#aiSend, .ai-form button[type=submit], .ai-form .primary')].filter(Boolean));
+      await tab('edit');
+      // The timeline: a text clip on it, then the screen again with it there.
+      press('t'); await sleep(500); await visit('timeline');
+      click('#accountBtn');
+      const acct = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /account|credits/i.test(b.textContent)), 3000, 100);
+      if (acct) { acct.click(); if (await until(() => document.querySelector('#accountDialog[open]'), 4000)) { await visit('account', () => document.querySelector('#accountDialog'), () => [document.querySelector('#accountClose')]); document.querySelector('#accountClose')?.click(); await until(() => !document.querySelector('#accountDialog[open]'), 3000); } }
+      else { pressOn(document.body, 'Escape'); t.note('The account menu had no Account row'); }
+      if (!document.querySelector('#sceneAction')?.hidden) {
+        click('#sceneAction');
+        if (await until(() => document.querySelector('#exportDialog[open]'), 4000)) { await visit('export', () => document.querySelector('#exportDialog'), () => [document.querySelector('#exportGo')]); document.querySelector('#exportClose')?.click(); }
+      }
+      // The detector must catch a deliberately overflowing element, so a quiet pass means something.
+      const canary = document.createElement('div');
+      canary.id = 'phone-canary'; canary.textContent = 'overflow canary';
+      canary.style.cssText = `position:absolute;top:60px;left:0;width:${W() + 160}px;height:12px;background:#f0f;z-index:9999`;
+      document.body.appendChild(canary);
+      await sleep(300);
+      const caught = overflow().some((m) => /phone-canary|sideways/.test(m));
+      canary.remove();
+      t.metric('canaryCaught', caught ? 1 : 0);
+      t.event(caught ? 'canary-overflow-reported' : 'canary-missed');
+      t.note(caught ? `Deliberate overflowing element (${W() + 160}px wide on a ${W()}px screen) was reported` : 'The overflow check missed the deliberate overflow');
+      t.metric('phoneProblems', bad);
+      t.finish(caught ? 'done' : 'stuck');
       return;
     }
     if (id === 'library') {
