@@ -52,6 +52,7 @@ import { handleUpload, downloadTarget, linkTarget, shareLink, signedFileUrl, ver
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
+import { mockHealth } from './mockproviders.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import { handleBench } from './bench/routes.ts';
 import { handleMake } from './make/routes.ts';
@@ -456,6 +457,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
         // Event-loop lag: the worst delay seen and the recent blocks over 500 ms, with the requests around them.
         loop: lagReport(),
+        // HAWKESGEN_MOCK_PROVIDERS (src/mockproviders.ts): whether providers are stand-ins, and any real spend since boot.
+        mock: mockHealth(),
+        process: { pid: process.pid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(), rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576) },
       });
     }
 

@@ -6,6 +6,10 @@ import { HOST, PORT, DATA_DIR } from './config.ts';
 import { handle } from './api.ts';
 import { queue } from './jobs.ts';
 import { startLagMonitor } from './lag.ts';
+import { assertMockProviders } from './mockproviders.ts';
+
+// HAWKESGEN_MOCK_PROVIDERS=1 is for beta and local copies: on the live lane the service refuses to start.
+try { assertMockProviders(); } catch (e: any) { console.error(e.message); process.exit(1); }
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch((e) => {
