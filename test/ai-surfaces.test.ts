@@ -47,7 +47,7 @@ const B = account('b');
 const a = api(A), b = api(B);
 setCredits(A.user.id, 5000);
 setCredits(B.user.id, 5000);
-const queue = (who: typeof A, answers: AM.CannedAnswer[]) => { AM.clearAnswers(who.user.id); AM.queueAnswers(who.user.id, answers); };
+const queue = (who: typeof A, answers: import('../src/aimock.ts').CannedAnswer[]) => { AM.clearAnswers(who.user.id); AM.queueAnswers(who.user.id, answers); };
 
 let keyN = 0;
 /** Runs `fn` with the house AI off, then with no key, then with a key the API rejects; each must be a 503. */
@@ -536,4 +536,277 @@ test('showrunner: a garbage plan is a readable 502 and no production; the call i
   assert.equal((await (await a('/v1/showrunner/productions')).json() as any).items.length, before);
   AM.clearAnswers(A.user.id);
   setCredits(A.user.id, 5000);
+});
+
+// ================================================================== the MCP tools hawkesgen_editor_ask / hawkesgen_editor_apply
+// The tools run against the real routes: the stand-in Gen client sends what hawkesgen.mjs would (JSON to /v1, errors thrown
+// with the route's own message and status), signed in as the given test account.
+const mcpFor = (who: { sessionToken: string }) => {
+  const gen: any = {
+    async request(p: string, o: { method?: string; body?: unknown } = {}) {
+      const r = await api(who)(`/v1${p}`, o.method ?? 'GET', o.body);
+      const data = await r.json().catch(() => ({})) as any;
+      if (!r.ok) throw Object.assign(new Error(data.error ?? `HTTP ${r.status}`), { status: r.status, kind: data.kind });
+      return data;
+    },
+  };
+  return genMcp(gen, { remote: true, account: 'u_x' });
+};
+const callTool = async (server: any, name: string, args: any) => (await rpc(server, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })).result;
+const textOf = (r: any) => String(r.content?.[0]?.text ?? '');
+const mcpA = mcpFor(A), mcpB = mcpFor(B);
+
+async function videoProject() {
+  const made = await (await a('/v1/editor/projects', 'POST', { title: 'MCP' })).json() as any;
+  const saved = await (await a(`/v1/editor/projects/${made.id}`, 'PUT', { doc: { ...made.doc, clips: [{ id: 'ct', track: 'T1', kind: 'text', start: 0, in: 0, out: 2, text: 'Old title' }] }, version: made.version })).json() as any;
+  return { id: made.id as string, version: saved.version as number, clip: saved.doc.clips[0].id as string };
+}
+
+test('mcp hawkesgen_editor_ask: the AI edits through the real route and is charged exactly like the app (one ai_turn, aiCredits)', async () => {
+  const p = await videoProject();
+  setCredits(A.user.id, 500);
+  const rows = ledger(A.user.id).length;
+  queue(A, [{ match: 'retitle', json: { say: 'Retitled.', ops: [{ op: 'set', id: p.clip, text: 'New title' }] }, cost: 0.2 }]);
+  const r = await callTool(mcpA, 'hawkesgen_editor_ask', { id: p.id, say: 'retitle the card' });
+  assert.notEqual(r.isError, true, textOf(r));
+  assert.equal(r.structuredContent.say, 'Retitled.');
+  assert.equal(r.structuredContent.version, p.version + 1);
+  assert.equal(r.structuredContent.results[0].ok, true);
+  assert.equal(credits(A.user.id), 470);
+  assert.equal(ledger(A.user.id).length, rows + 1);
+  assert.equal((await (await a(`/v1/editor/projects/${p.id}`)).json() as any).doc.clips[0].text, 'New title');
+  setCredits(A.user.id, 5000);
+});
+
+test('mcp hawkesgen_editor_ask: 402 and 503 are the tool\'s error with the route\'s words; nothing is charged or changed', async () => {
+  const p = await videoProject();
+  const rows = ledger(A.user.id).length;
+  setCredits(A.user.id, 0);
+  queue(A, [{ match: 'retitle', json: { say: 'x', ops: [{ op: 'delete', id: p.clip }] } }]);
+  const poor = await callTool(mcpA, 'hawkesgen_editor_ask', { id: p.id, say: 'retitle the card' });
+  assert.equal(poor.isError, true);
+  assert.match(textOf(poor), /credit/i);
+  assert.equal(AM.mockStatus(A.user.id).queued, 1);
+  AM.clearAnswers(A.user.id);
+  setCredits(A.user.id, 5000);
+  house.saveHouseSettings({ source: 'off' });
+  try {
+    const off = await callTool(mcpA, 'hawkesgen_editor_ask', { id: p.id, say: 'retitle the card' });
+    assert.equal(off.isError, true);
+    assert.match(textOf(off), /turned off/);
+  } finally { house.saveHouseSettings({ source: 'auto' }); }
+  assert.deepEqual([ledger(A.user.id).length, credits(A.user.id)], [rows, 5000]);
+  assert.equal((await (await a(`/v1/editor/projects/${p.id}`)).json() as any).version, p.version);
+});
+
+test('mcp: an unknown or malformed project id is a clear "No ... project" error, for ask and apply; nothing is asked or charged', async () => {
+  const rows = ledger(A.user.id).length, bal = credits(A.user.id);
+  queue(A, [{ match: 'anything', json: { say: 'x', ops: [] } }]);
+  const seen: string[] = [];
+  for (const id of ['ep_0123456789ab', 'sn_0123456789ab', 'ep_short', 'not-an-id', '../../v1/admin']) {
+    for (const [tool, args] of [['hawkesgen_editor_ask', { id, say: 'anything' }], ['hawkesgen_editor_apply', { id, ops: [{ op: 'delete', id: 'x' }] }]] as const) {
+      const r = await callTool(mcpA, tool, args);
+      assert.equal(r.isError, true, `${tool} ${id}`);
+      seen.push(`${tool} ${id}: ${textOf(r)}`);
+      assert.doesNotMatch(textOf(r), /TypeError|undefined|\[object/, `${tool} ${id}: ${textOf(r)}`);
+    }
+  }
+  // A well-formed id that isn't there says so ("No such scene", where "project" is the word the tool uses); the odd ones fall
+  // through to "No editor route" (404): never a crash. The todo below is the wish for the tool to name the id it was given.
+  assert.match(seen[0], /No such scene/, seen[0]);
+  assert.match(seen[2], /No such scene/, seen[2]);
+  assert.equal(AM.mockStatus(A.user.id).queued, 1);
+  assert.deepEqual([ledger(A.user.id).length, credits(A.user.id)], [rows, bal]);
+  AM.clearAnswers(A.user.id);
+});
+
+test('mcp: another user\'s project is the same error as a missing one, for ask and apply; the model is not called', async () => {
+  const p = await videoProject();
+  queue(B, [{ match: 'steal', json: { say: 'x', ops: [{ op: 'delete', id: p.clip }] } }]);
+  const rowsB = ledger(B.user.id).length;
+  const ask = await callTool(mcpB, 'hawkesgen_editor_ask', { id: p.id, say: 'steal it' });
+  const apply = await callTool(mcpB, 'hawkesgen_editor_apply', { id: p.id, ops: [{ op: 'delete', id: p.clip }] });
+  const missing = await callTool(mcpB, 'hawkesgen_editor_ask', { id: 'ep_0123456789ab', say: 'steal it' });
+  for (const r of [ask, apply]) assert.equal(r.isError, true);
+  assert.equal(textOf(ask), textOf(missing), 'no difference between "not yours" and "not there"');
+  assert.equal(AM.mockStatus(B.user.id).queued, 1);
+  assert.equal(ledger(B.user.id).length, rowsB);
+  assert.equal((await (await a(`/v1/editor/projects/${p.id}`)).json() as any).doc.clips.length, 1);
+  AM.clearAnswers(B.user.id);
+});
+
+test('mcp hawkesgen_editor_ask: a garbage answer is plain words with no edits (and charged); hawkesgen_editor_apply runs ops with no AI charge', async () => {
+  const p = await videoProject();
+  setCredits(A.user.id, 1000);
+  queue(A, [{ match: 'garble', text: 'Hmm. ```{ ops: [', cost: 0.1 }]);
+  const g = await callTool(mcpA, 'hawkesgen_editor_ask', { id: p.id, say: 'garble' });
+  assert.notEqual(g.isError, true);
+  assert.match(g.structuredContent.say, /ops/);
+  assert.deepEqual(g.structuredContent.results, []);
+  assert.equal(credits(A.user.id), 1000 - house.turnCredits(0.1));
+  const rows = ledger(A.user.id).length;
+  const ap = await callTool(mcpA, 'hawkesgen_editor_apply', { id: p.id, ops: [{ op: 'text', text: 'Hi', start: 3, end: 4 }, { op: 'delete', id: 'nope' }] });
+  assert.notEqual(ap.isError, true, textOf(ap));
+  assert.deepEqual(ap.structuredContent.results.map((x: any) => x.ok), [true, false]);
+  assert.equal(ledger(A.user.id).length, rows);
+  assert.equal(credits(A.user.id), 1000 - house.turnCredits(0.1));
+  setCredits(A.user.id, 5000);
+});
+
+test('mcp: the error for a bad project id names the id and what an id looks like', { todo: 'hawkesgen_editor_ask/apply pass any string to the route: a malformed id answers "No such editor route" and a missing one "No such scene", neither naming the id the caller gave (src/mcp-tools.ts)' }, async () => {
+  const r = await callTool(mcpA, 'hawkesgen_editor_ask', { id: 'not-an-id', say: 'anything' });
+  assert.equal(r.isError, true);
+  assert.match(textOf(r), /not-an-id/);
+  const missing = await callTool(mcpA, 'hawkesgen_editor_apply', { id: 'ep_0123456789ab', ops: [] });
+  assert.match(textOf(missing), /ep_0123456789ab/);
+});
+
+// ================================================================== a generate op that names a tool the AI should never run
+// What the AI editor's `generate` op does today with comfy.graph (a raw ComfyUI graph), unity.build (internal only) and
+// playtest.run (a browser run of any build), and what the scene AI does with the same tools as jobs. The editor checks only
+// that the tool exists (timeline.ts applyOps) and leaves the rest to the queue's own rules (billing.ts INTERNAL_ONLY_TOOLS),
+// where the scene AI also asks `aiCanUse` (editor.ts) first. The todo tests are the wanted behaviour: the AI never plans these.
+// playtest.run's params here name an asset that does not exist, so the run is refused at admit and no browser is ever started.
+const HOSTILE: Record<string, Record<string, unknown>> = {
+  'comfy.graph': { family: 'qwen-edit', graph: { '1': { class_type: 'KSampler', inputs: {} } } },
+  'unity.build': { github: { repo: 'jgriffith3433/hawkesgen', ref: 'main' } },
+  'playtest.run': { build: 'asset:a_ffffffffffff', scenario: 'smoke' },
+};
+const hostileOp = (tool: string) => ({ op: 'generate', tool, params: HOSTILE[tool], place: { library: true } });
+const queuedTools = (since: number) => (db.prepare('SELECT tool FROM jobs ORDER BY rowid DESC LIMIT ?').all(jobCount() - since) as { tool: string }[]).map((r) => r.tool);
+
+test('AI editor generate op, today: unity.build is refused by the queue; comfy.graph is queued; playtest.run reaches its own checks', async () => {
+  const p = await videoProject();
+  const seen: Record<string, any> = {};
+  for (const tool of Object.keys(HOSTILE)) {
+    const before = jobCount();
+    queue(A, [{ match: 'hostile', json: { say: 'ok', ops: [hostileOp(tool)] } }]);
+    const r = await a(`/v1/editor/projects/${p.id}/assistant`, 'POST', { messages: [{ role: 'user', text: 'hostile' }], autoCredits: 1_000_000 });
+    const body = await r.json() as any;
+    assert.equal(r.status, 200, 'the turn itself succeeds: a refused op is reported, not thrown');
+    seen[tool] = { result: body.results[0], jobs: queuedTools(before) };
+  }
+  assert.equal(seen['unity.build'].result.ok, false);
+  assert.match(seen['unity.build'].result.error, /internal-only and not available for user accounts/);
+  assert.deepEqual(seen['unity.build'].jobs, [], 'no job');
+  // comfy.graph: nothing in the editor stops it. A raw graph is queued as a job (it fails here only because this Gen has no GPU).
+  assert.equal(seen['comfy.graph'].result.ok, true);
+  assert.deepEqual(seen['comfy.graph'].jobs, ['comfy.graph']);
+  // playtest.run: the editor lets it through to the tool's own admit checks (here: the asset is not there). With a real build
+  // the AI could start a playtest on a person's say-so.
+  assert.equal(seen['playtest.run'].result.ok, false);
+  assert.match(seen['playtest.run'].result.error, /No asset a_ffffffffffff/);
+  assert.deepEqual(seen['playtest.run'].jobs, []);
+  AM.clearAnswers(A.user.id);
+});
+
+for (const tool of ['comfy.graph', 'playtest.run']) {
+  test(`AI editor generate op: ${tool} is refused as "not a tool the AI uses" before the queue sees it`, { todo: `editor.ts applyOps/timeline.ts 'generate' only checks getTool(); the scene AI also checks aiCanUse(). Same check wanted for the editor's and director's AI (fix task: gate generate ops by aiCanUse in the assistant routes, not in /apply, which is the person's own call)` }, async () => {
+    const p = await videoProject();
+    const before = jobCount();
+    queue(A, [{ match: 'hostile', json: { say: 'ok', ops: [hostileOp(tool)] } }]);
+    const body = await (await a(`/v1/editor/projects/${p.id}/assistant`, 'POST', { messages: [{ role: 'user', text: 'hostile' }], autoCredits: 1_000_000 })).json() as any;
+    assert.equal(body.results[0].ok, false);
+    assert.match(body.results[0].error, /not available|internal-only|no tool/i, `got: ${body.results[0].error}`);
+    assert.equal(jobCount(), before);
+    AM.clearAnswers(A.user.id);
+  });
+}
+
+test('scene AI jobs, today: comfy.graph, unity.build and playtest.run are all dropped as "no tool ..." (aiCanUse), in the turn and in /apply', async () => {
+  const s = await newCharacter();
+  const before = jobCount();
+  for (const tool of Object.keys(HOSTILE)) {
+    queue(A, [{ match: 'hostile', json: { say: 'ok', doc: s.doc, jobs: [{ gen: 0, tool, params: HOSTILE[tool] }] } }]);
+    const r = await (await askScene(s.id, 'hostile', { autoCredits: 1_000_000 })).json() as any;
+    assert.deepEqual(r.started, [], tool);
+    assert.deepEqual(r.errors, [`no tool ${tool}`]);
+    assert.equal(r.proposed, undefined, 'not even proposed for a tap');
+    const ap = await (await a(`/v1/scenes/${s.id}/apply`, 'POST', { jobs: [{ gen: 0, tool, params: HOSTILE[tool] }] })).json() as any;
+    assert.deepEqual(ap.started, []);
+    assert.deepEqual(ap.errors, [`no tool ${tool}`]);
+  }
+  assert.equal(jobCount(), before);
+  AM.clearAnswers(A.user.id);
+});
+
+test('the AI editor\'s own /apply is the person\'s call: unity.build is refused there too (queue rule), the others are theirs to run', async () => {
+  const p = await videoProject();
+  const r = await (await a(`/v1/editor/projects/${p.id}/apply`, 'POST', { ops: [hostileOp('unity.build'), hostileOp('playtest.run')] })).json() as any;
+  assert.deepEqual(r.results.map((x: any) => x.ok), [false, false]);
+  assert.match(r.results[0].error, /internal-only/);
+  assert.match(r.results[1].error, /No asset/);
+});
+
+// ================================================================== the legacy POST /v1/assistant/chat as a customer key
+// It is an old Hawkes Play helper that calls ask() with no callScope and no account: so it never takes the house AI's
+// route, never writes an ai_turn row, and (without an Anthropic key of the account's own) runs on the studio's Claude.
+// Recorded here with a fake Anthropic API that counts the calls and the key they carry.
+// One fake Anthropic API for the whole file: the SDK client for the env key is built once, with the base URL it first saw.
+const studioCalls: { key: string }[] = [];
+const STUDIO_KEY = 'sk-ant-api03-STUDIO-OWN-KEY-legacy-probe-0001';
+let studioFake: http.Server | null = null;
+test.after(() => { studioFake?.close(); });
+/** Runs `fn` with the studio's own Claude (API-key backend, key from the environment) pointed at the fake, so no real Claude is reached. */
+async function withStudioClaude<T>(fn: () => Promise<T>): Promise<{ result: T; calls: { key: string }[]; key: string }> {
+  const { saveSettings, loadSettings } = await import('../src/config.ts');
+  if (!studioFake) {
+    studioFake = http.createServer((q, res) => {
+      q.resume();
+      q.on('end', () => { studioCalls.push({ key: String(q.headers['x-api-key'] ?? '') }); res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } })); });
+    });
+    await new Promise<void>((ok) => studioFake!.listen(0, '127.0.0.1', () => ok()));
+  }
+  studioCalls.length = 0;
+  const was = loadSettings().claude, wasKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${(studioFake.address() as any).port}`;
+  process.env.ANTHROPIC_API_KEY = STUDIO_KEY;
+  saveSettings({ claude: { ...was, backend: 'api' } });
+  const log = console.error; console.error = () => {};
+  try { return { result: await fn(), calls: [...studioCalls], key: STUDIO_KEY }; }
+  finally {
+    console.error = log; saveSettings({ claude: was }); delete process.env.ANTHROPIC_BASE_URL;
+    if (wasKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = wasKey;
+  }
+}
+
+test('legacy /v1/assistant/chat as a user client: not charged, not scoped to the account, runs on the studio\'s own Claude key', async () => {
+  setCredits(A.user.id, 700);
+  queue(A, [{ json: { say: 'this canned answer is for the scoped surfaces only' } }]);
+  const rows = ledger(A.user.id).length;
+  const { result: r, calls, key } = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'make me a platformer', gameContext: { gameName: 'Probe' }, history: [] }));
+  // It reached Anthropic with the studio's key (the account has none of its own), and the mock did not answer for the account.
+  assert.equal(r.status, 500);
+  assert.match((await r.json() as any).error, /AI assistant error/);
+  assert.equal(calls.length, 1, 'one real call went out');
+  assert.equal(calls[0].key, key, 'with the studio\'s key, not the account\'s or the house AI\'s');
+  assert.equal(AM.mockStatus(A.user.id).queued, 1, 'the account\'s canned answer was not used: the call has no account scope');
+  // And it is free to the person: no credits taken, no ai_turn row.
+  assert.equal(credits(A.user.id), 700);
+  assert.equal(ledger(A.user.id).length, rows);
+  // The house AI being off changes nothing for it (the other assistants answer 503): it still goes to the studio's Claude.
+  house.saveHouseSettings({ source: 'off' });
+  try {
+    const off = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'again' }));
+    assert.equal(off.calls.length, 1);
+    assert.notEqual(off.result.status, 503);
+  } finally { house.saveHouseSettings({ source: 'auto' }); }
+  AM.clearAnswers(A.user.id);
+  setCredits(A.user.id, 5000);
+});
+
+test('legacy /v1/assistant/chat: the owner-only rule is a 403 for a key that is not a user, a 400 without a message; /generate has the same gate', async () => {
+  assert.equal((await a('/v1/assistant/chat', 'POST', {})).status, 400);
+  const anon = await fetch(`${base}/v1/assistant/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'hi' }) });
+  assert.ok([401, 403].includes(anon.status), String(anon.status));
+});
+
+test('legacy /v1/assistant/chat as a user client uses the studio\'s Claude without paying: a known gap', { todo: 'POST /v1/assistant/chat (assistant.ts processMessage) calls ask() outside callScope: a customer\'s message runs on the studio\'s Claude (Max plan or API key) at no cost to them. It should take the house AI route and charge ai_turn like the other assistants, or be turned off for role user.' }, async () => {
+  // Wanted: with the house AI off, the legacy chat is refused like every other assistant (503) and never reaches the studio's Claude.
+  house.saveHouseSettings({ source: 'off' });
+  try {
+    const { result: r, calls } = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'make me a platformer' }));
+    assert.equal(calls.length, 0, 'the studio\'s Claude was called');
+    assert.equal(r.status, 503);
+  } finally { house.saveHouseSettings({ source: 'auto' }); }
 });
