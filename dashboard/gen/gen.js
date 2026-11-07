@@ -337,6 +337,7 @@ async function start() {
 }
 if (state.user) { try { await start(); } catch (err) { toast(err.message); startSignedOut(); } } else startSignedOut();
 bus.emit('ready', state.user);
+document.getElementById('bootCover')?.remove();
 bus.on('signedIn', () => start().catch((err) => toast(err.message)));
 startSync();
 setTimeout(fit, 50);
