@@ -50,6 +50,7 @@ installPlaytest({
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
+    { id: 'signupcap', title: 'Starter credits are capped: health counts signups and refused grants, and the limits are shown; this account sees its balance', seconds: 30 },
     { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
     { id: 'phone', title: 'Phone (390x844, touch): every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
@@ -494,6 +495,20 @@ installPlaytest({
       const h2 = await fetch('/v1/health').then((r) => r.json()).catch(() => null);
       t.metric('realCostAfter', h2?.mock?.realCost ?? -1);
       t.finish(st === 'done' && (h2?.mock?.realCost ?? 1) === 0 ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'signupcap') {
+      t.scene('Starter-credit caps');
+      const h = await fetch('/v1/health').then((r) => r.json()).catch(() => null);
+      const sg = h?.signups;
+      t.metric('signupsToday', sg?.today?.signups ?? -1);
+      t.metric('refusedGrantsToday', sg?.today?.refusedGrants ?? -1);
+      t.metric('signupsTotal', sg?.total?.signups ?? -1);
+      t.metric('refusedGrantsTotal', sg?.total?.refusedGrants ?? -1);
+      t.metric('perIpPerDay', sg?.limits?.perIpPerDay ?? -1);
+      t.event(sg ? 'health-counts-signups' : 'health-missing-signups');
+      t.note(`Health: ${JSON.stringify(sg ?? null)}. This account's balance: ${state.user?.credits ?? '?'} credits.`);
+      t.finish(sg ? 'done' : 'stuck');
       return;
     }
     if (id === 'aimock') {

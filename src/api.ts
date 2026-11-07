@@ -1,6 +1,8 @@
 // The HTTP API (JSON, under /v1) and the dashboard (static files at /).
 // docs/api.md lists every route with examples.
 
+import { clientIp } from './analytics/collect.ts';
+import { signupStats } from './signupcap.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -450,6 +452,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         elevenlabsBilling: eleven.billingState(),
         // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
         orgCredits: orgCreditsOn(),
+        // New accounts and starter grants refused by the caps today and in total (src/signupcap.ts).
+        signups: signupStats(),
         queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),
         // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
         // (the deploy script waits for these only; everything else resumes after a restart).
@@ -518,26 +522,26 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/users/test-session' && method === 'POST') {
       const ts = await import('./testsignin.ts');
       const project = ts.checkTestToken(await readJson(req));
-      const result = googleSignin(ts.testAccountOf(project));
+      const result = googleSignin(ts.testAccountOf(project), clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
     }
     if (route === '/v1/users/test-session/github' && method === 'POST') {
       // A GitHub Actions run of an allowed repo, as its test account, on beta only (src/githubsignin.ts).
       const gh = await import('./githubsignin.ts');
       const project = await gh.checkGitHubToken((await readJson(req))?.token);
       const ts = await import('./testsignin.ts');
-      const result = googleSignin(ts.testAccountOf(project));
+      const result = googleSignin(ts.testAccountOf(project), clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
     }
     if (route === '/v1/users/google' && method === 'POST') {
       const { credential } = await readJson(req);
       let who;
       try { who = await checkGoogleToken(String(credential ?? '')); } catch (e: any) { return send(res, 401, { error: e.message }); }
-      const result = googleSignin(who);
+      const result = googleSignin(who, clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: result.user, created: result.created });
+      return send(res, 200, { user: result.user, created: result.created, notice: result.notice });
     }
     if ((route === '/v1/users/signup' || route === '/v1/users/login') && method === 'POST' && !passwordsAllowed()) {
       return send(res, 410, { error: 'Sign in with Google.', code: 'google_only' });

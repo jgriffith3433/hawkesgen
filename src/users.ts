@@ -8,6 +8,7 @@ import { env, loadSettings } from './config.ts';
 import { authenticate, createClient, getClient, setClientDisabled, type Client } from './auth.ts';
 import { id, sha256, GenError } from './util.ts';
 import { genOAuth } from './genoauth.ts';
+import { decideStarter, recordSignup, STARTER_REFUSED_MESSAGE } from './signupcap.ts';
 
 export type AuthClient = Client & { userId?: string };
 
@@ -100,7 +101,7 @@ export function getUserForClient(c: Client | AuthClient): UserRow | null {
   return null;
 }
 
-export function signupUser(input: { email?: unknown; password?: unknown; name?: unknown }) {
+export function signupUser(input: { email?: unknown; password?: unknown; name?: unknown }, opts: { starter?: number } = {}) {
   const email = String(input.email ?? '').trim().toLowerCase();
   if (!EMAIL_RE.test(email)) throw new GenError('Enter a valid email address');
   const password = typeof input.password === 'string' ? input.password : '';
@@ -112,7 +113,7 @@ export function signupUser(input: { email?: unknown; password?: unknown; name?: 
   const userId = id('u', 6);
   const project = userId;
   const pwdHash = hashPassword(password);
-  const starter = starterCredits();
+  const starter = opts.starter ?? starterCredits();
   const now = Date.now();
 
   db.exec('BEGIN');
@@ -164,7 +165,7 @@ export function isGenAdmin(user: Pick<UserRow, 'id' | 'email'>): boolean {
   return Boolean(db.prepare('SELECT 1 FROM user_google WHERE user_id = ?').get(user.id));
 }
 
-export function googleSignin(who: { sub: string | null; email: string; name: string | null }) {
+export function googleSignin(who: { sub: string | null; email: string; name: string | null }, ip?: string | null) {
   if (!who.sub) throw new GenError('That Google sign-in has no account id. Try again.', { status: 401 });
   const email = who.email.trim().toLowerCase();
   if (!EMAIL_RE.test(email)) throw new GenError('That Google account has no usable email');
@@ -173,16 +174,21 @@ export function googleSignin(who: { sub: string | null; email: string; name: str
   if (user && !bySub) db.prepare('INSERT OR IGNORE INTO user_google (user_id, sub, linked) VALUES (?, ?, ?)').run(user.id, who.sub, Date.now());
   if (!user) {
     // A new account: no password (an unusable hash), the starter credits, its own project and key, as signupUser does.
-    const made = signupUser({ email, password: crypto.randomBytes(24).toString('base64url'), name: who.name ?? undefined });
+    // Over the per-address or daily cap (src/signupcap.ts) the account is made and signed in, without the starter grant.
+    const asked = starterCredits();
+    const verdict = decideStarter(ip ?? null, asked);
+    const starter = verdict.grant ? asked : 0;
+    const made = signupUser({ email, password: crypto.randomBytes(24).toString('base64url'), name: who.name ?? undefined }, { starter });
+    recordSignup(ip ?? null, starter, verdict.grant ? null : verdict.reason);
     db.prepare("UPDATE users SET password_hash = 'google' WHERE id = ?").run(made.user.id);
     db.prepare('INSERT INTO user_google (user_id, sub, linked) VALUES (?, ?, ?)').run(made.user.id, who.sub, Date.now());
-    return { user: made.user, sessionToken: made.sessionToken, created: true };
+    return { user: made.user, sessionToken: made.sessionToken, created: true, notice: verdict.grant || asked <= 0 ? undefined : STARTER_REFUSED_MESSAGE };
   }
   const now = Date.now();
   db.prepare('UPDATE users SET last_login = ? WHERE id = ?').run(now, user.id);
   user = getUserById(user.id)!;
   const session = createSession(user.id);
-  return { user: toPublicUser(user), sessionToken: session.token, created: false };
+  return { user: toPublicUser(user), sessionToken: session.token, created: false, notice: undefined as string | undefined };
 }
 
 export function loginUser(input: { email?: unknown; password?: unknown }) {
