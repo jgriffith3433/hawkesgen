@@ -30,3 +30,5 @@ a message into the AI pane and shows the canned words and the title they add.
 
 **Tests.** `test/aimock.test.ts`: a queued answer and its cost, the editor assistant's ops from it, the flag unset, and a
 non-test account refused.
+
+`test/ai-assistants.test.ts` drives `POST /v1/editor/projects/:id/assistant` and `/apply` through the real route with the mock: one test per op type (add, generate, trim, split, move, delete, deleteRange, set, text, track, settings: clip change and version bump), the `ai_turn` row and exact debit, `aiCredits`, the `autoCredits` now/proposed split, 402, 503 (house AI off, no key, rejected key via a local fake API), 409, another user's project (404, nothing changes), `parseAnswer` on garbage, forged `role` turns and 60 messages trimmed to 16.
