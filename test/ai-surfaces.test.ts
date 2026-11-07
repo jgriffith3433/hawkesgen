@@ -448,3 +448,92 @@ test('showrunner: pause starts nothing more; cancel stops running jobs and never
   assert.equal(((await (await buttons(p2.id, 'dismiss')).json()) as any).status, 'dismissed');
   assert.equal(ranSteps(p2.id).length, 0);
 });
+
+test('showrunner: 402 with too few credits (for a production and for a small edit); the model is not called, nothing is made', async () => {
+  const proj = await (await a('/v1/editor/projects', 'POST', { title: 'Cut' })).json() as any;
+  setCredits(A.user.id, 0);
+  const rows = ledger(A.user.id).length, jobs = submitted.size;
+  queuePlan(A);
+  const r = await turn(MAKE, { autoCredits: 1_000_000 });
+  assert.equal(r.status, 402);
+  assert.match((await r.json() as any).error, /credit/i);
+  assert.equal(AM.mockStatus(A.user.id).queued, 2, 'the planner was never called');
+  queue(A, [{ match: 'slow motion', json: { say: 'Slowed.', ops: [] } }]);
+  const e = await turn('make this slow motion', { scene: proj.id });
+  assert.equal(e.status, 402);
+  assert.equal(AM.mockStatus(A.user.id).queued, 1);
+  assert.deepEqual([ledger(A.user.id).length, credits(A.user.id), submitted.size], [rows, 0, jobs]);
+  AM.clearAnswers(A.user.id);
+  setCredits(A.user.id, 5000);
+});
+
+test('showrunner: 503 when the house AI is off, has no key or a rejected one: no production, no charge', async () => {
+  const before = (await (await a('/v1/showrunner/productions')).json() as any).items.length;
+  const rows = ledger(A.user.id).length, bal = credits(A.user.id);
+  await houseDown(() => turn(MAKE, { autoCredits: 1_000_000 }));
+  assert.deepEqual([ledger(A.user.id).length, credits(A.user.id)], [rows, bal]);
+  assert.equal((await (await a('/v1/showrunner/productions')).json() as any).items.length, before);
+});
+
+test('showrunner: a small edit goes to the scene\'s own assistant and is charged once, by that assistant', async () => {
+  const proj = await (await a('/v1/editor/projects', 'POST', { title: 'Cut' })).json() as any;
+  setCredits(A.user.id, 500);
+  const rows = ledger(A.user.id).length;
+  queue(A, [{ match: 'slow motion', json: { say: 'Slowed.', ops: [{ op: 'settings', title: 'Slow' }] }, cost: 0.2 }]);
+  const r = await turn('make this slow motion', { scene: proj.id });
+  const body = await r.json() as any;
+  assert.equal(r.status, 200, JSON.stringify(body));
+  assert.equal(body.route, 'edit');
+  assert.equal(body.say, 'Slowed.');
+  assert.equal(body.project.doc.title, 'Slow');
+  assert.equal(body.aiCredits, 30);
+  assert.equal(credits(A.user.id), 470);
+  assert.equal(ledger(A.user.id).length, rows + 1);
+  assert.match(ledger(A.user.id).at(-1)!.detail, /^AI editor: make this slow motion/);
+  setCredits(A.user.id, 5000);
+});
+
+test('showrunner: another user\'s scene and production are a 404 on every route; the model is not called and nothing changes', async () => {
+  const proj = await (await a('/v1/editor/projects', 'POST', { title: 'Mine' })).json() as any;
+  queuePlan(A);
+  const mine = (await (await turn(MAKE, { autoCredits: 0 })).json() as any).production;
+  queue(B, [{ match: 'slow motion', json: { say: 'Stolen.', ops: [{ op: 'settings', title: 'Mine now' }] } }]);
+  const rowsB = ledger(B.user.id).length, balB = credits(B.user.id), jobs = submitted.size;
+  const t = await turn('make this slow motion', { scene: proj.id }, b);
+  assert.equal(t.status, 404);
+  assert.equal((await turn('make this slow motion', { scene: proj.id, doc: { title: 'x' } }, b)).status, 404);
+  for (const what of ['approve', 'dismiss', 'pause', 'resume', 'cancel', 'browser', 'claim', 'finish', 'keep', 'undo']) {
+    assert.equal((await buttons(mine.id, what, b)).status, 404, what);
+  }
+  assert.equal((await b(`/v1/showrunner/productions/${mine.id}`)).status, 404);
+  assert.equal((await (await b('/v1/showrunner/productions')).json() as any).items.some((p: any) => p.id === mine.id), false);
+  const rv = await b('/v1/showrunner/review', 'POST', { scene: proj.id, t: 1, text: 'fix' });
+  assert.equal(rv.status, 404);
+  assert.equal(AM.mockStatus(B.user.id).queued, 1, 'the model was not called for any of it');
+  assert.deepEqual([ledger(B.user.id).length, credits(B.user.id)], [rowsB, balB]);
+  // A card of someone else's named in a turn is not answered or replaced: it is simply not theirs.
+  queuePlan(B);
+  const bt = await (await turn(MAKE, { autoCredits: 0, production: mine.id }, b)).json() as any;
+  assert.notEqual(bt.production?.id, mine.id);
+  assert.equal(((await (await a(`/v1/showrunner/productions/${mine.id}`)).json()) as any).status, 'proposed', 'A\'s card is untouched');
+  assert.equal(ranSteps(mine.id).length, 0);
+  assert.equal((await (await a(`/v1/editor/projects/${proj.id}`)).json() as any).doc.title, 'Mine');
+  assert.equal(jobs, submitted.size);
+  AM.clearAnswers(B.user.id);
+});
+
+test('showrunner: a garbage plan is a readable 502 and no production; the call is still charged', async () => {
+  const before = (await (await a('/v1/showrunner/productions')).json() as any).items.length;
+  setCredits(A.user.id, 1000);
+  queue(A, [{ match: 'showrunner of Hawkes Gen', text: 'I would love to! ```{ "plan": {{{', cost: 0.1 }]);
+  const r = await turn(MAKE, { autoCredits: 1_000_000 });
+  const body = await r.json() as any;
+  assert.equal(r.status, 502);
+  assert.match(body.error, /plan didn't come back right/);
+  // Today the call that returned nonsense is still charged (the model was asked); a production is never made from it.
+  assert.equal(credits(A.user.id), 1000 - house.turnCredits(0.1));
+  assert.equal(ledger(A.user.id).at(-1)!.delta, -house.turnCredits(0.1));
+  assert.equal((await (await a('/v1/showrunner/productions')).json() as any).items.length, before);
+  AM.clearAnswers(A.user.id);
+  setCredits(A.user.id, 5000);
+});
