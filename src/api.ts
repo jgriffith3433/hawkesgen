@@ -953,6 +953,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       }
       throw new GenError('No such editor route', { status: 404 });
     }
+    // Canned AI answers for the test account (src/aimock.ts): HAWKESGEN_AI_MOCK=1 and a test sign-in session only.
+    if (route === '/v1/test/ai-mock') {
+      const am = await import('./aimock.ts');
+      const user = getUserForClient(client);
+      if (!am.aiMockOn() || !user || !am.isTestUser(user.id)) return send(res, 404, { error: 'No such route' });
+      if (method === 'GET') return send(res, 200, am.mockStatus(user.id));
+      if (method === 'DELETE') return send(res, 200, am.clearAnswers(user.id));
+      if (method === 'POST') { const b = await readJson(req); return send(res, 200, am.queueAnswers(user.id, Array.isArray(b?.answers) ? b.answers : [b])); }
+    }
     if (route === '/v1/users/api-key' && method === 'POST') {
       const user = getUserForClient(client);
       if (!user) throw new GenError('User account required', { status: 403 });

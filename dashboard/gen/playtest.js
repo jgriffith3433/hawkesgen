@@ -48,6 +48,7 @@ installPlaytest({
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
+    { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -343,6 +344,32 @@ installPlaytest({
       pressOn(document.activeElement ?? document.body, 'Escape');
       t.metric('drawerCloses', await until(() => !document.querySelector('#mediaDrawer'), 3000) ? 1 : 0);
       t.finish(open ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'aimock') {
+      t.scene('AI mock');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): queue one canned editor answer for this test account (needs HAWKESGEN_AI_MOCK=1 on this Gen).
+      const q = await api('/v1/test/ai-mock', { method: 'POST', body: { match: 'canned hello', cost: 0, json: { say: 'Canned: added your title.', ops: [{ op: 'add', track: 'T1', kind: 'text', text: 'Hello from the mock', start: 0, duration: 3 }] } } }).catch((e) => ({ error: e.message }));
+      t.metric('mockQueued', q?.queued ?? 0);
+      t.event(q?.queued ? 'mock-queued' : 'mock-off');
+      if (!q?.queued) { t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session'); t.finish('done'); return; }
+      made = await newScene('video', { title: `Playtest AI mock ${new Date().toISOString().slice(0, 16)}` });
+      await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
+      const before = P.doc?.clips?.length ?? 0;
+      // Real input: type the message in the AI pane and press Enter.
+      const box = document.querySelector('#aiInput');
+      box.focus();
+      box.value = 'canned hello: add a title';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      pressOn(box, 'Enter');
+      t.event('asked');
+      const said = await until(() => /Canned: added your title/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 15000);
+      t.metric('answered', said ? 1 : 0);
+      t.event(said ? 'canned-answer-shown' : 'no-answer');
+      const added = await until(() => (P.doc?.clips?.length ?? 0) > before, 5000);
+      t.metric('titleAdded', added ? 1 : 0);
+      t.finish(said && added ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback') {

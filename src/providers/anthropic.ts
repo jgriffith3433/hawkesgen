@@ -21,6 +21,7 @@ export { outputBudget, TOO_LONG, STREAMED_FLOOR } from './budget.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { orgSecret } from '../orgsecrets.ts';
 import { GenError, mimeOf } from '../util.ts';
+import { takeAnswer } from '../aimock.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
 export const MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-opus-5'];
@@ -101,6 +102,12 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
   // (orgsecrets.ts), else it's refused with what to do.
   const scope = callScope.getStore();
   const org = scope?.org ?? null;
+  // HAWKESGEN_AI_MOCK=1: a test sign-in account's queued canned answer, here below every route (src/aimock.ts).
+  const canned = takeAnswer(org, p);
+  if (canned) {
+    p.onText?.(canned.text);
+    return { text: canned.text, model: canned.model, usage: { input_tokens: 0, output_tokens: 0 }, cost: canned.cost, billing: 'api' };
+  }
   const ownKey = org ? orgSecret(org, 'anthropic') : null;
   if (ownKey) {
     const r = await askApi(p, signal, ownKey);
