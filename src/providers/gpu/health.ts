@@ -29,6 +29,10 @@ export function isDown(id: string, now = Date.now()): Down | null {
   return d;
 }
 
+/** Whether a cooldown is for trouble that won't clear on its own (a key refused, the account suspended): the queue
+ *  then fails a job that has nowhere else to go instead of letting it wait (src/providers/gpu/nogpu.ts). */
+export const lastingDown = (d: Down) => d.until - d.at >= COOLDOWN.auth;
+
 /** Every provider's state, for GET /v1/gpu/providers and the dashboard. */
 export function healthOf(id: string, now = Date.now()) {
   const d = isDown(id, now);

@@ -11,6 +11,7 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 import { env } from '../config.ts';
 import { GenError, mimeOf } from '../util.ts';
+import { outputBudget, TOO_LONG } from './budget.ts';
 
 // Map Claude model names to Bedrock model IDs
 const MODEL_MAP: Record<string, string> = {
@@ -83,7 +84,7 @@ type AskResult = {
 export async function ask(p: AskParams, signal?: AbortSignal): Promise<AskResult> {
   const model = p.model ?? 'claude-sonnet-5-5';
   const bedrockModelId = MODEL_MAP[model] ?? MODEL_MAP['claude-sonnet-5-5'];
-  const maxTokens = p.maxTokens ?? 16000;
+  const maxTokens = outputBudget(p.maxTokens, false);
 
   // Build Anthropic-formatted request body (Bedrock uses Anthropic's message format)
   const content: any[] = [];
@@ -133,7 +134,7 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<AskResult
 
     // Bedrock returns Anthropic-format response
     if (responseBody.stop_reason === 'max_tokens') {
-      throw new GenError('The answer ran out of room before it finished. Raise maxTokens.', { status: 422 });
+      throw new GenError(TOO_LONG, { status: 422, kind: 'too-long' });
     }
 
     const text = responseBody.content

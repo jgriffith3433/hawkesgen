@@ -17,6 +17,7 @@
 import crypto from 'node:crypto';
 import { getJob } from './jobs.ts';
 import { getTool } from './tools/index.ts';
+import { aiCanUse } from './editor.ts';
 import { sceneRef, type Render } from './scenes.ts';
 
 export type Role = 'main' | 'video' | 'text' | 'audio' | 'any';
@@ -304,6 +305,8 @@ export function applyOps(doc0: Doc, ops: Op[], submit?: Submit, kind: Kind = 'vi
           if (!submit) throw new Error('generating needs a signed-in account');
           const tool = String(op.tool ?? '');
           if (!getTool(tool)) throw new Error(`no tool ${tool}`);
+          // The same list Create shows and the scene AI plans with: no raw graphs, builds or playtests from an edit.
+          if (!aiCanUse(tool)) throw new Error(`${tool} is not available from the editor`);
           const inputs: Record<string, any> = {};
           for (const [k, v] of Object.entries(op.inputs ?? {})) {
             const one = (x: unknown) => {

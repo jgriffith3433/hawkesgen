@@ -134,7 +134,9 @@ const customerJobResource = (over: Record<string, any> = {}) => ({
   } },
 });
 
-function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [], executions = [], canCreate = false }: {
+function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [], executions = [], canCreate = false, noLog = false, log }: {
+  /** The Unity log the bucket has for the build. */ log?: string;
+  /** No Unity log in the bucket unless a test puts one there. */ noLog?: boolean;
   version?: string; result: unknown | ((run: number) => unknown); jobs?: Record<string, unknown>; cacheObjects?: string[];
   /** The execution resources of the 1st, 2nd... run (default: a success). */ executions?: unknown[];
   /** Whether Gen may create a job (POST jobs?jobId=): the made ones are kept in `created`. */ canCreate?: boolean;
@@ -167,12 +169,12 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
     if (url.startsWith('https://storage.googleapis.com/storage/v1/b/')) {
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
       if (method === 'DELETE') { writes.delete(key); return new Response(null, { status: 204 }); }
-      if (key.endsWith('/cloud-job.json') && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
+      if ((key.endsWith('/cloud-job.json') || key.endsWith('/done.json') || key.endsWith('/unity.log')) && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
       if (key.endsWith('/result.json')) {
         const v = typeof result === 'function' ? (result as (n: number) => unknown)(runs) : result;
         return v === null ? new Response('not found', { status: 404 }) : new Response(JSON.stringify(v));
       }
-      if (key.endsWith('/unity.log')) return new Response('[Hawkes] stage: unity\n[Hawkes] built 2 scene(s)\n');
+      if (key.endsWith('/unity.log')) return noLog ? new Response('not found', { status: 404 }) : new Response(log ?? '[Hawkes] stage: unity\n[Hawkes] built 2 scene(s)\n');
       if (key.endsWith('/artifact.tgz')) return new Response(Buffer.from('fake tar.gz bytes') as unknown as BodyInit);
       return new Response('not found', { status: 404 });
     }
@@ -201,13 +203,14 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
 }
 
 /** A RunContext for runCustomerBuild: emits become fake assets, the result is kept. */
-function ctxFor(jobId: string, params: Record<string, any>) {
-  const outputs: any[] = [];
+function ctxFor(jobId: string, params: Record<string, any>, hooks: { emitFile?: (o: any) => Promise<void>; outputs?: any[] } = {}) {
+  const outputs: any[] = hooks.outputs ?? [];
   const logs: string[] = [];
   const ctx: any = {
     job: { id: jobId, client: 'cust', project: 'usr_acme', tool: 'unity.build', labels: {} }, params, inputs: {}, done: 0, outputs,
     signal: new AbortController().signal, step: (s: string) => logs.push(s), log: (s: string) => logs.push(s), tmp: (n: string) => path.join(data, n),
     emit: async (o: any) => { outputs.push({ asset: `a_${outputs.length + 1}`, mime: o.mime, title: o.title, bytes: o.data.length }); },
+    emitFile: hooks.emitFile ?? (async (o: any) => { outputs.push({ asset: `a_${outputs.length + 1}`, mime: o.mime, title: o.title, bytes: fs.statSync(o.file).size, streamed: true }); }),
     result: (v: unknown) => { ctx.value = v; }, seed: () => 1, usage: () => {}, python: async () => '',
   };
   return { ctx, logs, outputs };
@@ -272,7 +275,7 @@ test('a project on a Unity version Gen has no image for fails before anything st
   }
 });
 
-test('the other version picks its own job; a lost token says to submit again', async () => {
+test('the other version picks its own job; a lost token says to submit again, before anything starts', async () => {
   const g = fakeCloud({ version: '6000.0.40f1', result: { ok: true, unity: '6000.0.40f1', output: { object: 'unity-builds/j_cust3/artifact.tgz', bytes: 10, files: 1 } } });
   try {
     const { ctx } = ctxFor('j_cust3', { ...C.admitCustomer(good()), method: 'Acme.Build.Web' });
@@ -282,7 +285,7 @@ test('the other version picks its own job; a lost token says to submit again', a
     assert.equal(s.method, 'Acme.Build.Web');
     assert.equal(s.customer.defaultMethod, false);
     const lost = ctxFor('j_cust4', { ...C.admitCustomer(good(), () => 'tok_' + 'f'.repeat(24)) });
-    await assert.rejects(() => runCustomerBuild(lost.ctx), /token for this build is gone/);
+    await assert.rejects(() => runCustomerBuild(lost.ctx), /no longer has the GitHub token/);
   } finally {
     g.restore();
   }
@@ -434,7 +437,12 @@ test("J's own builds are untouched: his job, only HAWKES_SPEC, no job check, no 
   assert.ok(run, 'it ran');
   assert.match(run!.url, /jobs\/hawkes-unity-build:run$/);
   assert.deepEqual(JSON.parse(run!.body).overrides.containerOverrides[0].env.map((e: any) => e.name), ['HAWKES_SPEC']);
-  assert.ok(!g.calls.some((c) => c.method === 'GET' && /\/jobs\/[^/:]+$/.test(c.url)), 'no customer job check');
+  assert.ok(!g.calls.some((c) => c.method === 'GET' && /\/jobs\/[^/:]+-customer$/.test(c.url)), 'no customer job check');
+  // us-east4 runs the live services (settings' liveRegion): the fallback region us-central1 is tried first (its job
+  // is checked: this fake cloud has none there), and the build lands in us-east4 only after it.
+  const central = g.calls.findIndex((c) => c.method === 'GET' && c.url.endsWith('/locations/us-central1/jobs/hawkes-unity-build'));
+  assert.ok(central >= 0 && central < g.calls.indexOf(run!), 'us-central1 first');
+  assert.match(run!.url, /locations\/us-east4\//);
 });
 
 const { spawnSync } = await import('node:child_process');
@@ -476,6 +484,20 @@ test('the fallback regions are cleaned: valid, unique, never the main region', (
     withGcp({});
   }
   assert.deepEqual(loadSettings().unityBuild.gcp.regions, ['us-central1'], 'the default');
+});
+
+test("the live services' region is cleaned: a region name, \"\" to turn it off, else us-east4", () => {
+  assert.equal(loadSettings().unityBuild.gcp.liveRegion, 'us-east4', 'the default');
+  try {
+    withGcp({ liveRegion: 'us-west1' });
+    assert.equal(loadSettings().unityBuild.gcp.liveRegion, 'us-west1');
+    withGcp({ liveRegion: '' });
+    assert.equal(loadSettings().unityBuild.gcp.liveRegion, '');
+    withGcp({ liveRegion: 'nope!' });
+    assert.equal(loadSettings().unityBuild.gcp.liveRegion, 'us-east4');
+  } finally {
+    withGcp({});
+  }
 });
 
 test("GitHub's longer tokens pass the check; a bad one is named by its shape, never echoed", async () => {
@@ -594,4 +616,329 @@ test('machine sizes: out of memory on xl (the biggest) is not built again', asyn
   } finally {
     g.restore();
   }
+});
+
+test('the token vault survives a restart (encrypted at rest), and an expired or missing one fails before any build time', async () => {
+  const intake = await import('../src/providers/playtester/intake.ts');
+  process.env.HAWKESGEN_SECRETS_KEY = crypto.randomBytes(32).toString('base64');
+  const logs: string[] = [];
+  const ref = intake.holdToken(TOKEN);
+  const row = db.prepare('SELECT * FROM held_tokens WHERE ref = ?').get(ref) as any;
+  assert.ok(row);
+  assert.ok(!JSON.stringify(row).includes(TOKEN), 'the token is never stored in clear');
+  intake.forgetMemoryTokens(); // Gen restarted
+  const b = { tokenRef: ref } as any;
+  assert.equal(C.customerToken(b, undefined, (m) => logs.push(m)), TOKEN);
+  assert.match(logs.join('\n'), /restored from the encrypted store/);
+  assert.equal(C.customerToken(b, undefined, (m) => logs.push(m)), TOKEN);
+  assert.match(logs[logs.length - 1], /found in memory/);
+  // Expired: past its time, in memory or only in the store.
+  const old = intake.holdToken(TOKEN, Date.now() - 13 * 3600_000);
+  for (const restart of [false, true]) {
+    if (restart) intake.forgetMemoryTokens();
+    const e = (() => { try { C.customerToken({ tokenRef: old } as any, undefined, (m) => logs.push(m)); } catch (x) { return x as any; } })();
+    assert.equal(e?.kind, 'token');
+    assert.match(e.message, /expired.*Nothing was built/);
+  }
+  assert.match(logs.join('\n'), /expired.*asking Studio/);
+  // Dropped: gone from both.
+  intake.dropToken(ref);
+  intake.forgetMemoryTokens();
+  assert.equal(intake.tokenFor(ref), null);
+  assert.equal(db.prepare('SELECT 1 FROM held_tokens WHERE ref = ?').get(ref), undefined);
+  assert.throws(() => C.customerToken(b, undefined, (m) => logs.push(m)), (e: any) => e.kind === 'token' && /no longer has/.test(e.message));
+  assert.match(logs[logs.length - 1], /not found in memory or the store/);
+  delete process.env.HAWKESGEN_SECRETS_KEY;
+});
+
+test('GitHub refusing the token (401) is a token failure, 403 stays a source one', async () => {
+  const f = (status: number) => (async () => new Response('{}', { status })) as unknown as typeof fetch;
+  await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(401)), (e: any) => e.kind === 'token' && /fresh token/.test(e.message));
+  await assert.rejects(() => C.probeProject({ repo: 'a/b', commit: SHA, path: '.' }, TOKEN, f(403)), (e: any) => e.kind === 'source');
+});
+
+
+// ------------------------------------------------------------------ one build per job, kept by streaming (2026-11-04)
+// Sick of It v13 (j_bb4c57cd1cf3): Unity built the game, Gen died keeping the ~1 GB output (it read the whole file into a
+// 4 GiB instance), every restart built the game again, and the 5th execution failed at the git fetch and overwrote the
+// result, with the 4th's Unity log as its "git said".
+
+test('a token older than 45 minutes starts no build: Studio sends a fresh one before any Unity time is spent', async () => {
+  const intake = await import('../src/providers/playtester/intake.ts');
+  const now = Date.now();
+  const young = intake.holdToken(TOKEN, now - 40 * 60_000);
+  assert.equal(C.customerToken({ tokenRef: young } as any, undefined, () => {}), TOKEN);
+  const old = intake.holdToken(TOKEN, now - 50 * 60_000);
+  const logs: string[] = [];
+  assert.throws(() => C.customerToken({ tokenRef: old } as any, undefined, (m) => logs.push(m)), (e: any) => e.kind === 'token' && /50 minutes old.*Nothing was built.*fresh token/.test(e.message));
+  assert.match(logs.join('\n'), /50 min old/);
+  intake.dropToken(young); intake.dropToken(old);
+});
+
+test('the output is streamed into the library: same bytes and hash, no Buffer of the file', async () => {
+  const lib = await import('../src/library.ts');
+  const big = path.join(data, 'big.tgz');
+  const chunk = crypto.randomBytes(1024 * 1024);
+  const fd = fs.openSync(big, 'w');
+  for (let i = 0; i < 20; i++) fs.writeSync(fd, chunk);
+  fs.closeSync(fd);
+  const want = crypto.createHash('sha256').update(fs.readFileSync(big)).digest('hex');
+  const read = fs.readFileSync;
+  const wholeReads: string[] = [];
+  (fs as any).readFileSync = (f: any, ...a: any[]) => { if (String(f) === big) wholeReads.push(String(f)); return (read as any)(f, ...a); };
+  try {
+    const asset = await lib.putAssetFile({ file: big, ext: 'tar.gz', mime: 'application/gzip', client: 'cust', project: 'usr_acme', tool: 'unity.build', recipe: { tool: 'unity.build', version: 1, params: {}, inputs: {} }, title: 'WebGL build' });
+    assert.equal(asset.bytes, 20 * 1024 * 1024);
+    assert.equal(asset.sha256, want);
+    assert.equal(fs.statSync(asset.path).size, asset.bytes);
+    assert.deepEqual(wholeReads, [], 'never read whole');
+  } finally {
+    (fs as any).readFileSync = read;
+  }
+});
+
+test('a customer build hands its archive to emitFile by path: the tool never reads it into memory', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_big1') });
+  const read = fs.readFileSync;
+  const reads: string[] = [];
+  (fs as any).readFileSync = (f: any, ...a: any[]) => { if (/artifact\.tgz$/.test(String(f))) reads.push(String(f)); return (read as any)(f, ...a); };
+  try {
+    const { ctx, outputs } = ctxFor('j_big1', C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    assert.equal(outputs[1].streamed, true);
+    assert.equal(outputs[1].mime, 'application/gzip');
+    assert.deepEqual(reads, []);
+    assert.equal(ctx.value.artifact.asset, 'a_2');
+  } finally {
+    (fs as any).readFileSync = read;
+    g.restore();
+  }
+});
+
+test('a Gen that dies keeping the output does not build the game again: the finished build is taken as it is', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_dies1') });
+  try {
+    // First run: the instance dies as the output is kept.
+    const boom = ctxFor('j_dies1', C.admitCustomer(good()), { emitFile: async () => { throw new Error('out of memory'); } });
+    await assert.rejects(() => runCustomerBuild(boom.ctx), /out of memory/);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 1);
+    assert.ok(g.writes.has('unity-builds/j_dies1/done.json'), 'the finished build is noted before its output is downloaded');
+    // The next try (a fresh token, the same job): no second execution, the same result, the output kept.
+    const { ctx, logs, outputs } = ctxFor('j_dies1', C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 1, 'built once');
+    assert.equal(ctx.value.ok, true);
+    assert.equal(outputs.find((o) => o.mime === 'application/gzip')?.streamed, true);
+    assert.ok(logs.some((l) => /already finished.*not building again/.test(l)));
+    assert.ok(!g.writes.has('unity-builds/j_dies1/done.json'), 'the note goes once the output is kept');
+  } finally {
+    g.restore();
+  }
+});
+
+test('a build whose output is already kept is not built or kept again when the job resumes', async () => {
+  const g = fakeCloud({ result: OK_RESULT('j_kept1') });
+  const lib = await import('../src/library.ts');
+  try {
+    const f = path.join(data, 'kept.tgz');
+    fs.writeFileSync(f, 'archive');
+    const a = await lib.putAssetFile({ file: f, ext: 'tar.gz', mime: 'application/gzip', client: 'cust', project: 'usr_acme', tool: 'unity.build', recipe: { tool: 'unity.build', version: 1, params: {}, inputs: {} }, meta: { files: 7, unity: '6000.3.7f1' } });
+    const { ctx } = ctxFor('j_kept1', C.admitCustomer(good()), { outputs: [{ asset: 'a_log', mime: 'text/plain' }, { asset: a.id, mime: 'application/gzip' }] });
+    await runCustomerBuild(ctx);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 0, 'no execution');
+    assert.equal(ctx.value.ok, true);
+    assert.deepEqual(ctx.value.artifact, { asset: a.id, url: `/v1/assets/${a.id}/file`, bytes: 7, files: 7 });
+  } finally {
+    g.restore();
+  }
+});
+
+test("a failed fetch never shows an earlier execution's Unity log (the 'git said' text is git's)", async () => {
+  const g = fakeCloud({ noLog: true, result: { ok: false, stage: 'source', kind: 'source', error: "couldn't fetch acme/rocket-game at cccccccccccc (is the commit pushed, and can the GitHub token read the repo?): git said: fatal: Authentication failed", exitCode: 1, cache: { restoredFrom: null, saved: false, savedKey: null, skipped: null }, seconds: {}, output: null, errors: [], results: null, log: null, memoryPeakBytes: null } });
+  // Left in the bucket by an earlier execution of this job (the 4th, which got as far as Unity).
+  g.writes.set('unity-builds/j_stale1/unity.log', Buffer.from('Build completed with a result of Succeeded\n[GameDeploy] CLOUD BUILD COMPLETE\n'));
+  try {
+    const { ctx, logs } = ctxFor('j_stale1', C.admitCustomer(good()));
+    await assert.rejects(() => runCustomerBuild(ctx), (e: any) => /git said: fatal: Authentication failed/.test(e.message) && !/CLOUD BUILD COMPLETE/.test(e.message));
+    assert.ok(!/CLOUD BUILD COMPLETE/.test(JSON.stringify(ctx.value ?? {})), 'the result carries no stranger\'s log tail');
+    assert.ok(logs.some((l) => /Library cache: not reached \(the build stopped at "source"\)/.test(l)), 'the cache line says it was never reached');
+  } finally {
+    g.restore();
+  }
+});
+
+test('a build that ran out of memory and is made again on a bigger machine is not mistaken for the finished one', async () => {
+  const oom = { startTime: '2026-10-31T10:00:00Z', completionTime: '2026-10-31T10:03:00Z', succeededCount: 0, failedCount: 1,
+    conditions: [{ type: 'Completed', state: 'CONDITION_FAILED', message: 'Task j-x failed: Memory limit of 8192 MiB exceeded with 8400 MiB used.' }] };
+  const g = fakeCloud({ result: (run) => (run === 1 ? null : OK_RESULT('j_oomdone')), executions: [oom], canCreate: true });
+  try {
+    const { ctx } = ctxFor('j_oomdone', C.admitCustomer({ ...good(), machine: 's' }));
+    await runCustomerBuild(ctx);
+    assert.equal(g.calls.filter((c) => c.url.endsWith(':run')).length, 2, 'the retry really builds');
+    assert.equal(ctx.value.ok, true);
+  } finally {
+    g.restore();
+  }
+});
+
+// ------------------------------------------------------------------ the compile-only check (check.ts; docs/unity-cloudrun.md)
+
+const CS_LOG = [
+  '[Licensing::Module] Licensing is initialized',
+  'Assets/Scripts/Player/Mover.cs(12,34): error CS1503: Argument 1: cannot convert from \'string\' to \'int\'',
+  'Assets/Scripts/Player/Mover.cs(12,34): error CS1503: Argument 1: cannot convert from \'string\' to \'int\'',
+  '[12:00:01] Packages/com.acme.tools/Runtime/Gun.cs(7,5): error CS0246: The type or namespace name \'Bullet\' could not be found',
+  'Assets/Scripts/Old.cs(3,1): warning CS0618: obsolete',
+  '-----CompilerOutput:-stderr----------',
+  'Compilation failed: 2 error(s), 0 warnings',
+].join('\n');
+
+test('check: a boolean next to github is admitted, with no out, no artifact and the check machine', () => {
+  const hold = () => 'tok_' + '0'.repeat(24);
+  const params = { github: good().github, target: 'web', check: true };
+  assert.equal(C.isCustomerMode(params), true, 'out absent is fine with check');
+  assert.equal(C.isCustomerMode({ ...params, out: 'none' }), true);
+  assert.equal(C.isCustomerMode({ github: good().github, target: 'web' }), false, 'no out and no check is not customer mode');
+  const p = C.admitCustomer(params, hold);
+  assert.equal(p.check, true);
+  assert.equal(p.out, 'none');
+  assert.equal(p.backend, 'cloudrun');
+  assert.ok(!JSON.stringify(p).includes(TOKEN));
+  assert.equal(C.isCustomerMode(p), true, 'the stored form is still customer mode');
+  assert.equal(C.customerBuildOf(p).check, true);
+  assert.equal(C.admitCustomer({ ...params, out: 'none' }, hold).out, 'none');
+  // The machine for a check: absent -> settings checkSize (m); asked -> kept.
+  assert.equal(C.admitCustomer({ ...params, machine: 's' }, hold).machine, 's');
+  assert.equal(C.admitCustomer(params, hold).machine, undefined);
+  // An ordinary build stores no check.
+  assert.equal(C.admitCustomer(good(), hold).check, undefined);
+});
+
+test('check: a non-boolean check is refused, and so is a check with an artifact or a build method', () => {
+  const hold = () => 'tok_' + '0'.repeat(24);
+  const refused = (params: any, re: RegExp) => assert.throws(() => C.admitCustomer(params, hold), (e: any) => re.test(e.message) && e.kind === 'params');
+  for (const bad of ['true', 'yes', 1, 0, {}, []]) refused({ ...good(), out: undefined, check: bad }, /check must be true or false/);
+  refused({ ...good(), check: true }, /no out "artifact"/);
+  refused({ github: good().github, target: 'web', check: true, method: 'Acme.Build.Web' }, /no build method/);
+  refused({ github: good().github, target: 'web' }, /out "artifact"/);
+});
+
+test('check: the unity.build tool admits it for a customer, refuses a wrong type and a check on J\'s builds', async () => {
+  const { unityBuild } = await import('../src/tools/build.ts');
+  const admit = (params: any) => unityBuild.admit!({ params, client: customer, project: 'usr_acme', customer: true });
+  assert.equal(admit({ github: good().github, target: 'web', check: true }).check, true);
+  assert.throws(() => admit({ github: good().github, target: 'web', check: 'true' }), /check must be true or false/);
+  assert.throws(() => admit({ project: 'sickofitgame-unity', check: true }), /check is for customer builds/);
+  assert.equal(customerMayRun('unity.build', { github: good().github, target: 'web', check: true }), true, 'a customer key may run it');
+  assert.equal(customerMayRun('unity.build', { github: good().github, target: 'web', check: false }), true, 'and a wrong one reaches admit, which says why');
+  assert.equal((unityBuild.params as any).check.type, 'boolean');
+});
+
+test('check: a CS1503 line is parsed into file, line, column, code and message; unique and capped at 100', async () => {
+  const { parseCompileErrors, MAX_COMPILE_ERRORS, compileSummary } = await import('../src/providers/builder/check.ts');
+  const errors = parseCompileErrors(CS_LOG);
+  assert.deepEqual(errors, [
+    { file: 'Assets/Scripts/Player/Mover.cs', line: 12, col: 34, code: 'CS1503', message: "Argument 1: cannot convert from 'string' to 'int'" },
+    { file: 'Packages/com.acme.tools/Runtime/Gun.cs', line: 7, col: 5, code: 'CS0246', message: "The type or namespace name 'Bullet' could not be found" },
+  ], 'the repeat is dropped, the warning is not an error, a log prefix is ignored');
+  const many = Array.from({ length: 300 }, (_, i) => `Assets/A.cs(${i + 1},1): error CS0103: The name 'x${i}' does not exist`).join('\n');
+  assert.equal(parseCompileErrors(many).length, MAX_COMPILE_ERRORS);
+  assert.deepEqual(parseCompileErrors('all good\nBuild completed'), []);
+  assert.match(compileSummary(errors), /^2 compiler errors; first: Assets\/Scripts\/Player\/Mover\.cs\(12,34\): CS1503/);
+});
+
+test('check: it reserves 15 credits (UNITY_CHECK_CREDITS), not the flat build price, and settles by machine-minutes', async () => {
+  const q = (extra: any = {}) => quoteJobCredits({ project: 'usr_acme', tool: 'unity.build', params: { github: good().github, target: 'web', check: true, ...extra } }).credits;
+  assert.equal(q(), 15);
+  assert.equal(q({ machine: 'xl' }), 15, 'flat whatever the machine: the settling is by time');
+  const { checkCreditsReserved } = await import('../src/providers/builder/check.ts');
+  assert.equal(checkCreditsReserved({}), 15);
+  assert.equal(checkCreditsReserved({ UNITY_CHECK_CREDITS: '25' }), 25);
+  assert.equal(checkCreditsReserved({ UNITY_CHECK_CREDITS: 'many' }), 15);
+  const { checkCreditsUsed } = await import('../src/billing.ts');
+  // m: 4 vCPU, 16 GiB. 6 minutes of it is about $0.037: 12 credits with the margin.
+  assert.equal(checkCreditsUsed(360 * (4 * 0.000018 + 16 * 0.000002)), 12);
+  assert.equal(checkCreditsUsed(0), 1);
+  assert.equal(loadSettings().unityBuild.gcp.checkSize, 'm', 'the default machine of a check');
+});
+
+test('check: a compiler error ends the job as kind compile with its errors, no artifact, no cache saved, no outcome recorded', async () => {
+  const g = fakeCloud({
+    result: { ok: false, stage: 'unity', kind: 'compile', error: 'the project has compiler errors (Unity exited with code 1)', exitCode: 1, unity: '6000.3.7f1', seconds: { cache: 40, unity: 90, total: 150 },
+      cache: { restoredFrom: 'build', restoredBytes: 5_000_000, saved: false, savedKey: null, skipped: 'a compile-only check restores the Library cache and never saves it' } },
+    cacheObjects: ['unity-cache/cust--usr_acme--acme--rocket-game--Game-x/build.tar.zst'],
+    log: CS_LOG, canCreate: true,
+  });
+  try {
+    const params = C.admitCustomer({ github: good().github, target: 'web', check: true });
+    const { ctx, logs, outputs } = ctxFor('j_chk1', params);
+    await assert.rejects(() => runCustomerBuild(ctx), (e: any) => e.kind === 'compile' && /2 compiler errors/.test(e.message));
+    const r = ctx.value;
+    assert.equal(r.ok, false);
+    assert.equal(r.check, true);
+    assert.equal(r.artifact, null);
+    assert.equal(r.errors.length, 2);
+    assert.deepEqual(Object.keys(r.errors[0]).sort(), ['code', 'col', 'file', 'line', 'message']);
+    assert.equal(typeof r.seconds, 'number');
+    assert.equal(typeof r.cost, 'number');
+    assert.equal(r.machine.name, 'm', 'a check runs on m by default');
+    assert.equal(r.unity, '6000.3.7f1');
+    assert.ok(r.logTail && r.cloud.stages.cache === 40, 'the stage seconds, cache restore included');
+    assert.equal(r.method, null);
+    assert.ok(!outputs.some((o) => o.mime === 'application/gzip'), 'no .tar.gz asset');
+    // The spec: no build method, no cache save; the signed URLs have no artifact and no cache to write.
+    const spec = JSON.parse(g.writes.get('unity-builds/j_chk1/spec.json')!.toString('utf8'));
+    assert.equal(spec.method, null);
+    assert.equal(spec.cache.save, null);
+    assert.deepEqual(spec.cache.restore, ['build'], 'the same Library cache is restored');
+    assert.deepEqual(spec.customer, { repo: 'acme/rocket-game', commit: SHA, ref: 'refs/heads/main', path: 'Game', defaultMethod: false, out: 'none', check: true });
+    const run = g.calls.find((c) => c.url.endsWith(':run'))!;
+    assert.match(run.url, /jobs\/hawkes-unity-build-customer-m:run$/, 'the m twin of the customer job, never J\'s');
+    const signed = JSON.parse(JSON.parse(run.body).overrides.containerOverrides[0].env.find((e: any) => e.name === 'HAWKES_SIGNED').value);
+    assert.deepEqual(Object.keys(signed.put).sort(), ['unity-builds/j_chk1/result.json', 'unity-builds/j_chk1/unity.log'], 'it may write its log and result only');
+    assert.ok(!logs.join('\n').includes(TOKEN));
+    // The cache state (a streak of failures would make the next build start clean) is not touched by a check.
+    const state = fs.existsSync(path.join(data, 'builder', 'cloud-cache.json')) ? fs.readFileSync(path.join(data, 'builder', 'cloud-cache.json'), 'utf8') : '{}';
+    assert.ok(!state.includes('j_chk1'), 'no outcome recorded');
+  } finally {
+    g.restore();
+  }
+});
+
+test('check: a clean compile is ok with no errors and no artifact', async () => {
+  const g = fakeCloud({
+    result: { ok: true, stage: 'end', exitCode: 0, unity: '6000.3.7f1', seconds: { cache: 20, unity: 60, total: 100 }, cache: { restoredFrom: 'build', restoredBytes: 1, saved: false, savedKey: null, skipped: 'a compile-only check restores the Library cache and never saves it' }, output: null },
+  });
+  try {
+    const { ctx, outputs } = ctxFor('j_chk2', C.admitCustomer({ github: good().github, target: 'web', check: true }));
+    await runCustomerBuild(ctx);
+    const r = ctx.value;
+    assert.equal(r.ok, true);
+    assert.equal(r.check, true);
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.artifact, null);
+    assert.equal(r.credits.used >= 1, true);
+    assert.ok(!outputs.some((o) => o.mime === 'application/gzip'));
+    assert.ok(!g.writes.has('unity-builds/j_chk2/artifact.tgz'));
+  } finally {
+    g.restore();
+  }
+});
+
+test('check: entrypoint.sh compile-only command has no -buildTarget and no -executeMethod; its stages write no artifact and save no cache', { skip: !hasJq && 'needs bash and jq' }, () => {
+  const src = fs.readFileSync(path.join(import.meta.dirname, '..', 'server', 'unity-cloudrun', 'entrypoint.sh'), 'utf8');
+  const start = src.indexOf('unity_args() {');
+  const end = src.indexOf('unity_args\n', start);
+  assert.ok(start > 0 && end > start);
+  const run = (vars: string) => spawnSync('bash', ['-c', `${vars}\n${src.slice(start, end)}\nunity_args; printf '%s\\n' "\${args[@]}"`], { encoding: 'utf8' }).stdout.trim().split('\n');
+  const check = run('CHECK=true PROJ=/work/Projects/src/Game TARGET=WebGL METHOD=Acme.Build.Web TESTS= S=/dev/null');
+  assert.deepEqual(check, ['-batchmode', '-nographics', '-quit', '-projectPath', '/work/Projects/src/Game', '-logFile', '-']);
+  assert.ok(!check.includes('-buildTarget') && !check.includes('-executeMethod') && !check.includes('-runTests'));
+  const build = run('CHECK=false PROJ=/work/Projects/src/Game TARGET=WebGL METHOD=Acme.Build.Web TESTS= S=/dev/null');
+  assert.ok(build.includes('-buildTarget') && build.includes('-executeMethod'), 'a build is unchanged');
+  // The script itself: a check skips the packing and the cache save, and a compiler error is kind compile.
+  assert.match(src, /if \[ "\$CHECK" = true \]; then\n  log "compile-only check: no output to pack"/);
+  assert.match(src, /stage save\nif \[ "\$CHECK" = true \]; then\n  SAVE_SKIPPED=/);
+  assert.match(src, /\[ "\$CHECK" = true \] && grep -Eq 'error CS\[0-9\]\+' "\$OUT\/unity\.log"; then die compile/);
+  assert.match(src, /if \[ "\$CUSTOMER" = true \] && \[ "\$CHECK" != true \]; then\n  # The build goes into HAWKES_OUT/, 'no build script is added for a check');
 });

@@ -6,6 +6,10 @@ import { HOST, PORT, DATA_DIR } from './config.ts';
 import { handle } from './api.ts';
 import { queue } from './jobs.ts';
 import { startLagMonitor } from './lag.ts';
+import { assertMockProviders } from './mockproviders.ts';
+
+// HAWKESGEN_MOCK_PROVIDERS=1 is for beta and local copies: on the live lane the service refuses to start.
+try { assertMockProviders(); } catch (e: any) { console.error(e.message); process.exit(1); }
 
 const server = http.createServer((req, res) => {
   handle(req, res).catch((e) => {
@@ -40,6 +44,9 @@ server.listen(PORT, HOST, () => {
   queue.start();
   // RunPod's balance, every 2 minutes: an empty one is skipped instead of waited on (providers/gpu/credit.ts).
   void import('./providers/gpu/credit.ts').then((m) => m.startCreditWatch()).catch((e) => console.warn(`[gpu] ${e.message}`));
+  // The RunPod playtest endpoint's workers.max, every 2 minutes: the playtest lane follows it (playtester/runpodcap.ts).
+  void Promise.all([import('./providers/playtester/runpodcap.ts'), import('./config.ts')])
+    .then(([m, c]) => m.startEndpointWatch(() => c.loadSettings().playtest.runpod.url)).catch((e) => console.warn(`[playtest] ${e.message}`));
   void import('./storage.ts').then((m) => m.resumeOnStart()).catch((e) => console.warn(`[storage] ${e.message}`));
   // Analytics: the daily rollups and the 13-month purge, and the GeoIP database (downloaded monthly).
   void import('./analytics/store.ts').then((m) => m.startMaintenance()).catch((e) => console.warn(`[analytics] ${e.message}`));

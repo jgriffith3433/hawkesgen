@@ -21,10 +21,10 @@ import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
-import { putAsset, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
@@ -37,10 +37,12 @@ import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
 import { gpuCandidates, triedOf, orderFor } from './providers/gpu/route.ts';
-import { markDown, markUp, isDown, awsRefused, COOLDOWN } from './providers/gpu/health.ts';
+import { markDown, markUp, isDown, awsRefused, COOLDOWN, lastingDown } from './providers/gpu/health.ts';
+import { noGpuVerdict, waitSinceOf, type NoGpuVerdict } from './providers/gpu/nogpu.ts';
 import { fleetBlocked } from './providers/gpu/egress.ts';
 import { cpuRoute, cpuCloudEnabled, runCpuRemote, type CpuService } from './providers/cloudrun/cpu.ts';
-import { cloudPlaytestsFor, cloudLanes, cloudLaneKey } from './providers/playtester/cloudrun.ts';
+import { cloudPlaytestsFor, cloudLanes, cloudLaneKey, providerDown } from './providers/playtester/cloudrun.ts';
+import { runpodCreditProblem } from './providers/gpu/credit.ts';
 import { isNativeTarget } from './providers/playtester/runners.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
 import { mayPlace, noRoomReason, isDiskHeavy, retryOnDiskFull } from './placement.ts';
@@ -454,7 +456,7 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
 export function keepsCharge(job: { tool: string; started?: number | null }, e: { kind?: string } | null, cancelled: boolean, now = Date.now()) {
   if (job.tool !== 'unity.build') return false;
   if (cancelled) return Boolean(job.started) && now - Number(job.started) > 2 * 60_000;
-  return ['build', 'output', 'timeout'].includes(String(e?.kind ?? ''));
+  return ['build', 'output', 'timeout', 'compile'].includes(String(e?.kind ?? ''));
 }
 
 /** A failed or cancelled job's credits back: a Gen account's reservation, and a customer Studio's charge. */
@@ -467,6 +469,9 @@ startOrgChargeSettler((id) => (db.prepare('SELECT status FROM jobs WHERE id = ?'
 export function cancel(jobId: string) {
   const j = getJob(jobId);
   if (!j) throw new GenError('No such job', { status: 404 });
+  // A pipeline's steps (video.change's frame and video, asset.make's takes) are jobs of their own: they stop with it, so
+  // nothing keeps waiting for a GPU (or spending one) for a job nobody wants any more.
+  stopChildren(jobId);
   if (j.status === 'queued') {
     Object.assign(j, { status: 'cancelled', detail: 'cancelled before it started', finished: Date.now() });
     save(j, ['status', 'detail', 'finished']);
@@ -484,9 +489,22 @@ export function cancel(jobId: string) {
   return getJob(jobId);
 }
 
+/** The queued and running steps of a pipeline job (labels.parent), cancelled. */
+export function stopChildren(parentId: string) {
+  const rows = db.prepare("SELECT id FROM jobs WHERE status IN ('queued', 'running') AND json_extract(labels, '$.parent') = ?").all(parentId) as { id: string }[];
+  for (const r of rows) {
+    try {
+      cancel(r.id);
+    } catch (e: any) {
+      console.warn(`[queue] couldn't stop ${r.id}, a step of ${parentId}: ${e?.message ?? e}`);
+    }
+  }
+}
+
 export function failJob(jobId: string, errorMessage = 'Job failed') {
   const j = getJob(jobId);
   if (!j) throw new GenError('No such job', { status: 404 });
+  stopChildren(jobId);
   Object.assign(j, { status: 'failed', error: errorMessage, detail: errorMessage, finished: Date.now() });
   j.log.push(`error: ${errorMessage}`);
   save(j, ['status', 'error', 'detail', 'finished', 'log']);
@@ -587,6 +605,9 @@ export function sameTurn<T extends { priority: number; turn: number }>(sorted: T
   return sorted.length ? sorted.filter((j) => j.priority === sorted[0].priority && j.turn === sorted[0].turn) : [];
 }
 
+/** How many restarts a running job is picked up again after before it stops with a reason (start()). */
+export const MAX_RESUMES = 5;
+
 class Queue {
   /** Server id -> job id running on it. */
   busy = new Map<string, string>();
@@ -621,15 +642,49 @@ class Queue {
   }
 
   start() {
-    // Jobs that were running when Hawkes Gen stopped go back in the line.
+    // Jobs that were running when Hawkes Gen stopped go back in the line, at most MAX_RESUMES times: a job that keeps
+    // being cut off (or keeps breaking the service) stops with a reason instead of starting over forever.
     for (const j of listJobs({ status: 'running', limit: 500 })) {
+      if (j.resumed >= MAX_RESUMES) {
+        j.log.push(`picked up again after ${j.resumed} restarts already: stopped instead`);
+        save(j, ['log']);
+        flushLogs();
+        failJob(j.id, `This job was interrupted ${j.resumed} times by Hawkes Gen restarting, so it was stopped instead of starting over again. Its credits were returned. Please run it again.`);
+        continue;
+      }
       j.status = 'queued';
       j.resumed += 1;
       j.detail = `picked up again after a restart (${j.outputs.length} done)`;
       j.log.push(j.detail);
-      save(j, ['status', 'resumed', 'detail', 'log']);
+      // A GPU job's wait for a GPU starts again: it had one when it was cut off.
+      const { gpuWaitSince: _w, ...labels } = j.labels ?? {};
+      j.labels = labels;
+      save(j, ['status', 'resumed', 'detail', 'log', 'labels']);
     }
     this.pump();
+  }
+
+  /** A GPU job that no GPU can run (nogpu.ts): failed with the plain reason, the providers' reasons in its log. */
+  failNoGpu(j: Job, v: Extract<NoGpuVerdict, { fail: true }>) {
+    console.warn(`[queue] ${j.id} (${j.tool}): ${v.log}`);
+    j.log.push(v.log);
+    save(j, ['log']);
+    flushLogs();
+    failJob(j.id, v.error);
+  }
+
+  /** A GPU job with nowhere to run: fails, or waits with its clock kept in its labels. -> whether it still waits. */
+  noGpu(j: Job, blockers: { reason: string; lasting: boolean }[], waitMinutes: number): string | null {
+    const v = noGpuVerdict(blockers, waitSinceOf(j.labels), waitMinutes);
+    if (v.fail) {
+      this.failNoGpu(j, v);
+      return null;
+    }
+    if (waitSinceOf(j.labels) !== v.since) {
+      j.labels = { ...j.labels, gpuWaitSince: v.since };
+      save(j, ['labels']);
+    }
+    return v.detail;
   }
 
   queued() {
@@ -684,7 +739,11 @@ class Queue {
       if (!gpuHost || (s.playtest.backend === 'ec2' && !Object.values(s.playtest.projects).some((b) => b !== 'ec2'))) return null;
       try {
         // The lane holds the tabs of every region of the first service's kind (the CPU service may run in several).
-        const all = cloudPlaytestsFor(j.project, s);
+        // A GPU provider the run will skip (RunPod out of credit, a provider cooling down after a refusal) doesn't set
+        // the lane: the next one in the order plays the run, so its tabs are the ones counted.
+        const listed = cloudPlaytestsFor(j.project, s);
+        const usable = listed.filter((x) => !(x.variant === 'runpod' && runpodCreditProblem()) && !(x.variant !== 'cpu' && providerDown(x)));
+        const all = usable.length ? usable : listed;
         const c = all[0];
         return c ? { key: cloudLaneKey(c), limit: all.filter((x) => x.variant === c.variant).reduce((n, x) => n + cloudLanes(x), 0) } : null;
       } catch {
@@ -783,18 +842,25 @@ class Queue {
       const used = (this.cloud.get(lane)?.size ?? 0) + (room.get(lane) ?? 0);
       return used < svc.maxInstances;
     };
+    // Jobs that could also run on a service (a full one): the fleet's having no server doesn't strand them.
+    const elsewhere = new Set<string>();
+    const failed = new Set<string>();
     for (const j of allGpu) {
-      const { choices, skipped } = gpuCandidates(j, toolOf(j), settings, map);
+      const { choices, blockers } = gpuCandidates(j, toolOf(j), settings, map);
       if (!choices.length) {
         // Every provider was tried or is cooling down: forget what this job tried, so it tries them again once one is back.
         if (triedOf(j).length) {
           j.labels = { ...j.labels, gpuTried: [] };
           save(j, ['labels']);
         }
-        stuck.set(j.id, `waiting: no GPU provider can take it now (${skipped.join('; ') || 'none set up'})`);
+        // Nowhere to run: it fails now when nothing will come back by itself, else waits at most queue.gpuWaitMinutes.
+        const waiting = this.noGpu(j, blockers, settings.queue.gpuWaitMinutes);
+        if (waiting === null) failed.add(j.id);
+        else stuck.set(j.id, waiting);
         continue;
       }
       const pick = choices.find((c) => c.kind === 'fleet' || hasRoom(c.service)) ?? choices[0];
+      if (choices.some((c) => c.kind === 'service')) elsewhere.add(j.id);
       if (pick.kind === 'fleet') continue;
       const lane = pick.service.lane ?? pick.service.name;
       room.set(lane, (room.get(lane) ?? 0) + 1);
@@ -809,7 +875,7 @@ class Queue {
       this.timer = setTimeout(() => this.pump(), 60_000);
     }
     if (routes.size) this.fillCloud(allGpu.filter((j) => routes.has(j.id)), routes, settings);
-    const gpu = allGpu.filter((j) => !routes.has(j.id) && !stuck.has(j.id));
+    const gpu = allGpu.filter((j) => !routes.has(j.id) && !stuck.has(j.id) && !failed.has(j.id));
     if (!gpu.length) return;
     let endpoints: Endpoint[] = [];
     // With no order set the fleet is the only place left, so only an unreachable fleet is skipped (the old behaviour otherwise).
@@ -883,14 +949,26 @@ class Queue {
       : '';
     // With auto start on, the last round says why nothing runs yet; with it off, the old "start one" hint.
     const why = !booting && !retrying && r && r.note && (r.want > 0 || !loadSettings().fleet.auto) && Date.now() - r.at < 1_800_000 ? r.note : '';
+    // The fleet as it stands after this look (AWS may have refused us just now).
+    const fleetNow = isDown('fleet');
     for (const j of left) {
       if (!eligible.has(j.id)) { this.wait(j, `waiting: this project already has ${share} GPU jobs running (its next job goes when one finishes)`); continue; }
       const noRoom = isDiskHeavy(j) ? noRoomReason(endpoints.map((e) => e.id), free_, avoidOf(j)) : '';
       if (noRoom) { this.wait(j, noRoom); continue; }
-      this.wait(j, endpoints.length ? `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)` : `waiting: ${booting || retrying || why || this.waitReason}`);
+      if (endpoints.length) { this.wait(j, `waiting for a free GPU server (${this.busy.size} of ${Math.min(cap, endpoints.length)} busy)`); continue; }
+      const reason = booting || retrying || why || this.waitReason || 'no GPU server is ready';
+      // No fleet server at all, and no service it could also run on: nowhere to run (nogpu.ts). AWS refusing Gen (no
+      // keys, the account suspended) won't clear by itself; servers booting or AWS out of machines might.
+      if (!elsewhere.has(j.id)) {
+        const waiting = this.noGpu(j, [{ reason: `the AWS fleet: ${reason}`, lasting: !booting && !!fleetNow && lastingDown(fleetNow) }], settings.queue.gpuWaitMinutes);
+        if (waiting === null) { failed.add(j.id); continue; }
+        this.wait(j, waiting);
+        continue;
+      }
+      this.wait(j, `waiting: ${reason}`);
     }
-    if (left.length) {
-      const wanting = left.filter((j) => eligible.has(j.id)).length;
+    if (left.some((j) => !failed.has(j.id))) {
+      const wanting = left.filter((j) => eligible.has(j.id) && !failed.has(j.id)).length;
       if (wanting && !fleetDown && endpoints.length < Math.min(cap, wanting + this.busy.size)) void this.autoStart(wanting + this.busy.size);
       if (this.timer) clearTimeout(this.timer);
       this.timer = setTimeout(() => this.pump(), endpoints.length ? 10_000 : 30_000);
@@ -1006,7 +1084,27 @@ class Queue {
     }
   }
 
+  /**
+   * Runs a job. Whatever breaks, the job ends failed or goes back in the line: nothing may leave it "running" with
+   * nothing running it (2026-11-02: a missing input threw before the run's own error handling, so jobs sat at "starting"
+   * until the next restart picked them up and the same thing happened again).
+   */
   async runJob(job: Job, ep: Endpoint | null, cloud: CloudService | null = null, cpu: CpuService | null = null) {
+    try {
+      await this.runJobInner(job, ep, cloud, cpu);
+    } catch (e: any) {
+      console.error(`[queue] ${job.id} (${job.tool}) broke outside its run: ${e?.stack ?? e}`);
+      this.aborts.get(job.id)?.abort();
+      this.aborts.delete(job.id);
+      try {
+        if (getJob(job.id)?.status === 'running') failJob(job.id, `Something went wrong starting this job: ${e?.message ?? e}`);
+      } catch (e2: any) {
+        console.error(`[queue] couldn't fail ${job.id}: ${e2?.message ?? e2}`);
+      }
+    }
+  }
+
+  async runJobInner(job: Job, ep: Endpoint | null, cloud: CloudService | null, cpu: CpuService | null) {
     const tool = getTool(job.tool)!;
     const abort = new AbortController();
     this.aborts.set(job.id, abort);
@@ -1018,6 +1116,12 @@ class Queue {
       status: 'running', started: Date.now(), server: cloud ? `${cloud.provider && cloud.provider !== 'cloudrun' ? cloud.provider : 'cloudrun'}:${cloud.name}` : cpu ? `cloudrun:${cpu.name}` : ep?.id ?? null,
       detail: cloud ? `starting on Cloud Run (${cloud.name}, ${cloud.gpu})` : cpu ? `starting on Cloud Run (${cpu.name})` : ep ? `connecting to the GPU server in ${ep.region}` : 'starting',
     });
+    // On a fleet server it has a GPU: its wait for one is over (a later wait starts a new clock).
+    if (ep && waitSinceOf(job.labels)) {
+      const { gpuWaitSince: _w, ...labels } = job.labels;
+      job.labels = labels;
+      save(job, ['labels']);
+    }
     save(job, ['status', 'started', 'server', 'detail']);
     const step = (detail: string) => {
       job.detail = detail;
@@ -1025,11 +1129,18 @@ class Queue {
       job.log = job.log.slice(-300);
       save(job, ['detail', 'log']);
     };
-    // The recipe parts that don't change between outputs.
+    // The recipe parts that don't change between outputs (the inputs' hashes once they are on this disk, in the run below).
     const inputHashes: Record<string, string | string[]> = {};
-    for (const [k, v] of Object.entries(job.inputs)) inputHashes[k] = Array.isArray(v) ? await Promise.all(v.map(sha256File)) : await sha256File(v);
     const baseRecipe: Omit<Recipe, 'seed'> = { tool: tool.id, version: tool.version, params: job.params, inputs: inputHashes, models: tool.models?.(job.params) };
 
+    const assetOf = (out: Omit<Output, 'data'>) => ({
+      mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
+      seed: out.seed ?? null, recipe: { ...baseRecipe, params: { ...job.params, seed: out.seed ?? job.params.seed } }, labels: job.labels, title: out.title, meta: out.meta,
+    });
+    const keep = (asset: ReturnType<typeof putAsset>) => {
+      job.outputs.push({ asset: asset.id, seed: asset.seed, mime: asset.mime, kind: asset.kind, title: asset.title });
+      save(job, ['outputs']);
+    };
     const ctx: RunContext = {
       job: { id: job.id, client: job.client, project: job.project, tool: job.tool, labels: job.labels },
       params: job.params,
@@ -1043,14 +1154,8 @@ class Queue {
         save(job, ['log']);
       },
       tmp: (name) => path.join(tmpDir, name),
-      emit: async (out: Output) => {
-        const asset = putAsset({
-          data: out.data, mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
-          seed: out.seed ?? null, recipe: { ...baseRecipe, params: { ...job.params, seed: out.seed ?? job.params.seed } }, labels: job.labels, title: out.title, meta: out.meta,
-        });
-        job.outputs.push({ asset: asset.id, seed: asset.seed, mime: asset.mime, kind: asset.kind, title: asset.title });
-        save(job, ['outputs']);
-      },
+      emit: async (out: Output) => keep(putAsset({ ...assetOf(out), data: out.data })),
+      emitFile: async (out) => keep(await putAssetFile({ ...assetOf(out), file: out.file })),
       result: (value) => {
         job.result = value;
         save(job, ['result']);
@@ -1067,8 +1172,18 @@ class Queue {
     };
 
     try {
-      // Library files this job reads that aren't on this disk (a new server) come back from S3 first.
+      // Library files this job reads that aren't on this disk (a new server) come back from storage first. One that
+      // can't (an upload that only lived on a disk that is gone) fails the job in plain words.
       await ensureInputs(job.inputs);
+      for (const [k, v] of Object.entries(job.inputs)) {
+        for (const f of Array.isArray(v) ? v : [v]) {
+          if (typeof f === 'string' && !fs.existsSync(f)) {
+            job.log.push(`input ${k} is missing: ${f}`);
+            throw new GenError(`The ${k} file this job uses is no longer available. Add it again and run the job again.`);
+          }
+        }
+        inputHashes[k] = Array.isArray(v) ? await Promise.all(v.map(sha256File)) : await sha256File(v);
+      }
       if (ep) ctx.comfy = await this.comfyRun(job, ep, step, abort.signal);
       if (cloud) {
         ctx.comfy = cloudComfyRun(job, cloud, {
@@ -1105,7 +1220,7 @@ class Queue {
       if (!remote) {
         if (cpu) Object.assign(job, { server: null });
         // A customer's job never spends J's Max plan (providers/anthropic.ts callScope).
-        await callScope.run({ customer: !exemptCheck()(job), org: orgOfProject(job.project), house: isGenAccountProject(job.project) }, () => tool.run(ctx));
+        await callScope.run({ customer: !exemptCheck()(job), org: orgOfProject(job.project), house: isHouseProject(job.project) }, () => tool.run(ctx));
       }
       if (cloud) markUp(cloud.lane ?? cloud.name);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
@@ -1154,6 +1269,7 @@ class Queue {
       }
       Object.assign(job, { status: cancelled ? 'cancelled' : 'failed', finished: Date.now(), error: cancelled ? null : e.message, detail: cancelled ? 'cancelled' : e.message });
       job.log.push(`error: ${e.message}`);
+      if (tool.provider === 'pipeline') stopChildren(job.id);
       if (keepsCharge(job, e, cancelled)) job.log.push(`credits kept: ${cancelled ? 'cancelled after the build had run for a while' : `the build itself failed (${e.kind})`}`);
       else refundJob(job.id, cancelled ? 'Job cancelled' : `Job failed: ${e.message}`);
     } finally {
@@ -1304,6 +1420,9 @@ function recentRunSeconds(tool: string): number {
   runSeconds.set(tool, { at: Date.now(), seconds });
   return seconds;
 }
+
+/** How long a run of this tool usually takes (seconds, the mean of its last 20 finished jobs; 60 when none): the app's "about 40 s". */
+export function typicalRunSeconds(tool: string): number { return Math.round(recentRunSeconds(tool)); }
 
 export const queue = new Queue();
 

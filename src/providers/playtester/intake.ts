@@ -8,13 +8,15 @@
 // bucket under playtest-builds/<project>/<sha256> and the runner gets a signed URL to it; a GitHub build resolves to
 // GitHub's own short-lived download link (Gen asks api.github.com where it is, and never downloads it); a URL is handed
 // to the runner as it is, after checking it isn't a private, loopback or metadata address (SSRF). A GitHub token is
-// passed per call and kept in memory only, never in the job's params, the database or a log (J's decision: tokens
-// now, a GitHub App maybe later); a job resumed after a restart without it fails and says so.
+// passed per call and kept in memory and, encrypted, in the token store (below), never in the job's params, a log or any row in clear (J's
+// decision: tokens now, a GitHub App maybe later); a job whose token is gone or expired fails and says so.
 import crypto from 'node:crypto';
 import dns from 'node:dns/promises';
 import fs from 'node:fs';
 import net from 'node:net';
 import { GenError } from '../../util.ts';
+import { db } from '../../db.ts';
+import { env } from '../../config.ts';
 import type { PlaytestTarget } from '../../config.ts';
 
 export type BuildRef =
@@ -92,26 +94,95 @@ export async function publicUrl(raw: string, lookup: Lookup = defaultLookup): Pr
 
 // ------------------------------------------------------------------ the token vault
 
-type Held = { token: string; until: number };
+type Held = { token: string; until: number; at: number };
 const vault = new Map<string, Held>();
 const TOKEN_TTL_MS = 12 * 3600_000;
 
-/** Keeps a GitHub token in memory for one job; the job's params carry only the returned reference. */
+// A token held for a job that waits in the queue and then builds for an hour must survive Cloud Run recycling the
+// instance (2026-11-03: every customer Unity build died with "token is gone"). So the memory copy is backed by an
+// encrypted row (AES-256-GCM, HAWKESGEN_SECRETS_KEY, the reference as AAD) with the same TTL: the token is never stored
+// in clear, never in a job's params, a log or any other row. Without the key only memory is used, and the log says so.
+db.exec(`CREATE TABLE IF NOT EXISTS held_tokens (ref TEXT PRIMARY KEY, iv TEXT NOT NULL, tag TEXT NOT NULL, data TEXT NOT NULL, at INTEGER NOT NULL, until INTEGER NOT NULL)`);
+
+function vaultKey(): Buffer | null {
+  const raw = env('HAWKESGEN_SECRETS_KEY');
+  const k = raw ? Buffer.from(raw, 'base64') : null;
+  return k && k.length === 32 ? k : null;
+}
+
+function persistToken(ref: string, h: Held) {
+  const key = vaultKey();
+  if (!key) { console.warn(`[tokens] ${ref} is held in memory only: HAWKESGEN_SECRETS_KEY isn't set, so a restart will lose it`); return; }
+  try {
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv('aes-256-gcm', key, iv);
+    c.setAAD(Buffer.from(ref));
+    const data = Buffer.concat([c.update(h.token, 'utf8'), c.final()]);
+    db.prepare('INSERT OR REPLACE INTO held_tokens (ref, iv, tag, data, at, until) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(ref, iv.toString('base64'), c.getAuthTag().toString('base64'), data.toString('base64'), h.at, h.until);
+  } catch (e) {
+    console.error(`[tokens] could not store ${ref}: ${(e as Error).message}`);
+  }
+}
+
+function storedToken(ref: string): Held | null {
+  const r = db.prepare('SELECT iv, tag, data, at, until FROM held_tokens WHERE ref = ?').get(ref) as { iv: string; tag: string; data: string; at: number; until: number } | undefined;
+  if (!r) return null;
+  const key = vaultKey();
+  if (!key) return null;
+  try {
+    const d = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(r.iv, 'base64'));
+    d.setAAD(Buffer.from(ref));
+    d.setAuthTag(Buffer.from(r.tag, 'base64'));
+    const token = Buffer.concat([d.update(Buffer.from(r.data, 'base64')), d.final()]).toString('utf8');
+    return { token, at: r.at, until: r.until };
+  } catch (e) {
+    console.error(`[tokens] could not read ${ref}: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+/** Keeps a GitHub token for one job (memory, and encrypted at rest); the job's params carry only the returned reference. */
 export function holdToken(token: string, now = Date.now()): string {
   for (const [k, v] of vault) if (v.until < now) vault.delete(k);
+  try { db.prepare('DELETE FROM held_tokens WHERE until < ?').run(now); } catch { /* the store is a backup */ }
   const ref = `tok_${crypto.randomBytes(12).toString('hex')}`;
-  vault.set(ref, { token, until: now + TOKEN_TTL_MS });
+  const h = { token, at: now, until: now + TOKEN_TTL_MS };
+  vault.set(ref, h);
+  persistToken(ref, h);
   return ref;
 }
-/** The token behind a reference, or null (expired, or Gen restarted since the job was submitted). */
-export function tokenFor(ref: string | undefined, now = Date.now()): string | null {
-  if (!ref) return null;
-  const h = vault.get(ref);
-  if (!h || h.until < now) return null;
-  return h.token;
+
+/** Why a token isn't there: never held (or the store can't say), held and past its time, or dropped by its job. */
+export type TokenLookup = { token: string; ageSeconds: number; from: 'memory' | 'store' } | { token: null; why: 'expired' | 'missing'; ageSeconds?: number };
+
+/** The token behind a reference, from memory first, then the encrypted store (a restarted Gen), with what happened. */
+export function lookupToken(ref: string | undefined, now = Date.now()): TokenLookup {
+  if (!ref) return { token: null, why: 'missing' };
+  const m = vault.get(ref);
+  if (m) {
+    if (m.until < now) return { token: null, why: 'expired', ageSeconds: Math.round((now - m.at) / 1000) };
+    return { token: m.token, ageSeconds: Math.round((now - m.at) / 1000), from: 'memory' };
+  }
+  const s = storedToken(ref);
+  if (!s) return { token: null, why: 'missing' };
+  if (s.until < now) return { token: null, why: 'expired', ageSeconds: Math.round((now - s.at) / 1000) };
+  vault.set(ref, s);
+  return { token: s.token, ageSeconds: Math.round((now - s.at) / 1000), from: 'store' };
 }
-/** Forgets a token once its job is done with it. */
-export const dropToken = (ref: string | undefined) => { if (ref) vault.delete(ref); };
+
+/** The token behind a reference, or null (expired, dropped, or lost with no stored copy). */
+export function tokenFor(ref: string | undefined, now = Date.now()): string | null {
+  return lookupToken(ref, now).token;
+}
+/** Forgets a token once its job is done with it (memory and store). */
+export const dropToken = (ref: string | undefined) => {
+  if (!ref) return;
+  vault.delete(ref);
+  try { db.prepare('DELETE FROM held_tokens WHERE ref = ?').run(ref); } catch { /* nothing stored */ }
+};
+/** Tests: a restart (the memory copy is gone, the store stays). */
+export const forgetMemoryTokens = () => vault.clear();
 
 // ------------------------------------------------------------------ the build param
 

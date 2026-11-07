@@ -448,7 +448,7 @@ test('CPU service settings: the cloudrun-cpu backend, its own URL and sizes, a l
   saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null } } } as any);
 });
 
-test('the CPU service in more regions: extra entries follow the first in order, each with its region and size; bad ones are dropped', () => {
+test('the CPU service in more regions: extra entries come in order, each with its region and size, the live region last; bad ones are dropped', () => {
   const C2 = 'https://gen-playtest-cpu-388576319982.us-central1.run.app';
   try {
   const s = saveSettings({ playtest: { backend: 'cloudrun-cpu', cloudrunCpu: { url: CPU_URL, maxInstances: 4, tabsPerInstance: 1, extra: [
@@ -458,10 +458,16 @@ test('the CPU service in more regions: extra entries follow the first in order, 
   ] } } } as any);
   assert.deepEqual(s.playtest.cloudrunCpu.extra, [{ url: C2, region: 'us-central1', maxInstances: 5 }]);
   const list = pc.cloudPlaytestsFor('x', s);
-  assert.deepEqual(list.map((c) => [c.url, c.region, c.maxInstances]), [[CPU_URL, 'us-east4', 4], [C2, 'us-central1', 5]]);
+  // us-east4 runs live Gen and Studio (settings.unityBuild.gcp.liveRegion): playtests take its CPU quota last.
+  assert.deepEqual(list.map((c) => [c.url, c.region, c.maxInstances]), [[C2, 'us-central1', 5], [CPU_URL, 'us-east4', 4]]);
   assert.ok(list.every((c) => c.variant === 'cpu' && c.slow === 2));
   // The queue's lane is every region's tabs together: 4 + 5.
   assert.equal(list.reduce((n, c) => n + pc.cloudLanes(c), 0), 9);
+  // No live region: the first service, then the extra ones, as configured.
+  assert.deepEqual(pc.cloudPlaytestsFor('x', { ...s, unityBuild: { ...s.unityBuild, gcp: { ...s.unityBuild.gcp, liveRegion: '' } } }).map((c) => c.region), ['us-east4', 'us-central1']);
+  // The GPU services keep their place before software WebGL.
+  const withL4 = pc.cloudPlaytestsFor('x', { ...s, playtest: { ...s.playtest, backend: 'cloudrun', cloudrun: { ...s.playtest.cloudrun, url: URL_ } } });
+  assert.deepEqual(withL4.map((c) => [c.name, c.region]), [['gen-playtest', withL4[0].region], ['gen-playtest-cpu', 'us-central1'], ['gen-playtest-cpu', 'us-east4']]);
   } finally {
     saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null, extra: [] } } } as any);
   }
@@ -561,7 +567,7 @@ test('the CPU image and service: Dockerfile.cpu without NVIDIA files, software m
   assert.match(docker, /^FROM mcr\.microsoft\.com\/playwright:v\d+\.\d+\.\d+-noble$/m);
   assert.match(docker, /HAWKES_GL_MODE=software/);
   assert.ok(!/nvidia/i.test(docker.split('\n').filter((l) => !l.startsWith('#')).join('\n')), 'no NVIDIA files');
-  assert.deepEqual(Object.keys(ctx.files).sort(), ['Dockerfile', 'gpu.mjs', 'package.json', 'server.mjs']);
+  assert.deepEqual(Object.keys(ctx.files).sort(), ['Dockerfile', 'gpu.mjs', 'package.json', 'server.mjs', 'site.mjs']);
   assert.notEqual(ctx.hash, tools.buildContext(ctx.version, 'gpu').hash);
   const spec = tools.loadSpec('cpu');
   assert.equal(spec.name, 'gen-playtest-cpu');
@@ -596,5 +602,18 @@ test('the service in software mode, run here: /ready after WebGL draws on SwiftS
     assert.equal(st.maxSessions, 1);
   } finally {
     svc.child.kill();
+  }
+});
+
+test('every file a playtest Dockerfile copies is in its build context (the image build failed on site.mjs)', async () => {
+  const toolsLib = await import('../tools/playtest-cloudrun/lib.mjs');
+  for (const variant of ['gpu', 'cpu'] as const) {
+    const ctx = toolsLib.buildContext(undefined, variant);
+    const docker = ctx.files['Dockerfile'].toString();
+    for (const line of docker.split('\n')) {
+      const m = /^COPY\s+(.+?)\s+\S+\s*$/.exec(line.trim());
+      if (!m || m[1].startsWith('--')) continue;
+      for (const name of m[1].split(/\s+/)) assert.ok(ctx.files[name], `${variant}: ${name} is copied by the Dockerfile but not in the context`);
+    }
   }
 });

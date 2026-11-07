@@ -29,7 +29,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chromium } from 'playwright';
-import { selfTest, candidatesFor, glMode, BASE_ARGS, ensureGraphicsLibs } from './gpu.mjs';
+import { selfTest, candidatesFor, glMode, BASE_ARGS, ensureGraphicsLibs, browserHandshake, wsDeflateAllowed } from './gpu.mjs';
 import { parseSiteHeader, openSite, siteArg } from './site.mjs';
 
 // The image installs ws; elsewhere (Gen's tests run this file from the repo) Playwright's bundled copy does.
@@ -194,6 +194,10 @@ server.on('upgrade', async (req, socket, head) => {
   if (!tokenOk(req)) return refuse(401, 'Unauthorized');
   if (url.pathname === '/encode') return encoder.handleUpgrade(req, socket, head, (ws) => encodeSession(ws, url));
   if (url.pathname !== '/pw') return refuse(404, 'Not Found');
+  // A cold container's first browsers arrive while the self-test runs (about 2 s on an L4): wait for it here rather
+  // than send them away with 503, which Modal's relay logs as a failed handshake and Gen retries after a pause.
+  if (!report && testing) await Promise.race([testing.catch(() => {}), new Promise((r) => setTimeout(r, 60_000).unref())]);
+  if (socket.destroyed) return;
   if (!report) return refuse(503, 'Starting');
   if (!report.gl.ok && !ALLOW_SOFTWARE) return refuse(412, MODE === 'software' ? 'No WebGL' : 'No GPU');
   // Cloud Run's concurrency already caps connections per instance; this guards a misconfigured deploy.
@@ -238,12 +242,8 @@ server.on('upgrade', async (req, socket, head) => {
     upstream.on('close', () => finish('browser connection closed'));
     upstream.on('connect', () => {
       // The client's handshake, re-addressed to the browser server's path (its key and version headers kept).
-      const lines = [`GET ${wsPath} HTTP/1.1`];
-      for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        const k = req.rawHeaders[i];
-        if (/^(authorization|x-hawkes-token|x-hawkes-site|x-forwarded-.*|x-cloud-trace-context|traceparent|forwarded|via|cf-.*|cdn-loop)$/i.test(k)) continue;
-        lines.push(`${k}: ${k.toLowerCase() === 'host' ? `127.0.0.1:${port}` : req.rawHeaders[i + 1]}`);
-      }
+      // Behind Modal's relay without permessage-deflate (gpu.mjs wsDeflateAllowed): it can't read compressed frames.
+      const lines = [`GET ${wsPath} HTTP/1.1`, ...browserHandshake(req.rawHeaders, port)];
       upstream.write(`${lines.join('\r\n')}\r\n\r\n`);
       if (head?.length) upstream.write(head);
       socket.pipe(upstream);
@@ -261,7 +261,7 @@ server.on('upgrade', async (req, socket, head) => {
 });
 
 started = Date.now();
-server.listen(PORT, () => log(`playtest service (${MODE}) on :${PORT}, up to ${MAX_SESSIONS} tabs`));
+server.listen(PORT, () => log(`playtest service (${MODE}) on :${PORT}, up to ${MAX_SESSIONS} tabs${wsDeflateAllowed() ? '' : ', WebSocket compression off'}`));
 // The self-test before traffic: the startup probe (/ready) waits for it.
 runSelfTest().catch((e) => log(`self-test failed: ${e?.message ?? e}`));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { log(`${sig}: closing`); server.close(); setTimeout(() => process.exit(0), 2000).unref(); });

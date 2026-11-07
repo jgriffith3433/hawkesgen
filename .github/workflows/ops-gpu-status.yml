@@ -36,6 +36,22 @@ jobs:
             echo "| $id | $name | $type | $w | $pools | \`$h\` |" >> "$GITHUB_STEP_SUMMARY"
             echo "$id $name $type $w $pools $h"
           done
+      - name: RunPod balance and the playtest endpoint's workers
+        run: |
+          # The balance (GraphQL myself.clientBalance, as Gen's src/providers/gpu/credit.ts reads it): at or below $0
+          # RunPod starts no worker and Gen skips RunPod for playtests. Then the playtest endpoint's workers, if API v2
+          # lists them. Reads only; prints no key.
+          b=$(curl -s --max-time 30 -H "Authorization: Bearer $RUNPOD_API_KEY" -H 'content-type: application/json' \
+            -d '{"query":"{ myself { clientBalance currentSpendPerHr } }"}' https://api.runpod.io/graphql)
+          echo "balance: $(echo "$b" | jq -c '.data.myself // .errors[0].message // .' | head -c 300)" | tee -a "$GITHUB_STEP_SUMMARY"
+          id=$(curl -s --max-time 30 -H "Authorization: Bearer $RUNPOD_API_KEY" 'https://api.runpod.io/v2/serverless?limit=100' | jq -r '.endpoints[] | select(.name == "hawkes-gen-playtest-gfx") | .id' | head -1)
+          [ -n "$id" ] || { echo "no endpoint named hawkes-gen-playtest-gfx"; exit 0; }
+          for path in "serverless/$id/workers" "serverless/$id?include=workers"; do
+            code=$(curl -s -o w.json -w '%{http_code}' --max-time 30 -H "Authorization: Bearer $RUNPOD_API_KEY" "https://api.runpod.io/v2/$path")
+            echo "GET /v2/$path: $code"
+            [ "$code" = 200 ] && jq -c '(.workers // .data // (if type == "array" then . else [] end))[]? | {id, status: (.status // .desiredStatus), gpu: (.gpuTypeId // .gpu // .machine.gpuTypeId), createdAt, lastStartedAt, lastStatusChange}' w.json | head -20
+          done
+          rm -f w.json
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

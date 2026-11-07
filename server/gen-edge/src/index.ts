@@ -21,7 +21,71 @@ const genOnly = (p: string) => p === '/mcp' || p.startsWith('/mcp/') || p.starts
 /** The largest body kept to send again to the portal (its own limit for an upload in a request is 30 MB). */
 const REPLAY_MAX = 32 * 1024 * 1024;
 
-function forward(request: Request, target: string, body: BodyInit | null): Promise<Response> {
+/**
+ * When Gen can't be reached or drops the connection part way (a restart or a deploy while an AI answer is being written),
+ * fetch() throws and Cloudflare would answer with its own HTML error page, which the app then printed as the AI's reply
+ * (2026-11-02). The API gets Gen's own JSON error shape instead; a page gets a short plain page.
+ */
+export function unreachable(request: Request): Response {
+  const api = isApi(new URL(request.url).pathname);
+  const error = 'Gen was interrupted before it could answer (it may have just restarted). Nothing was lost: please try again.';
+  return api
+    ? new Response(JSON.stringify({ error, kind: 'unreachable' }), { status: 502, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '5' } })
+    : new Response(`Hawkes Gen is restarting. Please reload in a few seconds.`, { status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+}
+
+/**
+ * Gen restarting, by the answer: Google's own HTML error page from Cloud Run (500 "could not start", 503 "readiness"),
+ * or Gen's stand-in for a deploy's old copy (server/gen-cloudrun/standby.mjs, X-Hawkes-Restarting). During a deploy the
+ * old copy hands the database to the new one and for about half a minute nothing else answers (2026-11-02: the app's
+ * live stream got Google's "Server Error" page and the browser gave up on it).
+ */
+export const restarting = (r: Response) => r.headers.get('X-Hawkes-Restarting') === '1' || (r.status >= 500 && /text\/html/i.test(r.headers.get('Content-Type') ?? ''));
+
+/** The waits between tries of a read while Gen restarts: about 25 s in all, a deploy's handover. */
+export const RETRY_WAITS = [1000, 2000, 3000, 4000, 5000, 5000, 5000];
+let wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** For tests: no real waiting. */
+export function setWait(fn: (ms: number) => Promise<void>) { wait = fn; }
+
+/** What a caller gets when Gen is still restarting after the waits: Gen's JSON error shape, or a short plain page. */
+export function stillRestarting(request: Request): Response {
+  const path = new URL(request.url).pathname;
+  // An event stream that ends normally after `retry:` is opened again by the browser itself, in 5 s.
+  if (path === '/v1/events') return new Response('retry: 5000\n: Gen is restarting\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store' } });
+  const error = 'Gen is restarting (a new version is starting up). Please try again in a few seconds.';
+  return isApi(path)
+    ? new Response(JSON.stringify({ error, kind: 'restarting' }), { status: 503, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '5' } })
+    : new Response('Hawkes Gen is restarting. Please reload in a few seconds.', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '5' } });
+}
+
+async function forward(request: Request, target: string, body: BodyInit | null): Promise<Response> {
+  // A read is asked again while Gen restarts, so the caller waits a little instead of seeing an error; a write (it may
+  // have happened) never is.
+  const read = request.method === 'GET' || request.method === 'HEAD';
+  for (let i = 0; ; i++) {
+    let r: Response;
+    try {
+      r = await send(request, target, body);
+    } catch (e) {
+      console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname} to ${new URL(target).hostname} failed: ${(e as Error)?.message ?? e}`);
+      return unreachable(request);
+    }
+    if (!restarting(r)) {
+      // Workers Logs keep only error lines (wrangler.jsonc): a 5xx from Gen is one, a routine hit is never logged.
+      if (r.status >= 500) console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname}: ${r.status} from ${new URL(target).hostname}`);
+      return r;
+    }
+    if (!read || i >= RETRY_WAITS.length) {
+      console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname}: Gen restarting (${r.status})${read ? ' after the waits' : ''}`);
+      return stillRestarting(request);
+    }
+    await r.body?.cancel();
+    await wait(RETRY_WAITS[i]);
+  }
+}
+
+function send(request: Request, target: string, body: BodyInit | null): Promise<Response> {
   const url = new URL(request.url);
   const to = new URL(target);
   url.protocol = to.protocol;
@@ -57,7 +121,11 @@ async function onPortalHost(request: Request, env: Env & { PORTAL_ORIGIN: string
   if (!(gen.status === 404 || (gen.status === 401 && isApi(url.pathname)))) return gen;
   const page = (request.method === 'GET' || request.method === 'HEAD') && !isApi(url.pathname) && /text\/html/.test(request.headers.get('Accept') ?? '');
   if (page) return Response.redirect(`${env.PORTAL_ORIGIN}${url.pathname}${url.search}`, 301);
-  return forward(request, env.PORTAL_ORIGIN, body);
+  const portal = await forward(request, env.PORTAL_ORIGIN, body);
+  // An API call the portal doesn't have either comes back as its 404 (HTML page or JSON): Gen's own answer says more. A
+  // signed-out call to Gen's own route (GET /v1/editor/tools) is Gen's 401, not the portal's "not found" (2026-11-02).
+  if (isApi(url.pathname) && !portal.ok && (portal.status === 404 || /text\/html/i.test(portal.headers.get('Content-Type') ?? ''))) return gen;
+  return portal;
 }
 
 export default {

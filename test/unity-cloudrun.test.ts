@@ -210,6 +210,31 @@ test('a full region hands the build on: waiting for capacity, the regions in ord
   assert.deepEqual(SETTINGS_DEFAULTS.unityBuild.gcp.regions, ['us-central1']);
 });
 
+test("builds try the live services' region last: other regions first, live alone still used, off with \"\"", async () => {
+  assert.equal(SETTINGS_DEFAULTS.unityBuild.gcp.liveRegion, 'us-east4');
+  // The default shape: main region us-east4 (where live Gen and Studio run) goes after us-central1 and us-west1.
+  assert.deepEqual(regionsOf({ gcp: { region: 'us-east4', regions: ['us-central1', 'us-west1'], liveRegion: 'us-east4' } }), ['us-central1', 'us-west1', 'us-east4']);
+  assert.deepEqual(regionsOf({ gcp: { region: 'us-east4', regions: ['us-central1'], liveRegion: 'us-east4' } }), ['us-central1', 'us-east4']);
+  // The live region among the fallbacks moves last too; the others keep their order.
+  assert.deepEqual(regionsOf({ gcp: { region: 'us-west1', regions: ['us-east4', 'us-central1'], liveRegion: 'us-east4' } }), ['us-west1', 'us-central1', 'us-east4']);
+  // Only the live region: builds still run there (today's behaviour).
+  assert.deepEqual(regionsOf({ gcp: { region: 'us-east4', regions: [], liveRegion: 'us-east4' } }), ['us-east4']);
+  // A live region not in the list, or none: the order is as configured.
+  assert.deepEqual(regionsOf({ gcp: { region: 'us-west1', regions: ['us-central1'], liveRegion: 'us-east4' } }), ['us-west1', 'us-central1']);
+  assert.deepEqual(regionsOf({ gcp: { region: 'us-east4', regions: ['us-central1'], liveRegion: '' } }), ['us-east4', 'us-central1']);
+  // Customer builds keep that order among the regions whose customer job checks out.
+  const hooks: any = { log: () => {} };
+  const ok = async () => {};
+  const t = { project: 'p', region: 'us-east4', job: 'hawkes-unity-build-customer' };
+  assert.deepEqual(await customerRegions(regionsOf({ gcp: { region: 'us-east4', regions: ['us-central1', 'us-west1'], liveRegion: 'us-east4' } }), t, hooks, ok), ['us-central1', 'us-west1', 'us-east4']);
+  // None usable: the setup problem (with its fix) is reported over a passing error from a region tried before it.
+  const bad = async (x: typeof t) => {
+    if (x.region === 'us-central1') throw new Error('Google Cloud answered 500');
+    throw Object.assign(new Error(`${x.job} runs as the wrong account (p, ${x.region})`), { kind: 'config' });
+  };
+  await assert.rejects(customerRegions(['us-central1', 'us-east4'], t, hooks, bad), /wrong account \(p, us-east4\)/);
+});
+
 test("a customer build skips a region that has only J's job, and says why when none has one", async () => {
   const logs: string[] = [];
   const hooks: any = { log: (s: string) => logs.push(s) };

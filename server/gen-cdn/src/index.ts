@@ -18,6 +18,7 @@ export default {
     const hit = await cache.match(cacheKey);
     if (hit) return request.method === 'HEAD' ? new Response(null, { status: hit.status, headers: hit.headers }) : hit;
     const r = await fetch(`${env.GEN_ORIGIN}/cdn${url.pathname}`);
+    if (!r.ok && r.status !== 404) console.error(`gen-cdn: ${url.pathname}: ${r.status} from Gen's /cdn route`);
     if (!r.ok) return new Response(r.status === 404 ? 'Not found' : 'Not available', { status: r.status === 404 ? 404 : 502, headers: cors });
     const headers = new Headers(cors);
     headers.set('Content-Type', r.headers.get('Content-Type') ?? 'application/octet-stream');

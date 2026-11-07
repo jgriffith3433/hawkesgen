@@ -2,18 +2,21 @@
 // (src/providers/builder/cloudrun.ts, docs/unity-cloudrun.md).
 
 import fs from 'node:fs';
+import { getAsset } from '../library.ts';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
-import { runCloudBuild, cloudConfig, cloudBuildStarted, regionsOf, type BuildOptions } from '../providers/builder/cloudrun.ts';
+import { runCloudBuild, cloudConfig, cloudBuildStarted, forgetFinishedBuild, releaseFinishedBuild, regionsOf, type BuildOptions } from '../providers/builder/cloudrun.ts';
 import { resolveMachine, nextBigger, customerJobForMachine, type Machine } from '../providers/builder/sizes.ts';
-import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
+import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, TOKEN_KIND, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
 import { dropToken } from '../providers/playtester/intake.ts';
+import { refundOrgCharge } from '../orgcredits.ts';
 import type { RunContext } from './types.ts';
 import { runVmBuild } from '../providers/builder/vm.ts';
 import { githubBuildOf } from '../providers/builder/github.ts';
 import { paths, loadSettings, unityBackendOf, type UnityBackend } from '../config.ts';
 import { GenError } from '../util.ts';
+import { db } from '../db.ts';
 
 /** Which backend runs a build: the param when given, else the project's own (settings.unityBuild.projects), else settings.unityBuild.backend. */
 export function buildBackend(param?: unknown, project?: string, u = loadSettings().unityBuild): UnityBackend {
@@ -65,7 +68,8 @@ export const unityBuild: Tool = {
     method: { type: 'string', description: 'The static method to run (-executeMethod): the project\'s batch deploy', example: 'YoobaWebBuild.FullDeploy' },
     target: { type: 'string', default: 'WebGL', description: 'WebGL, StandaloneWindows64 or Android (the build server); customer mode: "web" only (WebGL)' },
     path: { type: 'string', description: 'Customer mode: the Unity project folder in the repo (default: the folder with ProjectSettings/ProjectVersion.txt)', example: 'Game' },
-    out: { type: 'enum', values: ['artifact'], description: 'Customer mode: "artifact" returns the build output as a .tar.gz library asset (result.artifact)' },
+    out: { type: 'enum', values: ['artifact', 'none'], description: 'Customer mode: "artifact" returns the build output as a .tar.gz library asset (result.artifact); with check, absent or "none"' },
+    check: { type: 'boolean', description: 'Customer mode: a compile-only check. Unity (the project\'s own version, its Library cache restored, never saved) imports and compiles the scripts and exits: no player build, no build method, no artifact. The result lists the compiler errors { file, line, col, code, message } and what the run took and cost. Default machine: settings unityBuild.gcp.checkSize (m); reserves UNITY_CHECK_CREDITS (15) and settles by machine-minutes' },
     projectDir: { type: 'string', description: 'A folder under C:\\Projects to build in place of the project (an agent change\'s worktree); the server still builds it as the project, with its Library', advanced: true },
     siteDir: { type: 'string', description: 'A folder under C:\\Projects that gets the build instead of the website folder (a scratch copy of it), so the real site is untouched', advanced: true },
     env: { type: 'json', description: 'Environment variables for the build (e.g. {"BUILD_VERSION": "12"})', advanced: true },
@@ -77,9 +81,11 @@ export const unityBuild: Tool = {
     github: { type: 'json', description: 'GitHub mode (cloud only, docs/unity-cloudrun.md): {"repo": "owner/source", "commit": "<sha>", "siteRepo": "owner/website", "branch": "beta", "ref": "build-..."}. The container fetches that commit, builds, and commits Game/v<n> plus the loader to the website repo branch (beta; never main) and pushes it. Nothing is laid down here. Customer mode: {"repo": "owner/name", "commit": "<sha>", "token": "<short-lived GitHub token>", "ref": "..."} with out "artifact" (the token is held in memory for the job only, never stored)', advanced: true },
   },
   admit({ params }) {
+    if (params.check !== undefined && params.check !== null && typeof params.check !== 'boolean') throw new GenError('check must be true or false (a compile-only run)', { status: 400, kind: 'params' });
+    if (params.check === true && !isCustomerMode(params)) throw new GenError('check is for customer builds: github { repo, commit, token } with check true (out unset or "none")', { status: 400, kind: 'params' });
     if (isCustomerMode(params)) return admitCustomer(params);
     if (!params.project) throw new GenError('project is required (the Unity project folder), or customer mode: github { repo, commit, token } with out "artifact"', { status: 400, kind: 'params' });
-    if (params.out) throw new GenError('out "artifact" is customer mode: it needs github { repo, commit, token }', { status: 400, kind: 'params' });
+    if (params.out || params.check) throw new GenError('out "artifact" and check are customer mode: it needs github { repo, commit, token }', { status: 400, kind: 'params' });
     if (params.machine !== undefined && params.machine !== null && params.machine !== '') throw new GenError('machine is for customer builds (github with a token, out "artifact"); J\'s builds take settings.unityBuild.gcp cpu and memoryGiB', { status: 400, kind: 'params' });
     if (!['WebGL', 'StandaloneWindows64', 'Android'].includes(String(params.target ?? 'WebGL'))) throw new GenError('target must be one of WebGL, StandaloneWindows64, Android', { status: 400, kind: 'params' });
     return params;
@@ -131,6 +137,18 @@ export async function runCustomerBuild(ctx: RunContext) {
   const b = customerBuildOf(ctx.params);
   const cfg = cloudConfig();
   try {
+    // The output was already kept (this job resumed after Gen died between keeping it and finishing): the build is done.
+    const kept = b.check ? undefined : (ctx.outputs as { asset?: string; mime?: string }[]).find((o) => o.mime === 'application/gzip' && o.asset);
+    const keptAsset = kept ? getAsset(kept.asset!) : null;
+    if (keptAsset) {
+      ctx.log(`the build's output was already kept (${keptAsset.id}); not building again`);
+      ctx.result({
+        ok: true, exitCode: 0, resumed: true, artifact: { asset: keptAsset.id, url: `/v1/assets/${keptAsset.id}/file`, bytes: keptAsset.bytes, files: Number(keptAsset.meta?.files ?? 0) },
+        unity: keptAsset.meta?.unity ?? null, github: { repo: b.repo, commit: b.commit, ref: b.ref, path: b.path }, method: b.method, target: 'web', errors: [], backend: 'cloudrun',
+      });
+      await releaseFinishedBuild(ctx.job.id);
+      return;
+    }
     // A build already running (Gen restarted, or another instance took the job over) is followed, not asked about again.
     const started = await cloudBuildStarted(ctx.job.id);
     let probe = { path: b.path ?? '.', version: '' };
@@ -138,7 +156,7 @@ export async function runCustomerBuild(ctx: RunContext) {
     let token = '';
     let baseJob = '';
     // The machine size asked for (sizes.ts; absent: settings' customerSize, m). A resumed build keeps the one it noted.
-    const asked: Machine = resolveMachine(b.machine, cfg.gcp);
+    const asked: Machine = resolveMachine(b.machine, { sizes: cfg.gcp.sizes, customerSize: b.check ? cfg.gcp.checkSize : cfg.gcp.customerSize });
     let machine: Machine = asked;
     let warning: string | undefined;
     const onSize = async (m: Machine) => {
@@ -150,29 +168,38 @@ export async function runCustomerBuild(ctx: RunContext) {
     if (!started) {
       // Customer builds run only on their own job (its account reaches nothing): refused at once when there is none.
       assertCustomerBuildsOn(cfg.gcp);
-      token = customerToken(b);
+      token = customerToken(b, undefined, ctx.log);
       ctx.step('reading the project from GitHub');
       probe = await probeProject(b, token, ghFetch.fetch as typeof fetch);
       baseJob = customerJobFor(jobForVersion(probe.version, unityImages(cfg.gcp)), cfg.gcp);
       await onSize(asked);
-      ctx.log(`customer build: ${b.repo}@${b.commit.slice(0, 12)}${b.ref ? ` (${b.ref})` : ''}, project ${probe.path === '.' ? 'at the repo root' : probe.path}, Unity ${probe.version}${b.method ? `, ${b.method}` : ', every enabled scene'}, machine ${machine.name} (${machine.cpu} vCPU, ${machine.memoryGiB} GiB)`);
+      ctx.log(`customer build: ${b.repo}@${b.commit.slice(0, 12)}${b.ref ? ` (${b.ref})` : ''}, project ${probe.path === '.' ? 'at the repo root' : probe.path}, Unity ${probe.version}${b.check ? ', compile-only check (no player build, Library cache restored, never saved)' : b.method ? `, ${b.method}` : ', every enabled scene'}, machine ${machine.name} (${machine.cpu} vCPU, ${machine.memoryGiB} GiB)`);
     }
     const build = () => runCloudBuild(ctx.job.id, {
-      project: probe.path === '.' ? 'src' : `src/${probe.path}`, method: b.method ?? undefined, target: 'WebGL',
+      project: probe.path === '.' ? 'src' : `src/${probe.path}`, method: b.check ? undefined : b.method ?? undefined, target: 'WebGL',
       env: ctx.params.env && typeof ctx.params.env === 'object' ? ctx.params.env : undefined,
-      customer: { repo: b.repo, commit: b.commit, ref: b.ref, path: probe.path, owner: ctx.job.project, version: probe.version, job, token, machine },
+      customer: { repo: b.repo, commit: b.commit, ref: b.ref, path: probe.path, owner: ctx.job.project, version: probe.version, job, token, machine, ...(b.check ? { check: true } : {}) },
     }, { step: ctx.step, log: ctx.log, signal: ctx.signal });
     let r: any = await build();
     let spent = { seconds: r.seconds, cost: r.cost };
     let retried: { from: Machine; to: Machine } | null = null;
     // Out of memory (Cloud Run's "Memory limit ... exceeded"): built again once, a size up (never past the biggest).
     // Only a build this run started (a resumed one has no token or job here).
-    const up = !r.ok && r.oom && token ? nextBigger(r.machine ?? machine, cfg.gcp.sizes) : null;
+    let up = !r.ok && r.oom && token ? nextBigger(r.machine ?? machine, cfg.gcp.sizes) : null;
+    if (up) {
+      // The build may have run for an hour: the token it started with must still be fresh enough to fetch with.
+      try { token = customerToken(b, undefined, ctx.log); } catch (e: any) {
+        if (e?.kind !== TOKEN_KIND) throw e;
+        ctx.log('the build ran out of memory, but its GitHub token is too old to build again; resubmit it with a fresh token');
+        up = null;
+      }
+    }
     if (up) {
       const from: Machine = r.machine ?? machine;
       fs.rmSync(r.tmp, { recursive: true, force: true });
       ctx.log(`the build ran out of memory on ${from.name} (${from.cpu} vCPU, ${from.memoryGiB} GiB): building again on ${up.name} (${up.cpu} vCPU, ${up.memoryGiB} GiB)`);
       ctx.usage({ provider: 'gcp-cloudrun', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${b.repo} ${b.commit.slice(0, 7)} (out of memory on ${from.name})` });
+      await forgetFinishedBuild(ctx.job.id);
       await onSize(up);
       ctx.step(`building again on ${machine.name}`);
       r = await build();
@@ -185,23 +212,41 @@ export async function runCustomerBuild(ctx: RunContext) {
       ctx.usage({ provider: 'gcp-cloudrun', unit: 'seconds', amount: r.seconds, cost: r.cost, detail: `${b.repo} ${b.commit.slice(0, 7)}` });
       await ctx.emit({ data: r.log, ext: 'log', mime: 'text/plain', title: `Unity log (${b.repo})` });
       let artifact: { asset: string; url: string; bytes: number; files: number } | null = null;
-      if (r.ok && r.artifact) {
-        await ctx.emit({ data: fs.readFileSync(r.artifact.file), ext: 'tar.gz', mime: 'application/gzip', title: `WebGL build (${b.repo} ${b.commit.slice(0, 7)})`, meta: { repo: b.repo, commit: b.commit, unity: r.unity ?? probe.version, files: r.artifact.files } });
+      // A compile-only check's time and cost, settled against what it reserved (billing.ts, orgcredits.ts).
+      let credits: { used: number; refunded: number } | undefined;
+      if (b.check) {
+        // Loaded here: billing.ts imports the tool list, which imports this file.
+        const { checkCreditsUsed, refundJobCreditsDown } = await import('../billing.ts');
+        const used = checkCreditsUsed(spent.cost);
+        const why = `Compile-only check used ${Math.round(spent.seconds)} s, about $${spent.cost.toFixed(3)}`;
+        const refunded = refundJobCreditsDown(ctx.job.id, used, why) || (await refundOrgCharge(ctx.job.id, why, orgReserved(ctx.job.id) - used));
+        credits = { used, refunded };
+      }
+      if (r.ok && r.artifact && !b.check) {
+        // Streamed into the library: the archive can be a gigabyte, and the instance has 4 GiB.
+        await (ctx.emitFile ?? ((o) => ctx.emit({ ...o, data: fs.readFileSync(o.file) })))({ file: r.artifact.file, ext: 'tar.gz', mime: 'application/gzip', title: `WebGL build (${b.repo} ${b.commit.slice(0, 7)})`, meta: { repo: b.repo, commit: b.commit, unity: r.unity ?? probe.version, files: r.artifact.files } });
         const asset = ctx.outputs[ctx.outputs.length - 1] as { asset?: string };
         artifact = { asset: String(asset.asset), url: `/v1/assets/${asset.asset}/file`, bytes: r.artifact.bytes, files: r.artifact.files };
+        await releaseFinishedBuild(ctx.job.id);
       }
       ctx.result({
         ok: r.ok, exitCode: r.exitCode, seconds: r.seconds, cost: Math.round(r.cost * 1000) / 1000,
         unity: r.unity ?? probe.version, artifact,
         github: { repo: b.repo, commit: b.commit, ref: b.ref, path: probe.path },
-        method: b.method, target: 'web', errors: r.errors ?? [], logTail: r.ok ? undefined : r.logTail,
+        method: b.check ? null : b.method, target: 'web', errors: r.errors ?? [], logTail: r.ok ? undefined : r.logTail,
+        ...(b.check ? { check: true, credits } : {}),
         backend: 'cloudrun', ...(r.cloud ? { cloud: r.cloud } : {}),
         // The machine it ran on, and what was asked (sizes.ts); a retry a size up after running out of memory says so.
         machine: { name: ran.name, cpu: ran.cpu, memoryGiB: ran.memoryGiB }, machineAsked: asked.name,
         ...(retried ? { retried: { reason: 'out of memory', from: retried.from.name, to: retried.to.name, note: `ran out of memory on ${retried.from.name} (${retried.from.cpu} vCPU, ${retried.from.memoryGiB} GiB); built again on ${retried.to.name} (${retried.to.cpu} vCPU, ${retried.to.memoryGiB} GiB)` }, totalSeconds: Math.round(spent.seconds), totalCost: Math.round(spent.cost * 1000) / 1000 } : {}),
         ...(warning ? { warnings: [warning] } : {}),
       });
+      if (b.check) await releaseFinishedBuild(ctx.job.id);
       if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });
+      if (b.check) {
+        ctx.log(`compiled: no errors, ${Math.round(r.seconds)} s on ${ran.name} (${ran.cpu} vCPU, ${ran.memoryGiB} GiB), about $${r.cost.toFixed(3)}${credits ? `, ${credits.used} credits` : ''}`);
+        return;
+      }
       ctx.log(`built in ${Math.round(r.seconds / 60)} min on ${ran.name} (${ran.cpu} vCPU, ${ran.memoryGiB} GiB): ${artifact?.files ?? 0} files, about $${r.cost.toFixed(2)}`);
     } finally {
       fs.rmSync(r.tmp, { recursive: true, force: true });
@@ -209,6 +254,11 @@ export async function runCustomerBuild(ctx: RunContext) {
   } finally {
     dropToken(b.tokenRef);
   }
+}
+
+/** What a Studio's charge for this job was, in credits (0 when it wasn't charged to a studio). */
+function orgReserved(jobId: string): number {
+  return Number((db.prepare('SELECT credits FROM org_charges WHERE job = ? AND refunded IS NULL').get(jobId) as { credits?: number } | undefined)?.credits ?? 0);
 }
 
 /** Totals and failures from an NUnit 3 results file (what Unity's -runTests writes). */

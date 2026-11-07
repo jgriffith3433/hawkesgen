@@ -1,5 +1,5 @@
 # Builds and rolls out one of Gen's side services on Cloud Run with the repo's own scripts (the service-deploy part of
-# tools/playtest-cloudrun/deploy-cpu.ps1 and tools/cpu-cloudrun/deploy.ps1). No IAM, bucket or secret creation (no --setup).
+# tools/playtest-cloudrun/deploy-cpu.ps1 and tools/cpu-cloudrun/deploy.ps1); playtest-gpu is the L4 playtest service (one instance). No IAM, bucket or secret creation (no --setup).
 # As gen-deployer (keyless). production = REGION_LIVE from main; beta = REGION_BETA from beta.
 # gen-deployer needs roles/iam.serviceAccountUser on the service's runtime account (gen-playtest@, gen-cpu@): J's step in HANDOFF.md.
 #   gh workflow run ops-service-deploy.yml --repo jgriffith3433/hawkesgen --ref main -f service=playtest-cpu -f lane=production
@@ -9,7 +9,7 @@ on:
     inputs:
       service:
         type: choice
-        options: [playtest-cpu, cpu]
+        options: [playtest-cpu, playtest-gpu, cpu]
       lane:
         type: choice
         options: [beta, production]
@@ -46,6 +46,11 @@ jobs:
             playtest-cpu)
               node tools/playtest-cloudrun/build.mjs --variant cpu --project "$PROJECT" --region "$REGION" --apply
               node tools/playtest-cloudrun/deploy.mjs --variant cpu --project "$PROJECT" --region "$REGION" --max-instances 4 --tabs 1 --apply ;;
+            playtest-gpu)
+              # The L4 playtest browser, scale to zero, one instance (one L4: the smallest GPU quota that plays). Cloud Run
+              # grants a region's L4 quota on its first GPU deploy, or refuses it; either way the log says so.
+              node tools/playtest-cloudrun/build.mjs --variant gpu --project "$PROJECT" --region "$REGION" --apply
+              node tools/playtest-cloudrun/deploy.mjs --variant gpu --project "$PROJECT" --region "$REGION" --max-instances 1 --tabs 4 --apply ;;
             cpu)
               node tools/cpu-cloudrun/build.mjs --project "$PROJECT" --region "$REGION" --apply
               node tools/cpu-cloudrun/deploy.mjs --project "$PROJECT" --region "$REGION" --apply ;;

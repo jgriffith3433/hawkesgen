@@ -34,6 +34,7 @@ import { videoChangeTool, audioRevoiceTool } from './chain.ts';
 import { QUALITY_TOOLS } from './quality.ts';
 import { makeCheckedTool } from '../make/tool.ts';
 import { FINISHING_TOOLS } from './finishing.ts';
+import { mockProvidersOn, mockTool } from '../mockproviders.ts';
 
 // BiRefNet cutouts go to a GPU server when one can take them (src/tools/cutout-gpu.ts). Set here, not in local.ts: the CPU
 // service imports local.ts through src/cpu/suite.ts and keeps to pure modules (it never routes).
@@ -65,7 +66,9 @@ export function reloadTools() {
   loadWorkflows();
   const wf = listWorkflows().map(workflowTool);
   const ids = new Set(wf.map((t) => t.id));
-  TOOLS = orderTools([...BUILT_IN.filter((t) => !ids.has(t.id)), ...wf].map(decorateMeshTool));
+  // HAWKESGEN_MOCK_PROVIDERS=1 (beta and local copies only): GPU, ElevenLabs and Claude tools answer at once (src/mockproviders.ts).
+  const mock = mockProvidersOn();
+  TOOLS = orderTools([...BUILT_IN.filter((t) => !ids.has(t.id)), ...wf].map(decorateMeshTool).map((t) => (mock ? mockTool(t) : t)));
   byId = new Map(TOOLS.map((t) => [t.id, t]));
   return TOOLS;
 }

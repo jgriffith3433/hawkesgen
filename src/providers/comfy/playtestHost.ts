@@ -74,7 +74,7 @@ export type PlaytestHost = {
   /** The URL as the GPU server's browser must open it (local ports are tunneled to their own remote port). */ mapUrl(url: string): string;
   /** How to reach the machine over SSH (still usable after close(): the playtest video is encoded there). Null on Cloud Run. */ ssh: { args: string[]; dest: string } | null;
   /** The runner it plays on (settings.playtest.runners), when the router chose it. */ runner?: string | null;
-  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu' | 'runpod';
+  /** Where it runs. */ backend?: 'ec2' | 'fleet' | 'cloudrun' | 'cloudrun-cpu' | 'runpod' | 'modal';
   /** Set when the browser has no GPU (the Cloud Run CPU service): why, for the result's softwareBecause. */ software?: string | null;
   /** How much slower than a GPU browser to allow for (the boot wait and the default scenario limit): 1 on a GPU. */ slow?: number;
   /** A browser already connected (Cloud Run: a pool with a connection per tab); else playtest.ts connects to wsEndpoint. */ browser?: any;
@@ -83,22 +83,57 @@ export type PlaytestHost = {
   /** Encodes the screencast's MJPEG where the browser ran (Cloud Run: the service's /encode); returns the encoder. */ encode?(mjpeg: string, out: string, viewport: { width: number; height: number }, signal: AbortSignal): Promise<string>;
 };
 
+/** How long a game waits for a RunPod worker from zero before software WebGL: a new machine pulls the ~1 GB image
+ *  and may fetch the driver's graphics libraries (docs/playtest-runpod.md), which has taken over 5 minutes. */
+export const GPU_COLD_START_MS = 12 * 60_000;
+
+/**
+ * How long one try at a browser service may wait (undefined: connectOne's own default). RunPod gets its whole cold start
+ * on the first round (a game: GPU_COLD_START_MS, since a game played in software is inconclusive; a site crawl: 5
+ * minutes); with more than one service, the others and later rounds get 40 s each (a full region is skipped, not waited on).
+ */
+export function connectWaitMs(cloud: { variant?: string }, round: number, { many, game }: { many: boolean; game: boolean }): number | undefined {
+  if ((cloud.variant === 'runpod' || cloud.variant === 'modal') && round === 1) return game ? GPU_COLD_START_MS : many ? 5 * 60_000 : undefined;
+  return many ? 40_000 : undefined;
+}
+
+/**
+ * How long a GPU browser provider is skipped after it failed us, when it isn't a router's runner (null: not at all).
+ * Out of credit or refusing our key: the runner cooldowns. A RunPod or Modal gateway that held every handshake for the
+ * whole cold-start wait and never gave a browser (2026-11-02: Modal timed out at connect on every playtest for hours,
+ * each one waiting 12 minutes before software WebGL): 30 minutes, so the playtests after it go to the next provider at
+ * once and one run tries the provider again when the cooldown ends. Only the first round's full wait counts: a later
+ * round's short try (40 s) timing out says nothing about the provider.
+ */
+export const GATEWAY_STUCK_COOLDOWN_MS = 30 * 60_000;
+export function providerCooldownMs(cloud: { variant?: string; runner?: string }, why: string, { refusedForMoney, runnerCooldown, round = 1 }: { refusedForMoney: (w: string) => boolean; runnerCooldown: (w: string) => number; round?: number }): number | null {
+  if (cloud.runner || !cloud.variant || cloud.variant === 'cpu') return null;
+  if (refusedForMoney(why) || /\b(401|403)\b|Unauthorized|Forbidden/i.test(why)) return runnerCooldown(refusedForMoney(why) ? '401' : why);
+  if (round === 1 && (cloud.variant === 'runpod' || cloud.variant === 'modal') && /Timeout \d+ ?ms exceeded/i.test(why)) return GATEWAY_STUCK_COOLDOWN_MS;
+  return null;
+}
+
+/** A run in software says why no GPU browser played it (the CPU service's own note after the reasons). */
+export const softwareWhy = (base: string, passedOver: string[]) => `no GPU browser (${passedOver.join('; ')}), so it ${base}`.slice(0, 600);
+
 /**
  * The GPU browser for a playtest: Cloud Run when settings.playtest says so for this project and the service is
  * deployed (docs/playtest-cloudrun.md), else, or when Cloud Run can't be reached, the playtesters and GPU servers as
  * before (openPlaytestHost). Null when no GPU browser is ready.
  */
-export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, tabs = 1, project, job, onUsage, clouds: given, fallback = true, site }: {
+export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, game = false, tabs = 1, project, job, onUsage, clouds: given, fallback = true, site, passedOver: before = [] }: {
   startPlaytester?: boolean; tabs?: number; project?: string | null; job?: string; onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void;
+  /** A game (not a site crawl): software WebGL tells nothing about it, so RunPod gets a longer cold start (GPU_COLD_START_MS). */ game?: boolean;
+  /** Why the runner router already left GPU runners out (runners.ts skipped): said again when the run lands in software. */ passedOver?: string[];
   /** The browser services to try, in order (the runner router's choice); else this project's from settings.playtest. */ clouds?: CloudPlaytest[];
   /** false: when none of them has a browser, null instead of the playtesters (customers' runs, builds the service serves). */ fallback?: boolean;
   /** A build each service serves itself (cloudrun.ts siteHeader). */ site?: string;
 } = {}): Promise<PlaytestHost | null> {
-  const { cloudPlaytestsFor, openCloudPlaytestHost, localPortsOf } = await import('../playtester/cloudrun.ts');
+  const { cloudPlaytestsFor, openCloudPlaytestHost, localPortsOf, providerDown, providerHealthKey, refusedForMoney } = await import('../playtester/cloudrun.ts');
   const { loadSettings } = await import('../../config.ts');
   const { markDown } = await import('../gpu/health.ts');
   const { runnerHealthKey, runnerCooldown } = await import('../playtester/runners.ts');
-  const { runpodCreditProblem } = await import('../gpu/credit.ts');
+  const { runpodCreditProblem, recheckEmptyRunpodCredit } = await import('../gpu/credit.ts');
   const listed = given ?? (() => {
     try {
       return cloudPlaytestsFor(project, loadSettings());
@@ -107,10 +142,26 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
       return [];
     }
   })();
+  // Why each GPU browser was passed over, for the result when the run ends up in software (Studio shows it).
+  const passedOver = [...before];
   // An empty RunPod balance starts no browser and its gateway just waits (gpu/credit.ts): the next service plays it.
-  const broke = listed.some((c) => c.variant === 'runpod') ? runpodCreditProblem() : null;
-  if (broke) step(`skipping RunPod: ${broke}`);
-  const clouds = broke ? listed.filter((c) => c.variant !== 'runpod') : listed;
+  // An empty reading is read again first, so funds added a moment ago count now.
+  const hasRunpod = listed.some((c) => c.variant === 'runpod');
+  if (hasRunpod) await recheckEmptyRunpodCredit();
+  const broke = hasRunpod ? runpodCreditProblem() : null;
+  if (broke) {
+    step(`skipping RunPod: ${broke}`);
+    passedOver.push(`RunPod skipped: ${broke}`);
+  }
+  // A provider that refused us a moment ago (Modal out of credit, a bad token) cools down: the next one plays.
+  const clouds = (broke ? listed.filter((c) => c.variant !== 'runpod') : listed).filter((c) => {
+    const down = c.variant !== 'cpu' ? providerDown(c) : null;
+    if (down) {
+      step(`skipping ${c.name}: ${down.reason}`);
+      passedOver.push(`${c.name} skipped: ${down.reason}`);
+    }
+    return !down;
+  });
   // In order: the GPU browser (the RunPod endpoint, docs/playtest-runpod.md, or the L4 service), then the CPU service
   // (software WebGL) in each of its regions, then the playtesters. Each
   // step says why it moved on. With more than one service, each try is short (a full region is skipped, not waited on)
@@ -122,11 +173,21 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
       try {
         // RunPod gets its full wait on the first round: its cold start pulls the image on a new machine (minutes), and
         // moving on to software WebGL would leave the worker it started idle.
-        return await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, site, step, onUsage, ...(many ? { connectTimeoutMs: cloud.variant === 'runpod' && round === 1 ? 5 * 60_000 : 40_000 } : {}) });
+        const wait = connectWaitMs(cloud, round, { many, game });
+        const host = await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, site, step, onUsage, ...(wait ? { connectTimeoutMs: wait } : {}) });
+        return host.software && passedOver.length ? { ...host, software: softwareWhy(host.software, passedOver) } : host;
       } catch (e: any) {
         const why = String(e?.message ?? e);
+        if (cloud.variant !== 'cpu') passedOver.push(`${cloud.name}: ${why.split('\n')[0].slice(0, 160)}`);
         // A router's runner that refused us cools down (runners.ts), so the next runs go elsewhere first.
         if (cloud.runner && round === 1 && !/Build Failed/.test(why)) markDown(runnerHealthKey(cloud.runner), why.slice(0, 200), runnerCooldown(why));
+        // A provider out of credit or refusing our key cools down too when it isn't a router's runner, so the next
+        // playtests go straight to the next provider (RunPod's balance is read on its own: gpu/credit.ts).
+        // A gateway that held every handshake through the whole cold-start wait cools down as well (providerCooldownMs).
+        else {
+          const ms = providerCooldownMs(cloud, why, { refusedForMoney, runnerCooldown, round });
+          if (ms) markDown(providerHealthKey(cloud.variant), why.slice(0, 200), ms);
+        }
         const nxt = clouds[i + 1] ?? (many && Date.now() < end ? clouds[0] : null);
         step(`no browser on ${cloud.name} in ${cloud.region} (${why.slice(0, 200)}); ${nxt ? `trying ${nxt.name} in ${nxt.region}${nxt.variant === 'cpu' ? ' (software WebGL)' : ''}` : fallback ? 'using the playtesters' : 'no other runner'}`);
       }

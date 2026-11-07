@@ -24,8 +24,8 @@ export function playwrightVersion() {
 
 /** The build context's files: [name in the context, file in server/playtest-cloudrun/]. */
 export const FILES = {
-  gpu: [['Dockerfile', 'Dockerfile'], ['package.json', 'package.json'], ['server.mjs', 'server.mjs'], ['gpu.mjs', 'gpu.mjs'], ['10_nvidia.json', '10_nvidia.json'], ['nvidia_icd.json', 'nvidia_icd.json']],
-  cpu: [['Dockerfile', 'Dockerfile.cpu'], ['package.json', 'package.json'], ['server.mjs', 'server.mjs'], ['gpu.mjs', 'gpu.mjs']],
+  gpu: [['Dockerfile', 'Dockerfile'], ['package.json', 'package.json'], ['server.mjs', 'server.mjs'], ['gpu.mjs', 'gpu.mjs'], ['site.mjs', 'site.mjs'], ['10_nvidia.json', '10_nvidia.json'], ['nvidia_icd.json', 'nvidia_icd.json']],
+  cpu: [['Dockerfile', 'Dockerfile.cpu'], ['package.json', 'package.json'], ['server.mjs', 'server.mjs'], ['gpu.mjs', 'gpu.mjs'], ['site.mjs', 'site.mjs']],
 };
 
 /** The build context with __PW_VERSION__ filled in, and its hash (the tag changes when any file or the version does). */

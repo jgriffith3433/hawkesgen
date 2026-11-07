@@ -287,3 +287,29 @@ export async function selfTest(chromium, { all = false, only = process.env.HAWKE
     nvenc: mode === 'software' ? { ok: false, error: 'software mode: no GPU' } : nvencWorks(),
   };
 }
+
+/**
+ * Whether the browser's WebSocket may use permessage-deflate. Not behind Modal's web endpoint (2026-11-02): Modal's relay
+ * forwards the client's Sec-WebSocket-Extensions offer to this server but never negotiates compression with the client
+ * itself, so Playwright's server (which compresses messages over 10 KB) sends a compressed frame the relay can't read,
+ * and the relay closes the connection with a clean 1000 (modal-labs/modal-client#4150). The first big message (a
+ * screencast frame, a page's events) then ended every Modal playtest with "Target page, context or browser has been
+ * closed". HAWKES_WS_DEFLATE=0 turns it off anywhere; a Modal container (MODAL_TASK_ID) has it off by itself.
+ */
+export const wsDeflateAllowed = (env = process.env) => env.HAWKES_WS_DEFLATE !== '0' && !(env.MODAL_TASK_ID && env.HAWKES_WS_DEFLATE !== '1');
+
+/**
+ * The client's handshake headers as the browser server gets them: no credentials or proxy headers, the host made the
+ * browser server's own, and (when deflate is off) no Sec-WebSocket-Extensions, so the browser server answers without
+ * compression and the client, seeing none accepted, sends none either. Returns the header lines after the request line.
+ */
+export function browserHandshake(rawHeaders, port, { deflate = wsDeflateAllowed() } = {}) {
+  const lines = [];
+  for (let i = 0; i < rawHeaders.length; i += 2) {
+    const k = rawHeaders[i];
+    if (/^(authorization|x-hawkes-token|x-hawkes-site|x-forwarded-.*|x-cloud-trace-context|traceparent|forwarded|via|cf-.*|cdn-loop|modal-key|modal-secret)$/i.test(k)) continue;
+    if (!deflate && /^sec-websocket-extensions$/i.test(k)) continue;
+    lines.push(`${k}: ${k.toLowerCase() === 'host' ? `127.0.0.1:${port}` : rawHeaders[i + 1]}`);
+  }
+  return lines;
+}

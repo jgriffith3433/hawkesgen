@@ -22,7 +22,7 @@
   --shadow: 0 16px 50px rgba(0, 0, 0, .45);
   --left: 300px;
   --right: 360px;
-  --tl: 270px;
+  --tl: min(300px, 40dvh);
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -209,7 +209,9 @@ input.num { width: 70px; }
 /* AI pane */
 .ai-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }
 .ai-head .ico-wrap { color: var(--accent); }
-.ai-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ai-messages { flex: 1 1 0; overflow-y: auto; padding: 0 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.ai-messages > :first-child { margin-top: 12px; }
+.ai-messages > :last-child { margin-bottom: 12px; }
 .ai-hello { margin: auto 0; text-align: center; color: var(--muted); padding: 10px; }
 .ai-hello .ico { color: var(--accent); margin: 0 auto 10px; }
 .ai-hello h3 { color: var(--text); text-transform: none; letter-spacing: 0; font-size: 17px; margin: 0 0 6px; }
@@ -223,10 +225,11 @@ input.num { width: 70px; }
 .msg-ops .bad { color: var(--danger); }
 .proposal { margin-top: 10px; padding: 10px; border-radius: 10px; background: var(--panel-3); white-space: normal; font-size: 13px; }
 .proposal ul { margin: 6px 0 8px; padding-left: 18px; color: var(--muted); }
-.ai-gate { padding: 12px 14px; border-top: 1px solid var(--line); font-size: 13px; flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.ai-gate { padding: 8px 14px 0; border-top: 1px solid var(--line); font-size: 13px; flex: 0 5 auto; min-height: 0; overflow-y: auto; }
 .pane.right { overflow: hidden; }
 .ai-gate p { margin: 0 0 10px; }
-.ai-suggest { padding: 8px 14px 0; }
+.ai-head, .ai-context, .ai-form { flex: none; }
+.ai-suggest { padding: 8px 14px 0; flex: 0 10 auto; min-height: 0; overflow-y: auto; }
 .ai-suggest .chip { font-size: 12px; text-align: left; }
 .ai-context { display: flex; align-items: center; gap: 4px; padding: 8px 14px 0; }
 .ctx-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); background: var(--panel-2); border: 1px dashed var(--line-2); border-radius: 999px; padding: 3px 10px; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -367,7 +370,10 @@ input.num { width: 70px; }
   .app.no-left .pane.left > :not(.grip), .app.no-right .pane.right > :not(.grip) { display: revert !important; }
   .app.tl-small .tl-body { display: flex; }
   .bar { gap: 8px; padding: 0 10px; }
-  .brand b, .bar-mid, .save-state, #creditsPill { display: none; }
+  .brand b, .bar-mid, .save-state { display: none; }
+  #creditsPill { padding: 6px 10px; min-height: 44px; font-size: 12px; white-space: nowrap; }
+  #creditsPill.low::after { content: ""; }
+  #creditsPill[hidden] { display: none; }
   .pane.left, .pane.right { grid-area: sheet; border: 0; border-top: 1px solid var(--line); min-height: 0; overflow: hidden; }
   .center { grid-area: center; }
   .timeline { grid-area: tl; }
@@ -673,7 +679,7 @@ dl.recipe dd { margin: 0; word-break: break-word; white-space: pre-wrap; max-hei
 /* The frame's edges are always visible in the center (video or picture). */
 .stage { box-shadow: 0 0 0 1px rgba(255,255,255,.22), 0 10px 40px rgba(0,0,0,.6); overflow: visible; }
 .stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: 6px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
-.viewer { background: repeating-linear-gradient(45deg, #0d0f14 0 12px, #0b0c10 12px 24px); }
+.viewer { padding-top: 22px; box-sizing: border-box; background: repeating-linear-gradient(45deg, #0d0f14 0 12px, #0b0c10 12px 24px); }
 .stage-size { position: absolute; left: 0; top: -20px; font-size: 11px; color: var(--muted); pointer-events: none; white-space: nowrap; }
 .tile.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
 .scene-tab .unsaved { color: var(--accent); font-weight: 700; }
@@ -816,6 +822,17 @@ body.landing-open { overflow: hidden; }
   .ld-nav .ld-signin.ghost { display: none; }
   .ld-cta button { flex: 1; }
 }
+
+.ld-google { display: inline-flex; align-items: center; justify-content: center; gap: 10px; }
+.ld-google .ld-art { display: inline-flex; background: #fff; border-radius: 50%; padding: 3px; }
+.ld-examples { max-width: 1180px; margin: 0 auto; padding: 8px clamp(16px, 4vw, 48px) 24px; }
+.ld-examples h2 { font-size: 20px; margin: 0 0 14px; }
+.ld-ex-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.ld-ex { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.ld-ex .ld-art svg { display: block; width: 100%; height: auto; }
+.ld-ex figcaption { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; }
+.ld-ex-prompt { color: var(--muted); font-size: 13px; }
+@media (max-width: 900px) { .ld-ex-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* ---------------------------------------------------------------- The quick tour (tour.js) */
 .tour-veil { position: fixed; inset: 0; z-index: 260; }
@@ -992,8 +1009,17 @@ kbd { display: inline-block; padding: 1px 6px; border-radius: 5px; border: 1px s
 #aiMemory textarea { width: 100%; box-sizing: border-box; }
 
 /* ---------------------------------------------------------------- Mobile pass (J, 2026-11-01) */
-/* The page never zooms: no pinch, no double-tap (gen.js stops Safari's pinch too). */
-html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* The page never zooms: no pinch, no double-tap (index.html's first script stops Safari's pinch too).
+   On every element, not just the page (J, 2026-11-01: "I can still zoom in on mobile"): WebKit starts touch-action over
+   at each box that scrolls (the timeline, the panes, the sheets, the menus), so a pinch inside one of those still zoomed
+   the page. Rules that ask for less (none, pan-y) are more specific and still win. */
+html, body, *, *::before, *::after { touch-action: pan-x pan-y; }
+html, body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* A text box under 16px makes iOS zoom in when it's tapped: 16px wherever fingers are the pointer (a phone turned
+   sideways is wider than the phone layout). */
+@media (pointer: coarse) {
+  textarea, select, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]) { font-size: 16px; }
+}
 /* Menus never run off the screen: they scroll inside. Rows keep the icon beside the words. */
 .menu { max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; }
 .menu-item .row { flex-wrap: nowrap; align-items: flex-start; }
@@ -1034,3 +1060,43 @@ html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-siz
   /* An empty scene's start box fits a short picture: it scrolls rather than cutting off. */
   .stage-empty { overflow-y: auto; place-content: safe center; }
 }
+
+/* ---------------------------------------------------------------- The guided first project (guide.js) */
+.guide-card { position: fixed; z-index: 250; top: 64px; left: 50%; transform: translateX(-50%); width: min(380px, calc(100vw - 24px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px; padding: 14px 16px 14px; box-shadow: var(--shadow); animation: tour-in .25s ease; }
+.guide-card h3 { margin: 4px 0 8px; font-size: 17px; text-transform: none; letter-spacing: -.01em; color: var(--text); }
+.guide-card p { margin: 10px 0; color: var(--muted); line-height: 1.5; font-size: 14px; }
+.guide-head { display: flex; align-items: center; justify-content: space-between; }
+.guide-x { color: var(--muted); padding: 2px; }
+.guide-card .tour-dots { margin: 0 0 6px; }
+.guide-card .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.guide-own { display: flex; gap: 6px; margin-top: 10px; }
+.guide-own input { flex: 1; min-width: 0; }
+.guide-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.guide-foot .quote { margin-right: auto; color: var(--muted); font-size: 12.5px; }
+.clip-act { position: absolute; right: 4px; bottom: 3px; z-index: 3; font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+.clip-act.retry { border-color: var(--danger); }
+.ins-wait.failed { background: color-mix(in srgb, var(--danger) 18%, transparent); }
+
+/* Timeline feel: the snap guide, and the time under the pointer */
+.tl-snap, .tl-hover { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; z-index: 6; }
+.tl-snap { background: var(--accent); width: 2px; margin-left: -1px; }
+.tl-hover { background: color-mix(in srgb, var(--text) 35%, transparent); }
+.tl-snap::before, .tl-hover::before { content: attr(data-label); position: absolute; top: 2px; left: 5px; padding: 1px 5px; border-radius: 4px; font-size: 10.5px; white-space: nowrap; background: var(--panel); border: 1px solid var(--line-2); color: var(--text); }
+.tl-snap::before { color: var(--accent); border-color: var(--accent); }
+
+/* Media: the detail drawer and the tile's Details button */
+.tile-info { position: absolute; bottom: 24px; right: 5px; padding: 3px; border-radius: 7px; background: rgba(0,0,0,.6); color: #fff; opacity: 0; }
+.tile:hover .tile-info, .tile:focus-within .tile-info { opacity: 1; }
+.tile-info:hover { background: var(--accent); }
+@media (pointer: coarse) { .tile-info { opacity: 1; } }
+.media-drawer-wrap { position: fixed; inset: 0; z-index: 900; display: flex; justify-content: flex-start; }
+.media-drawer-back { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+.media-drawer { position: relative; width: min(380px, 100vw); height: 100%; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--line-2); padding: 14px; display: flex; flex-direction: column; gap: 8px; outline: none; }
+.dr-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.dr-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dr-media { background: var(--panel-2); border-radius: 10px; overflow: hidden; display: grid; place-items: center; min-height: 140px; }
+.dr-media img, .dr-media video { width: 100%; max-height: 40vh; object-fit: contain; display: block; }
+.dr-media audio { width: 100%; }
+.dr-prompt { white-space: pre-wrap; word-break: break-word; font-size: 13px; background: var(--panel-2); border-radius: 8px; padding: 8px 10px; max-height: 30vh; overflow-y: auto; }
+.dr-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; }
+.dr-actions { margin-top: 6px; flex-wrap: wrap; gap: 6px; }

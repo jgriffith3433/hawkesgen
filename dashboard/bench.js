@@ -104,13 +104,9 @@ export function benchTab(h) {
   }
 
   /** Redraws while the open run is going. */
-  function follow() {
-    clearTimeout(follow.t);
-    render().then(() => {
-      const st = document.querySelector(`#bench [data-run="${open}"] td:nth-child(3)`)?.className;
-      if (st === 's-running' && document.querySelector('#bench.on')) follow.t = setTimeout(follow, 3000);
-    }).catch(fail);
-  }
+  function follow() { render().catch(fail); }
+  // The server says when a run moved on (app.js hears `bench` on GET /v1/events): redraw only while the tab is showing.
+  document.addEventListener('gen:bench', () => { if (document.querySelector('#bench.on')) follow(); });
 
   async function realRun() {
     const est = await post('/bench/estimate', {});

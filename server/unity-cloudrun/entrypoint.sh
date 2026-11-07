@@ -294,9 +294,11 @@ log "license: $LICENSE_MODE"
 # ------------------------------------------------------------ 2. sources at exact commits
 stage source
 CUSTOMER=false
+CHECK=false   # customer mode: a compile-only check (docs/unity-cloudrun.md, "Compile-only check")
 if [ "$(jq -r '.customer != null' "$S")" = true ]; then
   # Customer mode: their own repo with their own token (never Gen's GitHub secret, never J's package repos).
   CUSTOMER=true
+  [ "$(jq -r '.customer.check == true' "$S")" = true ] && CHECK=true
   [ "${HAWKES_CUSTOMER_JOB:-}" = 1 ] && [ "$SIGNED_ONLY" = true ] || die config "customer builds run only on the customer job (HAWKES_CUSTOMER_JOB=1, signed URLs only): tools/unity-cloudrun/customer-setup.mjs"
   [ -n "$CUSTOMER_TOKEN" ] || die source "no GitHub token came with this customer build"
   AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$CUSTOMER_TOKEN" | base64 -w0)"
@@ -313,7 +315,13 @@ for ((i = 0; i < n; i++)); do
   slug=$(jq -r ".repos[$i].slug" "$S"); top=$(jq -r ".repos[$i].top" "$S"); commit=$(jq -r ".repos[$i].commit" "$S")
   mapfile -t sparse < <(jq -r ".repos[$i].sparse[]" "$S")
   log "fetching $slug at ${commit:0:12} into $top"
-  fetch_repo "$slug" "$top" "$commit" "${sparse[@]}" || die source "couldn't fetch $slug at ${commit:0:12} (is the commit pushed, and can the GitHub token read the repo?)"
+  if ! fetch_repo "$slug" "$top" "$commit" "${sparse[@]}"; then
+    ff=$(fetch_failure); fkind=${ff%%$'\t'*}; fwhy=${ff#*$'\t'}
+    if [ "$fkind" = token ]; then
+      die token "The GitHub token for this build expired or was refused when $slug was fetched${fwhy:+ ($fwhy)}: submit the build again with a fresh token"
+    fi
+    die source "couldn't fetch $slug at ${commit:0:12} (is the commit pushed, and can the GitHub token read the repo?)${fwhy:+: git said: $fwhy}"
+  fi
   if [ "$PROJECT" = "$top" ] || [[ "$PROJECT" == "$top/"* ]]; then PROJECT_COMMIT=$(git -C "$P/$top" rev-parse HEAD); PROJECT_TOP="$top"; fi
 done
 OVERLAY=$(j .overlay)
@@ -389,7 +397,7 @@ while IFS= read -r -d '' kv; do
 done < <(jq -j '.env // {} | to_entries[] | "\(.key)=\(.value)\u0000"' "$S")
 export HAWKES_CLOUD_BUILD=1 HAWKES_PROJECT_PATH="$PROJ" HAWKES_COMMIT="${HAWKES_COMMIT:-$PROJECT_COMMIT}"
 [ -n "$SITE" ] && export WEBSITE_PATH="$SITE_DIR" HAWKES_SITE_PATH="$SITE_DIR"
-if [ "$CUSTOMER" = true ]; then
+if [ "$CUSTOMER" = true ] && [ "$CHECK" != true ]; then
   # The build goes into HAWKES_OUT; that folder (whatever is in it afterwards) is the output. Unity names a WebGL
   # build's files after this folder, so it's the project's own name (YoobaLand.data, not artifact.data).
   out_name=$(basename "$PROJ" | tr -c 'A-Za-z0-9_-' '_' | sed 's/_*$//'); [ -n "$out_name" ] || out_name=Build
@@ -404,13 +412,25 @@ if [ "$CUSTOMER" = true ]; then
     log "added HawkesGenCloud.HawkesBuild.Build (every enabled scene to WebGL)"
   fi
 fi
-args=(-batchmode -nographics -projectPath "$PROJ" -buildTarget "${TARGET:-WebGL}" -logFile -)
-[ -n "$TESTS" ] || args+=(-quit)
-[ -n "$METHOD" ] && args+=(-executeMethod "$METHOD")
-[ -n "$TESTS" ] && { args+=(-runTests -testPlatform "$TESTS" -testResults "$OUT/results.xml"); [ -n "$TEST_FILTER" ] && args+=(-testCategory "$TEST_FILTER"); }
-mapfile -t extra < <(jq -r '.args[]?' "$S")
-args+=("${extra[@]}")
-log "Unity $UNITY_VERSION ${TARGET:-WebGL}${METHOD:+ $METHOD}${TESTS:+ tests $TESTS} (limit ${TIMEOUT_MIN} min)"
+# unity_args: sets `args`, Unity's command line. A compile-only check (customer mode, CHECK=true) is only
+# `-batchmode -nographics -quit -projectPath <p> -logFile -`: no -buildTarget (no player build, nothing for a platform to
+# switch), no -executeMethod (no build method), no -runTests. Unity imports, compiles every script and exits; it exits
+# non-zero on a compiler error.
+unity_args() {
+  if [ "$CHECK" = true ]; then
+    args=(-batchmode -nographics -quit -projectPath "$PROJ" -logFile -)
+    return
+  fi
+  args=(-batchmode -nographics -projectPath "$PROJ" -buildTarget "${TARGET:-WebGL}" -logFile -)
+  [ -n "$TESTS" ] || args+=(-quit)
+  [ -n "$METHOD" ] && args+=(-executeMethod "$METHOD")
+  [ -n "$TESTS" ] && { args+=(-runTests -testPlatform "$TESTS" -testResults "$OUT/results.xml"); [ -n "$TEST_FILTER" ] && args+=(-testCategory "$TEST_FILTER"); }
+  mapfile -t extra < <(jq -r '.args[]?' "$S")
+  args+=("${extra[@]}")
+}
+unity_args
+if [ "$CHECK" = true ]; then log "Unity $UNITY_VERSION compile-only check (limit ${TIMEOUT_MIN} min)"
+else log "Unity $UNITY_VERSION ${TARGET:-WebGL}${METHOD:+ $METHOD}${TESTS:+ tests $TESTS} (limit ${TIMEOUT_MIN} min)"; fi
 cd "$PROJ" || die source "no project folder"
 # In the background with wait: bash runs a trap only after a foreground command ends, so a cancel (SIGTERM, then
 # SIGKILL ~10 s later) used to kill the container before the license was returned. Now the TERM trap stops Unity and
@@ -432,12 +452,16 @@ elif [ "$EXIT_CODE" != 0 ]; then
   if grep -Eq 'No valid Unity Editor license found|User is not logged in|Unity license is not valid|not entitled' "$OUT/unity.log"; then
     die license "$(grep -Eo -m1 '.{0,40}(No valid Unity Editor license found|User is not logged in|Unity license is not valid|not entitled).{0,80}' "$OUT/unity.log" | sed -E 's/[[:cntrl:]]//g')"
   fi
+  # A check that stopped on compiler errors says so (Gen reads them out of the log: error CSnnnn lines).
+  if [ "$CHECK" = true ] && grep -Eq 'error CS[0-9]+' "$OUT/unity.log"; then die compile "the project has compiler errors (Unity exited with code $EXIT_CODE)"; fi
   die build "Unity exited with code $EXIT_CODE"
 fi
 
 # ------------------------------------------------------------ 5. website changes (customer mode: the output folder)
 stage output
-if [ "$CUSTOMER" = true ]; then
+if [ "$CHECK" = true ]; then
+  log "compile-only check: no output to pack"   # nothing is packed or uploaded; result.json and the log are all it writes
+elif [ "$CUSTOMER" = true ]; then
   files=$(find "$HAWKES_OUT" -type f | wc -l)
   [ "$files" -gt 0 ] || die output "the build wrote nothing to HAWKES_OUT: a build method of your own must build into the folder in env HAWKES_OUT"
   raw=$(du -sb "$HAWKES_OUT" | cut -f1)
@@ -485,7 +509,9 @@ OK=true; KIND=null
 
 # ------------------------------------------------------------ 6. Library cache back (success only, only if changed)
 stage save
-if [ "${HAWKES_PERSIST:-}" = 1 ]; then
+if [ "$CHECK" = true ]; then
+  SAVE_SKIPPED="a compile-only check restores the Library cache and never saves it"
+elif [ "${HAWKES_PERSIST:-}" = 1 ]; then
   SAVE_SKIPPED="the Library stays on the machine's disk"
 elif [ -z "$C_SAVE" ]; then
   SAVE_SKIPPED="this branch restores beta's cache and saves none"

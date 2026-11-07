@@ -6,8 +6,16 @@ import { $, $$, h, api, toast, bus, icon } from './lib.js';
 export const state = { user: null, admin: false, ai: null };
 
 export async function loadMe() {
-  try { state.user = (await api('/v1/users/me')).user; } catch { state.user = null; }
-  try { const c = await api('/v1/me'); state.admin = c.role === 'owner' || c.role === 'admin'; } catch { state.admin = false; }
+  try {
+    // index.html starts this request before the scripts load; use its answer once, else ask.
+    const early = window.__hgMe ? await window.__hgMe : null;
+    window.__hgMe = null;
+    if (early) { try { state.user = early.ok ? JSON.parse(early.text).user ?? null : null; } catch { state.user = null; } }
+    else state.user = (await api('/v1/users/me')).user;
+  } catch { state.user = null; }
+  // Signed out there is nothing to ask: /v1/me would only answer 401 (a console error on every anonymous load).
+  state.admin = false;
+  if (state.user) { try { const c = await api('/v1/me'); state.admin = c.role === 'owner' || c.role === 'admin'; } catch { state.admin = false; } }
   showMe();
   if (state.user) loadAi();
 }
@@ -32,7 +40,7 @@ function showMe() {
     // Running low: the pill says so before anything fails.
     const low = Number(u.credits ?? 0) < 25;
     $('#creditsPill').classList.toggle('low', low);
-    $('#creditsPill').title = low ? 'Running low: add credits (1 credit = 1 cent)' : 'Credits (1 credit = 1 cent)';
+    $('#creditsPill').title = low ? 'Running low: add credits, packs and plans (1 credit = 1 cent)' : 'Credits: packs and plans (1 credit = 1 cent)';
   }
 }
 export const refreshCredits = () => api('/v1/users/me').then((m) => { state.user = m.user; showMe(); }).catch(() => {});

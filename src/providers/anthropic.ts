@@ -16,9 +16,13 @@ import { houseRoute, houseCanFallBack } from '../houseai.ts';
 import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
 import * as bedrock from './bedrock.ts';
+import { outputBudget, TOO_LONG } from './budget.ts';
+import { mockProvidersOn } from '../mockproviders.ts';
+export { outputBudget, TOO_LONG, STREAMED_FLOOR } from './budget.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { orgSecret } from '../orgsecrets.ts';
 import { GenError, mimeOf } from '../util.ts';
+import { takeAnswer } from '../aimock.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
 export const MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-opus-5'];
@@ -99,6 +103,18 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
   // (orgsecrets.ts), else it's refused with what to do.
   const scope = callScope.getStore();
   const org = scope?.org ?? null;
+  // HAWKESGEN_AI_MOCK=1: a test sign-in account's queued canned answer, here below every route (src/aimock.ts).
+  const canned = takeAnswer(org, p);
+  if (canned) {
+    p.onText?.(canned.text);
+    return { text: canned.text, model: canned.model, usage: { input_tokens: 0, output_tokens: 0 }, cost: canned.cost, billing: 'api' };
+  }
+  // HAWKESGEN_MOCK_PROVIDERS=1 (beta and local copies only): Claude answers at once, free (src/mockproviders.ts).
+  if (mockProvidersOn()) {
+    const text = p.schema ? '{}' : 'mock answer';
+    p.onText?.(text);
+    return { text, model: 'mock', usage: { input_tokens: 0, output_tokens: 0 }, cost: 0, billing: 'max-plan' };
+  }
   const ownKey = org ? orgSecret(org, 'anthropic') : null;
   if (ownKey) {
     const r = await askApi(p, signal, ownKey);
@@ -167,7 +183,7 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
   try {
     const stream = anthropic(apiKey).beta.messages.stream({
       model,
-      max_tokens: maxTokens,
+      max_tokens: outputBudget(maxTokens),
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
       // Structured output only takes closed schemas; an open one (the assistants' free-form ops, shots and docs) is left to
@@ -196,7 +212,10 @@ async function askApi({ prompt, system, images = [], model = DEFAULT_MODEL, effo
     throw e;
   }
   if (response.stop_reason === 'refusal') throw new GenError(`Claude declined this request${response.stop_details?.category ? ` (${response.stop_details.category})` : ''}.`, { status: 422, kind: 'refusal' });
-  if (response.stop_reason === 'max_tokens') throw new GenError('The answer ran out of room before it finished. Raise maxTokens.', { status: 422 });
+  if (response.stop_reason === 'max_tokens') {
+    console.warn(`[claude] ${model} stopped at max_tokens (${outputBudget(maxTokens)}; asked ${maxTokens}, effort ${effort}, ${response.usage?.output_tokens ?? '?'} written)`);
+    throw new GenError(TOO_LONG, { status: 422, kind: 'too-long' });
+  }
   const text = response.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
   return { text, model: response.model as string, usage: response.usage, cost: costOf(response.model, response.usage), billing: 'api' as const };
 }

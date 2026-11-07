@@ -1,0 +1,77 @@
+# Deploys the playtest browser to Modal (tools/playtest-modal/deploy.mjs --apply): the image RunPod runs, as a Modal web
+# endpoint on a GPU with proxy auth, scale to zero. Production environment (main only), like ops-modal-deploy: the same
+# MODAL_TOKEN_ID / MODAL_TOKEN_SECRET, and GPU_WORKER_TOKEN as the image's HAWKES_TOKEN. Deploying costs nothing until a
+# playtest starts a container (L4: about $1.12/hour while one runs, 2 browsers each). The summary prints the web
+# endpoint's URL and the body to PUT to Gen's /v1/playtest/capacity so playtests use it.
+#   gh workflow run ops-modal-playtest-deploy.yml --repo jgriffith3433/hawkesgen --ref main -f gpu=L4 -f max=2
+# It also runs by itself: playtest-image.yml calls it on a push to main that changes the image or the Modal app, with the
+# image's exact pinned tag (not :latest), so the browser ships with Gen's go-live and nobody deploys it by hand.
+name: ops-modal-playtest-deploy
+on:
+  workflow_call:
+    inputs:
+      gpu:
+        type: string
+        default: L4
+      max:
+        type: number
+        default: 2
+      image:
+        type: string
+        default: ghcr.io/jgriffith3433/hawkes-gen-playtest:latest
+  workflow_dispatch:
+    inputs:
+      gpu:
+        type: choice
+        options: [L4, T4, A10, L40S]
+        default: L4
+      max:
+        description: Containers at most (2 browsers each)
+        type: number
+        default: 2
+      image:
+        description: The playtest image (public on GHCR; built by playtest-image.yml)
+        type: string
+        default: ghcr.io/jgriffith3433/hawkes-gen-playtest:latest
+permissions:
+  contents: read
+jobs:
+  deploy:
+    name: Deploy the playtest browser to Modal
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    # On the job, not the workflow, so it also holds when playtest-image.yml calls this one: one deploy at a time.
+    concurrency:
+      group: ops-modal-playtest-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Check the inputs
+        env:
+          GPU: ${{ inputs.gpu }}
+          MAX: ${{ inputs.max }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          [[ "$GPU" =~ ^(L4|T4|A10|L40S)$ ]] || { echo "gpu must be L4, T4, A10 or L40S"; exit 1; }
+          [[ "$MAX" =~ ^([1-9]|10)$ ]] || { echo "max must be 1 to 10"; exit 1; }
+          [[ "$IMAGE" =~ ^ghcr\.io/jgriffith3433/[a-z0-9._-]+(:[A-Za-z0-9._-]+)?$ ]] || { echo "image must be one of ours on ghcr.io"; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet modal
+      - name: Deploy
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          GPU_WORKER_TOKEN: ${{ secrets.GPU_WORKER_TOKEN }}
+          GPU: ${{ inputs.gpu }}
+          MAX: ${{ inputs.max }}
+          IMAGE: ${{ inputs.image }}
+        run: |
+          set -o pipefail
+          [ -n "$MODAL_TOKEN_ID" ] || { echo "MODAL_TOKEN_ID is not set in the production environment"; exit 1; }
+          node tools/playtest-modal/deploy.mjs --image "$IMAGE" --gpu "$GPU" --max "$MAX" --apply | tee -a "$GITHUB_STEP_SUMMARY"

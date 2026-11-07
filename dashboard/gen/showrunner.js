@@ -5,6 +5,7 @@
 
 import { h, api, toast, icon, plainError, friendly } from './lib.js';
 import { refreshCredits } from './account.js';
+import { openStream } from './stream.js';
 
 const LIVE = new Map(); // production id -> its newest state
 const CARDS = new Map(); // production id -> card elements on screen (redrawn on each update)
@@ -21,11 +22,9 @@ function follow() {
   const want = [...LIVE.values()].some((p) => p.status === 'running' || p.status === 'paused');
   if (!want) { stream?.close(); stream = null; return; }
   if (stream) return;
-  stream = new EventSource('/v1/events');
-  stream.addEventListener('production', async (e) => {
-    let ev = null;
-    try { ev = JSON.parse(e.data); } catch { return; }
-    if (!LIVE.has(ev.id)) return;
+  // Reopened after a restart or a deploy (stream.js); each card fetches where its production got to meanwhile.
+  stream = openStream({ production: (ev) => {
+    if (!LIVE.has(ev?.id)) return;
     const p = { ...LIVE.get(ev.id), status: ev.status, progress: ev.progress, out: { ...LIVE.get(ev.id).out, ...ev.out } };
     LIVE.set(ev.id, p);
     redraw(ev.id);
@@ -34,7 +33,7 @@ function follow() {
       if (ev.status === 'done' || ev.status === 'failed') refresh(ev.id);
     }
     if (ev.status !== 'running' && ev.status !== 'paused') follow();
-  });
+  } }, { onReconnect: () => { for (const [id, p] of LIVE) if (p.status === 'running' || p.status === 'paused') refresh(id); } });
 }
 async function refresh(id) {
   try { LIVE.set(id, await api(`/v1/showrunner/productions/${id}`)); redraw(id); } catch { /* gone */ }

@@ -6,8 +6,9 @@ import crypto from 'node:crypto';
 //   params: { github: { repo, commit, token, ref? }, path?, method?, target: "web", out: "artifact" }
 //
 // The token is a short-lived GitHub installation token that Studio passes per job. It is moved into the in-memory token
-// vault at submit (src/providers/playtester/intake.ts holdToken: the job's params keep only its tok_ reference), read
-// once when the build starts, handed to that one Cloud Run execution as an env override (HAWKES_GITHUB_TOKEN), and used
+// vault at submit (src/providers/playtester/intake.ts holdToken: the job's params keep only its tok_ reference; the vault
+// is memory backed by an encrypted row, so a restarted Gen still has it), read once when the build starts (a missing or
+// expired one fails the job at once, before any Unity time: kind 'token', Studio resubmits with a fresh one), handed to that one Cloud Run execution as an env override (HAWKES_GITHUB_TOKEN), and used
 // there only as an http.extraheader for the fetch. It is never in the stored params, spec.json, the log, the library
 // recipe or any row. Gen's own GitHub secret is never used for a customer: the container unsets it in this mode.
 //
@@ -22,7 +23,7 @@ import crypto from 'node:crypto';
 // version Gen has no image for fails at once (kind 'config'), naming the project's version and the supported ones.
 
 import { GenError } from '../../util.ts';
-import { holdToken, tokenFor } from '../playtester/intake.ts';
+import { holdToken, lookupToken, type TokenLookup } from '../playtester/intake.ts';
 import { cacheName } from './cache.ts';
 import { gapi, type CloudRunTarget } from './gcp.ts';
 import { resolveMachine, storedMachine, type MachineSizes } from './sizes.ts';
@@ -55,13 +56,21 @@ export type CustomerBuild = {
   /** -executeMethod; null: Gen's own HawkesBuild.Build (every enabled scene to WebGL). */
   method: string | null;
   tokenRef: string;
+  /** A compile-only check (check.ts): Unity imports and compiles, nothing is built or kept. */
+  check: boolean;
   /** The machine size asked for (sizes.ts): a size name, { cpu, memoryGiB }, or null for settings' customerSize. */
   machine: string | { cpu: number; memoryGiB: number } | null;
 };
 
-/** Whether unity.build params ask for customer mode: a GitHub token (or, stored, its reference) and out "artifact". */
+/** Whether `out` is what a compile-only check takes: absent or "none" (it makes no artifact). */
+const noOut = (out: unknown) => out === undefined || out === null || out === '' || out === 'none';
+
+/** Whether unity.build params ask for customer mode: a GitHub token (or, stored, its reference) and out "artifact", or
+ *  `check` (with out absent or "none"). A `check` of any type counts, so a wrong one is refused by admit, not as a stranger's. */
 export function isCustomerMode(params: Record<string, any> | undefined): boolean {
-  if (!params || params.out !== 'artifact') return false;
+  if (!params) return false;
+  const asksCheck = params.check !== undefined && params.check !== null;
+  if (!(params.out === 'artifact' || (asksCheck && noOut(params.out)))) return false;
   let g = params.github;
   if (typeof g === 'string') { try { g = JSON.parse(g); } catch { return false; } }
   if (!g || typeof g !== 'object' || Array.isArray(g)) return false;
@@ -79,8 +88,15 @@ export function customerTarget(target: unknown): 'WebGL' {
  * Checks customer-mode params at submit and moves the token into the vault. Returns the params to store: github has
  * tokenRef in place of token; siteRepo, branch, site, projectDir, siteDir and the rest of J's mode are refused.
  */
-export function admitCustomer(params: Record<string, any>, hold: (token: string) => string = holdToken, gcp: { sizes: MachineSizes; customerSize: string } = loadSettings().unityBuild.gcp): Record<string, any> {
+export function admitCustomer(params: Record<string, any>, hold: (token: string) => string = holdToken, gcp: { sizes: MachineSizes; customerSize: string; checkSize?: string } = loadSettings().unityBuild.gcp): Record<string, any> {
   const p = { ...params };
+  // check: a compile-only run (check.ts). A boolean only; it builds nothing, so no out, no method.
+  if (p.check !== undefined && p.check !== null && typeof p.check !== 'boolean') throw bad('check must be true or false (a compile-only run: Unity imports and compiles the project, nothing is built)');
+  const check = p.check === true;
+  if (check) {
+    if (p.out !== undefined && !noOut(p.out)) throw bad('a check builds nothing, so it takes no out "artifact": leave out unset (or "none")');
+    if (p.method) throw bad("a check runs no build method: leave method out (it only imports and compiles the project)");
+  } else if (p.out !== 'artifact') throw bad('customer builds take out "artifact" (or check: true for a compile-only run)');
   let g = p.github;
   if (typeof g === 'string') { try { g = JSON.parse(g); } catch { throw bad('github must be an object: { repo, commit, token, ref? }'); } }
   if (!g || typeof g !== 'object' || Array.isArray(g)) throw bad('github must be an object: { repo, commit, token, ref? }');
@@ -114,13 +130,13 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   if (ref) stored.ref = ref;
   p.github = stored;
   p.target = 'web';
-  p.out = 'artifact';
+  if (check) { p.check = true; p.out = 'none'; } else { delete p.check; p.out = 'artifact'; }
   if (path) p.path = path; else delete p.path;
   if (method) p.method = method; else delete p.method;
   if (!env || !Object.keys(env).length) delete p.env;
   // The machine size (sizes.ts): checked here, stored as its name (or { cpu, memoryGiB }); absent: settings' default.
   if (p.machine === undefined || p.machine === null || p.machine === '') delete p.machine;
-  else p.machine = storedMachine(resolveMachine(p.machine, gcp), gcp.sizes);
+  else p.machine = storedMachine(resolveMachine(p.machine, { sizes: gcp.sizes, customerSize: check ? gcp.checkSize ?? gcp.customerSize : gcp.customerSize }), gcp.sizes);
   for (const k of ['site', 'projectDir', 'siteDir', 'cache', 'args', 'clean', 'project']) delete p[k];
   // Always Cloud Run (the queue's builder-cloud lane): never the build server or a project's VM.
   p.backend = 'cloudrun';
@@ -143,17 +159,50 @@ export function customerBuildOf(params: Record<string, any>): CustomerBuild {
   if (!SLUG_RE.test(repo) || !SHA_RE.test(commit)) throw bad('github.repo and github.commit are needed');
   if (!TOKEN_REF_RE.test(String(g.tokenRef ?? ''))) throw bad('this customer build has no token (submit it again with github.token)');
   return {
-    repo, commit, ref: g.ref ? String(g.ref) : null, tokenRef: String(g.tokenRef),
+    repo, commit, ref: g.ref ? String(g.ref) : null, tokenRef: String(g.tokenRef), check: params.check === true,
     path: params.path ? normalPath(String(params.path)) : null, method: params.method ? String(params.method) : null,
     machine: params.machine === undefined || params.machine === null || params.machine === '' ? null : params.machine,
   };
 }
 
-/** The token behind a customer build, or a clear error (Gen restarted since the job was submitted, or it expired). */
-export function customerToken(b: CustomerBuild, lookup: (ref: string) => string | null = tokenFor): string {
-  const t = lookup(b.tokenRef);
-  if (!t) throw new GenError('The GitHub token for this build is gone (Gen restarted, or it expired): submit the build again with a fresh token', { status: 400, kind: 'source' });
-  return t;
+/** The kind a failure carries when Studio must send a fresh GitHub token (the build never started: nothing was spent). */
+export const TOKEN_KIND = 'token';
+
+/**
+ * A token older than this starts no new build. GitHub's installation tokens last an hour and a build fetches its source
+ * some minutes after it starts (a queue wait, the machine, the image), so one held 45 minutes would die at the fetch,
+ * after Cloud Run time was spent; the vault keeps tokens 12 hours (intake.ts) only so a restarted Gen still has them.
+ */
+export const TOKEN_MAX_AGE_SECONDS = 45 * 60;
+
+/**
+ * The token behind a customer build: memory first, then the encrypted store (so a recycled Gen instance doesn't lose
+ * it). Missing or expired: a 'token' failure at once, before any Unity time is spent, saying which it was and that
+ * Studio should resubmit with a fresh token (installation tokens last an hour, so a long queue can outlive one). The
+ * log line says whether it came from memory, came back from the store after a restart, expired, or was never found.
+ */
+export function customerToken(b: CustomerBuild, lookup: (ref: string) => TokenLookup | string | null = lookupToken, log: (m: string) => void = console.log): string {
+  const raw = lookup(b.tokenRef);
+  const r: TokenLookup = typeof raw === 'string' ? { token: raw, ageSeconds: 0, from: 'memory' } : raw ?? { token: null, why: 'missing' };
+  if (r.token !== null && r.ageSeconds > TOKEN_MAX_AGE_SECONDS) {
+    log(`customer build token: ${Math.round(r.ageSeconds / 60)} min old (GitHub's last an hour, a build needs it at its start); asking Studio for a fresh one`);
+    throw new GenError(
+      `The GitHub token for this build is ${Math.round(r.ageSeconds / 60)} minutes old, too old to start a build with (GitHub's installation tokens last an hour and the build fetches its source after it starts). Nothing was built: resubmit it with a fresh token.`,
+      { status: 400, kind: TOKEN_KIND });
+  }
+  if (r.token !== null) {
+    log(`customer build token: ${r.from === 'store' ? 'restored from the encrypted store (Gen restarted since submit)' : 'found in memory'}, ${r.ageSeconds}s since submit`);
+    return r.token;
+  }
+  const age = r.ageSeconds !== undefined ? ` (held ${Math.round(r.ageSeconds / 60)} min)` : '';
+  log(r.why === 'expired'
+    ? `customer build token: expired${age}; asking Studio for a fresh one`
+    : 'customer build token: not found in memory or the store (dropped, never held, or Gen restarted with no secrets key); asking Studio for a fresh one');
+  throw new GenError(
+    r.why === 'expired'
+      ? `The GitHub token for this build expired${age} before the build could start. Nothing was built: resubmit it with a fresh token.`
+      : 'Hawkes Gen no longer has the GitHub token for this build (it was dropped, or Gen restarted and could not restore it). Nothing was built: resubmit it with a fresh token.',
+    { status: 400, kind: TOKEN_KIND });
 }
 
 // ------------------------------------------------------------------ images by Unity version
@@ -188,7 +237,9 @@ function ghHeaders(token: string, raw = false) {
 }
 
 async function ghFail(r: Response, what: string): Promise<never> {
-  if (r.status === 401 || r.status === 403) throw new GenError(`GitHub refused ${what} (${r.status}): the token can't read the repo`, { status: 400, kind: 'source' });
+  // 401: GitHub no longer takes the token (an installation token lasts an hour): Studio sends a fresh one.
+  if (r.status === 401) throw new GenError(`GitHub refused ${what} (401): the token has expired or was revoked. Nothing was built: resubmit it with a fresh token.`, { status: 400, kind: TOKEN_KIND });
+  if (r.status === 403) throw new GenError(`GitHub refused ${what} (${r.status}): the token can't read the repo`, { status: 400, kind: 'source' });
   if (r.status === 404 || r.status === 422) throw new GenError(`GitHub has no ${what} (${r.status}): is the commit pushed, and can the token read the repo?`, { status: 400, kind: 'source' });
   throw new GenError(`GitHub answered ${r.status} for ${what}`, { status: 502, kind: 'source' });
 }
@@ -320,6 +371,8 @@ const KEY_RE = /^[A-Za-z0-9_.-]+$/;
 export async function customerSignedUrls(o: {
   bucket: string; prefix: string; cachePrefix: string; restore: string[]; save: string | null;
   sign: (method: 'GET' | 'PUT', key: string) => Promise<string>;
+  /** A compile-only check (check.ts) hands back no artifact: no URL to write one. */
+  artifact?: boolean;
 }): Promise<SignedUrls> {
   const no = (m: string) => new GenError(m, { status: 500, kind: 'builder' });
   if (!BUILD_PREFIX_RE.test(o.prefix)) throw no(`not a build's prefix: ${o.prefix}`);
@@ -328,6 +381,6 @@ export async function customerSignedUrls(o: {
   const get: Record<string, string> = {};
   const put: Record<string, string> = {};
   for (const k of [`${o.prefix}/spec.json`, ...o.restore.flatMap((r) => [`${o.cachePrefix}/${r}.tar.zst`, `${o.cachePrefix}/${r}.json`])]) get[k] = await o.sign('GET', k);
-  for (const k of [`${o.prefix}/artifact.tgz`, `${o.prefix}/unity.log`, `${o.prefix}/result.json`, ...(o.save ? [`${o.cachePrefix}/${o.save}.tar.zst`, `${o.cachePrefix}/${o.save}.json`] : [])]) put[k] = await o.sign('PUT', k);
+  for (const k of [...(o.artifact === false ? [] : [`${o.prefix}/artifact.tgz`]), `${o.prefix}/unity.log`, `${o.prefix}/result.json`, ...(o.save ? [`${o.cachePrefix}/${o.save}.tar.zst`, `${o.cachePrefix}/${o.save}.json`] : [])]) put[k] = await o.sign('PUT', k);
   return { bucket: o.bucket, get, put };
 }

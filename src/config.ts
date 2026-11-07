@@ -97,7 +97,10 @@ export type Settings = {
   /** Fair sharing of the GPU between customers (src/jobs.ts `fairOrder`): `perProjectGpu` is the most GPU jobs one customer
    *  project runs at once, `perProjectLane` the most slots one takes in each API or local lane (playtests count browser
    *  tabs), `projects` (globs) says which projects are customers. Studio's own projects and admin/owner keys are exempt. */
-  queue: { perProjectGpu: number; perProjectLane: number; projects: string[] };
+  /** gpuWaitMinutes: how long a GPU job may wait while no GPU provider can take it at all (none set up, all busy
+   *  refusing, booting) before it fails with a plain reason (src/providers/gpu/nogpu.ts). Waiting behind other jobs on a
+   *  GPU that exists has no limit. */
+  queue: { perProjectGpu: number; perProjectLane: number; projects: string[]; gpuWaitMinutes: number };
   /** Platform tokens from the portal (src/platform.ts): `issuer` the portal this lane trusts (empty: hawkesgames.com, or
    *  beta.hawkesgames.com on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
    *  (design partners, J's own). */
@@ -177,15 +180,19 @@ export type Settings = {
      * plus "-customer". Empty: customer builds are refused. tools/unity-cloudrun/customer-setup.mjs makes them.
      * `regions`: more regions with the same jobs, tried in order when `region` has no machine free (J, 2026-10-31: Google
      * left a build waiting for "unknown quota capacity" in us-east4). A region without the job is skipped.
+     * `liveRegion`: where Gen's and Studio's always-on live services run (us-east4). Cloud Run's CPU quota is per project
+     * per region, so builds (8 vCPU each) and CPU playtests try it last, after every other region they have
+     * (2026-11-02: builds and playtests used up hawkes-staging's us-east4 quota and live Studio couldn't start a
+     * revision). Alone, it is still used. "" turns this off.
      */
     /**
      * `sizes`: the machine sizes a customer build may ask for (unity.build param `machine`; docs/unity-cloudrun.md,
      * "Machine sizes"), each a Cloud Run job of its own ("<customer job>-<size>", made by Gen from the customer job; the
      * size equal to `cpu` / `memoryGiB` is the customer job itself). `customerSize`: the default, "m" (4 vCPU, 16 GiB,
      * half the cost of xl; J, 2026-11-01: "make it cheap if we don't need all that"). A build out of memory is built
-     * again once a size up.
+     * again once a size up. `checkSize`: the default machine of a compile-only check (unity.build `check: true`), "m".
      */
-    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[]; sizes: MachineSizes; customerSize: string };
+    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[]; liveRegion: string; sizes: MachineSizes; customerSize: string; checkSize: string };
     /** The build VMs: one per project, named hawkes-unity-<project>, made by tools/unity-cloudrun/vm.mjs. */
     vm: { zone: string; machineType: string; pricePerHour: number };
   };
@@ -217,7 +224,24 @@ export type Settings = {
      * CPU service. `url` is https://<endpoint id>.api.runpod.ai; `maxInstances` is the endpoint's max workers;
      * `pricePerHour` is a worker's price (RunPod bills from the worker's start to its idle timeout, `idleSeconds`).
      */
-    runpod: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here'; gpu: string; pricePerHour: number; idleSeconds: number };
+    runpod: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here'; gpu: string; pricePerHour: number; idleSeconds: number;
+      /** RunPod's serverless worker quota for the whole account (workers.max summed over every endpoint may not pass it;
+       *  10 on 2026-11-01). Gen learns it from RunPod's own refusal (src/providers/playtester/capacity.ts). */
+      workerQuota: number };
+    /**
+     * The same browser image as a Modal web endpoint on a GPU (docs/playtest-runpod.md, "Modal";
+     * tools/playtest-modal/deploy.mjs makes it): https://<workspace>--hawkes-gen-playtest-browser.modal.run, behind Modal's
+     * proxy auth (MODAL_PROXY_KEY / MODAL_PROXY_SECRET). `maxInstances` is the app's max_containers, `pricePerHour` a
+     * container's (GPU, cores and memory), `idleSeconds` its scaledown_window. Null url: not deployed.
+     */
+    modal: { url: string | null; maxInstances: number; tabsPerInstance: number; encode: 'service' | 'here'; gpu: string; pricePerHour: number; idleSeconds: number };
+    /**
+     * The browser providers' order for web playtests (Studio's playtest capacity setting, GET/PUT /v1/playtest/capacity):
+     * ids from PLAYTEST_PROVIDERS. Empty: `backend` decides as before. Software WebGL (cloudrun-cpu) always goes last, so
+     * a game takes any GPU first. `disabled` ids are left out.
+     */
+    order: PlaytestProvider[];
+    disabled: PlaytestProvider[];
     /**
      * The runner router (src/providers/playtester/runners.ts, docs/playtest-runners.md): where a playtest plays, by its
      * target, first with room first. Empty: web runs play as `backend` says (the services above), and nothing plays
@@ -276,8 +300,8 @@ export const PLAYTEST_TARGETS: readonly PlaytestTarget[] = ['web', 'electron', '
 /** A runner in settings.playtest.runners (docs/playtest-runners.md). */
 export type PlaytestRunner = {
   id: string;
-  provider: 'runpod' | 'cloudrun' | 'cloudrun-cpu' | 'native';
-  /** https://…; null for a browser service means its URL in settings.playtest (runpod.url, cloudrun.url, cloudrunCpu.url). */
+  provider: 'runpod' | 'modal' | 'cloudrun' | 'cloudrun-cpu' | 'native';
+  /** https://…; null for a browser service means its URL in settings.playtest (runpod.url, modal.url, cloudrun.url, cloudrunCpu.url). */
   url: string | null;
   targets: PlaytestTarget[];
   lanes: ('studio' | 'customer')[];
@@ -293,6 +317,17 @@ export type PlaytestRunner = {
   enabled: boolean;
 };
 
+/** The browser providers a web playtest may play on, for settings.playtest.order (GPU ones first, software last). */
+export type PlaytestProvider = 'runpod' | 'modal' | 'cloudrun' | 'cloudrun-cpu';
+/** A Modal web endpoint: https://<workspace>--<app>-<function>.modal.run, or with the region Modal now puts before
+ *  modal.run (https://<workspace>--<app>-<function>.us-east.modal.run). Nothing else under modal.run, nothing else at all. */
+export const MODAL_ENDPOINT = /^https:\/\/[a-z0-9-]+(\.[a-z]{2}-[a-z]+[0-9]?)?\.modal\.run\/?$/;
+export const PLAYTEST_PROVIDERS: readonly PlaytestProvider[] = ['runpod', 'modal', 'cloudrun', 'cloudrun-cpu'];
+/** settings.playtest.order, checked: known ids once each, software WebGL (cloudrun-cpu) moved last. */
+export function cleanPlaytestOrder(v: unknown): PlaytestProvider[] {
+  const ids = [...new Set((Array.isArray(v) ? v : []).map(String).filter((x): x is PlaytestProvider => PLAYTEST_PROVIDERS.includes(x as PlaytestProvider)))];
+  return [...ids.filter((x) => x !== 'cloudrun-cpu'), ...ids.filter((x) => x === 'cloudrun-cpu')];
+}
 /** Where playtest.run's browser runs (settings.playtest): the EC2 playtesters, the L4 service, the CPU service. */
 export type PlaytestBackend = 'ec2' | 'cloudrun' | 'cloudrun-cpu' | 'runpod';
 export const PLAYTEST_BACKENDS: readonly PlaytestBackend[] = ['ec2', 'cloudrun', 'cloudrun-cpu', 'runpod'];
@@ -305,7 +340,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
   lod: { projects: ['usr_*', 'ubeta_*'] },
-  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'] },
+  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'], gpuWaitMinutes: 15 },
   platform: { issuer: '', freeOrgs: [] },
   orgCredits: { url: '' },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
@@ -318,11 +353,14 @@ export const SETTINGS_DEFAULTS: Settings = {
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
-    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'], sizes: { ...DEFAULT_SIZES }, customerSize: DEFAULT_CUSTOMER_SIZE },
+    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'], liveRegion: 'us-east4', sizes: { ...DEFAULT_SIZES }, customerSize: DEFAULT_CUSTOMER_SIZE, checkSize: DEFAULT_CUSTOMER_SIZE },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
-    runpod: { url: null, maxInstances: 2, tabsPerInstance: 2, encode: 'service', gpu: 'RTX A4000', pricePerHour: 0.58, idleSeconds: 60 }, runners: [] },
+    runpod: { url: null, maxInstances: 2, tabsPerInstance: 2, encode: 'service', gpu: 'RTX A4000', pricePerHour: 0.58, idleSeconds: 60, workerQuota: 10 },
+    // Modal L4 (modal.com/pricing 2026-10-28): GPU $0.000222/s + 4 cores x $0.0000131 + 16 GiB x $0.00000222 = about $1.12/h.
+    modal: { url: null, maxInstances: 2, tabsPerInstance: 2, encode: 'service', gpu: 'L4', pricePerHour: 1.12, idleSeconds: 60 },
+    order: [], disabled: [], runners: [] },
   cpu: { backend: 'local', tools: {}, cloudrun: { urls: {}, bucket: null, concurrent: 16 } },
   dashboard: { googleClientId: null, googleEmails: [] },
 };
@@ -393,8 +431,28 @@ function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['
         gpu: typeof r.gpu === 'string' && /^[A-Za-z0-9 ._-]{1,60}$/.test(r.gpu) ? r.gpu : d.runpod.gpu,
         pricePerHour: Number.isFinite(price) && price >= 0 && price <= 20 ? price : d.runpod.pricePerHour,
         idleSeconds: Math.max(5, Math.min(3600, Math.round(Number(r.idleSeconds)) || d.runpod.idleSeconds)),
+        workerQuota: n(r.workerQuota, 1, 1000, d.runpod.workerQuota),
       };
     })(),
+    modal: (() => {
+      const r: Partial<Settings['playtest']['modal']> = t?.modal ?? {};
+      // A Modal web endpoint (https://<workspace>--<app>-<function>[.<region>].modal.run), or the container on this machine.
+      // The deploy sets PLAYTEST_MODAL_URL (ci.yml) to the endpoint ops-modal-playtest-deploy made, and it wins, so nobody
+      // has to copy the address into settings; switching Modal off is Studio's provider order, not a missing URL.
+      const fromDeploy = (env('PLAYTEST_MODAL_URL') ?? '').trim();
+      const own = typeof r.url === 'string' && (MODAL_ENDPOINT.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
+      const url = MODAL_ENDPOINT.test(fromDeploy) ? fromDeploy.replace(/\/$/, '') : own;
+      const price = Number(r.pricePerHour);
+      return {
+        ...service(r, d.modal),
+        url,
+        gpu: typeof r.gpu === 'string' && /^[A-Za-z0-9 ._-]{1,60}$/.test(r.gpu) ? r.gpu : d.modal.gpu,
+        pricePerHour: Number.isFinite(price) && price > 0 && price <= 20 ? price : d.modal.pricePerHour,
+        idleSeconds: Math.max(5, Math.min(3600, Math.round(Number(r.idleSeconds)) || d.modal.idleSeconds)),
+      };
+    })(),
+    order: cleanPlaytestOrder(t?.order),
+    disabled: cleanPlaytestOrder(t?.disabled),
     runners: cleanRunners(t?.runners),
   };
 }
@@ -407,7 +465,7 @@ export function cleanRunners(list: unknown): PlaytestRunner[] {
   for (const r of list.slice(0, 32) as any[]) {
     const id = String(r?.id ?? '');
     if (!/^[a-z0-9][a-z0-9._-]{0,40}$/.test(id) || seen.has(id)) continue;
-    if (!['runpod', 'cloudrun', 'cloudrun-cpu', 'native'].includes(r?.provider)) continue;
+    if (!['runpod', 'modal', 'cloudrun', 'cloudrun-cpu', 'native'].includes(r?.provider)) continue;
     const url = typeof r.url === 'string' && (/^https:\/\/[a-z0-9.-]+(:\d{2,5})?\/?$/.test(r.url) || /^http:\/\/(127\.0\.0\.1|localhost):\d{2,5}\/?$/.test(r.url)) ? r.url.replace(/\/$/, '') : null;
     if (r.provider === 'native' && !url) continue;
     const targets = (Array.isArray(r.targets) ? r.targets : []).filter((x: unknown) => PLAYTEST_TARGETS.includes(x as PlaytestTarget)) as PlaytestTarget[];
@@ -500,6 +558,7 @@ function clean(s: Settings): Settings {
       perProjectGpu: n(s.queue?.perProjectGpu, 1, 16, SETTINGS_DEFAULTS.queue.perProjectGpu),
       perProjectLane: n(s.queue?.perProjectLane, 1, 64, SETTINGS_DEFAULTS.queue.perProjectLane),
       projects: Array.isArray(s.queue?.projects) ? s.queue!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.queue.projects,
+      gpuWaitMinutes: n(s.queue?.gpuWaitMinutes, 1, 240, SETTINGS_DEFAULTS.queue.gpuWaitMinutes),
     },
     platform: {
       issuer: typeof s.platform?.issuer === 'string' && /^https?:\/\/[^\s]+$/.test(s.platform.issuer) ? s.platform.issuer : '',
@@ -575,10 +634,20 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
       regions: Array.isArray(g.regions)
         ? [...new Set(g.regions.filter((r: unknown): r is string => typeof r === 'string' && /^[a-z]+-[a-z]+\d+$/.test(r)))].filter((r) => r !== word(g.region, /^[a-z]+-[a-z]+\d+$/, d.gcp.region)).slice(0, 5)
         : d.gcp.regions,
+      liveRegion: g.liveRegion === '' ? '' : word(g.liveRegion, /^[a-z]+-[a-z]+\d+$/, d.gcp.liveRegion),
       sizes,
       customerSize: cleanCustomerSize(g.customerSize, sizes),
+      checkSize: cleanCustomerSize(g.checkSize, sizes),
     },
   };
+}
+
+/** `items` with those in the live services' region (settings.unityBuild.gcp.liveRegion) moved last, the rest in their
+ *  order. Unchanged when every item is there (it is still used) or there is no live region. */
+export function liveRegionLast<T>(items: T[], live: string | null | undefined, regionOf: (x: T) => string | null | undefined): T[] {
+  if (!live) return items;
+  const others = items.filter((x) => regionOf(x) !== live);
+  return others.length ? [...others, ...items.filter((x) => regionOf(x) === live)] : items;
 }
 
 export function loadSettings(): Settings {
@@ -589,7 +658,7 @@ export function loadSettings(): Settings {
     if (raw.fleet && !('autoLaunch' in raw.fleet)) raw.fleet = { ...raw.fleet, auto: true, autoLaunch: false };
     // A file saved before "brain" existed never chose Claude on purpose. Claude usage is out (J, 2026-10-19).
     if (!raw.brain || raw.brain === 'grok') raw.brain = 'cursor';
-    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, ...raw.playtest?.cloudrunCpu }, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, ...raw.playtest?.runpod } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } }, dashboard: { ...SETTINGS_DEFAULTS.dashboard, ...raw.dashboard } });
+    return clean({ ...SETTINGS_DEFAULTS, ...raw, fleet: { ...SETTINGS_DEFAULTS.fleet, ...raw.fleet }, concurrency: { ...SETTINGS_DEFAULTS.concurrency, ...raw.concurrency }, claude: { ...SETTINGS_DEFAULTS.claude, ...raw.claude }, rates: { ...SETTINGS_DEFAULTS.rates, ...raw.rates }, audio: { ...SETTINGS_DEFAULTS.audio, ...raw.audio }, gpu: { ...SETTINGS_DEFAULTS.gpu, ...raw.gpu }, unityBuild: { ...SETTINGS_DEFAULTS.unityBuild, ...raw.unityBuild }, playtest: { ...SETTINGS_DEFAULTS.playtest, ...raw.playtest, cloudrun: { ...SETTINGS_DEFAULTS.playtest.cloudrun, ...raw.playtest?.cloudrun }, cloudrunCpu: { ...SETTINGS_DEFAULTS.playtest.cloudrunCpu, ...raw.playtest?.cloudrunCpu }, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, ...raw.playtest?.runpod }, modal: { ...SETTINGS_DEFAULTS.playtest.modal, ...raw.playtest?.modal } }, cpu: { ...SETTINGS_DEFAULTS.cpu, ...raw.cpu, cloudrun: { ...SETTINGS_DEFAULTS.cpu.cloudrun, ...raw.cpu?.cloudrun } }, dashboard: { ...SETTINGS_DEFAULTS.dashboard, ...raw.dashboard } });
   } catch {
     return clean(SETTINGS_DEFAULTS);
   }
@@ -610,7 +679,7 @@ export function saveSettings(patch: Partial<Settings>): Settings {
     storage: { ...cur.storage, ...(patch.storage ?? {}) },
     gpu: patch.gpu ? { ...cur.gpu, ...patch.gpu, families: { ...cur.gpu.families, ...(patch.gpu.families ?? {}) }, cloudrun: { ...cur.gpu.cloudrun, ...(patch.gpu.cloudrun ?? {}), urls: { ...cur.gpu.cloudrun.urls, ...(patch.gpu.cloudrun?.urls ?? {}) }, services: { ...cur.gpu.cloudrun.services, ...(patch.gpu.cloudrun?.services ?? {}) } } } : cur.gpu,
     unityBuild: { ...cur.unityBuild, ...(patch.unityBuild ?? {}), gcp: { ...cur.unityBuild.gcp, ...(patch.unityBuild?.gcp ?? {}) }, vm: { ...cur.unityBuild.vm, ...(patch.unityBuild?.vm ?? {}) } },
-    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) }, cloudrunCpu: { ...cur.playtest.cloudrunCpu, ...(patch.playtest?.cloudrunCpu ?? {}) }, runpod: { ...cur.playtest.runpod, ...(patch.playtest?.runpod ?? {}) }, runners: patch.playtest?.runners ?? cur.playtest.runners },
+    playtest: { ...cur.playtest, ...(patch.playtest ?? {}), projects: { ...cur.playtest.projects, ...(patch.playtest?.projects ?? {}) }, cloudrun: { ...cur.playtest.cloudrun, ...(patch.playtest?.cloudrun ?? {}) }, cloudrunCpu: { ...cur.playtest.cloudrunCpu, ...(patch.playtest?.cloudrunCpu ?? {}) }, runpod: { ...cur.playtest.runpod, ...(patch.playtest?.runpod ?? {}) }, modal: { ...cur.playtest.modal, ...(patch.playtest?.modal ?? {}) }, runners: patch.playtest?.runners ?? cur.playtest.runners },
     cpu: { ...cur.cpu, ...(patch.cpu ?? {}), tools: { ...cur.cpu.tools, ...(patch.cpu?.tools ?? {}) }, cloudrun: { ...cur.cpu.cloudrun, ...(patch.cpu?.cloudrun ?? {}), urls: { ...cur.cpu.cloudrun.urls, ...(patch.cpu?.cloudrun?.urls ?? {}) } } },
     dashboard: { ...cur.dashboard, ...(patch.dashboard ?? {}) },
   });

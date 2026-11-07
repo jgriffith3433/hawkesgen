@@ -9,15 +9,34 @@ import type { GpuEndpoint, Settings } from '../../config.ts';
 import { env } from '../../config.ts';
 import type { Tool } from '../../tools/types.ts';
 import { cloudRoute, serviceForFamily, allServices, type CloudService, type ServiceMap } from '../cloudrun/services.ts';
-import { isDown } from './health.ts';
+import { isDown, lastingDown } from './health.ts';
 import { runpodCreditProblem } from './credit.ts';
 import { endpointHeaders, missingSecrets, type Secrets } from './auth.ts';
 
 export type Choice = { kind: 'service'; service: CloudService } | { kind: 'fleet' };
-export type Candidates = { choices: Choice[]; skipped: string[] };
+/**
+ * skipped: why each provider was passed over, in words. blockers: the same, each marked lasting when it won't clear on its
+ * own (no key, no credit, not set up, AWS refusing us) as opposed to passing (busy, cooling down after a capacity error,
+ * this job already failed there). With no choice and every blocker lasting, the job fails at once (nogpu.ts).
+ */
+export type Blocker = { reason: string; lasting: boolean };
+export type Candidates = { choices: Choice[]; skipped: string[]; blockers: Blocker[] };
 
 type Job = { id?: string; family: string | null; params: Record<string, any>; labels?: Record<string, unknown> };
 type ToolLike = Pick<Tool, 'provider' | 'server' | 'gpuSeconds'> & { image?: Tool['image'] };
+
+/**
+ * Why the AWS fleet can't be used at all, or '' when it can: the same credentials rule as fleet.ts awsConfig (keys, the
+ * Google-to-AWS federation, an instance role), checked without loading the AWS SDK. Kept in step with awsConfig.
+ * 2026-11-07: with no keys in Gen's environment the fleet stayed in the order, so jobs were sent there and failed on
+ * the credentials before moving on; now it is skipped as a lasting blocker.
+ */
+export function fleetCredentialProblem(get: Secrets = env): string {
+  if (get('AWS_ACCESS_KEY_ID') && get('AWS_SECRET_ACCESS_KEY')) return '';
+  if (get('HAWKES_AWS_FEDERATION') === 'gce' || (get('K_SERVICE') && get('HAWKES_AWS_ROLE_ARN'))) return '';
+  if (get('HAWKES_AWS_ROLE')) return '';
+  return 'no AWS credentials, so the GPU servers can\'t be started';
+}
 
 /** The ids this job already failed on (it moves on from them). */
 export const triedOf = (job: Job): string[] => (Array.isArray(job.labels?.gpuTried) ? (job.labels!.gpuTried as unknown[]).map(String) : []);
@@ -47,16 +66,21 @@ export function endpointService(ep: GpuEndpoint, family: string, map: ServiceMap
  */
 export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings, 'gpu'>, map: ServiceMap | null, now = Date.now(), get: Secrets = env): Candidates {
   const skipped: string[] = [];
+  const blockers: Blocker[] = [];
+  const skip = (reason: string, lasting: boolean) => { skipped.push(reason); blockers.push({ reason, lasting }); };
   const order = orderFor(settings, job.family);
-  if (tool.provider !== 'comfy') return { choices: [{ kind: 'fleet' }], skipped: ['not a GPU tool'] };
+  if (tool.provider !== 'comfy') return { choices: [{ kind: 'fleet' }], skipped: ['not a GPU tool'], blockers: [] };
   // The old rule, exactly: no order set.
   if (!order.length) {
-    if (!map) return { choices: [{ kind: 'fleet' }], skipped: ['no services.json'] };
+    if (!map) return { choices: [{ kind: 'fleet' }], skipped: ['no services.json'], blockers };
     const r = cloudRoute(job, tool, settings, map);
-    return r.service ? { choices: [{ kind: 'service', service: { ...r.service, provider: 'cloudrun', lane: r.service.name } }], skipped } : { choices: [{ kind: 'fleet' }], skipped: [r.why] };
+    return r.service ? { choices: [{ kind: 'service', service: { ...r.service, provider: 'cloudrun', lane: r.service.name } }], skipped, blockers } : { choices: [{ kind: 'fleet' }], skipped: [r.why], blockers };
   }
   if (job.labels?.gpuBackend === 'fleet' || tool.server === 'ssh') {
-    return { choices: [{ kind: 'fleet' }], skipped: [tool.server === 'ssh' ? 'the tool works on the server over SSH: the fleet only' : 'this job asked for the fleet'] };
+    const why = tool.server === 'ssh' ? 'the tool works on the server over SSH: the fleet only' : 'this job asked for the fleet';
+    const off = fleetCredentialProblem(get);
+    if (off) { skip(`${why}; fleet: ${off}`, true); return { choices: [], skipped, blockers }; }
+    return { choices: [{ kind: 'fleet' }], skipped: [why], blockers };
   }
   const tried = new Set(triedOf(job));
   const family = job.family ?? '';
@@ -65,36 +89,41 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
   const choices: Choice[] = [];
   for (const id of order) {
     const cool = isDown(id, now);
-    if (tried.has(id)) { skipped.push(`${id}: this job already failed there`); continue; }
-    if (cool) { skipped.push(`${id}: ${cool.reason} (skipped for ${Math.ceil((cool.until - now) / 60_000)} min)`); continue; }
-    if (id === 'fleet') { choices.push({ kind: 'fleet' }); continue; }
-    if (!map) { skipped.push(`${id}: no services.json`); continue; }
+    if (tried.has(id)) { skip(`${id}: this job already failed there`, false); continue; }
+    if (cool) { skip(`${id}: ${cool.reason} (skipped for ${Math.ceil((cool.until - now) / 60_000)} min)`, lastingDown(cool)); continue; }
+    if (id === 'fleet') {
+      const off = fleetCredentialProblem(get);
+      if (off) skip(`fleet: ${off}`, true);
+      else choices.push({ kind: 'fleet' });
+      continue;
+    }
+    if (!map) { skip(`${id}: no services.json`, true); continue; }
     if (id === 'cloudrun') {
       const r = cloudRoute({ ...job, labels: { ...(job.labels ?? {}), gpuBackend: 'cloudrun' } }, tool, settings, map);
       // Cloud Run's services cool down and are tried one by one (a job's tried list and the cooldowns hold service names).
       const down = r.service && isDown(r.service.name, now);
-      if (r.service && tried.has(r.service.name)) skipped.push(`cloudrun: this job already failed on ${r.service.name}`);
-      else if (r.service && down) skipped.push(`cloudrun: ${r.service.name} ${down.reason} (skipped for ${Math.ceil((down.until - now) / 60_000)} min)`);
+      if (r.service && tried.has(r.service.name)) skip(`cloudrun: this job already failed on ${r.service.name}`, false);
+      else if (r.service && down) skip(`cloudrun: ${r.service.name} ${down.reason} (skipped for ${Math.ceil((down.until - now) / 60_000)} min)`, lastingDown(down));
       else if (r.service) choices.push({ kind: 'service', service: { ...r.service, provider: 'cloudrun', lane: r.service.name } });
-      else skipped.push(`cloudrun: ${r.why}`);
+      else skip(`cloudrun: ${r.why}`, true);
       continue;
     }
     const ep = settings.gpu.providers.find((p) => p.id === id);
-    if (!ep) { skipped.push(`${id}: not in settings.gpu.providers`); continue; }
-    if (!ep.enabled) { skipped.push(`${id}: turned off`); continue; }
-    if (!ep.families.includes('*') && !ep.families.includes(family)) { skipped.push(`${id}: doesn't run the ${family || 'job\'s'} family`); continue; }
+    if (!ep) { skip(`${id}: not in settings.gpu.providers`, true); continue; }
+    if (!ep.enabled) { skip(`${id}: turned off`, true); continue; }
+    if (!ep.families.includes('*') && !ep.families.includes(family)) { skip(`${id}: doesn't run the ${family || 'job\'s'} family`, true); continue; }
     // "*" is the ComfyUI image: a 3D tool's script needs an endpoint running the 3D image, which names its family.
-    if (tool.image === '3d' && !ep.families.includes(family)) { skipped.push(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the 3D image that names it`); continue; }
-    if (perGraph > ep.graphLimitSeconds) { skipped.push(`${id}: one graph may run ${Math.round(perGraph / 60)} min, past its limit`); continue; }
-    if (!bucket) { skipped.push(`${id}: settings.gpu.cloudrun.bucket is not set (the worker's files go there)`); continue; }
-    if (!env('HAWKESGEN_PUBLIC_URL')) { skipped.push(`${id}: HAWKESGEN_PUBLIC_URL is not set (the worker reaches the bucket through Gen)`); continue; }
+    if (tool.image === '3d' && !ep.families.includes(family)) { skip(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the 3D image that names it`, true); continue; }
+    if (perGraph > ep.graphLimitSeconds) { skip(`${id}: one graph may run ${Math.round(perGraph / 60)} min, past its limit`, true); continue; }
+    if (!bucket) { skip(`${id}: settings.gpu.cloudrun.bucket is not set (the worker's files go there)`, true); continue; }
+    if (!env('HAWKESGEN_PUBLIC_URL')) { skip(`${id}: HAWKESGEN_PUBLIC_URL is not set (the worker reaches the bucket through Gen)`, true); continue; }
     const missing = missingSecrets(ep.provider, get);
-    if (missing) { skipped.push(`${id}: ${missing}`); continue; }
+    if (missing) { skip(`${id}: ${missing}`, true); continue; }
     const broke = ep.provider === 'runpod' ? runpodCreditProblem(get) : null;
-    if (broke) { skipped.push(`${id}: ${broke}`); continue; }
+    if (broke) { skip(`${id}: ${broke}`, true); continue; }
     choices.push({ kind: 'service', service: endpointService(ep, family, map, bucket, get) });
   }
-  return { choices, skipped };
+  return { choices, skipped, blockers };
 }
 
 /**

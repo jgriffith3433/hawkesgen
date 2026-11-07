@@ -26,9 +26,22 @@ const ORG_ID = /^org_[0-9a-f]{8,32}$/;
 
 export type OrgCharge = { org: string; credits: number };
 
+/**
+ * Studio's public names (Cloudflare Workers, server/studio-edge in hawkesstudio) and the Cloud Run services behind them.
+ * Gen calls the control plane for every charged job and refund: server to server, so straight to Cloud Run and never
+ * through a Cloudflare Worker (2026-11-02: Workers usage must grow with people, not with Gen's own calls). Studio's gate
+ * lets /api/cells/gen/charge and /refund through on its own address too (hawkesstudio src/cloudauth.ts). Settings keep
+ * the public name (what people read); HAWKESGEN_ORG_CREDITS_DIRECT=0 calls it as written.
+ */
+const STUDIO_DIRECT: Record<string, string> = {
+  'https://studio.hawkesgen.ai': 'https://studio-388576319982.us-east4.run.app',
+  'https://studio-beta.hawkesgen.ai': 'https://studio-beta-388576319982.us-central1.run.app',
+};
+export const directControlUrl = (url: string) => (env('HAWKESGEN_ORG_CREDITS_DIRECT') === '0' ? url : STUDIO_DIRECT[url.toLowerCase()] ?? url);
+
 /** The control plane's address and key, or null when Gen doesn't charge orgs (older setup: the cell charges itself). */
 export function orgCreditsConfig(): { url: string; key: string } | null {
-  const url = (loadSettings().orgCredits?.url || env('HAWKESGEN_ORG_CREDITS_URL') || '').trim().replace(/\/+$/, '');
+  const url = directControlUrl((loadSettings().orgCredits?.url || env('HAWKESGEN_ORG_CREDITS_URL') || '').trim().replace(/\/+$/, ''));
   const key = (env('HAWKESGEN_ORG_CREDITS_KEY') || '').trim();
   return url && key ? { url, key } : null;
 }
@@ -89,11 +102,14 @@ export async function chargeOrg(org: string, job: string, credits: number, tool:
 }
 
 /** Gives a job's charge back (it failed, was cancelled, or never got made). Once; retried later when unreachable. */
-export async function refundOrgCharge(job: string, reason = 'Job failed or cancelled'): Promise<number> {
+export async function refundOrgCharge(job: string, reason = 'Job failed or cancelled', credits?: number): Promise<number> {
   const row = db.prepare('SELECT * FROM org_charges WHERE job = ? AND refunded IS NULL').get(job) as { job: string; org: string; credits: number } | undefined;
   if (!row) return 0;
+  // A part of it (a compile-only check settled by its machine time): never more than was charged.
+  const amount = credits === undefined ? row.credits : Math.min(row.credits, Math.max(0, Math.round(credits)));
+  if (!amount) { db.prepare('UPDATE org_charges SET refunded = 0 WHERE job = ?').run(job); return 0; }
   try {
-    const r = await control('refund', { genOrg: row.org, job: row.job, credits: row.credits, reason: String(reason).slice(0, 200) });
+    const r = await control('refund', { genOrg: row.org, job: row.job, credits: amount, reason: String(reason).slice(0, 200) });
     // 404: the control plane has no such charge (nothing to give back).
     if (r.status !== 200 && r.status !== 404) throw new Error(`the control plane answered ${r.status}`);
     db.prepare('UPDATE org_charges SET refunded = ?, refund_error = NULL WHERE job = ?').run(Date.now(), row.job);

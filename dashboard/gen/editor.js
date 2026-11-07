@@ -8,7 +8,7 @@
 // size, turn, opacity, blend, text, color, sound, fades, speed), a track, or the scene itself.
 
 import { $, $$, h, api, toast, bus, icon, mediaInfo, fmt, fileUrl, plainError, ApiError } from './lib.js';
-import { P, take, save, canUndo, canRedo, doUndo, doRedo, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
+import { P, take, save, canUndo, canRedo, doUndo, doRedo, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, retryClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
 import { seek, pause, frameAt, mixdown, recordTimeline, refresh } from './player.js';
 import { fit, timelineRefusal, viewState, setView } from './timeline.js';
 import { openExport, clipTools } from './tools.js';
@@ -396,7 +396,8 @@ function clipPanel(c) {
     h('b', { class: 'ins-name', title: name }, name), h('span', { class: 'muted small' }, `${tr?.name ?? ''} · ${fmt(clipLength(c), 1)}`))];
   if (c.pending) parts.push(h('div', { class: 'ins-wait' }, h('span', { class: 'busy-dot' }), h('span', {}, PROGRESS.get(c.job) ?? 'Being made'), h('span', { class: 'muted small' }, 'It fills in when it\'s ready.'),
     h('button', { class: 'ghost small', onclick: () => stopClip(c.id) }, 'Stop')));
-  if (c.failed) parts.push(h('p', { class: 'error small' }, plainError(c.failed)));
+  if (c.failed) parts.push(h('div', { class: 'ins-wait failed' }, h('p', { class: 'error small' }, plainError(c.failed)),
+    c.job ? h('button', { class: 'ghost small', onclick: () => retryClip(c.id) }, 'Retry') : ''));
   if (c.scene) parts.push(h('button', { class: 'ghost small', onclick: () => openScene(c.scene) }, icon('layers'), 'Open the scene it plays'));
   if (tr?.locked) parts.push(h('p', { class: 'muted small' }, `"${tr.name}" is locked: unlock it to change this.`));
   parts.push(askRow(ASK[c.kind] ?? []));

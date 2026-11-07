@@ -62,7 +62,11 @@ connection, the video encoded on the worker (NVENC) over `/encode`. Only the hea
   (`PLAYTEST_RUNPOD_TOKEN`, else `GPU_WORKER_TOKEN`) always. The image checks the token as `HAWKES_TOKEN` on `/pw`,
   `/encode`, `/selftest` and `/ready` (`/ping` and `/healthz` stay open for the gateway).
 - **Retries:** a cold start may answer 408, 504 or 524 (Cloudflare); they are retried like 429/503. 412 (no GPU) is not.
-- **Lane:** `playtest-runpod`, `maxInstances x tabsPerInstance` tabs.
+- **Lane:** `playtest-runpod`, `maxInstances x tabsPerInstance` tabs. Since 2026-11-01 `maxInstances` is the
+  endpoint's own `workers.max`, read from RunPod every 2 minutes (`src/providers/playtester/runpodcap.ts`); the setting
+  is only the fallback when RunPod can't be read. To change how many playtests run at once, change the endpoint:
+  `ops-playtest-capacity.yml` (or `node tools/playtest-runpod/capacity.mjs --max N --apply`), which touches only
+  `workers.max`. Per-second billing means more workers play the same queue sooner for about the same money.
 - **Usage:** a `runpod-playtest` row per playtest (`runpodUsage`): the tabs' share of a worker for the connect wait, the
   play and the idle tail. It is an upper bound when playtests follow each other on a warm worker.
 - **Check it:** `GET /v1/playtester/cloud?variant=runpod&selftest=1` (starts a worker: about a cent).
@@ -82,6 +86,68 @@ connection, the video encoded on the worker (NVENC) over `/encode`. Only the hea
   Vulkan vendor files there. `HAWKES_FETCH_DRIVER=0` turns it off. The self-test report's `graphics` says what happened.
 - Each GL candidate in the self-test now has a hard deadline, so a hung GPU process fails the test instead of holding
   `/ping` at 204.
+
+## Provider order and Modal (2026-11-01)
+
+Web playtests try browser providers in `settings.playtest.order` (Studio's playtest setting writes it through
+`PUT /v1/playtest/capacity`): `runpod`, `modal`, `cloudrun` (the L4 service), `cloudrun-cpu` (software WebGL). Software is
+always moved last, so a game takes any GPU first; ids in `settings.playtest.disabled` are left out; a project's own backend
+(`settings.playtest.projects`) still wins. Empty order: `backend`'s own GPU first, then every other GPU provider that is set
+up (runpod: RunPod, Modal, the L4, then software; cloudrun: the L4, RunPod, Modal, then software), so a second GPU is
+the fallback without setting an order (2026-11-02). A run that still lands in software lists the GPU providers with no
+playtest browser set up in its reason ("modal: no Modal playtest browser deployed ..."). A provider that is out of credit
+(RunPod's balance, `gpu/credit.ts`) is skipped with the reason, and one that refused us for money or a key (a 402, a spend
+limit, 401/403) cools down for 30 minutes (`playtest:<id>` in `gpu/health.ts`), so the next playtests go straight to the
+next provider. The queue's lane follows the first provider a run will actually use.
+
+**Modal** runs the same image (`ghcr.io/jgriffith3433/hawkes-gen-playtest:latest`, public) as a Modal web endpoint on the
+cheapest card Modal has free (T4, else L4, else A10): `tools/playtest-modal/deploy.mjs` writes the app (`@modal.web_server(8080, requires_proxy_auth=True)`, `max_containers`,
+`scaledown_window=60`, no warm containers: scale to zero) and `--apply` deploys it. The workflow
+`ops-modal-playtest-deploy.yml` (production environment, main only; the `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` that
+`ops-modal-deploy.yml` uses, and `GPU_WORKER_TOKEN` as the image's `HAWKES_TOKEN`) runs it and prints the endpoint URL.
+Gen calls it with the Modal proxy token it already has for GPU jobs (`MODAL_PROXY_KEY` / `MODAL_PROXY_SECRET`) and
+`X-Hawkes-Token` (`PLAYTEST_MODAL_TOKEN`, else `GPU_WORKER_TOKEN`). **It deploys on main by itself** (2026-11-02): a push
+to main that changes the image's inputs (`server/playtest-cloudrun/`, `tools/playtest-cloudrun/lib.mjs`,
+`tools/playtest-runpod/image-context.mjs`, the Playwright version in `package-lock.json`) or the Modal app
+(`tools/playtest-modal/`) runs `playtest-image.yml`, which builds the image (skipped when that `pw<version>-<hash>` tag is
+already on GHCR) and calls `ops-modal-playtest-deploy.yml` with that exact pinned tag, so the browser ships with Gen's
+go-live (Studio fast-forwards main to beta). It deploys only when the image is new or the app's code changed; beta and pull
+requests never deploy. The hand run above still works for another GPU or size. Then set `settings.playtest.modal.url` (and put `modal`
+in the order): `PUT /v1/playtest/capacity {"modal": {"url": "https://<workspace>--hawkes-gen-playtest-browser.modal.run"}}`.
+Check it with `GET /v1/playtester/cloud?variant=modal&selftest=1` (starts a container: about $0.02). About $0.91/hour per
+container on a T4 ($1.12 on an L4, $1.42 on an A10; 4 cores, 16 GiB), two browsers each; usage rows are `modal-playtest`.
+**Cheap cards for playtests** (Jaycee, 2026-11-02: "we should be using cheap GPUs for playtests on all providers. The
+expensive GPUs are just for Gen's actual AI gen jobs"): Chromium needs graphics and NVENC, not memory, so the app asks for
+`gpu=["T4", "L4", "A10"]` and Modal starts the first it has (it ran out of L4s for 40 minutes that day and every playtest
+waited out its 12 minutes). RunPod's playtest endpoint already takes AMPERE_16 ($0.58/h) before AMPERE_24 ($0.69/h);
+the Cloud Run service is on an L4, the cheapest GPU Cloud Run offers. Generation stays on its own L40S app (hawkes-gen-gpu).
+**No WebSocket compression behind Modal** (2026-11-02): Modal's relay forwards the client's `permessage-deflate` offer to
+the container but never negotiates it with the client, so the first compressed frame from Playwright's browser server
+(any message over 10 KB: a screencast frame, the page's events) made it close the connection, and every Modal playtest
+ended about a minute in with "page.goto: Target page, context or browser has been closed" (modal-labs/modal-client#4150).
+The image's server drops `Sec-WebSocket-Extensions` from the browser's handshake in a Modal container (`MODAL_TASK_ID`,
+or `HAWKES_WS_DEFLATE=0`, which the Modal app sets); Cloud Run and RunPod keep compression (`gpu.mjs wsDeflateAllowed`).
+Not verified yet: whether Modal's GPU sandbox gives Chromium a graphics path (EGL/Vulkan). If it doesn't, the image's
+self-test fails, `/pw` answers 412 "No GPU" and the run moves on to the next provider.
+
+## Capacity (Studio's setting: `/v1/playtest/capacity`)
+
+`GET /v1/playtest/capacity` (admin or owner key; customers' keys get 403) returns `{ browsers, perWorker, workers,
+maxBrowsers, order, providers: [{ id, name, kind: "gpu"|"software", enabled, selectable, deployed, ready, ok, browsers,
+maxBrowsers, perWorker, gpu, pricePerHour, credit: { ok, balance } | null, reason }], runpod: { endpoint, workers, others,
+quota, maxWorkers, readError } }`. `browsers` is the RunPod lane (workers.max x 2); `maxBrowsers` is what RunPod's account
+worker quota leaves this endpoint after the other endpoints' workers.max (read from `GET /v2/serverless` each call).
+Every provider is listed, switched-off ones too, and `aws` last (`selectable: false`: suspended since 2026-10-28).
+
+`PUT` (or `POST`, owner key only) takes any of `{ browsers, providers, modal, runpod: { workerQuota } }`:
+- `browsers` (1-40): workers.max = ceil(browsers / 2), clamped to the account; only `workers` is PATCHed. When RunPod
+  refuses for its quota, its "at most N" is applied and its quota remembered (`settings.playtest.runpod.workerQuota`).
+- `providers`: the ids to use, in order (`["runpod", "modal", "cloudrun-cpu"]`, or `{ id, enabled }`). Ids left out are
+  switched off. Software is kept last. `aws` can't be switched on (409).
+- `modal`: `{ url, maxInstances, tabsPerInstance, gpu, pricePerHour, idleSeconds }` once the Modal app is deployed.
+
+It answers `{ applied: { requested, workers, browsers, clamped, providers, modal }, ...the GET body }`; a bad body is a 400
+(503 without RUNPOD_API_KEY, 409 without a RunPod endpoint, 502 when RunPod refuses) with `{ error }`.
 
 ## Measured (2026-10-29)
 

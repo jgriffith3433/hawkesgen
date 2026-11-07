@@ -54,9 +54,9 @@ test('cloudPlaytestsFor: runpod tries the RunPod GPU, then the CPU service; its 
   assert.equal(pc.cloudLanes(rp), 4);
   assert.equal(pc.cloudLaneKey(rp), 'playtest-runpod');
   assert.ok(Math.abs(rp.pricePerSecond * 3600 - 0.58) < 1e-9);
-  // No endpoint: straight to the CPU service. "cloudrun" never tries RunPod.
+  // No endpoint: straight to the CPU service. "cloudrun" with no L4 service falls back to RunPod's GPU before software.
   assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: { ...base, runpod: { ...base.runpod, url: null } } }).map((c) => c.variant), ['cpu']);
-  assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: { ...base, backend: 'cloudrun' } }).map((c) => c.variant), ['cpu']);
+  assert.deepEqual(pc.cloudPlaytestsFor('x', { playtest: { ...base, backend: 'cloudrun' } }).map((c) => c.variant), ['runpod', 'cpu']);
   // Per product.
   assert.deepEqual(pc.cloudPlaytestsFor('dod', { playtest: { ...base, backend: 'ec2', projects: { dod: 'runpod' } } }).map((c) => c.variant), ['runpod', 'cpu']);
   // A Pod's proxy gets its pod id as the name.
@@ -100,6 +100,31 @@ test('connectOne on RunPod: its headers, and it waits through a cold start (408,
   assert.equal(seen[0]['x-hawkes-job'], 'j_1');
   const denied = { connect: async () => { throw new Error('Unexpected server response: 401'); } };
   await assert.rejects(pc.connectOne(denied, { url: RP, variant: 'runpod' }, { deps: { idToken: async () => '', sleep: async () => {}, now: () => 0, env: ENV } }), /RunPod playtest service: .*401/);
+});
+
+test('connectOne on RunPod: a handshake the gateway holds past Playwright\'s timeout is a cold start, tried again; on Cloud Run it ends the try', async () => {
+  let n = 0;
+  const slow = { connect: async () => { n++; if (n < 3) throw new Error('browserType.connect: Timeout 300000ms exceeded.'); return { id: 'gpu' }; } };
+  let now = 0;
+  const deps = { idToken: async () => 'tok', sleep: async (ms: number) => { now += ms; }, now: () => now, env: ENV };
+  assert.deepEqual(await pc.connectOne(slow, { url: RP, variant: 'runpod' }, { timeoutMs: 12 * 60_000, deps }), { id: 'gpu' });
+  assert.equal(n, 3);
+  const cloud = { connect: async () => { throw new Error('browserType.connect: Timeout 300000ms exceeded.'); } };
+  await assert.rejects(pc.connectOne(cloud, { url: CPU_URL, variant: 'cpu' }, { deps }), /Cloud Run playtest service: .*Timeout/);
+});
+
+test('openGpuHost\'s waits: a game waits out RunPod\'s cold start before software WebGL; a run in software says why', async () => {
+  const { connectWaitMs, softwareWhy, GPU_COLD_START_MS } = await import('../src/providers/comfy/playtestHost.ts');
+  assert.ok(GPU_COLD_START_MS >= 10 * 60_000);
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 1, { many: true, game: true }), GPU_COLD_START_MS);
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 1, { many: false, game: true }), GPU_COLD_START_MS);
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 1, { many: true, game: false }), 5 * 60_000, 'a site crawl: as before');
+  assert.equal(connectWaitMs({ variant: 'runpod' }, 2, { many: true, game: true }), 40_000);
+  assert.equal(connectWaitMs({ variant: 'cpu' }, 1, { many: true, game: true }), 40_000);
+  assert.equal(connectWaitMs({ variant: 'cpu' }, 1, { many: false, game: true }), undefined);
+  const why = softwareWhy(pc.CPU_SOFTWARE_WHY, ['RunPod skipped: RunPod is out of credit (balance $-0.01): add funds at runpod.io (Billing)']);
+  assert.match(why, /^no GPU browser \(RunPod skipped: RunPod is out of credit .*\), so it played on the Cloud Run CPU service/);
+  assert.ok(softwareWhy('x', ['y'.repeat(2000)]).length <= 600);
 });
 
 test('openCloudPlaytestHost on RunPod: a GPU host, its label, and a runpod-playtest usage row with the cold start and idle tail', async () => {
@@ -258,4 +283,33 @@ test('the image workflow builds the same context as Cloud Run\'s L4 image, and p
   assert.ok(['Dockerfile', 'server.mjs', 'gpu.mjs', '10_nvidia.json', 'nvidia_icd.json', 'package.json'].every((f) => fs.existsSync(path.join(out, f))));
   assert.ok(!fs.readFileSync(path.join(out, 'package.json'), 'utf8').includes('__PW_VERSION__'));
   fs.rmSync(out, { recursive: true, force: true });
+});
+
+test('the RunPod lane follows the endpoint\'s own workers.max once read; settings when unknown or stale', async () => {
+  const cap = await import('../src/providers/playtester/runpodcap.ts');
+  const base = { ...SETTINGS_DEFAULTS.playtest, backend: 'runpod' as const, runpod: { ...SETTINGS_DEFAULTS.playtest.runpod, url: RP, maxInstances: 2, tabsPerInstance: 2 } };
+  cap.setRunpodEndpointMax(null);
+  assert.equal(pc.cloudLanes(pc.cloudPlaytestsFor('x', { playtest: base })[0]), 4, 'unknown: settings (2 x 2)');
+  let asked = '';
+  const fetcher = (async (u: string, init: any) => {
+    asked = `${u} ${init.headers.Authorization}`;
+    return new Response(JSON.stringify({ id: 'wi67a2gkuwi9o5', workers: { min: 0, max: 6, idleTimeout: 60 } }), { status: 200 });
+  }) as any;
+  const got = await cap.checkRunpodEndpointMax(RP, (k) => (ENV as any)[k], fetcher);
+  assert.equal(got?.max, 6);
+  assert.equal(asked, 'https://api.runpod.io/v2/serverless/wi67a2gkuwi9o5 Bearer rp_key');
+  assert.equal(pc.cloudLanes(pc.cloudPlaytestsFor('x', { playtest: base })[0]), 12, 'raised on RunPod: 6 workers x 2 tabs');
+  // Another endpoint in settings, a stale reading, a Pod, no key, or an error: settings decide.
+  assert.equal(cap.runpodEndpointMax('https://other1234.api.runpod.ai'), null);
+  assert.equal(cap.runpodEndpointMax(RP, () => Date.now() + 16 * 60_000), null);
+  assert.equal(cap.runpodEndpointMax(POD), null);
+  assert.equal(await cap.checkRunpodEndpointMax(RP, () => undefined, fetcher), null);
+  assert.equal(await cap.checkRunpodEndpointMax(POD, (k) => (ENV as any)[k], fetcher), null);
+  const failing = (async () => new Response('{"title":"nope"}', { status: 500 })) as any;
+  cap.setRunpodEndpointMax(null);
+  assert.equal(await cap.checkRunpodEndpointMax(RP, (k) => (ENV as any)[k], failing), null);
+  // Absurd values are capped.
+  const huge = (async () => new Response(JSON.stringify({ workers: { max: 500 } }), { status: 200 })) as any;
+  assert.equal((await cap.checkRunpodEndpointMax(RP, (k) => (ENV as any)[k], huge))?.max, cap.MAX_WORKERS);
+  cap.setRunpodEndpointMax(null);
 });

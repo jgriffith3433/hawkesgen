@@ -3,7 +3,8 @@
 // back), undo and redo, saving to Gen (with a version, so edits from the AI or MCP elsewhere aren't lost), waiting clips
 // filled in when their jobs end, and changes made elsewhere picked up.
 
-import { api, bus, toast, plainError, jobStatusText, sendFeedback } from './lib.js';
+import { state } from './account.js';
+import { api, bus, toast, plainError, friendly, jobStatusText, sendFeedback } from './lib.js';
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -429,6 +430,21 @@ export async function stopClip(id) {
   undoable(`Stopped making "${c.label ?? 'it'}".`);
 }
 
+/** Tries a failed clip again: the same job again (a new one, same recipe); the clip waits for it like any other. */
+export async function retryClip(id) {
+  const c = byId(id);
+  if (!c?.job || !c.failed) return;
+  try {
+    const r = await api(`/v1/jobs/${c.job}/rerun`, { method: 'POST', body: {} });
+    const job = r.jobs?.[0] ?? r;
+    remember();
+    Object.assign(c, { job: job.id, pending: true });
+    delete c.failed;
+    changed();
+    watchJobs();
+  } catch (err) { toast(friendly(err).text); }
+}
+
 // Waiting clips: follow their jobs and fill them in. Edits made elsewhere: picked up while the page is visible.
 const watching = new Map();
 export function watchJobs() {
@@ -438,39 +454,52 @@ export function watchJobs() {
     followJob(c.job).catch(() => {}).finally(() => watching.delete(c.job));
   }
 }
+/** A waiting clip's job, through the page's live stream (jobwatch.js): its progress as it comes, filled in when it ends. */
 async function followJob(jobId) {
-  for (;;) {
-    let j;
-    try { j = await api(`/v1/jobs/${jobId}`); } catch { await new Promise((r) => setTimeout(r, 4000)); continue; }
-    const mine = P.doc.clips.filter((c) => c.job === jobId && c.pending);
-    if (!mine.length) return;
-    if (j.status === 'done' || j.status === 'failed' || j.status === 'cancelled') {
-      for (const c of mine) {
-        if (j.status === 'done') {
-          const want = c.kind === 'audio' ? ['audio'] : c.kind === 'image' ? ['image', 'video'] : ['video', 'image'];
-          const out = j.outputs.find((o) => want.includes(o.kind) && !/mask/i.test(o.title ?? '')) ?? j.outputs.find((o) => want.includes(o.kind)) ?? j.outputs[0];
-          if (out) { c.asset = out.asset; if (isVisual(c) && (out.kind === 'image' || out.kind === 'video')) c.kind = out.kind; } else c.failed = 'The job made nothing';
-        } else c.failed = plainError(j.error ?? j.status);
-        delete c.pending;
-      }
-      changed();
-      bus.emit('jobDone', j);
-      return;
-    }
-    PROGRESS.set(jobId, jobStatusText(j));
-    bus.emit('jobProgress', { job: jobId, status: j.status, detail: j.detail, ahead: j.queue?.ahead, step: PROGRESS.get(jobId) });
-    await new Promise((r) => setTimeout(r, 2500));
+  const { jobWatch } = await import('./jobwatch.js');
+  const w = await jobWatch();
+  const j = await w.follow(jobId, (x) => {
+    PROGRESS.set(jobId, jobStatusText(x));
+    bus.emit('jobProgress', { job: jobId, status: x.status, detail: x.detail, ahead: x.queue?.ahead, step: PROGRESS.get(jobId) });
+  });
+  const mine = P.doc.clips.filter((c) => c.job === jobId && c.pending);
+  if (!mine.length) return;
+  for (const c of mine) {
+    if (j.status === 'done') {
+      const want = c.kind === 'audio' ? ['audio'] : c.kind === 'image' ? ['image', 'video'] : ['video', 'image'];
+      const out = j.outputs.find((o) => want.includes(o.kind) && !/mask/i.test(o.title ?? '')) ?? j.outputs.find((o) => want.includes(o.kind)) ?? j.outputs[0];
+      if (out) { c.asset = out.asset; if (isVisual(c) && (out.kind === 'image' || out.kind === 'video')) c.kind = out.kind; } else c.failed = 'The job made nothing';
+    } else c.failed = plainError(j.error ?? j.status);
+    delete c.pending;
   }
+  changed();
+  bus.emit('jobDone', j);
 }
 
+/** Reads the open project once and takes it when someone else saved a newer one (the AI, MCP, another tab). */
+async function catchUp() {
+  if (!P.id || !P.active || document.hidden || P.dirty || P.saving) return;
+  try {
+    const p = await api(`/v1/editor/projects/${P.id}`);
+    if (p.id === P.id && p.version > P.version && !P.dirty) { take(p); toast('Updated with changes made elsewhere.'); }
+  } catch { /* offline: the next event or reconnect reads it */ }
+}
+
+let syncing = false;
 export function startSync() {
-  setInterval(async () => {
-    if (!P.id || !P.active || document.hidden || P.dirty || P.saving) return;
-    try {
-      const p = await api(`/v1/editor/projects/${P.id}`);
-      if (p.id === P.id && p.version > P.version && !P.dirty) { take(p); toast('Updated with changes made elsewhere.'); }
-    } catch { /* offline: try later */ }
-  }, 8000);
+  // The stream is for accounts: signed out it would answer 401 on every anonymous load. It starts at sign-in instead.
+  if (!state.user) { if (!syncing) { syncing = true; bus.on('signedIn', (u) => { if (u) openSync(); }); } return; }
+  openSync();
+}
+let opened = false;
+function openSync() {
+  if (opened) return;
+  opened = true;
+  // Edits made elsewhere arrive as `scene` events on the page's one stream (GET /v1/events): nothing asks on a timer.
+  // One read when the stream comes back from a drop or the page is shown again, for what was missed.
+  import('./jobwatch.js').then(({ jobWatch }) => jobWatch()).then((w) => w.on('scene', (e) => {
+    if (e?.id === P.id && e.version > P.version) catchUp();
+  }, catchUp));
   bus.on('doc', watchJobs);
   // Clips that were already waiting when the page opened are followed now, not at the next change.
   watchJobs();

@@ -106,7 +106,7 @@ only on runners that take customers' builds (never in a browser on Gen's machine
 | `PATCH /v1/versions/:id` | `{ status: current \| take \| old \| discarded, note? }` |
 
 Job inputs and chain steps take `slot:<project>/<slug>/<slot>[@n|@latest]` and, in an entity's own recipes, `slot:./<slot>`.
-`GET /v1/events` also streams `library` events.
+`GET /v1/events` also streams `library` events. It also sends `scene` (`{ id, project, kind, version }`: a scene was saved; read it if yours is older), and, to admins only, `machines` (`{ at }`: a reading was taken) and `bench` (`{ run }`: a run or a result moved on). Pages use these instead of asking on a timer; the stream sends `retry: 5000` and a `: ping` every 20 s, with `Cache-Control: no-transform` and `X-Accel-Buffering: no`, so nothing on the way holds it back (the gen-edge Worker streams it through; test/no-polling.test.ts).
 
 ## Levels of detail (src/lod.ts)
 
@@ -376,3 +376,10 @@ Events: `/v1/events` sends `production` events (`{ id, status, progress, out: { 
 | `GET /v1/providers/anthropic/models` | Claude models the tools accept |
 | `GET/POST /v1/settings` | Service settings (owner to change) |
 | `GET/POST /v1/clients`, `POST /v1/clients/:id/disable\|enable` | API keys (owner). Roles: owner, admin, user; `projects` limits which projects a key sees |
+
+## Signed file links
+
+`POST /v1/assets/:id?sign=1[&ttl=<days>]` (needs access to the asset's project) returns `{ url, expires }`: a relative
+`/v1/files/<id>?exp=<ms>&sig=<hmac>` that opens in any browser with no session (default 7 days, max 30). The signature
+covers that one asset id and the expiry; a bad, tampered or expired one is 401, and another asset's signature never
+opens this one. Without `sig` the normal key/session check applies. Code: `src/links.ts` `signedFileUrl`/`verifyFileSig`.

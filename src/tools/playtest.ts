@@ -17,6 +17,7 @@ import { runnerCandidates, isNativeTarget, claimRunner, runnerHealthKey, runnerC
 import { runSession, groupCrashes, RunnerUnavailable, type SessionResult } from '../providers/playtester/native.ts';
 import { siteHeader, sitePageUrl, type CloudPlaytest } from '../providers/playtester/cloudrun.ts';
 import { markDown, markUp } from '../providers/gpu/health.ts';
+import { recheckEmptyRunpodCredit } from '../providers/gpu/credit.ts';
 import { db } from '../db.ts';
 import { ask, DEFAULT_MODEL, usageOf, customerJob } from '../providers/anthropic.ts';
 import { openGpuHost, GPU_LINUX_ARGS, type PlaytestHost } from '../providers/comfy/playtestHost.ts';
@@ -164,7 +165,7 @@ export const playtestRunTool: Tool = {
 };
 
 /** How a web run finds its browser: the router's services in order (null: today's, settings.playtest), and whether the playtesters may stand in. */
-type WebRoute = { clouds?: CloudPlaytest[]; fallback: boolean; site?: string } | null;
+type WebRoute = { clouds?: CloudPlaytest[]; fallback: boolean; site?: string; passedOver?: string[] } | null;
 
 /**
  * A web build's page and browser services. The studio's own URLs play as before (unless settings.playtest.runners is
@@ -189,13 +190,17 @@ async function webRoute(ctx: RunContext, p: Record<string, any>, build: BuildRef
   }
   const settings = loadSettings();
   if (!customer && !site && !settings.playtest.runners.length) return null;
+  // An empty RunPod balance read a while ago is read again before the router skips RunPod for it (gpu/credit.ts).
+  await recheckEmptyRunpodCredit();
   const c = runnerCandidates({ project: ctx.job.project, labels: ctx.job.labels }, 'web', customer ? 'customer' : 'studio', settings);
   const clouds = c.choices.flatMap((x) => (x.kind === 'browser' ? [x.cloud] : []));
   for (const s of c.skipped) ctx.log(`runner ${s}`);
   if (!clouds.length) throw new GenError(`No runner plays web builds${customer ? ' for customers' : ''} now: ${c.skipped.join('; ') || 'none set up'}`, { kind: 'runner', status: 503 });
   const fallback = !customer && !site;
   if (!fallback) p.gpu = 'require';
-  return { clouds, fallback, site };
+  // GPU runners left out (cooldown, credit, already tried): said again if the run lands in software.
+  const passedOver = c.skipped.filter((x) => /^(runpod|modal|cloudrun)(?!-cpu)/.test(x));
+  return { clouds, fallback, site, ...(passedOver.length ? { passedOver } : {}) };
 }
 
 /** A build the runner downloads: a public URL as it is, an upload or asset staged in the library bucket and signed, a GitHub link. */
@@ -295,7 +300,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         // Cloud Run when settings.playtest says so (docs/playtest-cloudrun.md), else the playtesters / GPU servers.
         // Installing the browser on a server takes a few minutes the first time.
         // Games (anything but a site crawl) start the playtester if it's off.
-        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
+        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', game: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
         host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
           opening.then((h) => h?.close(), () => {});
           if (p.gpu === 'require') throw e;
@@ -925,7 +930,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
 
   try {
     if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
-      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
+      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, game: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
       host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
         opening.then((h) => h?.close(), () => {});
         if (p.gpu === 'require') throw e;

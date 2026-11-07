@@ -53,12 +53,24 @@ export async function api(path, { method, body } = {}) {
     method: method ?? (body ? 'POST' : 'GET'), credentials: 'same-origin',
     headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
   });
-  const text = await r.text();
+  const text = await r.text().catch(() => '');
   let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = { error: text }; }
+  try { data = text ? JSON.parse(text) : null; } catch {
+    // Not Gen's JSON: an error page from somewhere in between (Cloudflare, Google's front end) or an answer cut off when
+    // Gen restarted mid-request. Its words are never shown (2026-11-02: the AI pane printed "<!DOCTYPE html>").
+    throw new ApiError(unreadableAnswer(r.status), r.ok ? 502 : r.status, { error: unreadableAnswer(r.status), unreadable: true });
+  }
   if (!r.ok) throw new ApiError(data?.error ?? `HTTP ${r.status}`, r.status, data);
   return data;
 }
+/** What to say when an answer came back that isn't Gen's (an HTML error page, or JSON cut off part way). */
+export function unreadableAnswer(status) {
+  if (status === 413) return 'That was too big to send.';
+  if (status === 429) return 'That\'s a lot at once: give it a few seconds, then try again.';
+  return 'Gen was interrupted before it could answer (it may have just restarted). Nothing was lost: please try again.';
+}
+/** Whether a message is markup (an error page), not words for a person. */
+export const looksLikeMarkup = (t) => /<\s*(?:!doctype|html|head|body|title|div|meta|script)\b/i.test(String(t ?? ''));
 
 /** Tells the making loop's learning what the person thought of a take (src/make/feedback.ts): pick, discard, redo,
  *  rating or complaint. Never in the way: it fails silently. */
@@ -92,6 +104,7 @@ export function plainWords(text) {
   return t.replace(/\b(the (?:server|model))(?:\s+\1)+\b/gi, '$1').replace(/\s{2,}/g, ' ').trim();
 }
 export function plainError(msg) {
+  if (looksLikeMarkup(msg)) return unreadableAnswer(0);
   const lines = String(msg ?? '').replace(/\u001b\[[0-9;]*m/g, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   if (lines.some((l) => /^Traceback|^\s*at |^File "/.test(l))) return 'Something went wrong on our side. Your credits were returned; please try again.';
   const line = plainWords(lines[0] ?? 'Something went wrong.');
@@ -126,7 +139,14 @@ export function jobStatusText(j) {
     if (/no (stopped |free )?server|launching new ones is off|offline|no gpu|unavailable/i.test(why)) return 'Waiting for a free server';
     return j.queue?.ahead ?? j.ahead ? `In line (${j.queue?.ahead ?? j.ahead} ahead)` : 'In line';
   }
-  return j.detail ? plainWords(j.detail) : 'Working';
+  const doing = j.detail && j.detail !== 'running' ? plainWords(j.detail) : 'Working';
+  return j.estimateSeconds ? `${doing} · ${estimateText(j.estimateSeconds)}` : doing;
+}
+/** "about 40 s", "about 3 min": what the tool usually takes (the server's own run history), said once, never a ticking clock. */
+export function estimateText(sec) {
+  sec = Math.max(1, Math.round(sec));
+  if (sec < 90) return `about ${sec < 10 ? sec : Math.round(sec / 5) * 5} s`;
+  return `about ${Math.round(sec / 60)} min`;
 }
 
 /** 0:03.4, 1:02.0 */

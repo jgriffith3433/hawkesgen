@@ -145,7 +145,7 @@ export function createOAuth(h: OAuthHost) {
 
   function consentPage(req: IncomingMessage, user: OAuthUser, q: URLSearchParams, appName: string) {
     const hidden = [...q.entries()].map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(v)}">`).join('');
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Connect to ${esc(h.name)}</title>
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"><script src="/gen/nozoom.js"></script><title>Connect to ${esc(h.name)}</title>
 <style>:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:#f4f2ed;color:#1a1915}
 @media (prefers-color-scheme:dark){body{background:#141413;color:#ecebe6}.card{background:#1f1e1c!important;border-color:#33312d!important}.muted{color:#a6a39a!important}button.no{color:#ecebe6!important;border-color:#4a4741!important}}
 .card{max-width:420px;margin:16px;padding:28px;background:#fff;border:1px solid #e3dfd6;border-radius:10px}h1{font-size:20px;margin:0 0 8px}.muted{color:#6b675e;margin:0 0 20px}

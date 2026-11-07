@@ -88,3 +88,61 @@ test("hawkesgen.ai: Gen's MCP, its sign-in and its signed links are Gen's alone,
     assert.deepEqual(to(seen), [`https://gen.run.app${p}`], p);
   }
 });
+
+// A deploy's handover (2026-11-02): for about half a minute Cloud Run answers with Google's HTML error page, or Gen's
+// stand-in for the old copy answers 503 X-Hawkes-Restarting. Reads wait it out; writes and the stream never see HTML.
+import { restarting, setWait, RETRY_WAITS } from '../server/gen-edge/src/index.ts';
+
+async function runSeq(url: string, init: RequestInit, answers: (() => Response)[]) {
+  const real = globalThis.fetch;
+  let n = 0;
+  globalThis.fetch = (async () => answers[Math.min(n++, answers.length - 1)]()) as typeof fetch;
+  setWait(async () => {});
+  try {
+    return { res: await worker.fetch(new Request(url, init), env), tries: n };
+  } finally {
+    globalThis.fetch = real;
+  }
+}
+const googlePage = () => new Response('<html><title>500 Server Error</title></html>', { status: 500, headers: { 'Content-Type': 'text/html; charset=UTF-8' } });
+const standby = () => new Response('{"error":"restarting"}', { status: 503, headers: { 'Content-Type': 'application/json', 'X-Hawkes-Restarting': '1' } });
+const stream = () => new Response(': hello\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+
+test('restarting: Google\'s HTML error page and the stand-in, not Gen\'s own JSON errors', () => {
+  assert.equal(restarting(googlePage()), true);
+  assert.equal(restarting(standby()), true);
+  assert.equal(restarting(new Response('{"error":"x"}', { status: 500, headers: { 'Content-Type': 'application/json' } })), false);
+  assert.equal(restarting(new Response('{"error":"busy"}', { status: 503, headers: { 'Content-Type': 'application/json' } })), false);
+  assert.equal(restarting(new Response('ok', { status: 200, headers: { 'Content-Type': 'text/html' } })), false);
+});
+
+test('the event stream waits out a restart and then is Gen\'s own stream', async () => {
+  const { res, tries } = await runSeq('https://hawkesgen.ai/v1/events', { headers: { Accept: 'text/event-stream' } }, [googlePage, standby, stream]);
+  assert.equal(tries, 3);
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), ': hello\n\n');
+});
+
+test('the event stream, Gen still down after the waits: a stream that tells the browser to open it again, never HTML', async () => {
+  const { res, tries } = await runSeq('https://hawkesgen.ai/v1/events', {}, [googlePage]);
+  assert.equal(tries, RETRY_WAITS.length + 1);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('Content-Type') ?? '', /text\/event-stream/);
+  assert.match(await res.text(), /^retry: 5000\n/);
+});
+
+test('an API read still failing gets Gen\'s JSON error shape; a write is never sent twice', async () => {
+  const read = await runSeq('https://hawkesgen.ai/v1/assets', {}, [googlePage]);
+  assert.equal(read.res.status, 503);
+  assert.equal((await read.res.json()).kind, 'restarting');
+  const write = await runSeq('https://hawkesgen.ai/v1/jobs', { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json', 'Content-Length': '2' } }, [googlePage, stream]);
+  assert.equal(write.tries, 1);
+  assert.equal(write.res.status, 503);
+  assert.match(write.res.headers.get('Content-Type') ?? '', /application\/json/);
+});
+
+test('a page during a restart: a short plain page, not Google\'s', async () => {
+  const { res } = await runSeq('https://hawkesgen.ai/', { headers: HTML }, [googlePage]);
+  assert.equal(res.status, 503);
+  assert.match(await res.text(), /restarting/);
+});

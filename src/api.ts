@@ -19,7 +19,7 @@ import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
-import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec, type Job } from './jobs.ts';
+import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, typicalRunSeconds, type JobSpec, type Job } from './jobs.ts';
 import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
@@ -48,10 +48,11 @@ import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { genOAuth } from './genoauth.ts';
-import { handleUpload, downloadTarget, linkTarget, shareLink } from './links.ts';
+import { handleUpload, downloadTarget, linkTarget, shareLink, signedFileUrl, verifyFileSig } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
+import { mockHealth } from './mockproviders.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import { handleBench } from './bench/routes.ts';
 import { handleMake } from './make/routes.ts';
@@ -225,7 +226,7 @@ export function isCustomer(c: Client) {
   const globs = loadSettings().queue.projects;
   return c.projects.length > 0 && c.projects.every((p) => p !== '*' && globs.some((g) => (g.endsWith('*') ? p.startsWith(g.slice(0, -1)) : p === g)));
 }
-const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
+const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|playtest\/capacity|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
@@ -302,6 +303,17 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (!fs.existsSync(a.path) && !(await storage.ensureLocal({ path: a.path, sha256: a.sha256 } as any))) return send(res, 404, { error: 'The file is missing' });
     // A share link (the app's Share) plays in the browser; an editor's download link downloads.
     return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=300', 'Content-Disposition': `${link!.view ? 'inline' : 'attachment'}; filename="${route.split('/').pop()}"` });
+  }
+
+  // A signed file link (src/links.ts signedFileUrl): /v1/files/<id>?exp=&sig= opens in a browser with no session. Bound to
+  // that one asset and its expiry; a bad or expired signature is 401. Without ?sig the normal credential check applies.
+  const sf = (method === 'GET' || method === 'HEAD') && url.searchParams.has('sig') ? /^\/v1\/files\/(a_[0-9a-f]+)$/.exec(route) : null;
+  if (sf) {
+    if (!verifyFileSig(sf[1], q('exp'), q('sig'))) return send(res, 401, { error: 'This link is invalid or expired: ask for a new one' });
+    const a = getAsset(sf[1]);
+    if (!a) return send(res, 404, { error: 'No such asset' });
+    if (!fs.existsSync(a.path) && !(await storage.ensureLocal({ path: a.path, sha256: a.sha256 } as any))) return send(res, 404, { error: 'The file is missing' });
+    return serveFile(req, res, a.path, a.mime, { 'Cache-Control': 'private, max-age=300' });
   }
 
   // Player analytics from every product's pages: public, with its own CORS for the registered origins (src/analytics/).
@@ -445,6 +457,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
         // Event-loop lag: the worst delay seen and the recent blocks over 500 ms, with the requests around them.
         loop: lagReport(),
+        // HAWKESGEN_MOCK_PROVIDERS (src/mockproviders.ts): whether providers are stand-ins, and any real spend since boot.
+        mock: mockHealth(),
+        process: { pid: process.pid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(), rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576) },
       });
     }
 
@@ -942,6 +957,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       }
       throw new GenError('No such editor route', { status: 404 });
     }
+    // Canned AI answers for the test account (src/aimock.ts): HAWKESGEN_AI_MOCK=1 and a test sign-in session only.
+    if (route === '/v1/test/ai-mock') {
+      const am = await import('./aimock.ts');
+      const user = getUserForClient(client);
+      if (!am.aiMockOn() || !user || !am.isTestUser(user.id)) return send(res, 404, { error: 'No such route' });
+      if (method === 'GET') return send(res, 200, am.mockStatus(user.id));
+      if (method === 'DELETE') return send(res, 200, am.clearAnswers(user.id));
+      if (method === 'POST') { const b = await readJson(req); return send(res, 200, am.queueAnswers(user.id, Array.isArray(b?.answers) ? b.answers : [b])); }
+    }
     if (route === '/v1/users/api-key' && method === 'POST') {
       const user = getUserForClient(client);
       if (!user) throw new GenError('User account required', { status: 403 });
@@ -1229,7 +1253,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       if (!body.message) throw new GenError('message is required');
       const response = await assistant.processMessage(
-        user.id,
+        { client, project: user.project, payerId: user.id },
         body.gameContext || {},
         body.history || [],
         body.message
@@ -1249,7 +1273,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (client.role !== 'user') throw new GenError('Assistant is for user accounts only', { status: 403 });
       const body = await readJson(req);
       if (!body.intent) throw new GenError('intent is required');
-      const code = await assistant.getCodeSuggestions({
+      const user = getUserForClient(client);
+      const code = await assistant.getCodeSuggestions({ client, project: user?.project ?? client.projects.find((p) => p !== '*') ?? '', payerId: user?.id ?? null }, {
         intent: body.intent,
         currentCode: body.currentCode
       });
@@ -1355,7 +1380,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
-      if (!m[2] && method === 'GET') return send(res, 200, publicJob({ ...j, queue: queuePosition(j) }, isCustomer(client)));
+      if (!m[2] && method === 'GET') return send(res, 200, publicJob({ ...j, queue: queuePosition(j), ...(j.status === 'queued' || j.status === 'running' ? { estimateSeconds: typicalRunSeconds(j.tool) } : {}) }, isCustomer(client)));
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
       if (m[2] === 'rerun' && method === 'POST') {
         const b = await readJson(req);
@@ -1387,8 +1412,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     // --------------------------------------------------------------- events
     if (route === '/v1/events' && method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
-      res.write(': hello\n\n');
+      // No buffering anywhere on the way (the gen-edge Worker streams it through, Cloud Run too): no-transform and
+      // X-Accel-Buffering keep proxies from holding events back; the 20 s ping below keeps idle connections open.
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write('retry: 5000\n: hello\n\n');
       const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(publicJob(j, isCustomer(client)))}\n\n`);
       // Library changes (src/entities.ts): an entity edited, a take filed, picked or discarded.
       const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
@@ -1400,11 +1427,23 @@ data: ${JSON.stringify(e)}
 
 `);
       events.on('production', onProduction);
+      // A scene saved (src/scenes.ts): an open editor, character sheet or world picks up edits made elsewhere (the AI, MCP,
+      // another tab) and fills in finished jobs without asking on a timer. Only ids and versions; the page reads the scene.
+      const onScene = (e: any) => canProject(client, String(e.project)) && res.write(`event: scene\ndata: ${JSON.stringify(e)}\n\n`);
+      events.on('scene', onScene);
+      // The studio's machinery (admins only): a machines reading was taken, or a bench run moved on. The page reads what it shows.
+      const ops = !isCustomer(client);
+      const onMachines = (e: any) => res.write(`event: machines\ndata: ${JSON.stringify(e)}\n\n`);
+      const onBench = (e: any) => res.write(`event: bench\ndata: ${JSON.stringify(e)}\n\n`);
+      if (ops) { events.on('machines', onMachines); events.on('bench', onBench); }
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
       req.on('close', () => {
         events.off('job', onJob);
         events.off('library', onLibrary);
         events.off('production', onProduction);
+        events.off('scene', onScene);
+        events.off('machines', onMachines);
+        events.off('bench', onBench);
         clearInterval(ping);
       });
       return;
@@ -1551,6 +1590,11 @@ data: ${JSON.stringify(e)}
         if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
         const title = String(q('name') || a.title || a.id).replace(/[^\w .-]+/g, '').trim() || a.id;
         return send(res, 200, { url: shareLink('', a.id, `${title}${path.extname(a.path)}`), expires: Date.now() + 7 * 24 * 3600 * 1000 });
+      }
+      // A signed link to the file for a browser with no session (Studio's playtest videos and screenshots): ?ttl= days (max 30).
+      if (m[1] === 'assets' && !m[3] && method === 'POST' && q('sign') != null) {
+        if (!canProject(client, a.project)) throw new GenError('No access to that asset', { status: 403 });
+        return send(res, 200, signedFileUrl('', a.id, Number(q('ttl') || 7) * 24 * 3600 * 1000));
       }
       if (method === 'GET') return send(res, 200, { ...a, inS3: storage.inS3(a.sha256), ...cdnField(a.sha256), lods: lodSummary(a.id) });
       if (method === 'PATCH') {
@@ -1771,6 +1815,26 @@ data: ${JSON.stringify(e)}
       if (act === 'ssh') return send(res, 200, { ok: true, output: await builder.ssh(String(body.command ?? ''), { timeoutMs: Math.min(600_000, Number(body.timeoutMs) || 120_000) }) });
     }
 
+    // ------------------------------------------------- Studio's playtest capacity setting (docs/playtest-runpod.md, "Capacity")
+    // GET: browsers at once (the RunPod lane), the most the account allows, every provider in order with why it can't
+    // play now. PUT (or POST): { browsers?, providers?, modal?, runpod?: { workerQuota } }. The studio's own key (owner)
+    // only for changes; customers' keys never reach it (OPS_ROUTES).
+    if (route === '/v1/playtest/capacity' && method === 'GET') {
+      requireRole(client, 'admin');
+      const { playtestCapacity } = await import('./providers/playtester/capacity.ts');
+      return send(res, 200, await playtestCapacity(loadSettings()));
+    }
+    if (route === '/v1/playtest/capacity' && (method === 'PUT' || method === 'POST')) {
+      requireRole(client, 'owner');
+      const { setPlaytestCapacity, CapacityError } = await import('./providers/playtester/capacity.ts');
+      try {
+        return send(res, 200, await setPlaytestCapacity(await readJson(req), loadSettings()));
+      } catch (e: any) {
+        if (e instanceof CapacityError) return send(res, e.status, { error: e.message });
+        throw e;
+      }
+    }
+
     // ------------------------------------------------- playtests on Cloud Run (docs/playtest-cloudrun.md)
     // The settings, the lanes and the price; ?selftest=1 also asks the service how WebGL reaches its GPU (that may start
     // an instance: about $0.03 for its cold start and test, plus its idle tail). fresh=1 reruns it, all=1 tries every path.
@@ -1781,8 +1845,10 @@ data: ${JSON.stringify(e)}
       const pc = await import('./providers/playtester/cloudrun.ts');
       const s = loadSettings();
       const project = url.searchParams.get('project');
-      const variant = url.searchParams.get('variant') === 'cpu' ? 'cpu' : url.searchParams.get('variant') === 'runpod' ? 'runpod' : 'gpu';
-      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, projects: {}, backend: variant === 'cpu' ? 'cloudrun-cpu' : variant === 'runpod' ? 'runpod' : 'cloudrun' } });
+      const v = url.searchParams.get('variant');
+      const variant = v === 'cpu' ? 'cpu' : v === 'runpod' ? 'runpod' : v === 'modal' ? 'modal' : 'gpu';
+      // One service: the variant asked for (?variant=modal: the Modal endpoint; a self-test there starts a container, about $0.02).
+      const c = pc.cloudPlaytestFor(project, { playtest: { ...s.playtest, projects: {}, disabled: [], order: variant === 'modal' ? ['modal'] : [], backend: variant === 'cpu' ? 'cloudrun-cpu' : variant === 'runpod' ? 'runpod' : 'cloudrun' } });
       const out: any = { settings: s.playtest, backendFor: project ? pc.playtestBackendOf(project, s.playtest) : s.playtest.backend, deployed: Boolean(c) };
       if (c) Object.assign(out, { service: c.name, variant: c.variant, region: c.region, lanes: pc.cloudLanes(c), pricePerHour: Math.round(c.pricePerSecond * 3600 * 100) / 100, perTabMinute: Math.round(pc.tabCost(c, 60) * 10_000) / 10_000 });
       if (c && url.searchParams.get('selftest') === '1') out.selftest = await pc.cloudSelfTest(c, { fresh: url.searchParams.get('fresh') === '1', all: url.searchParams.get('all') === '1' });

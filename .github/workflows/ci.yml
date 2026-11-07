@@ -20,6 +20,10 @@ env:
   PROJECT: hawkes-staging
   PROJECT_NUMBER: '388576319982'
   REGION: us-east4
+  # The Modal playtest browser (ops-modal-playtest-deploy.yml made it, 2026-11-02): Gen reads it as settings.playtest.modal.url,
+  # so playtests can fall to Modal without anyone copying the address into settings. Not a secret: Modal's proxy auth and
+  # the image's token guard it. Empty turns it off (Gen then uses the settings' own URL, if any).
+  PLAYTEST_MODAL_URL: https://piercehawkes3--hawkes-gen-playtest-browser.us-east.modal.run
 jobs:
   deploy:
     name: Build and deploy to Cloud Run
@@ -57,7 +61,7 @@ jobs:
           [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/gen-cloudrun/deploy.ps1 for this lane first"; exit 1; }
           echo "prev=$prev" >> "$GITHUB_ENV"
           tag=$(node -e "console.log(require('./.data/cloudrun/gen-image.json').tag)")
-          gcloud run services update "$SERVICE" --image "$tag" --update-env-vars "HAWKESGEN_COMMIT=$GITHUB_SHA" --region "$RUN_REGION" --project "$PROJECT" --format=none
+          gcloud run services update "$SERVICE" --image "$tag" --update-env-vars "HAWKESGEN_COMMIT=$GITHUB_SHA,PLAYTEST_MODAL_URL=$PLAYTEST_MODAL_URL" --region "$RUN_REGION" --project "$PROJECT" --format=none
       - name: Health check (back to the previous revision if it fails)
         run: |
           for i in $(seq 1 18); do

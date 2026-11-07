@@ -20,7 +20,7 @@ export async function openReview(sceneId) {
 }
 
 export function close() {
-  clearInterval(R.timer);
+  R.unlisten?.(); R.unlisten = null;
   R.panel?.remove();
   R.layer?.remove();
   Object.assign(R, { scene: null, panel: null, layer: null, box: null, t: null, fix: null, timer: 0 });
@@ -82,19 +82,34 @@ function draw() {
   words.focus();
 }
 
+/** One read of the fix's production, and it is drawn only when something changed. */
+async function readFix() {
+  if (!R.fix) return;
+  let next;
+  try { next = await api(`/v1/showrunner/productions/${R.fix.id}`); } catch { return; }
+  if (!R.fix || next.id !== R.fix.id) return;
+  // Drawn only when something changed: a redraw restarts the before and after takes (J, 2026-11-01: no constant refreshes).
+  const same = JSON.stringify(next) === JSON.stringify(R.fix);
+  R.fix = next;
+  if (!['running', 'proposed', 'paused'].includes(next.status)) stopFollowing();
+  if (!same) draw();
+}
+function stopFollowing() { R.unlisten?.(); R.unlisten = null; }
+
+/**
+ * Follows the fix's production on the page's live stream (GET /v1/events, `production` events from the server): each
+ * event for it reads the production once. Nothing asks on a timer; a stream that comes back from a drop reads it once.
+ */
 function follow() {
-  clearInterval(R.timer);
-  R.timer = setInterval(async () => {
-    if (!R.fix) return clearInterval(R.timer);
-    let next;
-    try { next = await api(`/v1/showrunner/productions/${R.fix.id}`); } catch { return; }
-    if (!R.fix || next.id !== R.fix.id) return;
-    if (!['running', 'proposed', 'paused'].includes(next.status)) clearInterval(R.timer);
-    // Drawn only when something changed: a redraw restarts the before and after takes (J, 2026-11-01: no constant refreshes).
-    const same = JSON.stringify(next) === JSON.stringify(R.fix);
-    R.fix = next;
-    if (!same) draw();
-  }, 4000);
+  stopFollowing();
+  if (!R.fix) return;
+  const id = R.fix.id;
+  const asked = import('./jobwatch.js').then(({ jobWatch }) => jobWatch()).then((w) => w.on('production', (ev) => {
+    if (ev?.id === id) void readFix();
+  }, () => void readFix()));
+  R.unlisten = () => { void asked.then((stop) => stop()); };
+  // One read once the stream is listening, so a change that came in between is not missed.
+  void asked.then(() => readFix());
 }
 
 function fixView() {
