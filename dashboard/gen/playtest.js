@@ -49,6 +49,7 @@ installPlaytest({
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
+    { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -344,6 +345,30 @@ installPlaytest({
       pressOn(document.activeElement ?? document.body, 'Escape');
       t.metric('drawerCloses', await until(() => !document.querySelector('#mediaDrawer'), 3000) ? 1 : 0);
       t.finish(open ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'mockproviders') {
+      t.scene('Mock providers');
+      // Reads /v1/health (no polling: one request) and, where providers are mocked, runs one job to see it finish with no wait.
+      const h = await fetch('/v1/health').then((r) => r.json()).catch(() => null);
+      const on = Boolean(h?.mock?.providers);
+      t.metric('mockOn', on ? 1 : 0);
+      t.metric('realCost', h?.mock?.realCost ?? -1);
+      t.event(on ? 'providers-mocked' : 'providers-real');
+      if (!on) { t.note(`Providers are real on this Gen (lane ${h?.lane}); no job was run`); t.finish('done'); return; }
+      const t0 = performance.now();
+      const job = await api('/v1/jobs', { method: 'POST', body: { tool: 'image.generate', params: { prompt: 'a playtest fox', seed: 4 }, labels: { playtest: true } } }).then((r) => r.jobs?.[0]).catch(() => null);
+      t.event(job ? 'job-submitted' : 'job-refused');
+      // One on-demand look after the job had a moment (the job runs in milliseconds; the app's event stream carries it).
+      await sleep(1500);
+      const j = job ? await api(`/v1/jobs/${job.id}`).catch(() => null) : null;
+      const st = j?.job?.status ?? j?.status;
+      t.metric('jobSeconds', Math.round((performance.now() - t0) / 100) / 10);
+      t.metric('jobDone', st === 'done' ? 1 : 0);
+      t.event(st === 'done' ? 'mock-job-done' : 'mock-job-not-done');
+      const h2 = await fetch('/v1/health').then((r) => r.json()).catch(() => null);
+      t.metric('realCostAfter', h2?.mock?.realCost ?? -1);
+      t.finish(st === 'done' && (h2?.mock?.realCost ?? 1) === 0 ? 'done' : 'stuck');
       return;
     }
     if (id === 'aimock') {
