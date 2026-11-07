@@ -26,11 +26,12 @@ const { handleBroker } = await import('../src/providers/gpu/brokerRoute.ts');
 const { signedGetUrl } = await import('../src/providers/gpu/sign.ts');
 const { fleetBlocked, NO_EGRESS } = await import('../src/providers/gpu/egress.ts');
 const { endpointHeaders } = await import('../src/providers/gpu/auth.ts');
+const { fleetCredentialProblem } = await import('../src/providers/gpu/route.ts');
 const { gpuStatus } = await import('../src/providers/gpu/status.ts');
 const { cleanProviders, saveSettings, loadSettings, SETTINGS_DEFAULTS, ROOT } = await import('../src/config.ts');
 
 const map = loadServiceMap();
-const KEYS: Record<string, string> = { RUNPOD_API_KEY: 'rp-key', MODAL_PROXY_KEY: 'wk-1', MODAL_PROXY_SECRET: 'ws-1', GPU_HTTP_TOKEN: 'h-tok' };
+const KEYS: Record<string, string> = { RUNPOD_API_KEY: 'rp-key', MODAL_PROXY_KEY: 'wk-1', MODAL_PROXY_SECRET: 'ws-1', GPU_HTTP_TOKEN: 'h-tok', AWS_ACCESS_KEY_ID: 'ak', AWS_SECRET_ACCESS_KEY: 'sk' };
 const get = (k: string) => KEYS[k];
 const none = () => undefined;
 const comfyTool = { provider: 'comfy', gpuSeconds: () => 30 } as any;
@@ -125,10 +126,19 @@ test('routing by order: skips what is not set up, cooling down, already tried, a
   assert.ok(rp.familyModels.length > 0, 'the family\'s models ride along');
   assert.equal(rp.headers().Authorization, 'Bearer rp-key');
 
-  // No keys: those endpoints are skipped with the reason; Cloud Run and the fleet stay.
+  // No keys: those endpoints and the fleet (no AWS credentials) are skipped with the reason, as lasting; Cloud Run stays.
   r = gpuCandidates(job, comfyTool, s, map, Date.now(), none);
-  assert.deepEqual(r.choices.map((c: any) => c.kind === 'fleet' ? 'fleet' : c.service.lane), ['gen-z-image', 'fleet']);
+  assert.deepEqual(r.choices.map((c: any) => c.kind === 'fleet' ? 'fleet' : c.service.lane), ['gen-z-image']);
+  assert.ok(r.blockers.some((b: any) => /^fleet: no AWS credentials/.test(b.reason) && b.lasting), JSON.stringify(r.blockers));
   assert.ok(r.skipped.some((x: string) => /runpod-a: RUNPOD_API_KEY not set/.test(x)));
+  // A job that only the fleet can run gets no choice and a lasting blocker, so it fails at once instead of trying AWS.
+  r = gpuCandidates({ ...job, labels: { gpuBackend: 'fleet' } }, comfyTool, s, map, Date.now(), none);
+  assert.equal(r.choices.length, 0);
+  assert.equal(r.blockers[0].lasting, true);
+  // Federation or an instance role counts as credentials.
+  assert.equal(fleetCredentialProblem((k: string) => ({ HAWKES_AWS_FEDERATION: 'gce' } as any)[k]), '');
+  assert.equal(fleetCredentialProblem((k: string) => ({ K_SERVICE: 'gen', HAWKES_AWS_ROLE_ARN: 'arn' } as any)[k]), '');
+  assert.equal(fleetCredentialProblem((k: string) => ({ HAWKES_AWS_ROLE: '1' } as any)[k]), '');
 
   // Cooling down and already tried.
   markDown('runpod-a', 'no GPU free', COOLDOWN.capacity);

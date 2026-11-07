@@ -391,6 +391,48 @@ print(json.dumps({"freed": freed, "left": left}))
     'the old input went; the oldest model went; the one the job needs stayed even though it is older still');
 });
 
+test("worker.py makes room for what a job downloads, and a failed run leaves nothing behind", (t) => {
+  const py = ['python3', 'python', 'py'].find((p) => spawnSync(p, ['--version']).status === 0);
+  if (!py) return t.skip('no Python here');
+  const dir = path.join(ROOT, 'server', 'cloudrun');
+  const comfy = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-room2-'));
+  const code = `
+import json, os, sys, time
+sys.path.insert(0, ${JSON.stringify(dir)})
+import worker
+asked = []
+worker.make_room = lambda keep=(), need=None, on_step=None: asked.append(need) or 0
+class Store:
+    def stat(self, uri): return {"size": 30 * 10**9} if uri.endswith("big.safetensors") else None
+    def download(self, uri, dest, parallel=4):
+        os.makedirs(os.path.dirname(dest), exist_ok=True); open(dest, "w").close(); return 0
+worker.MODEL_LOAD = "download"
+worker.mounted = lambda: False
+worker.place_models(["diffusion_models/big.safetensors", "vae/small.safetensors"], store=Store(), bucket="b")
+# A run whose graph fails half way: its partial output and its input are gone once the run lets go of the GPU.
+out = os.path.join(worker.COMFY_DIR, "output", "hawkesgen", "u1", "partial.mp4")
+os.makedirs(os.path.dirname(out), exist_ok=True); open(out, "w").write("x")
+inp = os.path.join(worker.COMFY_DIR, "input", "hawkesgen", "in.png")
+os.makedirs(os.path.dirname(inp), exist_ok=True); open(inp, "w").write("x")
+class R:
+    key = "k"; finished = False
+    def __init__(self, req): pass
+    def execute(self): raise RuntimeError("graph failed")
+    def emit(self, ev): pass
+worker.Run = R
+import threading
+r, _ = worker.begin_run({"key": "k"})
+for th in threading.enumerate():
+    if th is not threading.current_thread(): th.join(5)
+print(json.dumps({"need": asked[0], "min": worker.MIN_FREE, "left": [p for p in (out, inp) if os.path.exists(p)]}))
+`;
+  const r = spawnSync(py, ['-c', code], { encoding: 'utf8', env: { ...process.env, COMFY_DIR: comfy } });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout.trim().split('\n').pop()!);
+  assert.equal(out.need, out.min + 30e9, 'room for the 30 GB model plus the margin, not the margin alone');
+  assert.deepEqual(out.left, []);
+});
+
 test('worker.py runs an open audio model for a hawkes_audio request: run.py in its venv, the takes uploaded', (t) => {
   if (process.platform === 'win32') return t.skip('the fake model venv is a shell script');
   const py = ['python3', 'python'].find((p) => spawnSync(p, ['--version']).status === 0);
@@ -431,7 +473,8 @@ print(json.dumps({"final": final, "steps": steps, "written": sorted(store.w), "e
   const out = JSON.parse(r.stdout.trim().split('\n').pop()!);
   assert.equal(out.final.t, 'done');
   assert.deepEqual(out.final.files.map((f: any) => f.filename), ['result.json', 'take0.wav']);
-  assert.deepEqual(out.written, ['gs://b/cloudrun/runs/k1/00-result.json', 'gs://b/cloudrun/runs/k1/01-take0.wav']);
+  // The heartbeat moves while the model runs (Gen reads it after a restart); the outputs are the takes and result.json.
+  assert.deepEqual(out.written.filter((u: string) => !u.endsWith('/heartbeat.json')), ['gs://b/cloudrun/runs/k1/00-result.json', 'gs://b/cloudrun/runs/k1/01-take0.wav']);
   assert.ok(out.steps.includes('loading qwen3-tts'), JSON.stringify(out.steps));
   assert.match(out.err, /no open audio model 'voxcpm2' \(it has qwen3-tts\)/);
 });

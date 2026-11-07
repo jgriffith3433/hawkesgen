@@ -387,6 +387,18 @@ def tidy_scratch(max_age=600):
                     pass
 
 
+def models_size(entries, store=GcsStore, bucket=None):
+    """Bytes the bucket says these models take (0 for any it can't say: the margin covers small ones)."""
+    total = 0
+    for e in entries:
+        try:
+            meta = store.stat(f"gs://{bucket or BUCKET}/models/{e}")
+            total += int((meta or {}).get("size") or 0)
+        except Exception:  # noqa: BLE001 - a size we can't read only makes the room smaller
+            pass
+    return total
+
+
 def make_room(keep=(), need=None, on_step=None):
     """Frees disk for what comes next: old scratch first, then downloaded models (never symlinks, never `keep`), the least
     recently used first, until `need` bytes are free. Returns the bytes it freed."""
@@ -419,8 +431,17 @@ def make_room(keep=(), need=None, on_step=None):
                 on_step(f"made room: removed {os.path.basename(p)} ({size // 1_000_000} MB)")
         except OSError:
             pass
+    if free_bytes() < need:
+        # Removed models ComfyUI still holds open keep their space until it lets go of them.
+        try:
+            comfy("/free", {"unload_models": True, "free_memory": True})
+            time.sleep(2)
+        except Exception:  # noqa: BLE001 - ComfyUI not up yet: nothing of it is held open
+            pass
     if freed:
         log(f"made room: {freed / 1e9:.1f} GB of models removed, {free_bytes() / 1e9:.1f} GB free")
+    if free_bytes() < need and on_step:
+        on_step(f"only {free_bytes() / 1e9:.1f} GB free of the {need / 1e9:.1f} GB this job needs")
     return freed
 
 
@@ -435,7 +456,9 @@ def place_models(entries, on_step=None, preload=False, store=GcsStore, bucket=No
     if not todo:
         return
     if MODEL_LOAD != "mount" and not (not preload and mounted()):
-        make_room(keep=[model_dest(e) for e in entries], on_step=on_step)
+        # Room for everything this job downloads plus the margin (2026-11-07: a fixed 12 GB let a 30 GB video family
+        # start downloading onto 12 GB, and the job died with "No space left on device" in SaveVideo).
+        make_room(keep=[model_dest(e) for e in entries], need=MIN_FREE + models_size(todo, store, bucket), on_step=on_step)
     t = time.time()
     total = [0]
 
@@ -913,6 +936,12 @@ def begin_run(req):
         try:
             r.execute()
         finally:
+            # Nothing of a run stays on the disk, done or failed (a failed graph's partial outputs used to stay until
+            # the disk was nearly full). Safe here: this instance runs one run at a time and this one holds the lock.
+            try:
+                tidy_scratch(max_age=0)
+            except Exception as e:  # noqa: BLE001
+                log(f"tidy: {e}")
             gpu_lock.release()
             with active_lock:
                 if active.get(r.key) is r:
