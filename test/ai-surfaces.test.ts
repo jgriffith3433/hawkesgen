@@ -675,43 +675,29 @@ const HOSTILE: Record<string, Record<string, unknown>> = {
 const hostileOp = (tool: string) => ({ op: 'generate', tool, params: HOSTILE[tool], place: { library: true } });
 const queuedTools = (since: number) => (db.prepare('SELECT tool FROM jobs ORDER BY rowid DESC LIMIT ?').all(jobCount() - since) as { tool: string }[]).map((r) => r.tool);
 
-test('AI editor generate op, today: unity.build is refused by the queue; comfy.graph is queued; playtest.run reaches its own checks', async () => {
-  const p = await videoProject();
-  const seen: Record<string, any> = {};
-  for (const tool of Object.keys(HOSTILE)) {
+for (const tool of Object.keys(HOSTILE)) {
+  test(`AI editor generate op: ${tool} is refused with a plain reason and starts no job`, async () => {
+    const p = await videoProject();
     const before = jobCount();
     queue(A, [{ match: 'hostile', json: { say: 'ok', ops: [hostileOp(tool)] } }]);
     const r = await a(`/v1/editor/projects/${p.id}/assistant`, 'POST', { messages: [{ role: 'user', text: 'hostile' }], autoCredits: 1_000_000 });
     const body = await r.json() as any;
     assert.equal(r.status, 200, 'the turn itself succeeds: a refused op is reported, not thrown');
-    seen[tool] = { result: body.results[0], jobs: queuedTools(before) };
-  }
-  assert.equal(seen['unity.build'].result.ok, false);
-  assert.match(seen['unity.build'].result.error, /internal-only and not available for user accounts/);
-  assert.deepEqual(seen['unity.build'].jobs, [], 'no job');
-  // comfy.graph: nothing in the editor stops it. A raw graph is queued as a job (it fails here only because this Gen has no GPU).
-  assert.equal(seen['comfy.graph'].result.ok, true);
-  assert.deepEqual(seen['comfy.graph'].jobs, ['comfy.graph']);
-  // playtest.run: the editor lets it through to the tool's own admit checks (here: the asset is not there). With a real build
-  // the AI could start a playtest on a person's say-so.
-  assert.equal(seen['playtest.run'].result.ok, false);
-  assert.match(seen['playtest.run'].result.error, /No asset a_ffffffffffff/);
-  assert.deepEqual(seen['playtest.run'].jobs, []);
-  AM.clearAnswers(A.user.id);
-});
-
-for (const tool of ['comfy.graph', 'playtest.run']) {
-  test(`AI editor generate op: ${tool} is refused as "not a tool the AI uses" before the queue sees it`, { todo: `editor.ts applyOps/timeline.ts 'generate' only checks getTool(); the scene AI also checks aiCanUse(). Same check wanted for the editor's and director's AI (fix task: gate generate ops by aiCanUse in the assistant routes, not in /apply, which is the person's own call)` }, async () => {
-    const p = await videoProject();
-    const before = jobCount();
-    queue(A, [{ match: 'hostile', json: { say: 'ok', ops: [hostileOp(tool)] } }]);
-    const body = await (await a(`/v1/editor/projects/${p.id}/assistant`, 'POST', { messages: [{ role: 'user', text: 'hostile' }], autoCredits: 1_000_000 })).json() as any;
     assert.equal(body.results[0].ok, false);
-    assert.match(body.results[0].error, /not available|internal-only|no tool/i, `got: ${body.results[0].error}`);
+    assert.match(body.results[0].error, /not available from the editor/, `got: ${body.results[0].error}`);
     assert.equal(jobCount(), before);
     AM.clearAnswers(A.user.id);
   });
 }
+
+const { applyOps, newDoc } = await import('../src/timeline.ts');
+test('applyOps: a refused generate op leaves the other ops applied, and catalog tools still queue', () => {
+  const submitted: string[] = [];
+  const submit = (spec: any) => { submitted.push(spec.tool); return { id: 'j_test' } as any; };
+  const r = applyOps(newDoc('t', 'video'), [hostileOp('comfy.graph'), { op: 'generate', tool: 'audio.music', params: { prompt: 'x', seconds: 5 }, place: { library: true } }, hostileOp('playtest.run'), hostileOp('unity.build')] as any, submit as any, 'video');
+  assert.deepEqual(r.results.map((x) => x.ok), [false, true, false, false]);
+  assert.deepEqual(submitted, ['audio.music']);
+});
 
 test('scene AI jobs, today: comfy.graph, unity.build and playtest.run are all dropped as "no tool ..." (aiCanUse), in the turn and in /apply', async () => {
   const s = await newCharacter();
@@ -730,12 +716,13 @@ test('scene AI jobs, today: comfy.graph, unity.build and playtest.run are all dr
   AM.clearAnswers(A.user.id);
 });
 
-test('the AI editor\'s own /apply is the person\'s call: unity.build is refused there too (queue rule), the others are theirs to run', async () => {
+test('the same rule holds in /apply (proposed ops come back through it): none of the three starts a job', async () => {
   const p = await videoProject();
-  const r = await (await a(`/v1/editor/projects/${p.id}/apply`, 'POST', { ops: [hostileOp('unity.build'), hostileOp('playtest.run')] })).json() as any;
-  assert.deepEqual(r.results.map((x: any) => x.ok), [false, false]);
-  assert.match(r.results[0].error, /internal-only/);
-  assert.match(r.results[1].error, /No asset/);
+  const before = jobCount();
+  const r = await (await a(`/v1/editor/projects/${p.id}/apply`, 'POST', { ops: Object.keys(HOSTILE).map(hostileOp) })).json() as any;
+  assert.deepEqual(r.results.map((x: any) => x.ok), [false, false, false]);
+  for (const x of r.results) assert.match(x.error, /not available from the editor/);
+  assert.equal(jobCount(), before);
 });
 
 // ================================================================== the legacy POST /v1/assistant/chat as a customer key
