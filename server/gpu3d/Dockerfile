@@ -22,7 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # weights lock) and curl; the installers add Python 3.11 from deadsnakes for the rig and motion venvs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-venv python3-dev python3-pil git curl ca-certificates ffmpeg xz-utils util-linux \
-      software-properties-common gpg-agent build-essential libgl1 libglib2.0-0 libgomp1 sudo \
+      software-properties-common gpg-agent build-essential cmake ninja-build libgl1 libglib2.0-0 libgomp1 sudo \
     && rm -rf /var/lib/apt/lists/* \
     && git config --system --add safe.directory '*'
 # (The installers hand /opt/hawkes-* to the ubuntu user, as on the fleet; the build and the worker run as root, so git

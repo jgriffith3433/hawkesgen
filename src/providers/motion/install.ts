@@ -106,7 +106,7 @@ export function chooseBackend(kimodoBvh: boolean): 'kimodo' | 'hymotion' {
 export function installScript(sudo = 'sudo ', o: { weights?: boolean } = {}) {
   const weights = o.weights !== false;
   const apt = `${sudo}apt-get -o DPkg::Lock::Timeout=600`;
-  const pkgs = 'python3.11 python3.11-venv python3.11-dev git curl ca-certificates';
+  const pkgs = 'python3.11 python3.11-venv python3.11-dev git curl ca-certificates cmake build-essential'; // cmake: kimodo builds a native extension
   return [
     'set -euo pipefail',
     `MARK='${READY_MARK}'`,
