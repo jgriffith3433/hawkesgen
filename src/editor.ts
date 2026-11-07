@@ -18,6 +18,8 @@ import { isInternalOnlyTool } from './billing.ts';
 const TOOL_IDS = () => TOOLS.map((t) => t.id);
 import { ask, callScope } from './providers/anthropic.ts';
 import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { toolReady } from './providers/gpu/route.ts';
+import type { Settings } from './config.ts';
 
 
 // The timeline document and its edits live in src/timeline.ts (one model under video, image and audio scenes).
@@ -124,10 +126,11 @@ const NOT_IN_CATALOG = /^(comfy\.graph|unity\.|playtest\.|asset\.lod|media\.|fil
 
 /**
  * Every tool the app's Create pane offers: Gen's own description of it (params, inputs, outputs), and whether it can
- * run now. Tools that work over SSH need the GPU fleet (AWS, suspended since 2026-10-28) and say so with ready: false.
+ * run now. Tools that work over SSH need the GPU fleet (AWS, suspended since 2026-10-28); the 3D tools (rigging,
+ * animation, Blender) need the fleet or a GPU endpoint with the 3D worker image; either says so with ready: false.
  */
-export async function catalog(describe: (t: any) => any, all: any[], fleetDown: boolean) {
-  return all.filter((t) => !NOT_IN_CATALOG.test(t.id)).map((t) => ({ ...describe(t), ready: !(t.server === 'ssh' && fleetDown) }));
+export async function catalog(describe: (t: any) => any, all: any[], fleetDown: boolean, settings: Pick<Settings, 'gpu'> | null = null) {
+  return all.filter((t) => !NOT_IN_CATALOG.test(t.id)).map((t) => ({ ...describe(t), ready: toolReady(t, { fleetDown, settings }) }));
 }
 
 // ------------------------------------------------------------------ voices

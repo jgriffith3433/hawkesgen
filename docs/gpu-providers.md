@@ -54,8 +54,9 @@ With an order, each job's providers are taken in that order. A provider is **ski
 - `settings.gpu.cloudrun.bucket` or `HAWKESGEN_PUBLIC_URL` is missing (the broker needs both)
 - for `fleet` only: the fleet can't be reached from here (below)
 
-Tools that work over SSH (`server: 'ssh'`: Blender, rigging, motion) and jobs labelled `gpuBackend: "fleet"` always go to
-the fleet.
+Tools that work over SSH only (`server: 'ssh'`: LoRA training, the transcriber) and jobs labelled `gpuBackend: "fleet"` always go to
+the fleet. The 3D tools (`image: '3d'`: Blender, rigging, motion, mocap) go to the fleet or to an endpoint running the 3D worker image
+that names their family (never one with `["*"]`, the ComfyUI image): docs/3d-animation.md, and `runpod.mjs` / `modal.mjs --kind 3d`.
 
 The job takes the first provider that has room. Room is the endpoint's `maxConcurrent` jobs at once, or Cloud Run's
 `maxInstances`. When every provider has room taken, the job waits for the first one.

@@ -16,16 +16,18 @@
 // endpoint too (type LOAD_BALANCER: tools/playtest-runpod/setup.mjs does), so this could follow it later.
 // All calls go to RunPod's API v2 (runpod-v2.mjs): REST v1 is retired on 2026-11-15 and GraphQL early 2027.
 // With --endpoint <id> it prints the settings entry for that endpoint.
-import { APPLY, arg, secret, workerImage, say, header, redact, printEntry } from './lib.mjs';
+import { APPLY, arg, secret, workerImage, say, header, redact, printEntry, print3dEntry, KIND, IMAGE_3D } from './lib.mjs';
 import { runpod } from './runpod-v2.mjs';
 
-const name = arg('name', 'hawkes-gen-gpu');
+// --kind 3d: the 3D worker (server/gpu3d): Blender, the rig, motion and mocap venvs; weights on a network volume.
+const is3d = KIND === '3d';
+const name = arg('name', is3d ? 'hawkes-gen-3d' : 'hawkes-gen-gpu');
 const gpu = arg('gpu', 'NVIDIA L40S');
 const max = Number(arg('max', '2'));
-const disk = Number(arg('disk', '120'));
+const disk = Number(arg('disk', is3d ? '80' : '120'));
 const registryAuth = arg('registry-auth');
 const endpoint = arg('endpoint');
-const image = workerImage();
+const image = is3d && !arg('image') ? IMAGE_3D : workerImage();
 const key = secret('RUNPOD_API_KEY');
 const workerToken = secret('GPU_WORKER_TOKEN');
 
@@ -79,11 +81,19 @@ if (APPLY) {
 header('Then the endpoint, in the RunPod console (Serverless > New Endpoint)');
 say(`1. Import from template: ${templateId ?? name}. Endpoint type: Load balancer.`);
 say(`2. GPU: ${gpu} (48 GB, like the fleet's L40S). Max workers ${max}, active (min) workers 0, idle timeout 600 s, FlashBoot on.`);
-say('3. Health check path: /ping (the worker answers 200 when ComfyUI is up, 204 while it starts). Port 8080 exposed.');
-say('4. Optional: a network volume mounted at /mnt/models with the models (then models load from it, not through Gen).');
+if (is3d) {
+  say('3. Health check path: /ping (the 3D worker answers 200 at once: it has no ComfyUI to wait for). Port 8080 exposed. Idle timeout 900 s: a long job keeps going after its request ends (Gen follows its heartbeat).');
+  say('4. A network volume (about 150 GB, same region as the GPUs) attached to the endpoint: RunPod mounts it at /runpod-volume and the worker keeps every 3D weight there (rig ~5 GB, Kimodo + Llama 3 8B ~20 GB, HY-Motion ~20 GB, GEM-X ~4 GB), so only the first job ever downloads them.');
+  if (!workerToken) say('   GPU_WORKER_TOKEN is not set in hawkesgen/.env: set it first. The 3D worker refuses hawkes_job scripts without a worker token.');
+} else {
+  say('3. Health check path: /ping (the worker answers 200 when ComfyUI is up, 204 while it starts). Port 8080 exposed.');
+  say('4. Optional: a network volume mounted at /mnt/models with the models (then models load from it, not through Gen).');
+}
 say('5. Copy the endpoint id; run this again with --endpoint <id> for Gen\'s settings entry.');
 
-if (endpoint) {
+if (endpoint && is3d) {
+  print3dEntry({ id: 'runpod-3d', provider: 'runpod', url: `https://${endpoint}.api.runpod.ai`, gpu: gpu.replace(/^NVIDIA /, ''), pricePerHour: PRICES[gpu] ?? 0, maxConcurrent: max, graphLimitSeconds: 1800, enabled: true });
+} else if (endpoint) {
   printEntry({ id: 'runpod', provider: 'runpod', url: `https://${endpoint}.api.runpod.ai`, families: ['*'], gpu: gpu.replace(/^NVIDIA /, ''), pricePerHour: PRICES[gpu] ?? 0, maxConcurrent: max, graphLimitSeconds: 300, enabled: true });
 }
 say('\nGen also needs RUNPOD_API_KEY in its environment (tools/gen-cloudrun/deploy.mjs mounts it from Secret Manager) and HAWKESGEN_PUBLIC_URL.');

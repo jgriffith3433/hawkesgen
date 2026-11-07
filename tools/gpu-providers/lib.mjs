@@ -50,6 +50,22 @@ export const say = (s = '') => console.log(s);
 export const header = (s) => console.log(`\n# ${s}`);
 export const redact = (v) => (v ? `<set, ${String(v).length} characters>` : '<not set>');
 
+/**
+ * --kind 3d: the 3D worker image (server/gpu3d, docs/3d-animation.md) instead of the ComfyUI one. Its endpoint names
+ * the 3D families (never "*") and gets a longer graph limit; settings.gpu.familyOrder sends those families to it.
+ */
+export const KIND = arg('kind', 'comfy');
+export const THREE_D_FAMILIES = ['rig', 'motion', 'mocap', 'blender'];
+export const IMAGE_3D = 'ghcr.io/jgriffith3433/hawkes-gen-3d:latest';
+
+/** The settings entry for a 3D endpoint: the families it runs and the order that sends them there (fleet after). */
+export function print3dEntry(entry) {
+  header('Then add this to Gen (POST /v1/settings; settings.gpu.providers replaces the whole list: include the endpoints already there)');
+  const familyOrder = Object.fromEntries(THREE_D_FAMILIES.map((f) => [f, [entry.id, 'fleet']]));
+  say(JSON.stringify({ gpu: { providers: [{ ...entry, families: THREE_D_FAMILIES }], familyOrder } }, null, 2));
+  say('(familyOrder replaces the whole map too: include any family orders already there. GPU_WORKER_TOKEN must be set in Gen and on the endpoint: the 3D worker refuses scripts without it.)');
+}
+
 /** The settings.gpu.providers entry to add (printed for J; Gen's settings are changed through its API or dashboard). */
 export function printEntry(entry) {
   header('Then add this to Gen (POST /v1/settings, or the dashboard: Settings > GPU providers shows it once added)');

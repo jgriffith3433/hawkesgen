@@ -39,7 +39,9 @@ const GROUPS = [
     ['blender.render', '3D shot render', 'Render a 3D shot, with its depth, pose and edge videos for filming.'], ['blender.character', '3D character pipeline', 'Clean up, retarget, bake and export a 3D character.'], ['image.geometry', 'Depth and normals', 'Depth and normals from one picture.'], ['splat.build', 'Gaussian splat', 'A Gaussian splat scene from a picture.'],
   ] },
   { id: 'motion', label: 'Animation', icon: 'person', tools: [
-    ['motion.from-text', 'Text to 3D skeletal motion', 'A humanoid animation from words, on your rigged character.'], ['sprite.sheet', 'Sprite sheet from a clip', 'A clip or frames as a game sprite sheet.'], ['image.pose-detect', 'Detect a pose', 'Find the body pose in a picture.'],
+    ['motion.from-text', 'Text to 3D skeletal motion', 'A humanoid animation from words, on your rigged character.'], ['motion.from-video', 'Video to 3D motion (mocap)', 'Lift a person\'s movement out of a video onto your rigged character.'],
+    ['motion.check', 'Check an animation', 'Foot slide, feet through the floor, pops and jitter in a clip (BVH). Free.'],
+    ['sprite.sheet', 'Sprite sheet from a clip', 'A clip or frames as a game sprite sheet.'], ['image.pose-detect', 'Detect a pose', 'Find the body pose in a picture.'],
   ] },
   { id: 'audio', label: 'Voice, sound & music', icon: 'music', tools: [
     ['audio.music', 'Music', 'A song or score from a description, with or without lyrics.'], ['audio.voice', 'Character voice', 'Speak a line in a character voice.'], ['audio.voice-design', 'Design a voice', 'Describe a voice and hear candidates.'], ['audio.sfx', 'Sound effect', 'A sound effect from words.'],

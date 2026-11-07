@@ -21,6 +21,8 @@ import { videoMatteTool, videoCompositeTool, videoControlMixTool } from './film-
 import { meshRigTool } from './rig.ts';
 import { blenderCharacterTool } from './character.ts';
 import { motionFromTextTool } from './motion.ts';
+import { motionFromVideoTool } from './mocap.ts';
+import { motionCheckTool } from './motioncheck.ts';
 import { sheetTool } from './sheet.ts';
 import { viewSheetTool } from './viewsheet.ts';
 import { decorateMeshTool, orderTools } from './threed.ts';
@@ -39,7 +41,7 @@ const BUILT_IN: Tool[] = [
   llmTextTool, llmJsonTool,
   cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
-  blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
+  blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, motionFromVideoTool, motionCheckTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
   assetLodTool,
   imageRepaintTool, imageExpandTool, videoFrameTool, videoStillTool, mediaNormalizeTool, videoChangeTool, audioRevoiceTool,

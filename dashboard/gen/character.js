@@ -177,6 +177,67 @@ async function makeModel(rig) {
     .then((done) => { const out = done.outputs.find((o) => o.kind === 'mesh'); D.change((d) => { d.model = out ? { asset: out.asset } : { failed: 'No model came out' }; }, { history: false }); })
     .catch((err) => D.change((d) => { d.model = { failed: plainError(err.message) }; }, { history: false }));
 }
+/** Rigs the model they have (mesh.rig: a Mixamo-named skeleton for a humanoid). */
+async function rigModel() {
+  const model = D.doc.model?.asset;
+  if (!model) return toast('Give them a 3D model first.');
+  const q = await quote('mesh.rig', { kind: 'auto', height: D.doc.height });
+  if (!confirm(`Rig ${D.doc.title}'s model${q ? ` for ${credits(q)}` : ''}?${!toolReady('mesh.rig') ? '\n\nRigging runs on GPU servers that are offline right now: it waits until they\'re back.' : ''}`)) return;
+  runJob({ tool: 'mesh.rig', params: { kind: 'auto', height: D.doc.height }, inputs: { mesh: `asset:${model}` }, label: `${D.doc.title}: rig`, onStart: (job) => D.change((d) => { d.model = { ...d.model, pending: job }; }) })
+    .then((done) => { const out = done.outputs.find((o) => o.title === 'rigged') ?? done.outputs.find((o) => o.kind === 'mesh'); D.change((d) => { d.model = out ? { asset: out.asset } : { asset: model, failed: 'No rig came out' }; }, { history: false }); })
+    .catch((err) => D.change((d) => { d.model = { asset: model, failed: plainError(err.message) }; }, { history: false }));
+}
+
+const clipName = (words) => (String(words).trim().split(/\s+/).slice(0, 3).join(' ').replace(/[^\w ]/g, '').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/ /g, '') || 'Move').slice(0, 32);
+
+/**
+ * A new move on their model: from words (motion.from-text), the stock library (a Quaternius clip) or a video
+ * (motion.from-video). Each ends by merging the clip into the model they have (blender.character: their clips kept,
+ * the new one retargeted), so the model's clip list grows and every stage that casts them can use it.
+ */
+async function addMove(source) {
+  const model = D.doc.model?.asset;
+  if (!model) return toast('Give them a rigged 3D model first.');
+  if (!D.doc.clips.length && !confirm(`${D.doc.title}'s model has no clips yet: is it rigged? (Rig it first if not.) Go on anyway?`)) return;
+  const merge = (name, from) => ({ tool: 'blender.character', params: { ops: [{ op: 'import', file: 0 }, { op: 'retarget', file: 1, name, inPlace: false }, { op: 'export', format: 'glb', title: 'mesh' }] }, inputs: { files: ['$input:0', from] } });
+  const go = async (steps, label, extraInputs = []) => {
+    const q = await quote('asset.make', { steps });
+    const offline = !toolReady('blender.character') ? '\n\nThis runs on GPU servers that are offline right now: it waits until they\'re back.' : '';
+    if (!confirm(`${label}${q ? ` for ${credits(q)}` : ''}?${offline}`)) return;
+    runJob({ tool: 'asset.make', params: { steps }, inputs: { files: [`asset:${model}`, ...extraInputs] }, label: `${D.doc.title}: ${label}`, onStart: (job) => D.change((d) => { d.model = { ...d.model, pending: job }; }) })
+      .then((done) => { const out = done.outputs.find((o) => o.kind === 'mesh'); D.change((d) => { d.model = out ? { asset: out.asset } : { asset: model, failed: 'No clip came out' }; }, { history: false }); })
+      .catch((err) => D.change((d) => { d.model = { asset: model, failed: plainError(err.message) }; }, { history: false }));
+  };
+  if (source === 'words') {
+    const words = prompt(`Describe ${D.doc.title}'s move as it happens, one sentence (e.g. "A person throws a straight right punch and returns to guard"):`);
+    if (!words?.trim()) return;
+    const name = clipName(words);
+    return go([
+      { tool: 'motion.from-text', params: { prompt: words.trim(), seconds: 2, takes: 1 }, inputs: { character: '$input:0' } },
+      merge(name, '$prev:glb'),
+    ], `Add "${name}" from words`);
+  }
+  if (source === 'stock') {
+    const want = prompt('Which stock move? A word like walk, run, idle, punch, kick, hit, death, jump:');
+    if (!want?.trim()) return;
+    let clips = [];
+    try { clips = (await api(`/v1/assets?tool=motion.library&q=${encodeURIComponent(want.trim())}&limit=12`)).items ?? []; } catch { /* */ }
+    if (!clips.length) return toast(`No stock move matches "${want}".`);
+    const pick = clips.length === 1 ? clips[0] : clips[Number(prompt(`Pick one:\n${clips.map((c, i) => `${i + 1}. ${c.title}`).join('\n')}`, '1')) - 1];
+    if (!pick) return;
+    return go([merge(pick.title.replace(/[^\w-]/g, ''), '$input:1')], `Add the stock move "${pick.title}"`, [pick.id]);
+  }
+  if (source === 'video') {
+    libraryPicker('video', (v) => {
+      const name = clipName(v.title ?? 'Mocap');
+      go([
+        { tool: 'motion.from-video', params: { name, camera: 'auto' }, inputs: { video: '$input:1', character: '$input:0' } },
+        merge(name, '$prev:glb'),
+      ], `Add "${name}" from the video`, [`asset:${v.id}`]);
+    });
+  }
+}
+
 async function stageThem(id = D.scene?.id, title = D.doc?.title) {
   await D.save();
   await newScene('stage', { title: `${title}: shot`, doc: { title: `${title}: shot`, cast: [{ character: id, name: title, position: [0, 0], facing: 0 }], camera: { target: 0, distance: 4, height: 1.5, lens: 50 } } });
@@ -235,6 +296,13 @@ function draw() {
           hasTool('mesh.views3d') ? h('button', { class: 'ghost small', onclick: () => makeModel(false), disabled: Boolean(d.model?.pending) }, icon('sparkle'), 'Make the 3D model') : '',
           hasTool('mesh.rig') ? h('button', { class: 'ghost small', onclick: () => makeModel(true), disabled: Boolean(d.model?.pending) }, 'Make it, rigged') : '',
           d.model?.asset ? h('a', { class: 'icon-btn', href: fileUrl(d.model.asset), download: '', title: 'Download the GLB' }, icon('download')) : ''),
+        d.model?.asset && !d.model?.pending ? h('div', { class: 'row' },
+          hasTool('mesh.rig') && !d.clips.length ? h('button', { class: 'ghost small', onclick: rigModel, title: 'Add a skeleton so it can move' }, 'Rig it') : '',
+          hasTool('motion.from-text') ? h('button', { class: 'ghost small', onclick: () => addMove('words'), title: 'A new move from a sentence' }, icon('sparkle'), 'Move from words') : '',
+          hasTool('blender.character') ? h('button', { class: 'ghost small', onclick: () => addMove('stock'), title: 'A free stock move (walks, idles, attacks, hits)' }, 'Stock move') : '',
+          hasTool('motion.from-video') ? h('button', { class: 'ghost small', onclick: () => addMove('video'), title: 'Their move copied from a video of someone doing it' }, 'Move from a video') : '')
+          : d.model?.asset && d.model?.pending ? h('p', { class: 'working small' }, 'Working on their model (a rig or a new move)…') : '',
+        d.model?.failed && d.model?.asset ? h('p', { class: 'warn small' }, d.model.failed) : '',
         d.clips.length ? h('p', { class: 'muted small' }, `Clips: ${d.clips.map((c) => c.name).join(', ')}`) : ''),
       text('Notes', d.notes, (v) => { D.doc.notes = v; }, 3, 'Anything to remember: backstory, how they move, what they never wear.'),
       h('div', { class: 'row' }, h('button', { class: 'primary small', onclick: () => stageThem() }, icon('cube'), 'Stage them'),

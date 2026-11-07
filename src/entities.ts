@@ -286,9 +286,11 @@ export function makeSpecFor(e: Entity, slot: string, given?: MakeSpec | null): M
   const slots = kinds[e.kind]?.slots ?? {};
   const hit = slots[slot] ?? Object.entries<any>(slots).find(([pat]) => pat.endsWith('/*') && slot.startsWith(pat.slice(0, -1)))?.[1];
   if (!hit) return null;
-  // character3d robots: data.form=robot uses makeRobot (template rig) instead of mesh.rig.
+  // character3d robots: data.form=robot uses makeRobot (template rig) instead of mesh.rig. A slot whose recipe needs a
+  // source (mocap/*: the video) uses makeWithoutSource when none is set (the character films itself).
   const form = String(e.data?.form ?? 'humanoid').toLowerCase();
-  const make = form === 'robot' && hit.makeRobot ? hit.makeRobot : hit.make;
+  const hasSource = Boolean(e.data?.slots?.[slot]?.source);
+  const make = form === 'robot' && hit.makeRobot ? hit.makeRobot : !hasSource && hit.makeWithoutSource ? hit.makeWithoutSource : hit.make;
   return make ? { ...make, ...(given ?? {}) } : null;
 }
 

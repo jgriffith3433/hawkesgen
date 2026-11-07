@@ -73,11 +73,18 @@ test('routing: Cloud Run only when the family says so, the service is deployed a
   assert.equal(serviceForFamily(map, 'qwen-edit', { 'qwen-edit': 'gen-qwen-edit-l4' }), 'gen-qwen-edit-l4', 'a pilot alternative by settings');
 });
 
-test('the SSH tools are marked, so they never route to Cloud Run', () => {
-  for (const id of ['blender.render', 'blender.character', 'mesh.rig', 'motion.from-text', 'lora.train', 'image.character']) {
-    assert.equal(getTool(id)?.server, 'ssh', id);
+test('the SSH tools and the 3D tools are marked, so they never route to Cloud Run', () => {
+  for (const id of ['lora.train', 'image.character']) assert.equal(getTool(id)?.server, 'ssh', id);
+  // The 3D tools run a script on the fleet or a GPU worker with the 3D image (docs/3d-animation.md): never ComfyUI services.
+  const urls = { 'gen-z-image': 'https://gen-z-image-abc.a.run.app' };
+  for (const id of ['blender.render', 'blender.character', 'mesh.rig', 'motion.from-text', 'motion.from-video']) {
+    const t = getTool(id)!;
+    assert.equal(t.image, '3d', id);
+    assert.equal(t.server, undefined, `${id} is no longer SSH-only`);
+    assert.equal(cloudRoute({ family: String(t.family), params: {}, labels: {} }, t, settingsWith({ backend: 'cloudrun', cloudrun: { urls } }), map!).service, null, id);
   }
   assert.equal(getTool('image.generate')?.server, undefined);
+  assert.equal(getTool('image.generate')?.image, undefined);
 });
 
 test('settings.gpu is cleaned: bad URLs, backends and names are dropped; urls merge on save', () => {

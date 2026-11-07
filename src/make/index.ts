@@ -13,7 +13,7 @@ import { pickTools, type RouteContext } from './routing.ts';
 export type MakeIntent =
   | 'image' | 'character-sheet' | 'first-frame' | 'texture' | 'skybox' | 'prop-3d' | 'character-3d'
   | 'shot-action' | 'shot-dialogue' | 'shot-two-people' | 'shot-continue' | 'shot-recast'
-  | 'voice' | 'sfx' | 'music';
+  | 'voice' | 'sfx' | 'music' | 'animation';
 
 export type MakeQuality = 'draft' | 'final' | 'hero';
 

@@ -11,9 +11,9 @@ import path from 'node:path';
 import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { paths } from '../config.ts';
-import { ensureBlender, blenderWorkspace, BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
-import { ensureMotion } from '../providers/motion/motion.ts';
-import { HY_COMMIT, HY_MODEL, HY_PYTHON, HY_ROOT, KIMODO_COMMIT, KIMODO_MODEL, KIMODO_PYTHON, MOTION_LICENSES } from '../providers/motion/install.ts';
+import { BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+import { jobWorkspace, prepare3d, weightsPrelude } from '../providers/workspace.ts';
+import { HY_COMMIT, HY_MODEL, HY_PYTHON, HY_ROOT, KIMODO_COMMIT, KIMODO_MODEL, KIMODO_PYTHON, MOTION_LICENSES, weightsScript, hyWeightsScript } from '../providers/motion/install.ts';
 import { checkOps } from './character.ts';
 
 const FPS = 30;
@@ -131,29 +131,68 @@ export function retargetOps(clips: string[], scheme: 'soma' | 'smpl', o: { loop:
   return ops;
 }
 
-/** The script the server runs in the job folder. Kimodo first; HY-Motion only if there is no BVH. */
-export function motionJobScript(o: { character: boolean }, bin = { blender: BLENDER, kimodo: KIMODO_PYTHON, hy: HY_PYTHON, hyRoot: HY_ROOT, hyModel: HY_MODEL }) {
-  const retarget = o.character ? [
-    'python3 stamp.py',
+/** The shell that retargets out/bvhs onto the character (spec.json: blender.character ops) and renders each preview.
+ * Shared by motion.from-text and motion.from-video. */
+export function retargetLines(blender = BLENDER) {
+  return [
     'echo "HB step retargeting onto the character"',
-    `"${bin.blender}" -b --factory-startup --python-exit-code 1 -P hawkes_character.py -- spec.json`,
+    `"${blender}" -b --factory-startup --python-exit-code 1 -P hawkes_character.py -- spec.json`,
     'cp out/character.json res/ || true',
     'if ls out/files/* >/dev/null 2>&1; then cp out/files/* res/; fi',
     'if [ -d out/previews ]; then for s in out/previews/*.json; do',
     '  n=$(basename "$s" .json); read FPS FRAMES < "out/previews/$n.args"',
     '  echo "HB step rendering preview $n"',
-    `  "${bin.blender}" -b --factory-startup --python-exit-code 1 -P hawkes_blender.py -- "$s"`,
+    `  "${blender}" -b --factory-startup --python-exit-code 1 -P hawkes_blender.py -- "$s"`,
     '  START=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))[\'start\'])" "out/previews/$n/info.json")',
     '  echo "HB encoding"',
     '  ffmpeg -hide_banner -loglevel error -y -framerate "$FPS" -start_number "$START" -i "out/previews/$n/beauty/%05d.png" -frames:v "$FRAMES" -c:v libx264 -pix_fmt yuv420p -crf 18 -movflags +faststart "res/preview-$n.mp4"',
     'done; fi',
-  ] : ['python3 stamp.py'];
+  ];
+}
+
+/** The motion check (post/motion/check.py) on every take in out/bvhs: res/check-N.json. It never fails the job. */
+export function checkLines(o: { loop?: boolean; inPlace?: boolean } = {}) {
+  // The source clip is checked as made: loop and inPlace are applied after the retarget, so they're not asked of it.
+  void o;
+  return [
+    'echo "HB step checking the motion (foot slide, ground, pops, jitter)"',
+    'for b in out/bvhs/take-*.bvh; do n=$(basename "$b" .bvh); n=${n#take-}; python3 check.py "$b" --json "res/check-$n.json" >/dev/null || echo "HB warning the motion check could not read $b"; done',
+  ];
+}
+
+export type MotionCheck = { ok: boolean; problems: string[]; metrics: Record<string, number>; fix: string | null };
+
+/** res/check-N.json for each take (null where the check couldn't run). */
+export function readChecks(dir: string, takes: number): (MotionCheck | null)[] {
+  return Array.from({ length: takes }, (_, i) => {
+    const f = path.join(dir, `check-${i}.json`);
+    try { return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) as MotionCheck : null; } catch { return null; }
+  });
+}
+
+/** The take the check likes best: one that passed with the least foot slide and jitter, else the fewest problems. */
+export function bestTake(checks: (MotionCheck | null)[]): number | null {
+  let best: number | null = null;
+  let bestScore = Infinity;
+  checks.forEach((c, i) => {
+    if (!c) return;
+    const m = c.metrics ?? {};
+    const score = c.problems.length * 100 + (m.footSkate ?? 0) * 10 + (m.jitter ?? 0) + (m.pops ?? 0) * 5;
+    if (score < bestScore) { bestScore = score; best = i; }
+  });
+  return best;
+}
+
+/** The script the server runs in the job folder. Kimodo first; HY-Motion only if there is no BVH. */
+export function motionJobScript(o: { character: boolean }, bin = { blender: BLENDER, kimodo: KIMODO_PYTHON, hy: HY_PYTHON, hyRoot: HY_ROOT, hyModel: HY_MODEL }) {
+  const retarget = o.character ? ['python3 stamp.py', ...checkLines(), ...retargetLines(bin.blender)] : ['python3 stamp.py', ...checkLines()];
   return [
     'set -euo pipefail',
-    'export HF_HOME=/opt/hawkes-motion/hf',
+    weightsPrelude([weightsScript()]),
+    'export HF_HOME="${HAWKES_HF_HOME:-/opt/hawkes-motion/hf}"',
     'export HF_HUB_ENABLE_HF_TRANSFER=0',
     'export USE_HF_MODELS=1',
-    'if [ -f /opt/hawkes-motion/hf/token ]; then export HF_TOKEN="$(cat /opt/hawkes-motion/hf/token)"; export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"; fi',
+    'if [ -z "${HF_TOKEN:-}" ] && [ -f /opt/hawkes-motion/hf/token ]; then export HF_TOKEN="$(cat /opt/hawkes-motion/hf/token)"; export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"; fi',
     'VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1 | tr -d " " || echo 0)',
     'if [ "${VRAM:-0}" -lt 40000 ]; then export TEXT_ENCODER_DEVICE=cpu; fi',
     'mkdir -p out/bvhs res',
@@ -168,6 +207,7 @@ export function motionJobScript(o: { character: boolean }, bin = { blender: BLEN
     '  echo "HB warning Kimodo wrote $GOT of $WANT takes (exit $K); using HY-Motion 1.0"',
     '  rm -rf out/bvhs; mkdir -p out/bvhs',
     '  if [ "${VRAM:-0}" -lt 26000 ]; then echo "HY-Motion 1.0 wants 26 GB of VRAM" >&2; exit 1; fi',
+    ...hyWeightsScript().split(/\n/).map((l) => `  ${l}`),
     '  echo "HB step generating the motion with HY-Motion"',
     `  "${bin.hy}" hymotion_run.py ${bin.hyRoot} ${bin.hyModel}`,
     '  echo "HB step writing the BVH"',
@@ -184,10 +224,10 @@ export function motionJobScript(o: { character: boolean }, bin = { blender: BLEN
 
 export const motionFromTextTool: Tool = {
   id: 'motion.from-text',
-  version: 1,
+  version: 2,
   title: 'Humanoid animation from a text prompt',
   description:
-    'Makes a humanoid clip from a sentence on a GPU server. Kimodo-SOMA-RP-v1.2 writes a BVH on the SOMA skeleton ' +
+    'Makes a humanoid clip from a sentence on a GPU worker (the 3D image) or fleet server. Kimodo-SOMA-RP-v1.2 writes a BVH on the SOMA skeleton ' +
     '(not SMPL; the NVIDIA Open Model License allows commercial use). If Kimodo writes nothing, HY-Motion 1.0 is the fallback ' +
     'and its pose is saved as a BVH without SMPL\'s body weights. poses are key moments (a swing\'s windup, contact and ' +
     'follow-through). Pass a rigged character and the clip is retargeted with blender.character; loop and inPlace are those ops. ' +
@@ -195,7 +235,7 @@ export const motionFromTextTool: Tool = {
     'docs/3d-characters.md ("motion.from-text").',
   provider: 'comfy',
   family: 'motion',
-  server: 'ssh',
+  image: '3d',
   output: 'file',
   inputs: {
     character: { kind: 'file', description: 'The rig to put the clip on (GLB or FBX from mesh.rig). Without it, the job returns the BVH only.' },
@@ -234,16 +274,16 @@ export const motionFromTextTool: Tool = {
     const outDir = ctx.tmp('motion');
     const seed = ctx.seed(0);
 
-    await ensureBlender(c.server.id, ctx.step);
-    await ensureMotion(c.server.id, ctx.step);
-    const ws = await blenderWorkspace(c.server.id, ctx.job.id);
+    await prepare3d(c, ['blender', 'motion'], ctx.step);
+    const ws = await jobWorkspace(c, ctx.job.id);
     try {
-      ctx.step('sending the job to the GPU server');
+      ctx.step(`sending the job to ${ws.where}`);
       const put: Record<string, string> = {
         'kimodo_run.py': path.join(paths.post, 'motion', 'kimodo_run.py'),
         'hymotion_run.py': path.join(paths.post, 'motion', 'hymotion_run.py'),
         'smplh_to_bvh.py': path.join(paths.post, 'motion', 'smplh_to_bvh.py'),
         'stamp.py': path.join(paths.post, 'motion', 'stamp.py'),
+        'check.py': path.join(paths.post, 'motion', 'check.py'),
         'hawkes_character.py': path.join(paths.post, 'blender', 'hawkes_character.py'),
         'hawkes_blender.py': path.join(paths.post, 'blender', 'hawkes_blender.py'),
       };
@@ -297,10 +337,13 @@ export const motionFromTextTool: Tool = {
       if (fbx) outs.push({ file: fbx.file, title: 'fbx', ext: '.fbx', take: i });
       if (preview) outs.push({ file: preview.file, title: 'preview', ext: '.mp4', take: i });
     }
+    const checks = readChecks(outDir, plan.takes);
+    checks.forEach((c, i) => { if (c && !c.ok) ctx.log(`warning: take ${i}: ${c.problems.join('; ')}`); });
     for (const [k, o] of outs.entries()) {
-      if (k >= ctx.done) await ctx.emit({ data: fs.readFileSync(path.join(outDir, o.file)), ext: o.ext, title: o.title, seed: seed + o.take, meta: { ...meta, take: o.take } });
+      if (k >= ctx.done) await ctx.emit({ data: fs.readFileSync(path.join(outDir, o.file)), ext: o.ext, title: o.title, seed: seed + o.take, meta: { ...meta, take: o.take, check: checks[o.take] ? { ok: checks[o.take]!.ok, problems: checks[o.take]!.problems } : undefined } });
     }
     ctx.result({
+      checks, best: bestTake(checks),
       backend, model: meta.model, prompt: plan.prompt, modelPrompt: plan.modelPrompt, seconds: plan.seconds,
       durations: plan.durations, takes: plan.takes, loop: plan.loop, inPlace: plan.inPlace,
       clips: plan.clips, outputs: outs.map((o) => ({ title: o.title, take: o.take })),

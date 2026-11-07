@@ -155,7 +155,10 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     hooks.keepGraph(graph);
     const key = runKey(job.id, graph);
     const out = `${base}/runs/${key}/`;
-    const extra = env('COMFY_ORG_API_KEY') ? { api_key_comfy_org: env('COMFY_ORG_API_KEY') } : undefined;
+    // Secrets ride in `extra`, never in the graph (which is kept with the job and makes the run key). A 3D job's script
+    // gets Gen's Hugging Face token for gated weights (Kimodo's Llama 3 text encoder).
+    const hf = (graph as any)?.hawkes_job ? env('HF_TOKEN') || env('HUGGING_FACE_HUB_TOKEN') : '';
+    const extra = env('COMFY_ORG_API_KEY') || hf ? { ...(env('COMFY_ORG_API_KEY') ? { api_key_comfy_org: env('COMFY_ORG_API_KEY') } : {}), ...(hf ? { hf_token: hf } : {}) } : undefined;
     // Elsewhere (no preloads) every model of the family's service that the graph names rides along too.
     const models = new Map([...pending.values()].map(({ dir, file }) => [`${dir}/${file}`, { dir, file }]));
     if (svc.broker) {
@@ -280,7 +283,7 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
         if (!svc.preload.has(id)) pending.set(id, m);
       }
     },
-    // Nothing on Cloud Run runs outside a graph (tools that work over SSH stay on the fleet).
+    // Nothing here runs outside a request (a 3D job's script is one request too: src/providers/workspace.ts).
     timed: <T>(work: () => Promise<T>) => work(),
   };
 }

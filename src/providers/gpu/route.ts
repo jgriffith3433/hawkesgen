@@ -16,7 +16,7 @@ export type Choice = { kind: 'service'; service: CloudService } | { kind: 'fleet
 export type Candidates = { choices: Choice[]; skipped: string[] };
 
 type Job = { id?: string; family: string | null; params: Record<string, any>; labels?: Record<string, unknown> };
-type ToolLike = Pick<Tool, 'provider' | 'server' | 'gpuSeconds'>;
+type ToolLike = Pick<Tool, 'provider' | 'server' | 'gpuSeconds'> & { image?: Tool['image'] };
 
 /** The ids this job already failed on (it moves on from them). */
 export const triedOf = (job: Job): string[] => (Array.isArray(job.labels?.gpuTried) ? (job.labels!.gpuTried as unknown[]).map(String) : []);
@@ -82,6 +82,8 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     if (!ep) { skipped.push(`${id}: not in settings.gpu.providers`); continue; }
     if (!ep.enabled) { skipped.push(`${id}: turned off`); continue; }
     if (!ep.families.includes('*') && !ep.families.includes(family)) { skipped.push(`${id}: doesn't run the ${family || 'job\'s'} family`); continue; }
+    // "*" is the ComfyUI image: a 3D tool's script needs an endpoint running the 3D image, which names its family.
+    if (tool.image === '3d' && !ep.families.includes(family)) { skipped.push(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the 3D image that names it`); continue; }
     if (perGraph > ep.graphLimitSeconds) { skipped.push(`${id}: one graph may run ${Math.round(perGraph / 60)} min, past its limit`); continue; }
     if (!bucket) { skipped.push(`${id}: settings.gpu.cloudrun.bucket is not set (the worker's files go there)`); continue; }
     if (!env('HAWKESGEN_PUBLIC_URL')) { skipped.push(`${id}: HAWKESGEN_PUBLIC_URL is not set (the worker reaches the bucket through Gen)`); continue; }
@@ -90,4 +92,17 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     choices.push({ kind: 'service', service: endpointService(ep, family, map, bucket, get) });
   }
   return { choices, skipped };
+}
+
+/**
+ * Whether a GPU tool can run now, for the app's Create list and make.checked's routing: a tool that works over SSH
+ * needs the fleet; a 3D tool needs the fleet or an enabled endpoint that names its family (the 3D worker image).
+ */
+export function toolReady(tool: Pick<Tool, 'server' | 'family' | 'image'> | undefined | null, o: { fleetDown: boolean; settings: Pick<Settings, 'gpu'> | null }): boolean {
+  if (!tool) return false;
+  if (tool.server === 'ssh') return !o.fleetDown;
+  if (tool.image !== '3d') return true;
+  if (!o.fleetDown) return true;
+  const family = typeof tool.family === 'string' ? tool.family : '';
+  return Boolean(o.settings?.gpu.providers?.some((p) => p.enabled && p.families.includes(family)));
 }

@@ -201,9 +201,10 @@
     }
   },
   "stayOnVm": {
-    "blender": "Renders run up to 90 minutes: past Cloud Run's 60-minute request limit. Also driven over SSH.",
-    "rig": "mesh.rig: its own venvs and Blender over SSH.",
-    "motion": "motion.from-text: its own venv and Blender over SSH.",
+    "blender": "Blender runs in the 3D worker image (server/gpu3d) on RunPod/Modal endpoints that name the family, or on the fleet over SSH; never on these ComfyUI services (docs/3d-animation.md).",
+    "rig": "mesh.rig: the 3D worker image or the fleet (docs/3d-animation.md).",
+    "motion": "motion.from-text: the 3D worker image or the fleet (docs/3d-animation.md).",
+    "mocap": "motion.from-video (GEM-X): the 3D worker image or the fleet (docs/3d-animation.md).",
     "audio:*": "The open audio models (voxcpm2, qwen3-tts, moss...): one venv each, run over SSH by post/audio/run.py. Phase 2: a worker image with the venvs behind the same /run protocol.",
     "lora.train, image.character": "z-image family, but they copy files to and from the server over SSH (training up to 42 minutes, the LoRA file kept on the server).",
     "api-kling, api-seedance": "Partner API nodes: they wait on someone else's servers, so a GPU is wasted on them. Later: a CPU-only Cloud Run service with the same image."

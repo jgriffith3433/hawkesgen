@@ -98,6 +98,10 @@ export type Tool = {
   /** `ssh`: the tool also works on the GPU server itself over SSH (Blender, venvs, copying files), so it always runs on a
    *  fleet server, never on Cloud Run (src/providers/cloudrun/services.ts). */
   server?: 'ssh';
+  /** `3d`: the tool runs a script in a job folder (src/providers/workspace.ts) on a fleet server over SSH, or on a GPU
+   *  worker running the 3D image (server/gpu3d: Blender, the rig, motion and mocap venvs). Only endpoints that name its
+   *  family run it ("*" is the ComfyUI image); Cloud Run's ComfyUI services never do (src/providers/gpu/route.ts). */
+  image?: '3d';
   /** For ComfyUI tools: the set of models it loads (servers swap between families). */
   family?: string | ((params: Record<string, any>) => string);
   output: 'image' | 'video' | 'audio' | 'text' | 'json' | 'mesh' | 'file';

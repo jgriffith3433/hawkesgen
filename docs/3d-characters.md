@@ -102,7 +102,14 @@ So version 4 straightens props and uses the exact words; the check (Claude) refu
 6. One old starter recipe passed image.remove-background's first output (the mask) to image.viewsheet: the Shield's
    "views" were white discs. Recipes must name `:cutout`; the viewsheet now refuses a mask.
 
-### Tested on the GPU (2026-10-23, project test-3dfix)
+### motion.from-video and motion.check
+
+A clip from an ordinary video (NVIDIA GEM-X, the same SOMA BVH Kimodo writes, retargeted like a motion.from-text take) and
+the free numbers every take gets (foot slide, ground, pops, jitter, loop seam, travel): docs/3d-animation.md. The
+`character3d` slot `mocap/<name>` takes a video in `source`, or films the character itself from `prompt` when it has none.
+motion.from-text (version 2) now returns `checks` (one per take) and `best`.
+
+## Tested on the GPU (2026-10-23, project test-3dfix)
 
 - Chair (`j_6dceb5b72c31`, GLB `a_1d2b4f2146857ef7`), crate (`j_46943fed5bb1`, `a_566855496fbfe555`), apple (`j_c38c79fae1b6`,
   `a_fe4ab0d9852fd905`): Pixal3D received four distinct, correctly framed views; the meshes are a clean chair (report score 98),
@@ -394,7 +401,8 @@ POST /v1/entities/phorigins/pierce/slots/concept/make
 ## mesh.rig
 
 `mesh.rig` (version 4, family `rig`) rigs the mesh before `blender.character` sees it. It is not a ComfyUI node and
-it is not on the fleet image. The first job on a server installs two venvs under `/opt/hawkes-rig` (the Blender
+it is not on the fleet image. It runs on a GPU worker with the 3D image (docs/3d-animation.md: the venvs are in the image,
+the weights come once into the worker's volume) or on a fleet server, where the first job installs two venvs under `/opt/hawkes-rig` (the Blender
 install pattern in `src/providers/rig/install.ts`) and refuses to start unless the disk has 30 GB free.
 
 | | Humanoid | Anything else |
@@ -488,7 +496,8 @@ also files a video on `preview/<name>`. The character file is the rigged GLB or 
 ## motion.from-text
 
 `motion.from-text` (version 1, family `motion`) makes a humanoid clip from a sentence. It is not a ComfyUI node and
-it is not on the fleet image. The first job on a server installs two venvs under `/opt/hawkes-motion` and refuses to
+it is not on the fleet image. It runs on a GPU worker with the 3D image (docs/3d-animation.md) or on a fleet server, where
+the first job installs two venvs under `/opt/hawkes-motion` and refuses to
 start unless the disk has 60 GB free. Prefer a Quaternius clip from the motion library when one already fits; this
 tool is for a new move that is not in those packs.
 

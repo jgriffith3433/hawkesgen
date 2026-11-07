@@ -860,7 +860,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const { isDown } = await import('./providers/gpu/health.ts');
         const noAws = (() => { try { fleet.awsConfig(); return false; } catch { return true; } })();
         const list = client.role === 'user' ? TOOLS.filter((t) => !isInternalOnlyTool(t.id)) : TOOLS;
-        return send(res, 200, { tools: await ed.catalog(describeTool, list, noAws || Boolean(isDown('fleet'))) });
+        return send(res, 200, { tools: await ed.catalog(describeTool, list, noAws || Boolean(isDown('fleet')), loadSettings()) });
       }
       if (route === '/v1/editor/projects' && method === 'GET') return send(res, 200, { items: ed.listProjects(projectOf(q('project'))) });
       if (route === '/v1/editor/projects' && method === 'POST') {

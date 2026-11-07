@@ -6,15 +6,16 @@
 // (depth, pose, edges, normals, a character mask) as videos at the same frame rate and size, plus the first frame as
 // an image to style with image.edit. video.control then repaints the shot in any look, following its motion exactly.
 //
-// The scripts are post/blender/hawkes_blender.py (inside Blender) and post/pose_draw.py; the server side is
-// src/providers/blender/blender.ts. docs/blender.md has the shot format.
+// The scripts are post/blender/hawkes_blender.py (inside Blender) and post/pose_draw.py; where they run is
+// src/providers/workspace.ts (a fleet server over SSH, or a GPU worker with the 3D image). docs/blender.md has the shot format.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { paths } from '../config.ts';
-import { ensureBlender, blenderWorkspace, BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+import { BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+import { jobWorkspace, prepare3d } from '../providers/workspace.ts';
 import { lintShot, type Shot } from '../film/shot.ts';
 
 /** `layers` is each character alone as a matte (layer0.mp4, layer1.mp4...), for layered effects (video.composite). */
@@ -107,7 +108,7 @@ export const blenderRenderTool: Tool = {
   version: 2,
   title: 'Render a Blender shot (with control videos)',
   description:
-    'Renders a 3D shot in Blender on a GPU server and returns it as videos: the beauty render plus control passes (depth, pose skeletons from the ' +
+    'Renders a 3D shot in Blender on a GPU worker (the 3D image) or fleet server and returns it as videos: the beauty render plus control passes (depth, pose skeletons from the ' +
     'rigs, edges, normals, a character mask) and the first frame as an image. Give a .blend (or a .zip of the project folder) and/or a `shot` ' +
     'that builds the scene from the job\'s files: characters (GLB, FBX, .blend; an animation by name or from a Mixamo FBX), props, ground, sky, ' +
     'lights and a camera move (push-in, orbit, follow, ...). Characters can hold props (attachments to a hand bone), follow a timeline of ' +
@@ -116,7 +117,7 @@ export const blenderRenderTool: Tool = {
     'docs/blender.md has the shot format and docs/film-pipeline.md the whole film pipeline.',
   provider: 'comfy',
   family: 'blender',
-  server: 'ssh',
+  image: '3d',
   output: 'video',
   inputs: {
     scene: { kind: 'file', description: 'A .blend, or a .zip of a project folder with its textures (the .blend at the top, or name it with blend).' },
@@ -168,10 +169,10 @@ export const blenderRenderTool: Tool = {
     const { shot, notes } = resolveShot(p.shot, frames, p.fps, (ctx.inputs.files ?? []).length);
     for (const n of notes) ctx.log(`shot: ${n}`);
 
-    await ensureBlender(c.server.id, ctx.step);
-    const ws = await blenderWorkspace(c.server.id, ctx.job.id);
+    await prepare3d(c, ['blender'], ctx.step);
+    const ws = await jobWorkspace(c, ctx.job.id);
     try {
-      ctx.step('sending the scene and files to the GPU server');
+      ctx.step(`sending the scene and files to ${ws.where}`);
       const remoteFiles: string[] = [];
       const put: Record<string, string> = {};
       files.forEach((f, i) => {
