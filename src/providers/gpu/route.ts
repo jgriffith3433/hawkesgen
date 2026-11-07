@@ -25,6 +25,19 @@ export type Candidates = { choices: Choice[]; skipped: string[]; blockers: Block
 type Job = { id?: string; family: string | null; params: Record<string, any>; labels?: Record<string, unknown> };
 type ToolLike = Pick<Tool, 'provider' | 'server' | 'gpuSeconds'>;
 
+/**
+ * Why the AWS fleet can't be used at all, or '' when it can: the same credentials rule as fleet.ts awsConfig (keys, the
+ * Google-to-AWS federation, an instance role), checked without loading the AWS SDK. Kept in step with awsConfig.
+ * 2026-11-07: with no keys in Gen's environment the fleet stayed in the order, so jobs were sent there and failed on
+ * the credentials before moving on; now it is skipped as a lasting blocker.
+ */
+export function fleetCredentialProblem(get: Secrets = env): string {
+  if (get('AWS_ACCESS_KEY_ID') && get('AWS_SECRET_ACCESS_KEY')) return '';
+  if (get('HAWKES_AWS_FEDERATION') === 'gce' || (get('K_SERVICE') && get('HAWKES_AWS_ROLE_ARN'))) return '';
+  if (get('HAWKES_AWS_ROLE')) return '';
+  return 'no AWS credentials, so the GPU servers can\'t be started';
+}
+
 /** The ids this job already failed on (it moves on from them). */
 export const triedOf = (job: Job): string[] => (Array.isArray(job.labels?.gpuTried) ? (job.labels!.gpuTried as unknown[]).map(String) : []);
 
@@ -64,7 +77,10 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     return r.service ? { choices: [{ kind: 'service', service: { ...r.service, provider: 'cloudrun', lane: r.service.name } }], skipped, blockers } : { choices: [{ kind: 'fleet' }], skipped: [r.why], blockers };
   }
   if (job.labels?.gpuBackend === 'fleet' || tool.server === 'ssh') {
-    return { choices: [{ kind: 'fleet' }], skipped: [tool.server === 'ssh' ? 'the tool works on the server over SSH: the fleet only' : 'this job asked for the fleet'], blockers };
+    const why = tool.server === 'ssh' ? 'the tool works on the server over SSH: the fleet only' : 'this job asked for the fleet';
+    const off = fleetCredentialProblem(get);
+    if (off) { skip(`${why}; fleet: ${off}`, true); return { choices: [], skipped, blockers }; }
+    return { choices: [{ kind: 'fleet' }], skipped: [why], blockers };
   }
   const tried = new Set(triedOf(job));
   const family = job.family ?? '';
@@ -75,7 +91,12 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     const cool = isDown(id, now);
     if (tried.has(id)) { skip(`${id}: this job already failed there`, false); continue; }
     if (cool) { skip(`${id}: ${cool.reason} (skipped for ${Math.ceil((cool.until - now) / 60_000)} min)`, lastingDown(cool)); continue; }
-    if (id === 'fleet') { choices.push({ kind: 'fleet' }); continue; }
+    if (id === 'fleet') {
+      const off = fleetCredentialProblem(get);
+      if (off) skip(`fleet: ${off}`, true);
+      else choices.push({ kind: 'fleet' });
+      continue;
+    }
     if (!map) { skip(`${id}: no services.json`, true); continue; }
     if (id === 'cloudrun') {
       const r = cloudRoute({ ...job, labels: { ...(job.labels ?? {}), gpuBackend: 'cloudrun' } }, tool, settings, map);
