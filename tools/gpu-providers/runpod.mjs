@@ -17,14 +17,14 @@
 // All calls go to RunPod's API v2 (runpod-v2.mjs): REST v1 is retired on 2026-11-15 and GraphQL early 2027.
 // With --endpoint <id> it prints the settings entry for that endpoint.
 import { APPLY, arg, secret, workerImage, say, header, redact, printEntry, print3dEntry, KIND, IMAGE_3D } from './lib.mjs';
-import { runpod } from './runpod-v2.mjs';
+import { runpod, upsertTemplate, findEndpoint, lbEndpoint } from './runpod-v2.mjs';
 
 // --kind 3d: the 3D worker (server/gpu3d): Blender, the rig, motion and mocap venvs; weights on a network volume.
 const is3d = KIND === '3d';
 const name = arg('name', is3d ? 'hawkes-gen-3d' : 'hawkes-gen-gpu');
 const gpu = arg('gpu', 'NVIDIA L40S');
 const max = Number(arg('max', '2'));
-const disk = Number(arg('disk', is3d ? '80' : '120'));
+const disk = Number(arg('disk', is3d ? '150' : '120'));
 const registryAuth = arg('registry-auth');
 const endpoint = arg('endpoint');
 const image = is3d && !arg('image') ? IMAGE_3D : workerImage();
@@ -71,6 +71,26 @@ say(JSON.stringify({ ...template, env: { ...template.env, ...(workerToken ? { WO
 say(`RUNPOD_API_KEY: ${redact(key)}; GPU_WORKER_TOKEN: ${redact(workerToken)} (optional: the worker then refuses requests without it)`);
 
 let templateId = null;
+// --kind 3d --apply makes the template and the load-balancer endpoint through API v2 (like tools/playtest-runpod/setup.mjs),
+// on the 48 GB pools (L40S class, then A6000/A40): HY-Motion wants 26 GB, SkinTokens 14 GB. No volume unless --volume <id>.
+if (APPLY && is3d) {
+  if (!key) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env'); process.exit(1); }
+  if (!workerToken) { console.error('GPU_WORKER_TOKEN is not in hawkesgen/.env: the 3D worker refuses scripts without it.'); process.exit(1); }
+  const api = runpod(key);
+  const t3 = { ...template, env: { ...template.env, HEALTH_CHECK_PATH: '/ping' } };
+  const [t, madeT] = await upsertTemplate(api, t3);
+  say(`${madeT ? 'made' : 'updated'} template ${t.id}`);
+  const volume = arg('volume');
+  const body = {
+    ...lbEndpoint({ name, templateId: t.id, gpu: { pools: ['ADA_48_PRO', 'AMPERE_48'], count: 1 }, max, idle: 900, perWorker: 1, timeoutMs: 3_600_000 }),
+    ...(volume ? { networkVolumes: [volume] } : {}),
+  };
+  const old = await findEndpoint(api, name);
+  const e = old ? await api.req('PATCH', `/serverless/${old.id}`, body) : await api.req('POST', '/serverless', body);
+  say(`${old ? 'updated' : 'made'} endpoint ${e.id} (${e.type}), pools ${(e.gpu?.pools ?? []).join(', ')}`);
+  print3dEntry({ id: 'runpod-3d', provider: 'runpod', url: `https://${e.id}.api.runpod.ai`, gpu: 'L40S', pricePerHour: PRICES['NVIDIA L40S'], maxConcurrent: max, graphLimitSeconds: 1800, enabled: true });
+  process.exit(0);
+}
 if (APPLY) {
   if (!key) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env (RunPod console > Settings > API Keys).'); process.exit(1); }
   try { templateId = (await runpod(key).req('POST', '/templates', template)).id; }

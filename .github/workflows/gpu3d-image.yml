@@ -1,7 +1,8 @@
 # The 3D worker image on GHCR, for RunPod, Modal and any other GPU host (docs/3d-animation.md, "The image"). Push a tag
 # gpu3d-image-<anything> (or run it by hand) and GitHub builds server/gpu3d (Blender, the rig, motion and mocap venvs,
-# worker.py; no ComfyUI, no weights, no keys) and pushes ghcr.io/jgriffith3433/hawkes-gen-3d:3d-<context hash> and
-# :latest. GitHub's own token writes the package: no secret. Nothing runs it until an endpoint is pointed at it.
+# worker.py; no ComfyUI, no weights, no keys) and pushes ghcr.io/jgriffith3433/hawkes-gen-gpu:3d-<context hash> and
+# :3d-latest: the public hawkes-gen-gpu package (a new package starts private, and RunPod's API has no registry credentials),
+# 3d- tags beside the ComfyUI ones. GitHub's own token writes it: no secret. Nothing runs it until an endpoint points at it.
 name: 3D worker image
 on:
   push:
@@ -37,10 +38,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push
         run: |
-          img=ghcr.io/jgriffith3433/hawkes-gen-3d
+          img=ghcr.io/jgriffith3433/hawkes-gen-gpu
           docker build "$RUNNER_TEMP/gpu3d" --provenance=false \
             --label org.opencontainers.image.source=https://github.com/jgriffith3433/hawkesgen \
-            -t "$img:${{ steps.ctx.outputs.TAG }}" -t "$img:latest"
+            -t "$img:${{ steps.ctx.outputs.TAG }}" -t "$img:3d-latest"
           docker push "$img:${{ steps.ctx.outputs.TAG }}"
-          docker push "$img:latest"
+          docker push "$img:3d-latest"
           echo "Pushed $img:${{ steps.ctx.outputs.TAG }}" >> "$GITHUB_STEP_SUMMARY"

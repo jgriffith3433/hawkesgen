@@ -1,6 +1,6 @@
 // Writes the 3D worker image's build folder (server/gpu3d/Dockerfile, worker.py, the entrypoint and the four install
 // scripts generated from src/providers/*/install.ts with weights: false). .github/workflows/gpu3d-image.yml builds it
-// on GitHub and pushes ghcr.io/jgriffith3433/hawkes-gen-3d (docs/3d-animation.md, "The image").
+// on GitHub and pushes ghcr.io/jgriffith3433/hawkes-gen-gpu:3d-<hash> (docs/3d-animation.md, "The image").
 //
 //   node tools/gpu-providers/image-context-3d.mjs <dir>      prints TAG= (for $GITHUB_OUTPUT)
 //   node tools/gpu-providers/image-context-3d.mjs --print    lists the files and the tag, writes nothing

@@ -27,7 +27,7 @@ Every one of these is a job (`/v1/jobs`, the CLI's `run`, any client), an MCP to
 The 3D tools (`image: '3d'` on the tool) run a bash script in a job folder, `/var/tmp/hawkes-blender/<job>`
 (`src/providers/workspace.ts`). That folder is in one of two places:
 
-- **A GPU worker running the 3D image** (`server/gpu3d/Dockerfile`, `ghcr.io/jgriffith3433/hawkes-gen-3d`): RunPod,
+- **A GPU worker running the 3D image** (`server/gpu3d/Dockerfile`, `ghcr.io/jgriffith3433/hawkes-gen-gpu:3d-latest`): RunPod,
   Modal or any HTTPS host.
   - Each script run is **one request**, `{ hawkes_job: { dir, script, files, texts, collect } }`, through the same
     protocol and broker a ComfyUI graph uses (`src/providers/cloudrun/run.ts`, `server/cloudrun/worker.py` `_job`).
@@ -78,7 +78,7 @@ test box.
 ## Setting it up (J's steps; nothing costs money until a job runs)
 
 1. **The image.** Push a tag `gpu3d-image-<anything>` (or run the "3D worker image" workflow by hand). GitHub builds
-   `server/gpu3d` and pushes `ghcr.io/jgriffith3433/hawkes-gen-3d:3d-<hash>` and `:latest`. To see the files and the
+   `server/gpu3d` and pushes `ghcr.io/jgriffith3433/hawkes-gen-gpu:3d-<hash>` and `:3d-latest` (the public package: a new one would start private). To see the files and the
    tag without building, run `node tools/gpu-providers/image-context-3d.mjs --print`.
 2. **The worker token.** `GPU_WORKER_TOKEN` in `hawkesgen/.env` and in Gen's environment on each lane. The 3D endpoint
    gets it as `WORKER_TOKEN` (the scripts below put it there).

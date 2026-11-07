@@ -1,7 +1,7 @@
 # Hawkes Gen's 3D worker: the same worker.py as the GPU image (server/cloudrun), with no ComfyUI. It runs the 3D tools'
 # scripts ({ hawkes_job } requests, src/providers/workspace.ts): blender.character, blender.render, mesh.rig,
 # motion.from-text and motion.from-video. Built on GitHub by .github/workflows/gpu3d-image.yml (tag gpu3d-image-*) into
-# ghcr.io/jgriffith3433/hawkes-gen-3d; RunPod and Modal pull it (docs/3d-animation.md).
+# ghcr.io/jgriffith3433/hawkes-gen-gpu:3d-<hash> / :3d-latest (the public package); RunPod and Modal pull it (docs/3d-animation.md).
 #
 # The install-*.sh files are written by tools/gpu-providers/image-context-3d.mjs from the same TypeScript the fleet's
 # SSH installs use (src/providers/{blender,rig,motion,mocap}/install.ts) with weights: false, so the paths match the

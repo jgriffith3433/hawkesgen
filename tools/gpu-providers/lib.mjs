@@ -56,7 +56,7 @@ export const redact = (v) => (v ? `<set, ${String(v).length} characters>` : '<no
  */
 export const KIND = arg('kind', 'comfy');
 export const THREE_D_FAMILIES = ['rig', 'motion', 'mocap', 'blender'];
-export const IMAGE_3D = 'ghcr.io/jgriffith3433/hawkes-gen-3d:latest';
+export const IMAGE_3D = 'ghcr.io/jgriffith3433/hawkes-gen-gpu:3d-latest';
 
 /** The settings entry for a 3D endpoint: the families it runs and the order that sends them there (fleet after). */
 export function print3dEntry(entry) {
