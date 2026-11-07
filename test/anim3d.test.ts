@@ -353,7 +353,7 @@ test('the MCP tools for animation: rig, move from words, from video (or the char
   assert.equal(submitted[3].tool, 'asset.make');
   assert.deepEqual(submitted[3].params.steps.map((s: any) => s.tool), ['blender.render', 'video.i2v', 'motion.from-video']);
   await assert.rejects(by.animate_from_video.run({ model: 'asset:m' }), /Give video/);
-  const stock = await by.stock_animations.run({ search: 'walk' });
+  const stock: any = await by.stock_animations.run({ search: "walk" });
   assert.equal(stock.clips[0].id, 'motion:ual1/Walk_Loop');
   await by.add_animations.run({ model: 'asset:m', clips: ['motion:ual1/Walk_Loop'], in_place: true });
   const ops = submitted[4].params.ops;
