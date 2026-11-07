@@ -493,6 +493,31 @@ test('showrunner: a small edit goes to the scene\'s own assistant and is charged
   setCredits(A.user.id, 5000);
 });
 
+test('showrunner: the pane\'s autoCredits is forwarded to the delegated scene assistant, capped at the account\'s balance', async () => {
+  const s = await newCharacter();
+  const doc = { ...s.doc, pictures: [front(0)] };
+  const edit = (extra: Record<string, unknown>) => { queue(A, [sceneAnswer('draw her', doc, [draw(0)])]); return turn('draw her', { scene: s.id, ...extra }); };
+  // The price the scene assistant asks for this one job: nothing runs at 0.
+  const none = await (await edit({ autoCredits: 0 })).json() as any;
+  assert.equal(none.started.length, 0);
+  const price = none.proposed.credits as number;
+  assert.ok(price > 1 && price <= 40, `the job costs more than a credit and under the default limit (${price})`);
+  // Had the pane's value been dropped, the default 40 would run it. One credit under the price stays proposed, the price runs it.
+  const under = await (await edit({ autoCredits: price - 1 })).json() as any;
+  assert.equal(under.started.length, 0, 'the pane\'s limit (one under the price) was forwarded, not the default 40');
+  assert.equal(under.proposed.credits, price);
+  const at = await (await edit({ autoCredits: price })).json() as any;
+  assert.equal(at.started.length, 1, 'at the price, the pane\'s limit runs it');
+  assert.equal(at.proposed, undefined);
+  // A huge limit is capped: a payer with less than the price cannot auto-run it, whatever the pane asks.
+  setCredits(A.user.id, price - 1);
+  const huge = await (await edit({ autoCredits: 1_000_000_000 })).json() as any;
+  assert.equal(huge.started.length, 0, 'capped by what the account holds');
+  assert.ok(huge.proposed, 'the proposal comes back for one tap');
+  setCredits(A.user.id, 5000);
+  AM.clearAnswers(A.user.id);
+});
+
 test('showrunner: another user\'s scene and production are a 404 on every route; the model is not called and nothing changes', async () => {
   const proj = await (await a('/v1/editor/projects', 'POST', { title: 'Mine' })).json() as any;
   queuePlan(A);
@@ -739,10 +764,9 @@ test('the AI editor\'s own /apply is the person\'s call: unity.build is refused 
 });
 
 // ================================================================== the legacy POST /v1/assistant/chat as a customer key
-// It is an old Hawkes Play helper that calls ask() with no callScope and no account: so it never takes the house AI's
-// route, never writes an ai_turn row, and (without an Anthropic key of the account's own) runs on the studio's Claude.
-// Recorded here with a fake Anthropic API that counts the calls and the key they carry.
-// One fake Anthropic API for the whole file: the SDK client for the env key is built once, with the base URL it first saw.
+// An old Hawkes Play helper. It now runs as the AI editor does (callScope with the customer's org, the house AI for a Gen
+// app account, paid in credits, 402/503 when it can't): never the studio's own Claude. Recorded with a fake Anthropic API
+// that counts the calls and the key they carry, so a call that reaches the studio's Claude is visible.
 const studioCalls: { key: string }[] = [];
 const STUDIO_KEY = 'sk-ant-api03-STUDIO-OWN-KEY-legacy-probe-0001';
 let studioFake: http.Server | null = null;
@@ -769,28 +793,70 @@ async function withStudioClaude<T>(fn: () => Promise<T>): Promise<{ result: T; c
     if (wasKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = wasKey;
   }
 }
+const lastUsage = (project: string) => db.prepare('SELECT provider, detail, cost FROM usage WHERE project = ? ORDER BY rowid DESC LIMIT 1').get(project) as { provider: string; detail: string; cost: number } | undefined;
 
-test('legacy /v1/assistant/chat as a user client: not charged, not scoped to the account, runs on the studio\'s own Claude key', async () => {
+test('legacy /v1/assistant/chat as a user client: charged like the AI editor, on the house AI, and the usage row names the house route', async () => {
   setCredits(A.user.id, 700);
-  queue(A, [{ json: { say: 'this canned answer is for the scoped surfaces only' } }]);
+  queue(A, [{ match: 'platformer', text: 'Start with a jump and a floor.', cost: 0.1 }]);
   const rows = ledger(A.user.id).length;
-  const { result: r, calls, key } = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'make me a platformer', gameContext: { gameName: 'Probe' }, history: [] }));
-  // It reached Anthropic with the studio's key (the account has none of its own), and the mock did not answer for the account.
-  assert.equal(r.status, 500);
-  assert.match((await r.json() as any).error, /AI assistant error/);
-  assert.equal(calls.length, 1, 'one real call went out');
-  assert.equal(calls[0].key, key, 'with the studio\'s key, not the account\'s or the house AI\'s');
-  assert.equal(AM.mockStatus(A.user.id).queued, 1, 'the account\'s canned answer was not used: the call has no account scope');
-  // And it is free to the person: no credits taken, no ai_turn row.
-  assert.equal(credits(A.user.id), 700);
+  const { result: r, calls } = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'make me a platformer', gameContext: { gameName: 'Probe' }, history: [] }));
+  const body = await r.json() as any;
+  assert.equal(r.status, 200, JSON.stringify(body));
+  assert.equal(body.message, 'Start with a jump and a floor.');
+  assert.equal(calls.length, 0, 'the studio\'s own Claude was never called');
+  // One ai_turn row, the exact debit (cost x markup, at least the minimum).
+  assert.equal(credits(A.user.id), 700 - house.turnCredits(0.1));
+  const added = ledger(A.user.id).slice(rows);
+  assert.equal(added.length, 1);
+  assert.equal(added[0].delta, -house.turnCredits(0.1));
+  assert.match(added[0].detail, /^Assistant: chat/);
+  // The usage row says the house route (not the studio brain, not the account\'s own Claude).
+  const u = lastUsage(A.user.id);
+  assert.ok(u, 'a usage row');
+  assert.equal(u!.provider, 'anthropic');
+  assert.match(u!.detail, /^house AI \(Gen\): assistant chat/);
+  AM.clearAnswers(A.user.id);
+  setCredits(A.user.id, 5000);
+});
+
+test('legacy /v1/assistant/chat as a user client at zero credits: 402 before the call; the model is not called and nothing is charged', async () => {
+  setCredits(A.user.id, 0);
+  queue(A, [{ match: 'platformer', text: 'Should not be sent.', cost: 0.1 }]);
+  const rows = ledger(A.user.id).length;
+  const { result: r, calls } = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'make me a platformer' }));
+  assert.equal(r.status, 402, JSON.stringify(await r.clone().json()));
+  assert.equal(calls.length, 0);
+  assert.equal(AM.mockStatus(A.user.id).queued, 1, 'the canned answer was not used');
+  assert.equal(credits(A.user.id), 0);
   assert.equal(ledger(A.user.id).length, rows);
-  // The house AI being off changes nothing for it (the other assistants answer 503): it still goes to the studio's Claude.
+  AM.clearAnswers(A.user.id);
+  setCredits(A.user.id, 5000);
+});
+
+test('legacy /v1/assistant/chat and code-suggestions with the house AI off: 503 with the route\'s words, and the studio\'s Claude is not used', async () => {
+  setCredits(A.user.id, 700);
   house.saveHouseSettings({ source: 'off' });
   try {
-    const off = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'again' }));
-    assert.equal(off.calls.length, 1);
-    assert.notEqual(off.result.status, 503);
+    const chat = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'hi' }));
+    assert.equal(chat.result.status, 503);
+    assert.match((await chat.result.json() as any).error, /turned off/);
+    assert.equal(chat.calls.length, 0);
+    const code = await withStudioClaude(() => a('/v1/assistant/code-suggestions', 'POST', { intent: 'add a jump' }));
+    assert.equal(code.result.status, 503);
+    assert.equal(code.calls.length, 0);
   } finally { house.saveHouseSettings({ source: 'auto' }); }
+  assert.equal(credits(A.user.id), 700, 'nothing charged');
+  setCredits(A.user.id, 5000);
+});
+
+test('legacy /v1/assistant/code-suggestions as a user client: the same house route and charge as chat', async () => {
+  setCredits(A.user.id, 700);
+  queue(A, [{ match: 'add a jump', text: '```javascript\nplayer.jump();\n```', cost: 0.1 }]);
+  const { result: r, calls } = await withStudioClaude(() => a('/v1/assistant/code-suggestions', 'POST', { intent: 'add a jump' }));
+  assert.equal(r.status, 200, JSON.stringify(await r.clone().json()));
+  assert.equal(calls.length, 0);
+  assert.equal(credits(A.user.id), 700 - house.turnCredits(0.1));
+  assert.match(ledger(A.user.id).at(-1)!.detail, /^Assistant: code/);
   AM.clearAnswers(A.user.id);
   setCredits(A.user.id, 5000);
 });
@@ -801,12 +867,3 @@ test('legacy /v1/assistant/chat: the owner-only rule is a 403 for a key that is 
   assert.ok([401, 403].includes(anon.status), String(anon.status));
 });
 
-test('legacy /v1/assistant/chat as a user client uses the studio\'s Claude without paying: a known gap', { todo: 'POST /v1/assistant/chat (assistant.ts processMessage) calls ask() outside callScope: a customer\'s message runs on the studio\'s Claude (Max plan or API key) at no cost to them. It should take the house AI route and charge ai_turn like the other assistants, or be turned off for role user.' }, async () => {
-  // Wanted: with the house AI off, the legacy chat is refused like every other assistant (503) and never reaches the studio's Claude.
-  house.saveHouseSettings({ source: 'off' });
-  try {
-    const { result: r, calls } = await withStudioClaude(() => a('/v1/assistant/chat', 'POST', { message: 'make me a platformer' }));
-    assert.equal(calls.length, 0, 'the studio\'s Claude was called');
-    assert.equal(r.status, 503);
-  } finally { house.saveHouseSettings({ source: 'auto' }); }
-});
