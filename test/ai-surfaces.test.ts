@@ -290,3 +290,161 @@ test('scene AI: a garbage answer changes nothing and is still charged; /apply wi
   assert.equal(none.status, 400);
   setCredits(A.user.id, 5000);
 });
+
+// ================================================================== the showrunner (POST /v1/showrunner/turn and the production buttons)
+// The planner's own Claude calls go through the mock like every other; the queue's calls (submit, job, cancel) and prices are
+// swapped, so an approved production starts "jobs" that cost nothing and the tests can see which steps ran.
+const PLAN = (axisBroken: boolean) => ({
+  title: 'The Keeper', kind: 'trailer', logline: 'A lonely lighthouse keeper befriends the sea creature everyone fears.', seconds: 60, aspect: '16:9',
+  world: { id: null, title: 'Gray Coast', tone: 'quiet, mythic', style: 'cinematic 35mm, overcast teal and amber', negative: 'cartoon', palette: ['#30454f', '#d09a4a'], canon: ['No one says "the Drowned One"'] },
+  characters: [
+    { key: 'c1', name: 'Mara', description: 'A weathered woman in her sixties, gray braid, yellow oilskin coat, rubber boots, deep-set blue eyes, a scar across her left hand.', voice: 'hv_ash', role: 'the keeper' },
+    { key: 'c2', name: 'Tide', description: 'A huge eel-like sea creature, slate skin with bioluminescent blue spots, large gentle black eyes, a fringe of fins.', voice: null, role: 'the creature' },
+  ],
+  places: [{ key: 'p1', name: 'The lighthouse', description: 'A white stone lighthouse on black rocks, storm sky, crashing surf, a lamp sweeping the dusk.' }],
+  beats: [{ key: 'b1', text: 'The keeper alone' }, { key: 'b2', text: 'Something in the water' }, { key: 'b3', text: 'They meet' }],
+  script: [{ beat: 'b1', text: 'MARA climbs the stairs.' }],
+  shots: [
+    { key: 's1', beat: 'b1', place: 'p1', cast: [], type: 'establishing', seconds: 10, angle: 0, framing: 'wide', move: 'push-in', action: 'Waves crash below the lighthouse as its lamp sweeps the dusk.' },
+    { key: 's2', beat: 'b1', place: 'p1', cast: ['c1'], type: 'action', seconds: 10, angle: 20, framing: 'medium', move: 'follow', action: 'Mara climbs the spiral stairs with a lantern.' },
+    { key: 's3', beat: 'b2', place: 'p1', cast: ['c1'], type: 'dialogue', seconds: 10, angle: 10, framing: 'close', move: 'static', action: 'Mara peers at the dark water.', lines: [{ who: 'c1', text: 'I know you are out there.', direction: 'quiet, certain' }] },
+    { key: 's4', beat: 'b3', place: 'p1', cast: ['c1', 'c2'], type: 'two-people', seconds: 10, angle: 30, framing: 'wide', move: 'static', action: 'Tide rises from the surf in front of Mara.' },
+    { key: 's5', beat: 'b3', place: 'p1', cast: ['c1', 'c2'], type: 'action', seconds: 10, angle: axisBroken ? 160 : 40, framing: 'medium', move: 'orbit', action: 'Mara reaches out a scarred hand toward Tide.' },
+    { key: 's6', beat: 'b3', place: 'p1', cast: ['c2'], type: 'action', seconds: 10, angle: 30, framing: 'close', move: 'push-in', action: 'Tide closes its eyes as her hand touches its skin.' },
+  ],
+  music: { brief: 'sparse piano and low strings, swelling at the meeting' },
+});
+
+
+const MAKE = 'a 60-second teaser about a lighthouse keeper and a sea creature';
+type SJob = { id: string; tool: string; status: 'queued' | 'cancelled' | 'done'; labels: any; outputs: { asset: string; kind: string }[]; error: null };
+const submitted = new Map<string, SJob>();
+setDeps({
+  submit: (_c, spec) => { const id = `j_${(submitted.size + 1).toString(16).padStart(8, '0')}`; submitted.set(id, { id, tool: spec.tool, status: 'queued', labels: spec.labels, outputs: [], error: null }); return { id }; },
+  job: (id) => (submitted.get(id) as any) ?? null,
+  cancel: (id) => { const j = submitted.get(id); if (j && j.status === 'queued') j.status = 'cancelled'; },
+  quote: (_p, tool) => ({ 'image.generate': 4, 'image.edit': 5, 'video.i2v': 30, 'video.talk': 25, 'video.scene': 60, 'audio.voice': 2, 'audio.music': 8 } as Record<string, number>)[tool] ?? 3,
+  hasTool: (id) => id !== 'make.checked',
+});
+/** Queues the planner's answer and its critique; `cost` (dollars) is what the planner call reports. */
+const queuePlan = (who: typeof A, cost = 0.1) => queue(who, [
+  { match: 'script supervisor', json: { ok: true, issues: [], plan: PLAN(false) }, cost: 0.05 },
+  { match: 'showrunner of Hawkes Gen', json: { say: 'Here is a teaser in six shots.', plan: PLAN(false) }, cost },
+]);
+const turn = (text: string, extra: Record<string, unknown> = {}, who = a) => who('/v1/showrunner/turn', 'POST', { messages: [{ role: 'user', text }], ...extra });
+const buttons = (id: string, what: string, who = a) => who(`/v1/showrunner/productions/${id}/${what}`, 'POST', {});
+const ranSteps = (prodId: string) => [...submitted.values()].filter((j) => j.labels?.production === prodId);
+
+test('showrunner: a production request comes back as a card with a price, a proposed production, and nothing started or spent on it', async () => {
+  setCredits(A.user.id, 5000);
+  const jobs = submitted.size, rows = ledger(A.user.id).length;
+  queuePlan(A);
+  const r = await turn(MAKE, { autoCredits: 0 });
+  const body = await r.json() as any;
+  assert.equal(r.status, 200, JSON.stringify(body));
+  assert.equal(body.route, 'production');
+  assert.equal(body.started, false);
+  assert.equal(body.production.status, 'proposed');
+  assert.ok(body.production.card.credits > 0, 'the card has a price');
+  assert.equal(body.production.card.credits, body.production.steps.reduce((n: number, s: any) => n + s.credits, 0));
+  assert.equal(submitted.size, jobs, 'no job was started');
+  assert.ok(body.production.steps.every((s: any) => s.status === 'waiting'));
+  // The planner and its critique were charged as AI turns (they are the person's words to the AI), the production not at all.
+  const turns = ledger(A.user.id).slice(rows);
+  assert.ok(turns.length >= 1 && turns.length <= 2, JSON.stringify(turns));
+  assert.equal(credits(A.user.id), 5000 + turns.reduce((n, t) => n + t.delta, 0));
+  assert.equal(body.aiCredits, turns.reduce((n, t) => n - t.delta, 0));
+  // It is on the person's list, as proposed.
+  const list = await (await a('/v1/showrunner/productions')).json() as any;
+  assert.equal(list.items.find((p: any) => p.id === body.production.id).status, 'proposed');
+});
+
+test('showrunner: approve starts the first steps (nothing before); too few credits for the card is a 402 and starts nothing', async () => {
+  queuePlan(A);
+  const card = (await (await turn(MAKE, { autoCredits: 0 })).json() as any).production;
+  const id = card.id as string;
+  const mine = credits(A.user.id);
+  setCredits(A.user.id, card.card.credits - 1);
+  const poor = await buttons(id, 'approve');
+  assert.equal(poor.status, 402);
+  assert.match((await poor.json() as any).error, /credits/i);
+  assert.equal(ranSteps(id).length, 0);
+  assert.equal(((await (await a(`/v1/showrunner/productions/${id}`)).json()) as any).status, 'proposed');
+  setCredits(A.user.id, mine);
+  const ok = await buttons(id, 'approve');
+  const started = await ok.json() as any;
+  assert.equal(ok.status, 200, JSON.stringify(started));
+  assert.equal(started.status, 'running');
+  assert.ok(ranSteps(id).length > 0, 'approving started the first steps');
+  // A second approve is refused (409), not run twice.
+  assert.equal((await buttons(id, 'approve')).status, 409);
+  await buttons(id, 'cancel');
+  setCredits(A.user.id, 5000);
+});
+
+test('showrunner: autoCredits from the body decides whether the card runs by itself (routes.ts forwards it, default 40)', async () => {
+  const run = async (extra: Record<string, unknown>) => { queuePlan(A); return await (await turn(MAKE, extra)).json() as any; };
+  const none = await run({ autoCredits: 0 });
+  assert.equal(none.started, false);
+  assert.equal(none.production.status, 'proposed');
+  const price = none.production.card.credits as number;
+  assert.ok(price > 40, `the test plan costs more than the default limit (${price})`);
+  const dflt = await run({});
+  assert.equal(dflt.production.status, 'proposed', 'default 40 is under the price');
+  const negative = await run({ autoCredits: -5 });
+  assert.equal(negative.production.status, 'proposed', 'a negative limit is 0');
+  const junk = await run({ autoCredits: 'lots' });
+  assert.equal(junk.production.status, 'proposed', 'a limit that is not a number never runs by itself');
+  const just = await run({ autoCredits: price - 1 });
+  assert.equal(just.production.status, 'proposed', 'one under the price');
+  // The limit covers the price and the fix budget on top of it (card.fixCredits).
+  const enough = await run({ autoCredits: price + none.production.card.fixCredits });
+  assert.equal(enough.started, true);
+  assert.equal(enough.production.status, 'running');
+  assert.ok(ranSteps(enough.production.id).length > 0);
+  for (const p of [none, dflt, negative, junk, just, enough]) await buttons(p.production.id, 'cancel');
+});
+
+test('showrunner: pause starts nothing more; cancel stops running jobs and never charges the steps that had not started', async () => {
+  queuePlan(A);
+  const card = (await (await turn(MAKE, { autoCredits: 0 })).json() as any).production;
+  const id = card.id as string;
+  await buttons(id, 'approve');
+  const first = ranSteps(id).length;
+  assert.ok(first > 0 && first < card.steps.length, 'only the steps with nothing before them started');
+  const paused = await (await buttons(id, 'pause')).json() as any;
+  assert.equal(paused.status, 'paused');
+  // Finish what is running: while paused no step after it starts.
+  for (const j of ranSteps(id)) { j.status = 'done'; j.outputs = [{ asset: `a_${j.id.slice(2)}`, kind: 'image' }]; }
+  const prod = await import('../src/showrunner/production.ts');
+  await prod.advance(id);
+  assert.equal(ranSteps(id).length, first, 'paused: nothing new started');
+  const resumed = await (await buttons(id, 'resume')).json() as any;
+  assert.equal(resumed.status, 'running');
+  assert.ok(ranSteps(id).length >= first);
+  // Cancel: the steps that had not started are skipped and counted as uncharged; the running ones are cancelled.
+  await (await buttons(id, 'pause')).json();
+  const before = ranSteps(id).length;
+  const cur = await (await a(`/v1/showrunner/productions/${id}`)).json() as any;
+  const waiting = cur.steps.filter((s: any) => s.status === 'waiting');
+  const running = cur.steps.filter((s: any) => s.status === 'running');
+  assert.ok(waiting.length > 0);
+  const live = ranSteps(id).filter((j) => j.status === 'queued');
+  const c = await (await buttons(id, 'cancel')).json() as any;
+  assert.equal(c.status, 'cancelled');
+  assert.equal(c.uncharged, waiting.reduce((n: number, s: any) => n + s.credits, 0));
+  assert.ok(c.uncharged > 0);
+  assert.equal(c.steps.filter((s: any) => s.status === 'waiting' || s.status === 'running').length, 0);
+  assert.equal(ranSteps(id).length, before, 'cancelling started nothing');
+  assert.equal(live.length, running.length);
+  for (const j of live) assert.equal(j.status, 'cancelled', 'a running step\'s job was cancelled');
+  // Cancel again, or approve after: nothing more happens.
+  assert.equal(((await (await buttons(id, 'cancel')).json()) as any).uncharged, 0);
+  assert.equal((await buttons(id, 'approve')).status, 409);
+  assert.equal(ranSteps(id).length, before);
+  // A proposed card can also be dismissed: nothing was ever started.
+  queuePlan(A);
+  const p2 = (await (await turn(MAKE, { autoCredits: 0 })).json() as any).production;
+  assert.equal(((await (await buttons(p2.id, 'dismiss')).json()) as any).status, 'dismissed');
+  assert.equal(ranSteps(p2.id).length, 0);
+});
