@@ -3,7 +3,11 @@
 // commands; changes nothing without --apply.
 //
 //   node tools/unity-cloudrun/customer-setup.mjs [--project <gcp-project>] [--region us-east4] [--all]
-//        [--for-job <job>] [--image <image>] [--shared-license] [--serial] [--timeout-minutes 40] [--offline] [--apply]
+//        [--for-job <job>] [--image <image>] [--shared-license] [--serial] [--timeout-minutes 40] [--sizes] [--offline] [--apply]
+//
+// --sizes also makes one job per machine size (settings.unityBuild.gcp.sizes; "<customer job>-<size>", the same job with
+// other --cpu/--memory; the size equal to --cpu/--memory is the customer job itself). Gen makes a missing one at build
+// time when its account may create jobs, and falls back to the customer job (with a warning) when it may not.
 //
 // Why: a customer's editor scripts run inside Unity, so whatever Google identity the build's container has, their code
 // has too. J's job runs as hawkes-unity-build, which can read and write the whole bucket (J's Library caches, other
@@ -74,19 +78,26 @@ if (missingValues.length) {
   if (APPLY) { console.error('\nAdd them, then run this again with --apply.'); process.exit(3); }
 }
 
-for (const job of jobs) {
-  const cj = twin(job);
-  console.log(`\n# The customer job ${cj} (from ${job})`);
+// The jobs to deploy for one customer job: itself, and with --sizes one per other machine size.
+const withSizes = process.argv.includes('--sizes');
+const sizedOf = (cj) => [
+  { name: cj, cpu: c.cpu, memoryGiB: c.memoryGiB },
+  ...(withSizes ? Object.entries(c.sizes).filter(([, v]) => !(Number(v.cpu) === c.cpu && Number(v.memoryGiB) === c.memoryGiB)).map(([k, v]) => ({ name: `${cj}-${k}`, cpu: Number(v.cpu), memoryGiB: Number(v.memoryGiB), size: k })) : []),
+];
+
+for (const job of jobs) for (const sized of sizedOf(twin(job))) {
+  const cj = sized.name;
+  console.log(`\n# The customer job ${cj} (from ${job}${sized.size ? `, size ${sized.size}: ${sized.cpu} vCPU, ${sized.memoryGiB} GiB` : ''})`);
   const image = flag('image') ?? gcloudQuery(['run', 'jobs', 'describe', job, R, P, '--format=value(spec.template.spec.template.spec.containers[0].image)'])
     ?? (APPLY ? die(`Couldn't read ${job}'s image: pass --image <the image J's job runs> (or --for-job another job).`) : `<the image ${job} runs>`);
   gcloud([
     'run', 'jobs', 'deploy', cj, P, R, `--image=${image}`,
-    `--cpu=${c.cpu}`, `--memory=${c.memoryGiB}Gi`, '--tasks=1', '--max-retries=0', `--task-timeout=${(timeoutMin + 15) * 60}s`,
+    `--cpu=${sized.cpu}`, `--memory=${sized.memoryGiB}Gi`, '--tasks=1', '--max-retries=0', `--task-timeout=${(timeoutMin + 15) * 60}s`,
     '--execution-environment=gen2', `--service-account=${customerSa}`,
     // Only the Unity license: never GITHUB_TOKEN, never R2_BUILDS_TOKEN. --set-secrets replaces any others.
     `--set-secrets=${secrets.map(([n, e]) => `${e}=${n}:latest`).join(',')}`,
     '--set-env-vars=HAWKES_WORK=/work,HAWKES_CUSTOMER_JOB=1',
-    '--labels=project=hawkes-gen,role=unity-build-customer',
+    `--labels=project=hawkes-gen,role=unity-build-customer${sized.size ? `,hawkes-size=${sized.size}` : ''}`,
   ]);
   console.log(`\n# Gen may run ${cj} (that job only) and act as ${customerSa} (that account only)`);
   for (const sa of genSas) {

@@ -84,6 +84,12 @@ export function makeTools(c: MakeContext): McpTool[] {
       run: async (a) => run(a, 'image.cutout', {}, { image: a.image }),
     },
     {
+      name: 'transform_image',
+      description: 'Everyday fixes for game art, free and fast (no GPU): steps applied in order, e.g. [{"op":"trim"},{"op":"pixelate","size":64,"colors":16},{"op":"outline","width":1}]. Ops: resize, scale, crop, trim, pad, square, pot, flip, rotate, pixelate, colors, outline, tint, grayscale.',
+      inputSchema: obj({ image: fileIn('The picture'), steps: { type: 'array', items: { type: 'object' }, description: 'The steps, in order (1 to 20), each {"op": ..., its settings}' }, ...common }, ['image', 'steps']),
+      run: async (a) => run(a, 'image.transform', { ops: a.steps }, { image: a.image }),
+    },
+    {
       name: 'upscale_image',
       description: 'A bigger, sharper copy of a picture (4x).',
       inputSchema: obj({ image: fileIn('The picture'), ...common }, ['image']),

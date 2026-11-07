@@ -25,6 +25,8 @@ import { GenError } from '../../util.ts';
 import { holdToken, tokenFor } from '../playtester/intake.ts';
 import { cacheName } from './cache.ts';
 import { gapi, type CloudRunTarget } from './gcp.ts';
+import { resolveMachine, storedMachine, type MachineSizes } from './sizes.ts';
+import { loadSettings } from '../../config.ts';
 
 const bad = (message: string, kind = 'params') => new GenError(message, { status: 400, kind });
 const config = (message: string) => new GenError(message, { status: 400, kind: 'config' });
@@ -53,6 +55,8 @@ export type CustomerBuild = {
   /** -executeMethod; null: Gen's own HawkesBuild.Build (every enabled scene to WebGL). */
   method: string | null;
   tokenRef: string;
+  /** The machine size asked for (sizes.ts): a size name, { cpu, memoryGiB }, or null for settings' customerSize. */
+  machine: string | { cpu: number; memoryGiB: number } | null;
 };
 
 /** Whether unity.build params ask for customer mode: a GitHub token (or, stored, its reference) and out "artifact". */
@@ -75,7 +79,7 @@ export function customerTarget(target: unknown): 'WebGL' {
  * Checks customer-mode params at submit and moves the token into the vault. Returns the params to store: github has
  * tokenRef in place of token; siteRepo, branch, site, projectDir, siteDir and the rest of J's mode are refused.
  */
-export function admitCustomer(params: Record<string, any>, hold: (token: string) => string = holdToken): Record<string, any> {
+export function admitCustomer(params: Record<string, any>, hold: (token: string) => string = holdToken, gcp: { sizes: MachineSizes; customerSize: string } = loadSettings().unityBuild.gcp): Record<string, any> {
   const p = { ...params };
   let g = p.github;
   if (typeof g === 'string') { try { g = JSON.parse(g); } catch { throw bad('github must be an object: { repo, commit, token, ref? }'); } }
@@ -114,6 +118,9 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   if (path) p.path = path; else delete p.path;
   if (method) p.method = method; else delete p.method;
   if (!env || !Object.keys(env).length) delete p.env;
+  // The machine size (sizes.ts): checked here, stored as its name (or { cpu, memoryGiB }); absent: settings' default.
+  if (p.machine === undefined || p.machine === null || p.machine === '') delete p.machine;
+  else p.machine = storedMachine(resolveMachine(p.machine, gcp), gcp.sizes);
   for (const k of ['site', 'projectDir', 'siteDir', 'cache', 'args', 'clean', 'project']) delete p[k];
   // Always Cloud Run (the queue's builder-cloud lane): never the build server or a project's VM.
   p.backend = 'cloudrun';
@@ -138,6 +145,7 @@ export function customerBuildOf(params: Record<string, any>): CustomerBuild {
   return {
     repo, commit, ref: g.ref ? String(g.ref) : null, tokenRef: String(g.tokenRef),
     path: params.path ? normalPath(String(params.path)) : null, method: params.method ? String(params.method) : null,
+    machine: params.machine === undefined || params.machine === null || params.machine === '' ? null : params.machine,
   };
 }
 

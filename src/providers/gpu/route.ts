@@ -10,6 +10,7 @@ import { env } from '../../config.ts';
 import type { Tool } from '../../tools/types.ts';
 import { cloudRoute, serviceForFamily, allServices, type CloudService, type ServiceMap } from '../cloudrun/services.ts';
 import { isDown } from './health.ts';
+import { runpodCreditProblem } from './credit.ts';
 import { endpointHeaders, missingSecrets, type Secrets } from './auth.ts';
 
 export type Choice = { kind: 'service'; service: CloudService } | { kind: 'fleet' };
@@ -89,6 +90,8 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     if (!env('HAWKESGEN_PUBLIC_URL')) { skipped.push(`${id}: HAWKESGEN_PUBLIC_URL is not set (the worker reaches the bucket through Gen)`); continue; }
     const missing = missingSecrets(ep.provider, get);
     if (missing) { skipped.push(`${id}: ${missing}`); continue; }
+    const broke = ep.provider === 'runpod' ? runpodCreditProblem(get) : null;
+    if (broke) { skipped.push(`${id}: ${broke}`); continue; }
     choices.push({ kind: 'service', service: endpointService(ep, family, map, bucket, get) });
   }
   return { choices, skipped };

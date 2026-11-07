@@ -919,7 +919,9 @@ async function gpuProviders(s) {
   const intro = r.legacy
     ? 'No order set: each family runs where its backend setting says (the AWS fleet by default), as before.'
     : `Jobs try them in this order: <b>${esc(r.order.join(' → '))}</b>${Object.keys(r.familyOrder).length ? ` (own orders for ${esc(Object.keys(r.familyOrder).join(', '))})` : ''}. One that refuses (no GPU free, a bad key, unreachable) is skipped for a while and the job goes to the next.`;
-  $('#gpuProviders').innerHTML = `<h3>GPU providers</h3><p class="muted small">${intro}</p>
+  const rc = r.runpodCredit;
+  const credit = !rc || rc.balance == null ? '' : `<p class="small"${rc.low ? ' style="color:var(--bad, #c33)"' : ''}>RunPod balance: <b>$${rc.balance.toFixed(2)}</b>${rc.empty ? ': out of credit, so RunPod is skipped (GPU jobs and playtests go to the next provider). Add funds at runpod.io (Billing).' : rc.low ? ': low. Add funds soon at runpod.io (Billing); at $0 RunPod starts nothing.' : ''} <span class="muted">checked ${esc(fmt(rc.at))}</span></p>`;
+  $('#gpuProviders').innerHTML = `<h3>GPU providers</h3><p class="muted small">${intro}</p>${credit}
     <table><thead><tr><th>#</th><th>Provider</th><th>Kind</th><th>Where</th><th>GPU</th><th>$/hour</th><th>Families</th><th>Status</th><th>Last error</th><th></th></tr></thead><tbody>
     ${r.providers.map((p) => `<tr><td>${pos(p.id)}</td><td><b>${esc(p.id)}</b></td><td>${esc(p.provider)}</td><td>${esc(p.url ?? '')}</td><td>${esc(p.gpu)}</td><td>${p.pricePerHour != null ? p.pricePerHour.toFixed(2) : ''}</td><td>${esc(p.families.join(', '))}</td><td>${state(p)}</td>
       <td class="small">${p.health.lastError ? `${fmt(p.health.lastError.at)} ${esc(p.health.lastError.reason)}` : ''}</td>

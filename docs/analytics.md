@@ -8,6 +8,10 @@ anything. Code: `src/analytics/`. Registry: `analytics/products.json`. Tests: `t
 
 This page is the contract the JS SDK, the Unity bridge and the products build against. Field names are exact.
 The SDK itself: `clients/js/hawkes-analytics.js` (quick start just below), tested in `test/analytics-sdk.test.ts`.
+**Its home is its own public repo, [jgriffith3433/hawkes-analytics](https://github.com/jgriffith3433/hawkes-analytics)
+(since 2026-11-01):** the browser SDK, the npm loader `@hawkesgen/analytics` and the Unity package, released by tag
+(`v1.<SDK version>.<patch>`). Edit them there; `node tools/sync-analytics-sdk.mjs <tag | beta>` brings Gen's copy in
+`clients/` (the one Gen serves) up to a release. Studio's Hawkes Analytics plugin installs from that repo.
 
 ## Quick start
 
@@ -94,9 +98,11 @@ went out.
 
 ### A Unity WebGL game
 
-`clients/unity/com.hawkes.analytics` (a runtime package; `com.hawkes.gen` is editor-only):
+`com.hawkes.analytics` from the hawkes-analytics repo (a runtime package; `com.hawkes.gen` is editor-only). Studio's
+Plugins installs it; by hand:
 
-1. `Packages/manifest.json`: `"com.hawkes.analytics": "file:C:/Projects/hawkesgen/clients/unity/com.hawkes.analytics"`.
+1. `Packages/manifest.json`: `"com.hawkes.analytics": "https://github.com/jgriffith3433/hawkes-analytics.git?path=/Packages/com.hawkes.analytics#v1.3.0"`
+   (a git URL pinned to a tag, so cloud builds can fetch it; never a `file:` path on someone's disk).
 2. Assets > Create > Hawkes > Analytics Settings, saved as `Assets/Resources/HawkesAnalyticsSettings.asset`; set the
    product. It starts itself when the game boots.
 3. Call it from the game:

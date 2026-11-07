@@ -353,7 +353,8 @@ has the SDK. The result JSON and the uploads land in `--out`.
    - Push a tag from a commit that has the workflow: `git tag play-native-image-1 && git push origin play-native-image-1`.
      GitHub builds `ghcr.io/jgriffith3433/hawkes-play-native:<tag>-<sha>` and `:latest`, plus a copy in the public
      `hawkes-gen-gpu` package (`:play-native-<tag>-<sha>`).
-   - Make `hawkes-play-native` public on GHCR (or pass `--image` with the `hawkes-gen-gpu` copy).
+   - `setup.mjs` defaults to the pinned public copy the endpoint runs now (`hawkes-gen-gpu:play-native-5-ebc6186`,
+     `DEFAULT_IMAGE`); move it to the new tag once a new image is proven, or pass `--image`.
    - About 15 minutes; Proton is most of the download.
 2. **The endpoint.**
    - Run `node tools/play-native/setup.mjs` and read the plan.

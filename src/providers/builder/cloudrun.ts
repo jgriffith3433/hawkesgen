@@ -136,7 +136,11 @@ export function siteInput(site: string, siteDir?: string) {
 
 // ------------------------------------------------------------------ state
 
-type CloudJob = { execution: string; prefix: string; started: number; repo: string; saveKey: string | null; stateKey: string; clean: boolean };
+type CloudJob = {
+  execution: string; prefix: string; started: number; repo: string; saveKey: string | null; stateKey: string; clean: boolean;
+  /** The machine it runs on (customer builds' sizes, sizes.ts): what it is priced at, also after a Gen restart. */
+  machine?: { name: string; cpu: number; memoryGiB: number };
+};
 const jobFile = (jobId: string) => path.join(paths.builder, 'cloud-jobs', `${jobId}.json`);
 // The running execution is noted here and next to the build's spec in the bucket: on Cloud Run this folder is the
 // instance's memory, so a replaced instance found no note, started the build again beside the one still running, and
@@ -363,7 +367,7 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     }
     startEnvs = envs;
     const execution = await startInRegion(regions, 0, target, envs, cfg.timeoutMinutes, !!spec.customer, hooks);
-    job = { execution: execution.name, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean };
+    job = { execution: execution.name, prefix: p.prefix, started: Date.now(), repo: p.repo, saveKey: p.saveKey, stateKey: p.stateKey, clean: p.clean, ...(spec.customer?.machine ? { machine: spec.customer.machine } : {}) };
     await saveJob(jobId, job, cfg.gcp.bucket);
     hooks.log(`cloud build started: ${execution.name.split('/').pop()} in ${regionOfExecution(execution.name)} (Unity ${checked.unity}, ${checked.target}${spec.method ? `, ${spec.method}` : ''}${p.clean ? ', clean' : ''})`);
   }
@@ -440,12 +444,15 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   await gcsDelete(cfg.gcp.bucket, jobKey(jobId)).catch(() => {});
   const ran = state.started && state.completed ? (Date.parse(state.completed) - Date.parse(state.started)) / 1000 : (Date.now() - job.started) / 1000;
   const oom = /memory limit|out of memory|OOM/i.test(state.message);
+  // Priced at the machine it ran on: a customer build's size (sizes.ts), else the job's settings.
+  const machine = job.machine ?? { name: 'base', cpu: cfg.gcp.cpu, memoryGiB: cfg.gcp.memoryGiB };
   const r = await finishBuildResult(jobId, spec, hooks, {
-    job: { ...job, label: `execution ${job.execution.split('/').pop()}` }, ran, cost: cloudRunCost(ran, cfg.gcp.cpu, cfg.gcp.memoryGiB), tmp, t0,
+    job: { ...job, label: `execution ${job.execution.split('/').pop()}` }, ran, cost: cloudRunCost(ran, machine.cpu, machine.memoryGiB), tmp, t0,
     bucket: cfg.gcp.bucket, cleanAfter: cfg.cleanAfterFailures, licenseLine: follow.licenseLine,
     noResult: state.cancelled ? 'it was cancelled in Cloud Run' : state.message || 'no result.json',
   });
   // Too big for Cloud Run: the next build of this project goes to its build VM (vm.ts), and the job says so.
+  if (spec.customer) Object.assign(r, { machine, oom: oom && !r.ok });
   const limit = cfg.gcp.memoryGiB * 1024 ** 3;
   const peak = (r.cloud as { memoryPeakBytes?: number | null } | undefined)?.memoryPeakBytes ?? null;
   const move = !spec.customer && shouldMoveToVm({ peakBytes: peak, limitBytes: limit, oom: oom && !r.ok, at: cfg.vmAt });

@@ -6,7 +6,7 @@
 // on screen for every kind: a stage lends it its lanes (people's moves, camera keys, lines). The Scenes tab on the left lists every scene: open one, or drag it into another
 // (a character onto a stage, a stage or image into a video, an audio scene into a track): that's plug and play.
 
-import { $, $$, h, api, toast, bus, icon, fileUrl, plainError } from './lib.js';
+import { $, $$, h, api, toast, bus, icon, fileUrl, keyedRedraw, plainError } from './lib.js';
 import { state, needSignIn } from './account.js';
 import { showPane } from './media.js';
 import { popMenu, closeMenus, lendTimeline } from './timeline.js';
@@ -331,21 +331,27 @@ function drawList() {
   const q = $('#scenesSearch').value.trim().toLowerCase();
   const items = W.list.filter((s) => (!W.filter || s.kind === W.filter) && (!q || s.title.toLowerCase().includes(q)));
   if (!items.length) { box.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, q || W.filter ? 'Nothing matches.' : 'No scenes yet.'), h('button', { class: 'ghost small', onclick: (e) => newSceneMenu(e.currentTarget) }, icon('plus'), 'New scene'))); return; }
-  box.replaceChildren(...items.map((s) => {
+  // In place (lib.js keyedRedraw): the list is read again after every job, and a rendered scene's clip would reload.
+  keyedRedraw(box, items.map((s) => {
     const open = W.tabs.some((t) => t.id === s.id);
-    const thumb = s.render?.asset && s.render.kind === 'image' ? h('img', { src: fileUrl(s.render.asset), alt: '', loading: 'lazy' })
-      : s.render?.asset && s.render.kind === 'video' ? h('video', { src: `${fileUrl(s.render.asset)}#t=0.1`, muted: true, preload: 'metadata' })
-        : h('span', { class: 'scene-ico' }, icon(kindInfo(s.kind).icon, 'ico'));
-    const el = h('div', { class: `scene-row${s.id === W.active ? ' on' : ''}`, draggable: 'true', tabindex: '0', title: 'Open it, or drag it into another scene' },
-      h('div', { class: 'scene-thumb' }, thumb),
-      h('div', { class: 'scene-txt' }, h('b', {}, s.title), h('span', { class: 'muted small' }, `${kindInfo(s.kind).label}${s.render ? ' · rendered' : ''}${open ? ' · open' : ''}`)),
-      h('button', { class: 'icon-btn small', title: 'More', onclick: (e) => { e.stopPropagation(); sceneMenu(s, e.currentTarget); } }, icon('more')));
-    el.addEventListener('click', () => openScene(s.id));
-    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openScene(s.id); });
-    el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-hg-scene', JSON.stringify(sceneItem(s))); e.dataTransfer.effectAllowed = 'copy'; });
-    touchDrag(el, () => sceneItem(s));
-    return el;
+    return { key: s.id, sig: JSON.stringify([s.title, s.kind, s.render?.asset, s.render?.kind, open]), make: () => sceneRow(s, open), update: (el) => el.classList.toggle('on', s.id === W.active) };
   }));
+}
+function sceneRow(s, open) {
+  // The row stays while the list is read again: its buttons act on the newest copy of the scene.
+  const now = () => W.list.find((x) => x.id === s.id) ?? s;
+  const thumb = s.render?.asset && s.render.kind === 'image' ? h('img', { src: fileUrl(s.render.asset), alt: '', loading: 'lazy' })
+    : s.render?.asset && s.render.kind === 'video' ? h('video', { src: `${fileUrl(s.render.asset)}#t=0.1`, muted: true, preload: 'metadata' })
+      : h('span', { class: 'scene-ico' }, icon(kindInfo(s.kind).icon, 'ico'));
+  const el = h('div', { class: 'scene-row', draggable: 'true', tabindex: '0', title: 'Open it, or drag it into another scene' },
+    h('div', { class: 'scene-thumb' }, thumb),
+    h('div', { class: 'scene-txt' }, h('b', {}, s.title), h('span', { class: 'muted small' }, `${kindInfo(s.kind).label}${s.render ? ' · rendered' : ''}${open ? ' · open' : ''}`)),
+    h('button', { class: 'icon-btn small', title: 'More', onclick: (e) => { e.stopPropagation(); sceneMenu(now(), e.currentTarget); } }, icon('more')));
+  el.addEventListener('click', () => openScene(s.id));
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openScene(s.id); });
+  el.addEventListener('dragstart', (e) => { e.dataTransfer.setData('application/x-hg-scene', JSON.stringify(sceneItem(now()))); e.dataTransfer.effectAllowed = 'copy'; });
+  touchDrag(el, () => sceneItem(now()));
+  return el;
 }
 
 function sceneMenu(s, btn) {

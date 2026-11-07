@@ -3,6 +3,7 @@
 import type { Tool } from './types.ts';
 import { imageEditTool, imagePaintTool, videoI2vTool, videoAnimateTool, comfyGraphTool } from './comfy.ts';
 import { cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool } from './local.ts';
+import { cutoutGpuTool, routeCutout } from './cutout-gpu.ts';
 import { videoReviewTool } from './review-video.ts';
 import { voiceListTool, voiceDeleteTool } from './voices.ts';
 import { voiceTool, sfxTool, voiceDesignTool, voiceSaveTool, llmTextTool, llmJsonTool, dialogueTool, voiceChangeTool } from './api.ts';
@@ -34,12 +35,17 @@ import { QUALITY_TOOLS } from './quality.ts';
 import { makeCheckedTool } from '../make/tool.ts';
 import { FINISHING_TOOLS } from './finishing.ts';
 
+// BiRefNet cutouts go to a GPU server when one can take them (src/tools/cutout-gpu.ts). Set here, not in local.ts: the CPU
+// service imports local.ts through src/cpu/suite.ts and keeps to pure modules (it never routes).
+cutoutTool.route = routeCutout;
+
 /** Tools written in code. Workflow tools (workflows/) are added by reloadTools(). */
 const BUILT_IN: Tool[] = [
   imageEditTool, imagePaintTool, videoI2vTool, videoAnimateTool, comfyGraphTool,
   voiceTool, sfxTool, voiceDesignTool, voiceSaveTool, voiceListTool, voiceDeleteTool, dialogueTool, voiceChangeTool, videoReviewTool,
   llmTextTool, llmJsonTool,
-  cutoutTool, frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool,
+  cutoutTool, cutoutGpuTool,
+  frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
   blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, motionFromVideoTool, motionCheckTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,

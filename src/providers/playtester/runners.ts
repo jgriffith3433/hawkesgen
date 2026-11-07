@@ -9,6 +9,7 @@
 import type { PlaytestRunner, PlaytestTarget, Settings } from '../../config.ts';
 import { env } from '../../config.ts';
 import { isDown } from '../gpu/health.ts';
+import { runpodCreditProblem } from '../gpu/credit.ts';
 import { cloudPlaytestsFor, runpodPlaytest, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
 
 export type Lane = 'studio' | 'customer';
@@ -125,6 +126,8 @@ export function runnerCandidates(
     if (tried.has(r.id)) { skipped.push(`${r.id}: this run already failed there`); continue; }
     const cool = isDown(cooldownKey(r.id), now);
     if (cool) { skipped.push(`${r.id}: ${cool.reason} (skipped for ${Math.ceil((cool.until - now) / 60_000)} min)`); continue; }
+    const broke = r.provider === 'runpod' ? runpodCreditProblem(get) : null;
+    if (broke) { skipped.push(`${r.id}: ${broke}`); continue; }
     let choice: RunnerChoice;
     if (r.provider === 'native') {
       if (!isNativeTarget(target)) { skipped.push(`${r.id}: a native runner doesn't play pages`); continue; }

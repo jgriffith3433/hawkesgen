@@ -80,7 +80,7 @@
   "image.panorama": { "role": "A seamless 360° equirect environment: a skybox, or the director's set backdrop." },
   "texture.maps": { "role": "Material maps from a seamless texture: albedo, normal, roughness and more. Make it seamless first (image.generate seamless, or image.tile)." },
   "image.remove-background": { "role": "Cuts the subject out on the GPU. Returns [mask, cutout]: chains must take '$stepN:cutout'." },
-  "image.cutout": { "role": "Cuts the subject out (rembg/BiRefNet on CPU)." },
+  "image.cutout": { "role": "Cuts the subject out (BiRefNet on a GPU server when one is up, image.cutout-gpu; else rembg on the CPU)." },
   "image.relight": { "role": "New lighting on a picture, keeping it otherwise. Matches a keyframe to the scene's light." },
   "image.restore": { "role": "SeedVR2 restore and 4x upscale. Heavy: a 1280x704 frame becomes 5120x2816." },
   "image.segment": { "role": "Masks of what you name (SAM 3): 'the car', 'every person'. Feeds repaint, change and composite." },

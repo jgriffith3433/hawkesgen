@@ -4,6 +4,7 @@
 // reaches the image's own server over a WebSocket at wss://<endpoint id>.api.runpod.ai/pw.
 //
 //   node tools/playtest-runpod/setup.mjs                      print the plan (changes nothing)
+//   node tools/playtest-runpod/setup.mjs --check              read RunPod (GETs only) and say what --apply would change
 //   node tools/playtest-runpod/setup.mjs --apply              create or update the template and the endpoint
 //   options: --image ghcr.io/jgriffith3433/hawkes-gen-playtest:latest  --name hawkes-gen-playtest
 //            --gpu AMPERE_16,AMPERE_24  --max 2  --tabs 2  --idle 60
@@ -15,7 +16,7 @@
 // image checks as HAWKES_TOKEN: PLAYTEST_RUNPOD_TOKEN, else GPU_WORKER_TOKEN (Gen already has it), else none (then only
 // RunPod's API key guards the endpoint).
 import { APPLY, arg, secret, say, header, redact } from '../gpu-providers/lib.mjs';
-import { runpod, gpuFor, envObject, lbEndpoint, upsertTemplate, findEndpoint, readCatalog, POOL_PRICES, POOL_GPUS } from '../gpu-providers/runpod-v2.mjs';
+import { runpod, gpuFor, envObject, lbEndpoint, upsertTemplate, findEndpoint, readCatalog, checkPlan, POOL_PRICES, POOL_GPUS } from '../gpu-providers/runpod-v2.mjs';
 
 // RunPod's management API v2 (tools/gpu-providers/runpod-v2.mjs): REST v1 is retired on 2026-11-15, GraphQL early 2027.
 const image = arg('image', 'ghcr.io/jgriffith3433/hawkes-gen-playtest:latest');
@@ -76,7 +77,13 @@ if (APPLY) {
   const e = old ? await api.req('PATCH', `/serverless/${old.id}`, endpointBody(t.id, gpu)) : await api.req('POST', '/serverless', endpointBody(t.id, gpu));
   endpointId = e.id;
   say(`${old ? 'updated' : 'made'} endpoint ${e.id} (type ${e.type}); GPU pools ${(e.gpu?.pools ?? gpu.pools).join(', ')}`);
-} else say('\n(dry run: --apply creates or updates them; that costs nothing until a playtest starts a worker)');
+} else if (process.argv.includes('--check')) {
+  // Read-only (GETs): what --apply would change.
+  if (!key) { console.error('RUNPOD_API_KEY is not set.'); process.exit(1); }
+  header('Check against RunPod API v2 (reads only, changes nothing)');
+  try { for (const line of await checkPlan(runpod(key), { template, name, gpuTypes, pools, endpointBody })) say(line); }
+  catch (e) { console.error(e.message); process.exit(1); }
+} else say('\n(dry run: --check reads RunPod without changing it; --apply creates or updates them, which costs nothing until a playtest starts a worker)');
 
 header('Then Gen\'s settings (POST /v1/settings, or the dashboard\'s settings JSON)');
 say(JSON.stringify({

@@ -101,3 +101,24 @@ export async function findEndpoint(api, name) {
 export async function readCatalog(api) {
   try { return (await api.list('/catalog/gpus', 'gpus')).map((g) => ({ id: g.id, pool: g.pool ?? null })); } catch { return null; }
 }
+
+/**
+ * Read-only: what --apply would do, from the same GETs it starts with (the catalog, the template and the endpoint of
+ * this name). Returns lines to print; throws when the catalog can't be read (--apply would stop there too).
+ */
+export async function checkPlan(api, { template, name, gpuTypes, pools, endpointBody }) {
+  const out = [];
+  const catalog = await readCatalog(api);
+  if (!catalog) throw new Error('Could not read GET /v2/catalog/gpus: --apply would stop here.');
+  out.push(`catalog: ${catalog.length} GPU types`);
+  const gpu = gpuFor(gpuTypes, { pools, catalog });
+  out.push(`would exclude in ${gpu.pools.join(', ')}: ${gpu.excludedTypes.join(', ') || 'none'}`);
+  const t = (await api.list('/templates', 'templates')).find((x) => x.name === template.name);
+  out.push(t ? `template ${t.id}: would PATCH (image now ${t.image ?? '?'}, wanted ${template.image})` : `no template named ${template.name}: would POST one`);
+  const old = await findEndpoint(api, name);
+  if (!old) { out.push(`no endpoint named ${name}: would POST one`); return out; }
+  const e = await api.req('GET', `/serverless/${old.id}`);
+  const pick = (x) => ({ type: x.type, workers: x.workers, scaling: x.scaling, timeout: x.timeout, gpu: x.gpu });
+  out.push(`endpoint ${old.id} (${old.name}): would PATCH`, `  now:    ${JSON.stringify(pick(e))}`, `  wanted: ${JSON.stringify(pick(endpointBody('<template id>', gpu)))}`);
+  return out;
+}
