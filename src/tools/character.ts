@@ -244,7 +244,7 @@ export function characterScript(bin = { blender: BLENDER, python3: 'python3', ff
     'cp out/character.json res/',
     'if ls out/files/* >/dev/null 2>&1; then cp out/files/* res/; fi',
     'if [ -d out/previews ]; then for s in out/previews/*.json; do',
-    '  n=$(basename "$s" .json); read FPS FRAMES < "out/previews/$n.args"',
+    '  n=$(basename "$s" .json); read FPS FRAMES < <(tr -d "\\r" < "out/previews/$n.args")',
     '  echo "HB step rendering preview $n"',
     `  "${bin.blender}" -b --factory-startup --python-exit-code 1 -P hawkes_blender.py -- "$s"`,
     `  START=$("${bin.python3}" -c "import json,sys; print(json.load(open(sys.argv[1]))['start'])" "out/previews/$n/info.json")`,
