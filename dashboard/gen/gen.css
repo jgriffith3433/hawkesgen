@@ -370,7 +370,10 @@ input.num { width: 70px; }
   .app.no-left .pane.left > :not(.grip), .app.no-right .pane.right > :not(.grip) { display: revert !important; }
   .app.tl-small .tl-body { display: flex; }
   .bar { gap: 8px; padding: 0 10px; }
-  .brand b, .bar-mid, .save-state, #creditsPill { display: none; }
+  .brand b, .bar-mid, .save-state { display: none; }
+  #creditsPill { padding: 6px 10px; min-height: 44px; font-size: 12px; white-space: nowrap; }
+  #creditsPill.low::after { content: ""; }
+  #creditsPill[hidden] { display: none; }
   .pane.left, .pane.right { grid-area: sheet; border: 0; border-top: 1px solid var(--line); min-height: 0; overflow: hidden; }
   .center { grid-area: center; }
   .timeline { grid-area: tl; }
@@ -819,6 +822,17 @@ body.landing-open { overflow: hidden; }
   .ld-nav .ld-signin.ghost { display: none; }
   .ld-cta button { flex: 1; }
 }
+
+.ld-google { display: inline-flex; align-items: center; justify-content: center; gap: 10px; }
+.ld-google .ld-art { display: inline-flex; background: #fff; border-radius: 50%; padding: 3px; }
+.ld-examples { max-width: 1180px; margin: 0 auto; padding: 8px clamp(16px, 4vw, 48px) 24px; }
+.ld-examples h2 { font-size: 20px; margin: 0 0 14px; }
+.ld-ex-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.ld-ex { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.ld-ex .ld-art svg { display: block; width: 100%; height: auto; }
+.ld-ex figcaption { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; }
+.ld-ex-prompt { color: var(--muted); font-size: 13px; }
+@media (max-width: 900px) { .ld-ex-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* ---------------------------------------------------------------- The quick tour (tour.js) */
 .tour-veil { position: fixed; inset: 0; z-index: 260; }
