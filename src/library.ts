@@ -98,6 +98,28 @@ export async function putAssetFile(a: NewAsset & { file: string }): Promise<Asse
   return insertAsset(a, t, fs.statSync(t.file).size, hash.digest('hex'));
 }
 
+/** Keeps an uploaded temp file (already hashed, see src/uploads.ts) as an asset by moving it into the library: nothing is read into memory. */
+export function putAssetUpload(a: NewAsset & { file: string; sha256: string; bytes: number }): Asset {
+  const t = assetTarget(a);
+  moveFile(a.file, t.file);
+  return insertAsset(a, t, a.bytes, a.sha256);
+}
+
+/** Keeps an uploaded temp file as a blob by its hash (the file is removed when the blob is already there). */
+export function putBlobUpload(file: string, hash: string, ext = ''): string {
+  const dest = path.join(paths.blobs, hash.slice(0, 2), `${hash}${ext}`);
+  if (fs.existsSync(dest)) fs.rmSync(file, { force: true });
+  else { fs.mkdirSync(path.dirname(dest), { recursive: true }); moveFile(file, dest); }
+  return hash;
+}
+
+function moveFile(from: string, to: string) {
+  try { fs.renameSync(from, to); } catch (e: any) {
+    if (e?.code !== 'EXDEV') throw e;
+    fs.copyFileSync(from, to); fs.rmSync(from, { force: true });
+  }
+}
+
 export function getAsset(assetId: string): Asset | null {
   return parseRow<Asset>(db.prepare('SELECT * FROM assets WHERE id = ?').get(assetId), JSON_COLS) ?? null;
 }
