@@ -1,0 +1,37 @@
+# The pull request check (J, 2026-11-08: tests on pull requests into beta and main, and on pushes to beta). This
+# replaces "GitHub runs no tests" (J, 2026-10-25) for pull requests: the deploy workflow (ci.yml) is unchanged.
+# Offline and free: no secrets, no provider keys, no GPU, read-only token. Tests use their own mocks.
+# The check's name is `Typecheck and tests` (docs/gen-cloudrun.md, "Pull request check").
+name: Checks
+on:
+  pull_request:
+    branches: [beta, main]
+  push:
+    branches: [beta]
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  checks:
+    name: Typecheck and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HAWKESGEN_AI_MOCK: '1'
+      HAWKESGEN_AUDIO_MOCK: '1'
+      HAWKESGEN_QUALITY_MOCK: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # A few tests start `python`; the runner only has python3 on its path.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

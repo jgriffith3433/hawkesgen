@@ -78,6 +78,14 @@ J, 2026-10-28: "dev -> beta -> main". Work lands on `dev` (deploys nothing). `be
 `deploy.ps1 -Lane beta` (client.json gets `genBetaUrl`/`genBetaKey`, live's entry is untouched) and
 `npx wrangler deploy --env beta` in `server/gen-edge`.
 
+## Pull request check
+
+`.github/workflows/checks.yml` runs `npm ci`, `npm run typecheck` and `npm test` on every pull request into `beta` or
+`main` and on pushes to `beta` (J, 2026-11-08). The check is named **`Typecheck and tests`** (workflow `Checks`): add that
+name under Settings > Branches (or a ruleset) > Require status checks to make it required. It uses no secrets and no
+provider keys (read-only token, `HAWKESGEN_AI_MOCK`, `HAWKESGEN_AUDIO_MOCK` and `HAWKESGEN_QUALITY_MOCK` set), spends nothing,
+and times out at 10 minutes (the suite takes about 2 to 3). A newer push to the same pull request cancels the older run.
+
 ## Deploys
 
 A push to `beta` or `main` deploys that lane (`.github/workflows/ci.yml`): GitHub signs in to Google with its own OIDC
@@ -85,8 +93,8 @@ token (no stored key: the `github-gen` provider of the `github` Workload Identit
 beta, as `gen-deployer@`), builds the image of that commit with `tools/gen-cloudrun/build.mjs`, points the lane's
 service (`gen-beta` or `gen`) at it, and checks the lane's `/v1/health`; if the new revision doesn't answer within three
 minutes, traffic goes back to the previous one and the run fails. The image is per commit, so going live after beta
-reuses beta's image. GitHub runs no tests (J, 2026-10-25): run `npm run typecheck` and `npm test` before
-pushing. One-time setup: `powershell -ExecutionPolicy Bypass -File tools\gen-cloudrun\setup-ci.ps1` (J). By hand, as
+reuses beta's image. A push to a lane runs no tests itself (J, 2026-10-25): run `npm run typecheck` and `npm test` before
+pushing; pull requests are checked as below. One-time setup: `powershell -ExecutionPolicy Bypass -File tools\gen-cloudrun\setup-ci.ps1` (J). By hand, as
 before: `build.mjs --apply`, then `gcloud run services update gen --image <tag>` (or `deploy.ps1` when settings, secrets
 or permissions change).
 
