@@ -6,6 +6,10 @@
 //   signedout what someone who isn't signed in sees: the welcome, and Start free
 //   playback two or three of the library's clips cut together, played through the cuts and scrubbed back over them:
 //            how often and how long the clock waited for data, seeks while playing, frames with no picture
+//   create   one form from each Create group (images, video, 3D, animation, audio, chains): fields, price and Make button; Make is never pressed
+//   account  credits pill, account sheet with packs and plans, Help menu, shortcuts overlay, Terms and Privacy
+//   export   a short plain cut from the library's clips, exported: the file loads and plays
+//            (create, account, export: option {"broken":true} sabotages what they look at, and each must then report a problem)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
@@ -38,6 +42,38 @@ async function until(fn, ms = 15000, step = 200) {
 }
 const click = (sel) => { const el = document.querySelector(sel); if (!el) return false; el.click(); return true; };
 
+
+/** Every job a scenario submits (POST /v1/jobs, /v1/run), so a scenario can say none started, or only the CPU render of an export. */
+function watchJobs() {
+  const sent = [];
+  const real = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+      const method = (init?.method ?? (typeof input === 'object' ? input.method : 'GET') ?? 'GET').toUpperCase();
+      if (method === 'POST' && /^\/v1\/(jobs|run)\b/.test(url.pathname)) {
+        let tool = '';
+        try { tool = JSON.parse(init?.body ?? '{}').tool ?? ''; } catch { /* not JSON */ }
+        sent.push(tool || url.pathname);
+      }
+    } catch { /* never block a call */ }
+    return real(input, init);
+  };
+  return { sent, stop: () => { window.fetch = real; } };
+}
+const visibleEl = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden' && !el.closest('[hidden]'); };
+/** What a Create form must show: fields to fill, a price and a Make button. Returns what's missing. */
+function formFaults(form) {
+  const out = [];
+  if (!form?.querySelector) return ['no form'];
+  if (!form.querySelector('textarea, input:not([type=checkbox]):not([type=hidden]), select, .slot, [data-slot], .pick')) out.push('no fields');
+  const q = form.querySelector('.gen-foot .quote');
+  if (!q || !/credit|free/i.test(q.textContent)) out.push(`no price (${q ? `"${q.textContent.trim()}"` : 'none'})`);
+  const go = form.querySelector('.gen-foot .primary');
+  if (!go || !go.textContent.trim()) out.push('no Make button');
+  return out;
+}
+
 let made = null;
 installPlaytest({
   product: 'hawkesgen-app',
@@ -55,8 +91,11 @@ installPlaytest({
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
     { id: 'signupcap', title: 'Starter credits are capped: health counts signups and refused grants, and the limits are shown; this account sees its balance', seconds: 30 },
     { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
-    { id: 'phone', title: 'Phone (390x844, touch): every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
+    { id: 'phone', title: 'Phone (390x844, touch): the five bottom tabs and the timeline stay on screen, no page zoom; every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
     { id: 'eventstreams', title: 'Live streams: four tabs open on one account, the oldest is closed with a bye and opens again by itself, and all jobs still reach the page', seconds: 90 },
+    { id: 'create', title: 'Create: one tool form from each group (images, video, 3D, animation, audio, chains) shows its fields, its price and a Make button; Make is never pressed and no job starts', seconds: 90 },
+    { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
+    { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -119,6 +158,185 @@ installPlaytest({
       }
       t.metric('forms', n); t.metric('formsPriced', priced); t.metric('priceChangedWithOption', changedCost);
       t.finish(priced > 0 ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'create') {
+      t.scene('Create forms');
+      const jobs = watchJobs();
+      click('#paneTabs button[data-pane="generate"]');
+      if (!await until(() => document.querySelectorAll('#createList .cat .cat-row').length > 0, 15000)) { jobs.stop(); t.note('the Create list did not load'); t.finish('stuck'); return; }
+      // One group at a time, by its heading: open its first tool that's on this Gen, look at the form, go back. Make is never pressed.
+      const groups = ['Images', 'Video', '3D', 'Animation', 'Voice', 'Chains'];
+      let opened = 0, ok = 0, priceFree = 0;
+      let sample = null;
+      for (const name of groups) {
+        const cat = [...document.querySelectorAll('#createList .cat')].find((c) => c.querySelector('h3')?.textContent.startsWith(name));
+        const row = cat?.querySelector('.cat-row');
+        if (!row) { t.problem('bug', `Create has no "${name}" group, or nothing in it on this Gen`); continue; }
+        row.click();
+        const shown = await until(() => document.querySelector('#createBody .gen-foot'), 5000, 100);
+        if (!shown) { t.problem('bug', `${name}: the form did not open`); click('#createBack'); continue; }
+        opened++;
+        // The price loads on open ("Pricing…", then credits): give it its moment.
+        await until(() => /credit|free/i.test(document.querySelector('#createBody .gen-foot .quote')?.textContent ?? ''), 6000, 150);
+        const form = document.querySelector('#createBody form') ?? document.querySelector('#createBody');
+        // A deliberately broken form (option broken): its price and Make button are taken away, so the scenario must say so.
+        if (options?.broken && name.startsWith('3D')) { form.querySelector('.gen-foot .quote')?.remove(); form.querySelector('.gen-foot .primary')?.remove(); }
+        const faults = formFaults(form);
+        const title = form.querySelector('.gen-head b')?.textContent ?? name;
+        const price = form.querySelector('.gen-foot .quote')?.textContent.trim() ?? '';
+        t.metric(`form_${name.toLowerCase()}_fields`, form.querySelectorAll('textarea, input:not([type=hidden]), select').length);
+        t.event(`form-${name.toLowerCase()}: ${title} · ${price || 'no price'}`);
+        if (faults.length) for (const f of faults) t.problem('bug', `${name} · ${title}: ${f}`); else ok++;
+        if (/^free$/i.test(price)) priceFree++;
+        if (!sample) sample = form;
+        click('#createBack');
+        await until(() => !document.querySelector('#createHome')?.hidden, 3000, 100);
+      }
+      t.metric('groupsOpened', opened); t.metric('formsComplete', ok); t.metric('freeForms', priceFree);
+      // The check must catch a form that lost its price and Make button, so a quiet pass means something.
+      const bad = document.createElement('form');
+      bad.innerHTML = '<div class="gen-foot"><span class="quote">…</span></div>';
+      const caught = formFaults(bad).length >= 2;
+      t.metric('brokenFormCaught', caught ? 1 : 0);
+      t.event(caught ? 'broken-form-reported' : 'broken-form-missed');
+      const started = jobs.sent.length;
+      jobs.stop();
+      t.metric('jobsStarted', started);
+      if (started) t.problem('blocker', `Create started ${started} job(s): ${jobs.sent.join(', ')}`);
+      t.finish(opened === groups.length && caught && !started ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'account') {
+      t.scene('Account');
+      const jobs = watchJobs();
+      const pill = document.querySelector('#creditsPill');
+      const shown = pill && !pill.hidden;
+      t.metric('creditsShown', shown ? 1 : 0);
+      t.metric('credits', Number(document.querySelector('#creditsCount')?.textContent.replace(/[^\d]/g, '')) || 0);
+      if (!shown) t.problem('bug', 'the credits pill is not on the bar');
+      // The credits pill opens the sheet.
+      pill?.click();
+      const open = await until(() => document.querySelector('#accountDialog[open]'), 5000, 100);
+      if (!open) t.problem('bug', 'the credits pill did not open the account sheet');
+      let packs = 0, plans = 0;
+      if (open) {
+        await until(() => document.querySelector('#packs .acct-pack, #packs .acct-note'), 6000, 150);
+        await until(() => document.querySelector('#plans .acct-pack, #plans .acct-note, #plans .plan-current'), 6000, 150);
+        packs = document.querySelectorAll('#packs .acct-pack').length;
+        plans = document.querySelectorAll('#plans .acct-pack, #plans .plan-current').length;
+        const sheetText = document.querySelector('#accountDialog').textContent;
+        t.metric('packs', packs); t.metric('plans', plans);
+        t.metric('sheetShowsBalance', document.querySelector('#accountCredits')?.textContent.trim() ? 1 : 0);
+        t.metric('sheetShowsWho', document.querySelector('#accountName')?.textContent.trim() ? 1 : 0);
+        t.event(`account-sheet: ${packs} packs, ${plans} plans`);
+        if (options?.broken) { document.querySelector('#packs')?.replaceChildren(); document.querySelector('#plans')?.replaceChildren(); packs = document.querySelectorAll('#packs .acct-pack').length; plans = 0; }
+        // Packs and plans come from Stripe's set-up: where it isn't open here the sheet says so in words (a note), never nothing.
+        if (!packs && !document.querySelector('#packs .acct-note')) t.problem('bug', 'the account sheet shows no credit packs and no note about them');
+        if (!plans && !document.querySelector('#plans .acct-note')) t.problem('bug', 'the account sheet shows no monthly plans and no note about them');
+        if (!/credit/i.test(sheetText)) t.problem('bug', 'the account sheet does not mention credits');
+        pressOn(document.querySelector('#accountDialog'), 'Escape');
+        document.querySelector('#accountClose')?.click();
+        t.metric('sheetCloses', await until(() => !document.querySelector('#accountDialog[open]'), 3000, 100) ? 1 : 0);
+      }
+      // The Help menu: its rows, the shortcuts overlay, and Terms and Privacy (the links, and that the pages say so).
+      click('#helpBtn');
+      const menu = await until(() => document.querySelector('.menu .menu-item'), 3000, 100);
+      const rows = [...document.querySelectorAll('.menu .menu-item')].map((b) => b.textContent.trim());
+      t.metric('helpRows', rows.length);
+      t.event(`help-menu: ${rows.join(' | ')}`);
+      if (!menu) t.problem('bug', 'the Help menu did not open');
+      const links = [...document.querySelectorAll('.menu-links a')].map((a) => ({ text: a.textContent.trim(), href: a.getAttribute('href') }));
+      const terms = links.find((l) => /terms/i.test(l.text)), privacy = links.find((l) => /privacy/i.test(l.text));
+      t.metric('termsLink', terms ? 1 : 0); t.metric('privacyLink', privacy ? 1 : 0);
+      if (!terms) t.problem('bug', 'the Help menu has no Terms link');
+      if (!privacy) t.problem('bug', 'the Help menu has no Privacy link');
+      for (const [name, l] of [['terms', terms], ['privacy', privacy]]) {
+        if (!l) continue;
+        const page = await fetch(l.href.split('#')[0]).then((r) => r.ok ? r.text() : '').catch(() => '');
+        const there = page.includes(`id="${name}"`);
+        t.metric(`${name}Page`, there ? 1 : 0);
+        t.event(there ? `${name}-page-has-its-section` : `${name}-page-missing`);
+        if (!there) t.problem('bug', `${l.href} does not have a ${name} section`);
+      }
+      const sc = [...document.querySelectorAll('.menu .menu-item')].find((b) => /shortcuts/i.test(b.textContent));
+      if (sc) {
+        sc.click();
+        const pop = await until(() => document.querySelector('#shortcutsPop kbd'), 3000, 100);
+        t.metric('shortcutKeys', document.querySelectorAll('#shortcutsPop kbd').length);
+        t.event(pop ? 'shortcuts-overlay-open' : 'no-shortcuts-overlay');
+        if (!pop) t.problem('bug', 'the shortcuts overlay did not open');
+        await sleep(600);
+        pressOn(document.body, 'Escape');
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        t.metric('shortcutsClose', await until(() => !document.querySelector('#shortcutsPop'), 3000, 100) ? 1 : 0);
+      } else t.problem('bug', 'the Help menu has no Keyboard shortcuts row');
+      click('#helpBtn'); // closes the menu if still open
+      const started = jobs.sent.length;
+      jobs.stop();
+      t.metric('jobsStarted', started);
+      if (started) t.problem('blocker', `the account screens started ${started} job(s)`);
+      t.finish(open && menu && !started ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'export') {
+      t.scene('Export');
+      const jobs = watchJobs();
+      const r = await api(`/v1/assets?${new URLSearchParams({ limit: '40', project: state.user.project, kind: 'video' })}`).catch(() => null);
+      const vids = (r?.items ?? []).filter((a) => a.kind === 'video' && a.meta?.duration > 1).slice(0, 2);
+      t.metric('videos', vids.length);
+      if (!vids.length) { jobs.stop(); t.note('The test account has no clips in its library: nothing to cut'); t.finish('done'); return; }
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video scene with the clips back to back on its main track, 2 s each: a plain cut.
+      made = await newScene('video', { title: `Playtest export ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { jobs.stop(); t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const track = mainTrack()?.id;
+      for (const a of vids) {
+        const c = addClip({ track, asset: a.id, kind: 'video', duration: a.meta.duration, label: a.title || 'clip' });
+        setClip(c.id, { out: Math.min(a.meta.duration, 2) }, { history: false });
+      }
+      const len = docLength();
+      t.metric('cutSeconds', Math.round(len * 10) / 10);
+      t.event('cut-built');
+      // The action: the bar's Export button, then Export video, as a person presses them.
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      if (!action) { jobs.stop(); t.problem('bug', 'the bar has no Export button for a video scene'); t.finish('stuck'); return; }
+      click('#sceneAction');
+      if (!await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) { jobs.stop(); t.problem('bug', 'the Export sheet did not open'); t.finish('stuck'); return; }
+      t.metric('exportNote', document.querySelector('#exportNote')?.textContent.trim() ? 1 : 0);
+      t.event(`export-sheet: ${document.querySelector('#exportNote')?.textContent.trim()}`);
+      if (options?.broken) document.querySelector('#exportGo').disabled = true;  // a sheet whose button never wakes
+      const go = document.querySelector('#exportGo');
+      if (go.disabled) { jobs.stop(); t.problem('bug', 'Export video is disabled for a plain cut of existing clips'); click('#exportClose'); t.finish('stuck'); return; }
+      const t0 = performance.now();
+      go.click();
+      t.event('export-pressed');
+      const video = await until(() => document.querySelector('#exportResult video'), 120000, 300) ? document.querySelector('#exportResult video') : null;
+      const failed = document.querySelector('#exportError:not([hidden])')?.textContent;
+      t.metric('exportSeconds', Math.round((performance.now() - t0) / 100) / 10);
+      if (!video) { jobs.stop(); t.problem('bug', `the export gave no file${failed ? `: ${failed}` : ''}`); click('#exportClose'); t.finish('stuck'); return; }
+      t.event('export-finished');
+      // The file plays: its metadata loads, it has a picture and a length, and the clock moves when it's played.
+      const meta = await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+      t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+      t.metric('fileWidth', video.videoWidth || 0); t.metric('fileHeight', video.videoHeight || 0);
+      video.muted = true;
+      let played = false;
+      try { await video.play(); played = await until(() => video.currentTime > 0.3, 8000, 100); } catch (e) { t.note(`play() refused: ${e.message}`); }
+      t.metric('filePlays', played ? 1 : 0);
+      t.event(played ? 'file-plays' : 'file-does-not-play');
+      if (!meta || !video.videoWidth) t.problem('bug', 'the exported file has no picture');
+      else if (!played) t.problem('bug', 'the exported file does not play');
+      if (meta && Math.abs(video.duration - len) > 1.5) t.problem('bug', `the file is ${video.duration.toFixed(1)} s but the cut is ${len.toFixed(1)} s`);
+      video.pause();
+      // Only the cut's own CPU render may have run (video.compose, and video.still for pictures): nothing on a GPU.
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('jobsStarted', jobs.sent.length); t.metric('gpuJobsStarted', gpu.length);
+      t.note(`Jobs: ${jobs.sent.join(', ') || 'none'}`);
+      if (gpu.length) t.problem('blocker', `Export started a job that isn't the CPU render: ${gpu.join(', ')}`);
+      click('#exportClose');
+      t.finish(meta && played && !gpu.length ? 'done' : 'stuck');
       return;
     }
     if (id === 'media') {
@@ -403,6 +621,39 @@ installPlaytest({
       if (!document.querySelector('#sceneAction')?.hidden) {
         click('#sceneAction');
         if (await until(() => document.querySelector('#exportDialog[open]'), 4000)) { await visit('export', () => document.querySelector('#exportDialog'), () => [document.querySelector('#exportGo')]); document.querySelector('#exportClose')?.click(); }
+      }
+      // The five bottom tabs, the timeline on screen at the same time, and no page zoom.
+      {
+        const bar = document.querySelector('#mobileTabs');
+        const names = [...(bar?.querySelectorAll('button') ?? [])].map((b) => b.textContent.trim());
+        const need = [['media', /media/i], ['generate', /create/i], ['scenes', /scenes/i], ['kind', /inspect/i], ['ai', /^ai$/i]];
+        const missing = need.filter(([m, re]) => { const b = bar?.querySelector(`button[data-m="${m}"]`); return !b || !visible(b) || !re.test(b.textContent.trim()) || !inView(b); });
+        t.metric('bottomTabs', names.length); t.metric('bottomTabsMissing', missing.length);
+        t.event(`bottom-tabs: ${names.join(' | ')}`);
+        for (const [m] of missing) { bad++; t.problem('bug', `phone: the ${m} tab is missing or off screen`); }
+        const atBottom = bar && Math.abs(bar.getBoundingClientRect().bottom - window.innerHeight) < 40;
+        t.metric('tabsAtBottom', atBottom ? 1 : 0);
+        if (!atBottom) { bad++; t.problem('bug', 'phone: the tabs are not at the bottom of the screen'); }
+        for (const [m] of need) {
+          await tab(m);
+          const tl = document.querySelector('#timelinePane');
+          const r = tl?.getBoundingClientRect();
+          const ok = tl && visible(tl) && r.height >= 30 && r.top < window.innerHeight - 20;
+          t.metric(`timelineOn_${m}`, ok ? 1 : 0);
+          if (!ok) { bad++; t.problem('bug', `phone: the timeline is not on screen on the ${m} tab`); }
+        }
+        await tab('edit');
+        const meta = document.querySelector('meta[name=viewport]')?.content ?? '';
+        const noZoomTag = /user-scalable\s*=\s*no/.test(meta) && /maximum-scale\s*=\s*1(\.0)?\b/.test(meta);
+        const wheel = new WheelEvent('wheel', { ctrlKey: true, deltaY: -120, bubbles: true, cancelable: true });
+        document.body.dispatchEvent(wheel);
+        const gesture = new Event('gesturestart', { bubbles: true, cancelable: true });
+        document.body.dispatchEvent(gesture);
+        const noZoom = noZoomTag && wheel.defaultPrevented && gesture.defaultPrevented && window.visualViewport?.scale <= 1.001;
+        t.metric('noZoom', noZoom ? 1 : 0); t.metric('viewportScale', window.visualViewport?.scale ?? 1);
+        t.event(noZoom ? 'zoom-blocked' : 'zoom-possible');
+        if (!noZoom) { bad++; t.problem('bug', `phone: page zoom is possible (viewport "${meta}", pinch ${gesture.defaultPrevented ? 'stopped' : 'not stopped'}, ctrl+wheel ${wheel.defaultPrevented ? 'stopped' : 'not stopped'})`); }
+        t.metric('pageScrollsSideways', document.documentElement.scrollWidth > W() + 1 ? 1 : 0);
       }
       // The detector must catch a deliberately overflowing element, so a quiet pass means something.
       const canary = document.createElement('div');
