@@ -19,9 +19,10 @@ jobs:
           fail=0
           check() {
             out=$(curl -s --max-time 30 -o body.txt -w '%{http_code}' "$2" || echo 000)
-            body=$(head -c 1500 body.txt 2>/dev/null | sed -E 's/(hg_|hgm_|ghs_|ghp_|github_pat_|sk-ant-|cfut_|cfat_|AKIA|rpa_)[A-Za-z0-9_-]+/\1***/g')
+            body=$(head -c 1500 body.txt 2>/dev/null | sed -E 's/(hg_|hgm_|ghs_|ghp_|github_pat_|sk-ant-|cfut_|cfat_|AKIA|rpa_|sk_|rk_|whsec_)[A-Za-z0-9_-]+/\1***/g')
             { echo "### $1: HTTP $out ($2)"; echo '```'; echo "$body"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
             echo "$1: $out"
+            echo "$1 stripe: $(echo "$body" | jq -c '.stripe // "none"' 2>/dev/null | sed -E 's/(sk|rk|pk|whsec)_[A-Za-z0-9_]+/\1_***/g')"
             [ "$out" = "$3" ] || fail=1
           }
           check production https://hawkesgen.ai/v1/health 200
