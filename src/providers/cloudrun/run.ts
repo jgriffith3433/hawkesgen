@@ -242,7 +242,7 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
         if (e.unavailable) throw e;
         // A provider's gateway holds the request while a worker starts; a new image's first start on a host pulls it
         // (minutes), past fetch's 5-minute wait for headers. That is a worker on its way, not an unreachable service.
-        const starting = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' && elsewhere && deps.now() < until + COLD_START_MS;
+        const starting = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' && elsewhere && deps.now() < until + (svc.coldStartMs ?? COLD_START_MS);
         hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
         await deps.sleep(10_000);
         if (!starting && deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
@@ -255,7 +255,7 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
         await r.body?.cancel().catch(() => undefined);
         // A worker starting from cold answers 429/503 until it is up: it gets the cold start's time too. RunPod's "failed
         // to assign worker" is no GPU free, not a start.
-        const limit = until + (cold && !noWorker ? COLD_START_MS : 0);
+        const limit = until + (cold && !noWorker ? (svc.coldStartMs ?? COLD_START_MS) : 0);
         if (deps.now() > limit) throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.round((limit - until + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS)) / 60_000)} minutes`, { capacity: true });
         if (!told && !(cold && !noWorker)) hooks.step(`${svc.name}: waiting for a free ${where} GPU`);
         await deps.sleep(15_000);

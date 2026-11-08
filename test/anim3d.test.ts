@@ -142,6 +142,17 @@ test('3D tools go to the fleet or an endpoint that names their family, never a "
   assert.equal(gpuCandidates(job, rig, fo, map, Date.now(), get).choices.map((c: any) => (c.kind === 'fleet' ? 'fleet' : c.service.lane))[0], 'runpod-3d');
 });
 
+test('an endpoint can allow a longer first start (the 3D image is big): coldStartSeconds reaches the run as coldStartMs', async () => {
+  const { cleanProviders } = await import('../src/config.ts');
+  const { endpointService } = await import('../src/providers/gpu/route.ts');
+  const g = cleanProviders({ providers: [ep({ id: 'runpod-3d', families: ['rig'], coldStartSeconds: 1800 }), ep({ id: 'runpod-b', coldStartSeconds: 99999 }), ep({ id: 'runpod-c' })] } as any);
+  assert.equal(g.providers[0].coldStartSeconds, 1800);
+  assert.equal(g.providers[1].coldStartSeconds, 7200, 'capped at two hours');
+  assert.equal(g.providers[2].coldStartSeconds, undefined, 'unset stays unset (the 12-minute default)');
+  assert.equal(endpointService(g.providers[0], 'rig', map!, 'bkt', get).coldStartMs, 1_800_000);
+  assert.equal(endpointService(g.providers[2], 'rig', map!, 'bkt', get).coldStartMs, undefined);
+});
+
 test('readiness: a 3D tool is ready with the fleet up or an enabled endpoint naming its family; SSH tools need the fleet', () => {
   const rig = getTool('mesh.rig')!;
   const none = gpuSettings();
