@@ -22,7 +22,7 @@ export type FeelFlag = {
   shot?: string | null; clip?: string | null;
 };
 
-export const FEEL_KINDS = ['camera-snap', 'camera-jump', 'camera-blocked', 'below-ground', 'fell-out', 'inside-geometry', 'stuck', 'collision-pop', 'jitter', 'hitch'];
+export const FEEL_KINDS = ['camera-snap', 'camera-jump', 'camera-blocked', 'below-ground', 'fell-out', 'inside-geometry', 'stuck', 'collision-pop', 'jitter', 'hitch', 'foot-sliding', 'slope-slide'];
 const MAX_FLAGS = 200;
 const MAX_FEEL_SHOTS = 24;
 const SHOT_GAP_MS = 1500;
@@ -120,20 +120,47 @@ export async function cutFeelClips(ctx: RunContext, mp4: string, flags: FeelFlag
   return n;
 }
 
-export const POLISH_KINDS = ['ugly-building', 'z-fighting', 'floating-object', 'stretched-texture', 'clipping', 'missing-texture', 'camera-inside', 'bad-lighting', 'other'];
+/**
+ * The 3D polish rubric: ONE list, the only place its lines live. Add a line here (kind, title, what to look for) and
+ * the vision pass, its schema, the review's brief and Studio's finding titles all pick it up. A playtest may add lines
+ * of its own for one run (playtest.run's `rubric` param: Studio's quality gates do that) without a Gen deploy.
+ */
+export type RubricLine = { kind: string; title: string; look: string };
+export const POLISH_RUBRIC_LINES: RubricLine[] = [
+  { kind: 'ugly-building', title: 'Ugly or broken building', look: 'a building or structure that looks wrong: boxy placeholder, broken roof, gaps, wrong scale, melted geometry' },
+  { kind: 'z-fighting', title: 'Z-fighting (surfaces flicker through each other)', look: 'two surfaces striped or flickering through each other (overlapping coplanar faces)' },
+  { kind: 'floating-object', title: 'Props float or sink', look: 'a prop, plant, rock or character hovering above the ground or sunk into it when it should sit on it' },
+  { kind: 'stretched-texture', title: 'Stretched textures', look: 'a texture visibly smeared, stretched or tiled at the wrong scale' },
+  { kind: 'clipping', title: 'Things clip through walls or floors', look: 'a character, prop or the camera passing through a wall, floor or another object' },
+  { kind: 'inside-out-model', title: 'Inside-out models', look: 'a model whose inside faces show or that is see-through from outside (flipped normals, wrong culling)' },
+  { kind: 'backwards-text', title: 'Backwards text', look: 'text that reads mirrored or backwards (UI or world text seen from behind, negative scale)' },
+  { kind: 'missing-texture', title: 'Missing textures', look: 'pink/black checker, plain white or grey untextured surfaces where detail is expected' },
+  { kind: 'camera-inside', title: 'Camera inside geometry', look: 'the view is inside geometry or blocked by a near wall; the player can\'t see their character' },
+  { kind: 'bad-lighting', title: 'Lighting hides the play area', look: 'pitch-black or blown-out areas where the player should see' },
+];
 
-export const POLISH_RUBRIC = `Polish rubric for 3D game frames. Flag only what a player would notice and find ugly or broken:
-- ugly-building: a building or structure that looks wrong: boxy placeholder, broken roof, gaps, wrong scale, melted geometry
-- z-fighting: two surfaces flickering/striped through each other (overlapping coplanar faces)
-- floating-object: an object hovering above the ground or sunk into it when it should sit on it
-- stretched-texture: a texture visibly smeared, stretched or tiled wrongly
-- clipping: a character, prop or the camera passing through a wall, floor or another object
-- missing-texture: pink/black checker, plain white or grey untextured surfaces where detail is expected
-- camera-inside: the view is inside geometry or blocked by a near wall, the player can't see their character
-- bad-lighting: pitch-black or blown-out areas where the player should see
+/** The rubric for one run: the standard lines plus any the caller added (unknown or malformed ones are dropped). */
+export function rubricFor(extra?: unknown): RubricLine[] {
+  const lines = [...POLISH_RUBRIC_LINES];
+  for (const r of Array.isArray(extra) ? extra.slice(0, 20) : []) {
+    const kind = String((r as any)?.kind ?? '').trim();
+    const look = String((r as any)?.look ?? '').trim().slice(0, 300);
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(kind) || !look || lines.some((l) => l.kind === kind)) continue;
+    lines.push({ kind, look, title: String((r as any)?.title ?? kind).trim().slice(0, 80) || kind });
+  }
+  return lines;
+}
+
+export const POLISH_KINDS = [...POLISH_RUBRIC_LINES.map((l) => l.kind), 'other'];
+
+export function rubricText(lines: RubricLine[] = POLISH_RUBRIC_LINES) {
+  return `Polish rubric for 3D game frames. Flag only what a player would notice and find ugly or broken:
+${lines.map((l) => `- ${l.kind}: ${l.look}`).join('\n')}
 Ignore menus, loading screens, intended stylisation (low-poly, toon) and UI. A clean frame gets no hits.`;
+}
+export const POLISH_RUBRIC = rubricText();
 
-const POLISH_SCHEMA = {
+const polishSchema = (kinds: string[]) => ({
   type: 'object', additionalProperties: false, required: ['frames'],
   properties: {
     frames: {
@@ -148,7 +175,7 @@ const POLISH_SCHEMA = {
             items: {
               type: 'object', additionalProperties: false, required: ['kind', 'severity', 'where', 'detail'],
               properties: {
-                kind: { type: 'string', enum: POLISH_KINDS },
+                kind: { type: 'string', enum: kinds },
                 severity: { type: 'string', enum: ['bug', 'polish'] },
                 where: { type: 'string', description: 'Where in the frame (e.g. "left, the tall red building")' },
                 detail: { type: 'string', description: 'What is wrong, one sentence' },
@@ -159,10 +186,10 @@ const POLISH_SCHEMA = {
       },
     },
   },
-};
+});
 
 export type PolishFrame = { asset: string | null; file: string; t: number; reason: string; scene?: string };
-export type PolishHit = { kind: string; severity: 'bug' | 'polish'; where: string; detail: string; t: number; asset: string | null; scene?: string; flag?: string };
+export type PolishHit = { kind: string; title: string; severity: 'bug' | 'polish'; where: string; detail: string; t: number; asset: string | null; scene?: string; flag?: string };
 
 /** Which frames the polish pass looks at: flag shots first, then evenly spread ones; at most max. */
 export function pickPolishFrames<T extends { reason: string }>(shots: T[], max: number): T[] {
@@ -178,16 +205,18 @@ export function pickPolishFrames<T extends { reason: string }>(shots: T[], max: 
  * The cheap vision pass: Haiku scores the frames against the rubric in one request (about 1.6k input tokens a
  * frame, so 10 frames cost a couple of cents). Returns the hits and an average score, or null when it couldn't run.
  */
-export async function polishScan(ctx: RunContext, frames: PolishFrame[], { model = 'claude-haiku-5-5', product = '' } = {}) {
+export async function polishScan(ctx: RunContext, frames: PolishFrame[], { model = 'claude-haiku-5-5', product = '', rubric = undefined as unknown } = {}) {
   if (!frames.length) return null;
+  const lines = rubricFor(rubric);
+  const kinds = [...lines.map((l) => l.kind), 'other'];
   const legend = frames.map((f, i) => `[${i}] t=${f.t}s ${f.reason}${f.scene ? ` (${f.scene})` : ''}`).join('\n');
   const prompt = [
     product ? `GAME\n${product}` : '',
-    POLISH_RUBRIC,
+    rubricText(lines),
     `FRAMES (score each one, by index)\n${legend}`,
     'Frames named feel:<kind> were taken the moment the game\'s own sensor noticed that problem: check whether the frame shows it.',
   ].filter(Boolean).join('\n\n');
-  const r = await ask({ prompt, system: 'You are a strict 3D art and polish reviewer. Answer only with the JSON asked for.', images: frames.map((f) => f.file), model, maxTokens: 3000, schema: POLISH_SCHEMA }, ctx.signal);
+  const r = await ask({ prompt, system: 'You are a strict 3D art and polish reviewer. Answer only with the JSON asked for.', images: frames.map((f) => f.file), model, maxTokens: 3000, schema: polishSchema(kinds) }, ctx.signal);
   ctx.usage(usageOf(r, `${r.model} polish scan`));
   const out = JSON.parse(r.text);
   const hits: PolishHit[] = [];
@@ -197,11 +226,11 @@ export async function polishScan(ctx: RunContext, frames: PolishFrame[], { model
     if (!f) continue;
     if (Number.isFinite(fr.score)) scores.push(Math.max(1, Math.min(10, fr.score)));
     for (const h of Array.isArray(fr.hits) ? fr.hits.slice(0, 4) : []) {
-      if (!POLISH_KINDS.includes(h.kind)) continue;
-      hits.push({ kind: h.kind, severity: h.severity === 'bug' ? 'bug' : 'polish', where: String(h.where ?? '').slice(0, 160), detail: String(h.detail ?? '').slice(0, 300), t: f.t, asset: f.asset, ...(f.scene ? { scene: f.scene } : {}), ...(f.reason.startsWith('feel:') ? { flag: f.reason.slice(5) } : {}) });
+      if (!kinds.includes(h.kind)) continue;
+      hits.push({ kind: h.kind, title: lines.find((l) => l.kind === h.kind)?.title ?? 'Polish problem', severity: h.severity === 'bug' ? 'bug' : 'polish', where: String(h.where ?? '').slice(0, 160), detail: String(h.detail ?? '').slice(0, 300), t: f.t, asset: f.asset, ...(f.scene ? { scene: f.scene } : {}), ...(f.reason.startsWith('feel:') ? { flag: f.reason.slice(5) } : {}) });
     }
   }
-  return { model: r.model, frames: frames.length, score: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null, hits: hits.slice(0, 30) };
+  return { model: r.model, rubric: lines.length, frames: frames.length, score: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null, hits: hits.slice(0, 30) };
 }
 
 /** What the review is told about the feel layer (empty when the run had none). */
@@ -212,7 +241,7 @@ export function feelBrief(result: any) {
   const lines = [
     'FEEL AND POLISH (the game\'s own sensor flagged these moments, and a vision pass scored frames; screenshots named feel:<kind> are the flag moments).',
     'Treat repeated or bug-severity flags as real problems a player hits: camera snaps and jumps, the camera behind walls, falling through the floor,',
-    'getting stuck on geometry, collision shoves and jitter, frame hitches. Name the place (scene + position) in the title and fix.',
+    'getting stuck on geometry, collision shoves and jitter, foot sliding, sliding off slopes after landing, frame hitches. Name the place (scene + position) in the title and fix.',
     ...rankFlags(flags).slice(0, 30).map((f) => `- ${f.kind} x${f.count ?? 1} at t=${f.rt ?? f.t}s${f.scene ? ` in ${f.scene}` : ''}${f.pos ? ` pos ${f.pos.join(',')}` : ''}: ${f.detail}`),
     ...hits.slice(0, 20).map((h) => `- vision ${h.kind} (${h.severity}) at t=${h.t}s${h.scene ? ` in ${h.scene}` : ''}: ${h.where}: ${h.detail}`),
   ];

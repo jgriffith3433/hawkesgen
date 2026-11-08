@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanFlag, FeelLog, rankFlags, flagTime, pickPolishFrames, feelBrief } from '../src/tools/playtest-feel.ts';
+import { cleanFlag, FeelLog, rankFlags, flagTime, pickPolishFrames, feelBrief, rubricFor, rubricText, POLISH_KINDS } from '../src/tools/playtest-feel.ts';
 
 test('cleanFlag keeps known fields, bounds them and builds the replay spot', () => {
   const f = cleanFlag({ id: 'feel-1', kind: 'below-ground', severity: 'bug', t: 12.345, pos: [1.234, -2, 3], cam: { pos: [0, 2, -4], yaw: 90, pitch: -10 }, seed: 7, scene: 'City', detail: 'x'.repeat(500), count: 3, evil: '<script>' }, 14.2)!;
@@ -67,4 +67,13 @@ test('feelBrief is empty without flags and lists them with place otherwise', () 
   const b = feelBrief({ feel: [{ id: 'f', kind: 'below-ground', severity: 'bug', t: 2, rt: 4, pos: [1, -3, 2], scene: 'Docks', detail: 'fell through', count: 2 }], polish: { hits: [{ kind: 'z-fighting', severity: 'polish', where: 'left wall', detail: 'flicker', t: 5, asset: null }] } });
   assert.match(b, /below-ground x2 at t=4s in Docks pos 1,-3,2/);
   assert.match(b, /vision z-fighting/);
+});
+
+test('the rubric is one list: the standard lines, plus valid extras for one run', () => {
+  assert.ok(POLISH_KINDS.includes('backwards-text') && POLISH_KINDS.includes('inside-out-model') && POLISH_KINDS.includes('other'));
+  const lines = rubricFor([{ kind: 'foot-sliding', title: 'Feet slide', look: 'feet skate over the ground' }, { kind: 'Bad Kind', look: 'x' }, { kind: 'z-fighting', look: 'dup' }, { kind: 'no-look' }]);
+  assert.equal(lines.filter((l) => l.kind === 'foot-sliding').length, 1);
+  assert.ok(!lines.some((l) => l.kind === 'no-look' || l.kind === 'Bad Kind'));
+  assert.equal(lines.filter((l) => l.kind === 'z-fighting').length, 1);
+  assert.match(rubricText(lines), /- foot-sliding: feet skate over the ground/);
 });

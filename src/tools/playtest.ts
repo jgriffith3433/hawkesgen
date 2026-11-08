@@ -104,6 +104,7 @@ export const playtestRunTool: Tool = {
     cookies: { type: 'json', description: 'Cookies set before the page loads: [{ "name", "value", "domain" }] (at most 8; Secure, HttpOnly, path /). Hawkes Studio sends a short-lived beta-site pass so playtests of beta sites get past the sign-in.', advanced: true, example: [{ name: 'hawkes_pass_beta', value: 'v1.beta…', domain: '.hawkesgen.ai' }] },
     peers: { type: 'integer', default: 1, min: 1, max: 4, description: 'Multiplayer: how many players (browser tabs in the same browser) play together. Each opens the URL with a shared random room=<id> and peer=<0..n-1>; peer 0 plays the scenario, the others scenarioPeers (or the same one). Their videos play side by side in the job\'s video; problems and events say which peer. Needs the playtest contract.' },
     polish: { type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', description: 'The feel layer\'s cheap vision pass (Haiku scores a few frames against the 3D polish rubric: ugly buildings, z-fighting, floating objects, stretched textures, clipping). auto: when the game has the feel sensor (it pushed flags); on: always; off: never. docs/playtest.md#feel in Hawkes Studio.', advanced: true },
+    rubric: { type: 'json', description: 'Extra polish rubric lines for this run: [{ "kind": "foot-sliding", "title": "Feet slide", "look": "what to look for" }] (at most 20; the standard lines are in playtest-feel.ts POLISH_RUBRIC_LINES)', advanced: true },
     polishFrames: { type: 'integer', default: 10, min: 2, max: 24, description: 'How many frames the polish pass scores', advanced: true },
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
   },
@@ -690,7 +691,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       if (polishOn && shots.length) {
         ctx.step('scoring frames against the polish rubric');
         const picked = pickPolishFrames(shots.map((s, i) => ({ ...s, asset: result.shots[i].asset })), p.polishFrames ?? 10);
-        result.polish = await within(polishScan(ctx, picked), 3 * 60_000, 'the polish pass').catch((e: any) => {
+        result.polish = await within(polishScan(ctx, picked, { rubric: p.rubric }), 3 * 60_000, 'the polish pass').catch((e: any) => {
           ctx.log(`polish pass: ${e.message}`);
           return { error: String(e.message).slice(0, 300), hits: [] };
         });
