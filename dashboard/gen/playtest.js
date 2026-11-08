@@ -6,6 +6,19 @@
 //   signedout what someone who isn't signed in sees: the welcome, and Start free
 //   playback two or three of the library's clips cut together, played through the cuts and scrubbed back over them:
 //            how often and how long the clock waited for data, seeks while playing, frames with no picture
+//   create   one form from each Create group (images, video, 3D, animation, audio, chains): fields, price and Make button; Make is never pressed
+//   account  credits pill, account sheet with packs and plans, Help menu, shortcuts overlay, Terms and Privacy
+//   export   a short plain cut from the library's clips, exported: the file loads and plays
+//            (create, account, export: option {"broken":true} sabotages what they look at, and each must then report a problem)
+//   ai-edit, ai-undo, ai-proposal, ai-nocredits, ai-signedout, ai-outage: the AI pane (docs/ai-mock.md). The test account's canned
+//            answers (POST /v1/test/ai-mock, a named setup shortcut) stand in for Claude, so no house AI is spent; the message is typed
+//            with key events into #aiInput, and nothing here ever presses Make it on a proposal (that would be GPU money)
+//   stage    the Director: a stage scene, a character cast, a prop added, camera keyed at two moments, scrubbed and played; the 3D view draws and the console stays clean
+//   character a character sheet: look, voice, pictures by role and 3D model sections draw; nothing is generated
+//   world    Start a world (canned AI answer): the sheet opens, the first proposal cards show, the pictures' price is known; Make this world is never pressed
+//   scenes   a new scene of each kind from the + menu, renamed, reordered, duplicated and deleted
+//   media-upload a small picture is uploaded by the Media pane's file input and shows as a tile and in its details (Media has no delete)
+//            (stage, character, world, scenes, media-upload: free, no paid job; every one watches the jobs it could start)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
@@ -13,11 +26,12 @@ import { state } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
 import { snapStats } from './timeline.js';
 import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
-import { activeScene, newScene } from './scenes.js';
+import { activeScene, newScene, sceneList, loadList } from './scenes.js';
+import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
-import { api } from './lib.js';
+import { api, bus } from './lib.js';
 import { openStream } from './stream.js';
-import { runJob } from './media.js';
+import { runJob, uploadFiles } from './media.js';
 import { streamState } from './trouble.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -38,6 +52,119 @@ async function until(fn, ms = 15000, step = 200) {
 }
 const click = (sel) => { const el = document.querySelector(sel); if (!el) return false; el.click(); return true; };
 
+
+/** Every job a scenario submits (POST /v1/jobs, /v1/run), so a scenario can say none started, or only the CPU render of an export. */
+function watchJobs() {
+  const sent = [];
+  const real = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+      const method = (init?.method ?? (typeof input === 'object' ? input.method : 'GET') ?? 'GET').toUpperCase();
+      if (method === 'POST' && /^\/v1\/(jobs|run)\b/.test(url.pathname)) {
+        let tool = '';
+        try { tool = JSON.parse(init?.body ?? '{}').tool ?? ''; } catch { /* not JSON */ }
+        sent.push(tool || url.pathname);
+      }
+    } catch { /* never block a call */ }
+    return real(input, init);
+  };
+  return { sent, stop: () => { window.fetch = real; } };
+}
+const visibleEl = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden' && !el.closest('[hidden]'); };
+/** What a Create form must show: fields to fill, a price and a Make button. Returns what's missing. */
+function formFaults(form) {
+  const out = [];
+  if (!form?.querySelector) return ['no form'];
+  if (!form.querySelector('textarea, input:not([type=checkbox]):not([type=hidden]), select, .slot, [data-slot], .pick')) out.push('no fields');
+  const q = form.querySelector('.gen-foot .quote');
+  if (!q || !/credit|free/i.test(q.textContent)) out.push(`no price (${q ? `"${q.textContent.trim()}"` : 'none'})`);
+  const go = form.querySelector('.gen-foot .primary');
+  if (!go || !go.textContent.trim()) out.push('no Make button');
+  return out;
+}
+
+
+/** Types into #aiInput one key at a time (keydown, input, keyup), then Enter: the way a person sends a message. */
+async function typeAi(text) {
+  const box = document.querySelector('#aiInput');
+  box.focus();
+  box.value = '';
+  for (const ch of text) {
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+    box.value += ch;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+    await sleep(8);
+  }
+  pressOn(box, 'Enter');
+}
+/** Setup shortcut (named): the test account's canned AI answers, replacing any left over. Null when the mock is off here. */
+async function mockAi(answers) {
+  await api('/v1/test/ai-mock', { method: 'DELETE' }).catch(() => {});
+  const q = await api('/v1/test/ai-mock', { method: 'POST', body: { answers } }).catch(() => null);
+  return q?.queued ? q : null;
+}
+/** Setup shortcut (named): a fresh video scene for the AI to work in. */
+async function aiScene(title) {
+  await until(() => activeScene(), 10000);
+  made = await newScene('video', { title: `${title} ${new Date().toISOString().slice(0, 16)}` });
+  return until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
+}
+/** Setup shortcut (named): the AI turn's call (POST /v1/showrunner/turn) answers the way Gen does in a bad moment; everything else is real. */
+function forceTurn(answer) {
+  const real = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+    if (url.pathname === '/v1/showrunner/turn') return Promise.resolve(answer());
+    return real(input, init);
+  };
+  return () => { window.fetch = real; };
+}
+const lastAi = () => [...document.querySelectorAll('#aiMessages .msg.ai:not(.pending)')].pop();
+const aiIdle = () => !document.querySelector('#aiSend')?.classList.contains('busy') && !document.querySelector('#aiMessages .msg.pending');
+/** What nothing on screen may show: JSON, a trace, a key, a stray "undefined". */
+const RAW_AI = /[{}<>]|"error"|Traceback|File "|\bat \S+:\d+|hg_[0-9a-f]{6}|sk-ant|hgm_|undefined|\[object/;
+const TITLE_OP = (text) => ({ op: 'add', track: 'T1', kind: 'text', text, start: 0, duration: 3 });
+
+
+/** Everything the console and the window say went wrong while a scenario plays (console.error, uncaught errors, rejected promises). */
+function watchConsole() {
+  const errors = [];
+  const real = console.error;
+  const text = (a) => a.map((x) => (x instanceof Error ? x.message : typeof x === 'string' ? x : (() => { try { return JSON.stringify(x); } catch { return String(x); } })())).join(' ').slice(0, 220);
+  console.error = (...a) => { errors.push(text(a)); real.apply(console, a); };
+  const onErr = (e) => errors.push(e.message || 'error');
+  const onRej = (e) => errors.push(`unhandled: ${e.reason?.message ?? e.reason}`);
+  window.addEventListener('error', onErr);
+  window.addEventListener('unhandledrejection', onRej);
+  return { errors, stop: () => { console.error = real; window.removeEventListener('error', onErr); window.removeEventListener('unhandledrejection', onRej); } };
+}
+/** Types into any field one key at a time (keydown, input, keyup): the way a person fills it in. */
+async function typeInto(box, text) {
+  box.focus();
+  box.value = '';
+  for (const ch of text) {
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+    box.value += ch;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+    await sleep(6);
+  }
+}
+/** The first element under `root` that matches `sel` and whose words match `re`. */
+const withText = (root, sel, re) => [...(root ?? document).querySelectorAll(sel)].find((el) => re.test(el.textContent));
+/** The "+" menu's blank-scene row for a kind (the starters above it are skipped). */
+const blankRow = (label) => [...document.querySelectorAll('.menu .menu-item')].find((b) => !b.closest('.menu-starters') && b.querySelector('b')?.textContent === label);
+/** Scenes this run made (all but the ones the bot opens through `made`), taken away again when it stops. */
+const extra = [];
+/** Setup shortcut (named): a confirm() that says yes, for Delete (a person would press OK). Returns the way back. */
+function confirmYes(log) {
+  const real = window.confirm;
+  window.confirm = (msg) => { log?.push(String(msg)); return true; };
+  return () => { window.confirm = real; };
+}
+
 let made = null;
 installPlaytest({
   product: 'hawkesgen-app',
@@ -55,8 +182,23 @@ installPlaytest({
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
     { id: 'signupcap', title: 'Starter credits are capped: health counts signups and refused grants, and the limits are shown; this account sees its balance', seconds: 30 },
     { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
-    { id: 'phone', title: 'Phone (390x844, touch): every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
+    { id: 'phone', title: 'Phone (390x844, touch): the five bottom tabs and the timeline stay on screen, no page zoom; every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
     { id: 'eventstreams', title: 'Live streams: four tabs open on one account, the oldest is closed with a bye and opens again by itself, and all jobs still reach the page', seconds: 90 },
+    { id: 'create', title: 'Create: one tool form from each group (images, video, 3D, animation, audio, chains) shows its fields, its price and a Make button; Make is never pressed and no job starts', seconds: 90 },
+    { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
+    { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
+    { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
+    { id: 'ai-undo', title: 'AI pane: Undo this removes what the AI added, and Ctrl+Z brings it back', seconds: 60 },
+    { id: 'ai-proposal', title: 'AI pane: an answer over 40 credits shows a proposal card with its price, and nothing starts (Make it is never pressed)', seconds: 60 },
+    { id: 'ai-nocredits', title: 'AI pane: with no credits left the answer is a plain 402 line with Add credits, and the timeline is unchanged', seconds: 60 },
+    { id: 'ai-signedout', title: 'AI pane signed out: the sign-in gate shows, a typed message opens Sign in and nothing is sent', seconds: 40 },
+    { id: 'ai-outage', title: 'AI pane in an outage: 503, 429, an unreadable page and a garbled answer each show one plain line (no JSON, trace or key) and the pane unlocks', seconds: 90 },
+    { id: 'stage', title: 'Stage: open the Director, cast a character, add a prop, key the camera at two moments and scrub; the 3D view draws, the console has no errors and no job starts', seconds: 90 },
+    { id: 'character', title: 'Character: the sheet shows their look, voice, pictures by role and 3D model sections; nothing is generated and no job starts', seconds: 60 },
+    { id: 'world', title: 'World: Start a world (canned AI answer) opens its sheet and reaches the first proposal cards with the pictures\' price known; Make this world is never pressed and no job starts', seconds: 60 },
+    { id: 'scenes', title: 'Scenes: a new scene of each kind from the + menu is renamed, reordered, duplicated and deleted; no job starts', seconds: 150 },
+    { id: 'media-upload', title: 'Media: a small picture is uploaded with the file button and shows as a tile and in its details; no job starts but the CPU conversion, if any', seconds: 60 },
+    { id: 'uploads', title: 'Uploads: three big files go up together with a percentage each and the server stays up; a fourth at once is refused with a plain "uploads at once" message; options {"mb":500}', seconds: 240 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -86,7 +228,519 @@ installPlaytest({
       t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
       return;
     }
+    if (id.startsWith('ai-')) {
+      if (id === 'ai-signedout') {
+        t.scene('Signed out');
+        await until(() => activeScene() || document.querySelector('#landing:not([hidden])'), 10000);
+        const me = state.user;
+        // Setup shortcut (named): a signed-in test account looks signed out for a moment (the session itself is untouched).
+        state.user = null;
+        bus.emit('ready');
+        const gate = document.querySelector('#aiGate');
+        t.metric('gateShown', gate && !gate.hidden && /Sign in/.test(gate.textContent) ? 1 : 0);
+        t.event('gate-shown');
+        const jobs = watchJobs();
+        const calls = [];
+        const real = window.fetch.bind(window);
+        window.fetch = (input, init) => { calls.push(new URL(typeof input === 'string' ? input : input.url, location.href).pathname); return real(input, init); };
+        const msgs0 = document.querySelectorAll('#aiMessages .msg').length;
+        await typeAi('add a title that says Hello');
+        const dlg = await until(() => document.querySelector('#authDialog')?.open, 4000, 100);
+        t.metric('signInOpened', dlg ? 1 : 0);
+        t.event(dlg ? 'sign-in-opened' : 'no-sign-in');
+        const sent = calls.filter((p) => p.startsWith('/v1/') && !/^\/v1\/users\//.test(p));
+        t.metric('sentToAi', sent.length + document.querySelectorAll('#aiMessages .msg').length - msgs0);
+        if (sent.length) t.problem('bug', `signed out, the AI pane called ${sent.join(', ')}`);
+        click('#authCancel');
+        window.fetch = real; jobs.stop();
+        state.user = me;
+        bus.emit('ready');
+        t.finish(dlg && !sent.length ? 'done' : 'stuck');
+        return;
+      }
+      if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
+      t.scene('AI pane');
+      const credits = () => Number(state.user?.credits ?? 0);
+      const clips = () => P.doc?.clips?.length ?? 0;
+      const titles = () => (P.doc?.clips ?? []).filter((c) => c.kind === 'text').length;
+      const mockOff = () => { t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session: nothing to play'); t.event('mock-off'); t.finish('done'); };
+      const HELLO = { match: 'says Hello', cost: 0.01, json: { say: 'Added a title that says Hello.', ops: [TITLE_OP('Hello')] } };
+      if (id === 'ai-edit' || id === 'ai-undo') {
+        if (!await mockAi([HELLO])) return mockOff();
+        if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const before = { clips: clips(), titles: titles(), credits: credits() };
+        await typeAi('add a title that says Hello');
+        t.event('asked');
+        const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
+        const added = await until(() => titles() > before.titles, 5000, 100);
+        t.metric('clipsAdded', clips() - before.clips);
+        t.event(added ? 'title-added' : 'no-title');
+        const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
+        t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
+        if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
+        const paid = await until(() => credits() < before.credits, 8000, 150);
+        t.metric('creditsDelta', before.credits - credits());
+        t.event(paid ? 'credits-dropped' : 'credits-unchanged');
+        if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
+        if (id === 'ai-edit') { t.finish(reply && added && paid ? 'done' : 'stuck'); return; }
+        // Undo this: a click on the reply's own button, then Ctrl+Z.
+        const undo = [...document.querySelectorAll('#aiMessages button')].find((b) => /Undo this/.test(b.textContent));
+        t.metric('undoOffered', undo ? 1 : 0);
+        if (!undo || !added) { t.finish('stuck'); return; }
+        undo.click();
+        const gone = await until(() => titles() === before.titles, 5000, 100);
+        t.metric('undoRemoved', gone ? 1 : 0);
+        t.event(gone ? 'undone' : 'undo-failed');
+        press('z', { ctrlKey: true });
+        const back = await until(() => titles() > before.titles, 5000, 100);
+        t.metric('undoRestored', back ? 1 : 0);
+        t.event(back ? 'ctrl-z-restored' : 'ctrl-z-failed');
+        t.finish(gone && back ? 'done' : 'stuck');
+        return;
+      }
+      if (id === 'ai-proposal') {
+        // Setup shortcut (named): price a generate op, and ask for enough of them to pass the 40-credit limit.
+        const quote = await api('/v1/billing/quote', { body: { tool: 'video.t2v', params: { prompt: 'a sunrise' } } }).catch(() => null);
+        const each = Math.max(1, Number(quote?.credits ?? 0));
+        const n = Math.min(8, Math.ceil(45 / each));
+        t.metric('opPrice', each);
+        const gen = Array.from({ length: n }, (_, i) => ({ op: 'generate', tool: 'video.t2v', params: { prompt: `a sunrise over the sea, take ${i + 1}` }, place: { track: 'V1' } }));
+        if (!await mockAi([{ match: 'sunrise clips', cost: 0.01, json: { say: 'Here are the sunrise clips. They cost enough that I want your OK first.', ops: gen } }])) return mockOff();
+        if (!await aiScene('Playtest AI proposal')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const jobs = watchJobs();
+        const before = clips();
+        await typeAi('put in some sunrise clips');
+        t.event('asked');
+        const card = await until(() => document.querySelector('#aiMessages .proposal'), 20000, 100);
+        const price = Number(/(\d+) credits/.exec(card?.textContent ?? '')?.[1] ?? 0);
+        t.metric('proposalShown', card ? 1 : 0);
+        t.metric('proposalCredits', price);
+        t.event(card ? 'proposal-shown' : 'no-proposal');
+        const hasMake = [...(card?.querySelectorAll('button') ?? [])].some((b) => /Make it/.test(b.textContent));
+        t.metric('makeItOffered', hasMake ? 1 : 0);
+        await sleep(2500);
+        // Nothing started before Make it: no job sent and no waiting clip. Make it itself is left alone (it is GPU money); Skip closes the card.
+        t.metric('jobsStarted', jobs.sent.length);
+        t.metric('clipsAdded', clips() - before);
+        t.event(!jobs.sent.length && clips() === before ? 'nothing-started' : 'something-started');
+        if (jobs.sent.length) t.problem('bug', `a proposal started ${jobs.sent.join(', ')} before Make it`);
+        if (price <= 40) t.problem('bug', `the proposal shows ${price} credits: not over the 40-credit limit`);
+        [...(card?.querySelectorAll('button') ?? [])].find((b) => /Skip/.test(b.textContent))?.click();
+        jobs.stop();
+        t.finish(card && hasMake && price > 40 && !jobs.sent.length && clips() === before ? 'done' : 'stuck');
+        return;
+      }
+      if (id === 'ai-nocredits') {
+        if (!await aiScene('Playtest AI no credits')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const before = { clips: clips(), credits: credits() };
+        // Setup shortcut (named): the AI turn answers 402, the way Gen does at zero credits (the account's real balance is kept).
+        const restore = forceTurn(() => new Response(JSON.stringify({ error: 'Not enough credits: this needs 1 and you have 0 Traceback hg_0123456789abcdef' }), { status: 402, headers: { 'Content-Type': 'application/json' } }));
+        await typeAi('add a title that says Hello');
+        t.event('asked');
+        await until(() => document.querySelector('#aiMessages .msg.err'), 10000, 100);
+        restore();
+        const msg = [...document.querySelectorAll('#aiMessages .msg.err')].pop();
+        const text = msg?.textContent ?? '';
+        const button = msg?.querySelector('button')?.textContent ?? '';
+        const ok = /out of credits/i.test(text) && !RAW_AI.test(text) && /Add credits/.test(button);
+        t.metric('plainLine', ok ? 1 : 0);
+        t.metric('timelineChanged', clips() - before.clips);
+        t.metric('creditsDelta', before.credits - credits());
+        t.event(ok ? '402-plain' : '402-bad');
+        if (!ok) t.problem('bug', `the 402 line is "${text.slice(0, 160)}" / button "${button}"`);
+        if (clips() !== before.clips) t.problem('bug', 'the timeline changed on a refused turn');
+        t.finish(ok && clips() === before.clips ? 'done' : 'stuck');
+        return;
+      }
+      // ai-outage
+      if (!await mockAi([{ match: 'garbled one', json: undefined, text: 'zxq ```{{ ~~ ### 0xDEAD', cost: 0.01 }])) return mockOff();
+      if (!await aiScene('Playtest AI outage')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const start = clips();
+      const cases = [
+        { key: '503', ask: 'add a title during the 503', answer: () => new Response(JSON.stringify({ error: 'The AI is not available Traceback sk-ant-oat01-abcdefghijkl' }), { status: 503, headers: { 'Content-Type': 'application/json' } }), words: /busy or resting|isn.t available|not available/i, strict: true },
+        { key: '429', ask: 'add a title during the 429', answer: () => new Response(JSON.stringify({ error: 'slow down', retryAfter: 7 }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } }), words: /Too many requests, try again in 7 s/, strict: true },
+        { key: 'page', ask: 'add a title on a broken page', answer: () => new Response('<!DOCTYPE html><html><body>502 Bad Gateway Traceback hg_0123456789abcdef</body></html>', { status: 200, headers: { 'Content-Type': 'text/html' } }), words: /interrupted|try again/i, strict: true },
+        { key: 'garbled', ask: 'add a title, garbled one', answer: null, words: /./, strict: false },
+      ];
+      let plain = 0, unlocked = 0;
+      for (const c of cases) {
+        t.scene(`Outage: ${c.key}`);
+        const restore = c.answer ? forceTurn(c.answer) : () => {};
+        const seen = document.querySelectorAll('#aiMessages .msg').length;
+        await typeAi(c.ask);
+        await until(() => document.querySelectorAll('#aiMessages .msg').length >= seen + 2 && aiIdle(), 15000, 100);
+        restore();
+        const m = c.key === 'garbled' ? lastAi() : [...document.querySelectorAll('#aiMessages .msg.err')].pop();
+        const text = m?.textContent ?? '';
+        // A garbled model answer is shown as the words it was; a trace or a key in it never is.
+        const clean = c.strict ? !RAW_AI.test(text) : !/Traceback|File "|\bat \S+:\d+|hg_[0-9a-f]{6}|sk-ant|hgm_/.test(text);
+        const ok = Boolean(text) && c.words.test(text) && clean;
+        const free = aiIdle() && !document.querySelector('#aiInput').disabled && !document.querySelector('#aiForm')?.classList.contains('locked');
+        if (ok) plain++;
+        if (free) unlocked++;
+        t.metric(`plain-${c.key}`, ok ? 1 : 0);
+        t.metric(`unlocked-${c.key}`, free ? 1 : 0);
+        t.event(`${c.key}-${ok && free ? 'ok' : 'bad'}`);
+        if (!ok) t.problem('bug', `AI outage "${c.key}" shows "${text.slice(0, 160)}"`);
+        if (!free) t.problem('bug', `the AI pane stayed locked after "${c.key}"`);
+      }
+      t.metric('clipsAddedByOutages', clips() - start);
+      t.finish(plain === cases.length && unlocked === cases.length ? 'done' : 'stuck');
+      return;
+    }
     if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
+    if (id === 'stage') {
+      t.scene('Stage');
+      const jobs = watchJobs(), con = watchConsole();
+      const stamp = new Date().toISOString().slice(0, 16);
+      const finish = (ok) => { const started = jobs.sent.length; jobs.stop(); con.stop(); t.metric('jobsStarted', started); t.metric('consoleErrors', con.errors.length); if (started) t.problem('blocker', `the stage started ${started} job(s): ${jobs.sent.join(', ')}`); for (const e of con.errors.slice(0, 5)) t.problem('bug', `console error on the stage: ${e}`); t.finish(ok && !started && !con.errors.length ? 'done' : 'stuck'); };
+      await until(() => activeScene(), 10000);
+      // Setup shortcuts (named): a character to cast (no pictures, no model) and a new stage scene. Everything after is clicks and the time bar.
+      const chr = await newScene('character', { title: `Playtest Mara ${stamp}`, open: false });
+      extra.push(chr.id);
+      made = await newScene('stage', { title: `Playtest stage ${stamp}` });
+      if (!await until(() => activeScene()?.id === made?.id && currentShot()?.id === made.id, 20000)) { t.note('the stage did not open'); finish(false); return; }
+      t.event('stage-opened');
+      // The 3D view: the canvas is on the page with a size, and the "couldn't start" note is not.
+      const canvas = await until(() => { const c = document.querySelector('#dirStage canvas.dir-canvas'); return c && c.clientWidth > 50 && c.clientHeight > 50; }, 20000, 150);
+      const failedNote = /couldn.t start/i.test(document.querySelector('#dirStage')?.textContent ?? '');
+      t.metric('canvasDrawn', canvas && !failedNote ? 1 : 0);
+      t.metric('canvasWidth', document.querySelector('#dirStage canvas.dir-canvas')?.clientWidth ?? 0);
+      t.event(canvas && !failedNote ? 'stage-drawn' : 'stage-not-drawn');
+      if (!canvas || failedNote) { t.problem('bug', failedNote ? 'the 3D stage says it could not start' : 'the 3D stage has no canvas'); finish(false); return; }
+      await until(() => document.querySelector('#dirTime') && document.querySelector('#kindPanel .dir-sec'), 8000, 100);
+      // Cast a character: Add a character, then them in the menu.
+      withText(document.querySelector('#kindPanel'), 'button', /Add a character/)?.click();
+      const row = await until(() => withText(document.querySelector('.menu'), '.menu-item', new RegExp(chr.title.replace(/[^\w ]/g, '.'))), 5000, 100) ? withText(document.querySelector('.menu'), '.menu-item', new RegExp(chr.title.replace(/[^\w ]/g, '.'))) : null;
+      if (!row) { t.problem('bug', 'Add a character did not list the new character'); finish(false); return; }
+      row.click();
+      let saw = false;
+      const cast = await until(() => currentShot()?.doc.cast.some((c) => c.character === chr.id), 5000, 100);
+      t.metric('cast', currentShot()?.doc.cast.length ?? 0);
+      t.event(cast ? 'character-cast' : 'character-not-cast');
+      // Add a prop: after the cast member has been saved and the shot read back (a read-back lands over an edit made before it).
+      await until(() => { api(`/v1/scenes/${made.id}`).then((x) => { if (x.doc?.cast?.length === 1) saw = true; }).catch(() => {}); return saw; }, 8000, 400);
+      await sleep(900);
+      withText(document.querySelector('#kindPanel'), 'button', /Add a prop/)?.click();
+      const prop = await until(() => currentShot()?.doc.props.length === 1, 5000, 100);
+      t.metric('props', currentShot()?.doc.props.length ?? 0);
+      t.event(prop ? 'prop-added' : 'prop-not-added');
+      // Camera keys at two moments, with the time bar (the range input a person drags) and the key button.
+      const bar = document.querySelector('#dirTime');
+      const scrub = async (frac) => { bar.value = String(frac); bar.dispatchEvent(new Event('input', { bubbles: true })); await sleep(250); return document.querySelector('#dirTc')?.textContent ?? ''; };
+      const stamps = new Set();
+      stamps.add(await scrub(0.25));
+      withText(document.querySelector('#kindPanel'), 'button', /Key the camera at/)?.click();
+      await until(() => (currentShot()?.doc.camera.keys?.length ?? 0) === 1, 4000, 100);
+      stamps.add(await scrub(0.75));
+      withText(document.querySelector('#kindPanel'), 'button', /Key the camera at/)?.click();
+      const keyed = await until(() => (currentShot()?.doc.camera.keys?.length ?? 0) === 2, 4000, 100);
+      const marks = await until(() => document.querySelectorAll('#dirMarks .dir-key').length === 2, 3000, 100);
+      t.metric('cameraKeys', currentShot()?.doc.camera.keys?.length ?? 0);
+      t.metric('keyMarks', document.querySelectorAll('#dirMarks .dir-key').length);
+      t.event(keyed ? 'camera-keyed-twice' : 'camera-not-keyed');
+      if (keyed && !marks) t.problem('bug', 'the time bar does not show the two camera keys');
+      // Scrub across the shot and play it a moment: the clock must move and the stage keep drawing.
+      for (const f of [0, 0.5, 1, 0.1]) stamps.add(await scrub(f));
+      t.metric('distinctTimecodes', stamps.size);
+      t.event('scrubbed');
+      const t0 = document.querySelector('#dirTc')?.textContent;
+      click('#dirPlay');
+      await sleep(1200);
+      const t1 = document.querySelector('#dirTc')?.textContent;
+      click('#dirPlay');
+      t.metric('playMoved', t0 !== t1 ? 1 : 0);
+      t.event(t0 !== t1 ? 'played' : 'play-did-not-move');
+      const still = document.querySelector('#dirStage canvas.dir-canvas')?.clientWidth > 50 && !document.querySelector('#dirStage .empty-note');
+      t.metric('stillDrawn', still ? 1 : 0);
+      // Saved with its cast, prop and keys (Ctrl+S saves now).
+      press('s', { ctrlKey: true });
+      let saved = null;
+      await until(() => { api(`/v1/scenes/${made.id}`).then((s) => { saved = s; }).catch(() => {}); return saved?.doc?.cast?.length === 1 && saved.doc.props?.length === 1 && saved.doc.camera?.keys?.length === 2; }, 8000, 500);
+      const savedOk = saved?.doc?.cast?.length === 1 && saved.doc.props?.length === 1 && saved.doc.camera?.keys?.length === 2;
+      t.metric('saved', savedOk ? 1 : 0);
+      t.event(savedOk ? 'stage-saved' : 'stage-not-saved');
+      if (!savedOk) t.problem('bug', 'the stage did not save its cast, prop and camera keys');
+      finish(Boolean(cast && prop && keyed && stamps.size >= 3 && t0 !== t1 && still && savedOk));
+      return;
+    }
+    if (id === 'character') {
+      t.scene('Character sheet');
+      const jobs = watchJobs();
+      const stamp = new Date().toISOString().slice(0, 16);
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a character scene, with the library's newest picture as their front when it has one.
+      const pics = ((await api(`/v1/assets?${new URLSearchParams({ limit: '5', project: state.user.project, kind: 'image' })}`).catch(() => null))?.items ?? []);
+      t.metric('libraryPictures', pics.length);
+      const doc = { title: `Playtest Iris ${stamp}`, description: 'A tall ranger in a green coat, grey eyes, a scar over the left brow.', ...(pics.length ? { pictures: [{ role: 'front', asset: pics[0].id }] } : {}) };
+      made = await newScene('character', { title: doc.title, doc });
+      if (!await until(() => activeScene()?.id === made?.id && document.querySelector('#chrWrap .chr-sheet'), 15000, 150)) { jobs.stop(); t.note('the character sheet did not open'); t.finish('stuck'); return; }
+      t.event('sheet-open');
+      const sheet = document.querySelector('#chrWrap');
+      // Each section the sheet promises. Every one is looked at, none is pressed.
+      const name = sheet.querySelector('.chr-name');
+      const look = sheet.querySelector('.chr-look');
+      const voiceReady = await until(() => (sheet.querySelectorAll('.chr-voice select option').length ?? 0) > 1, 8000, 200);
+      const voice = sheet.querySelector('.chr-voice select');
+      const rolePick = sheet.querySelector('.chr-pic select');
+      const model = sheet.querySelector('.chr-model');
+      const checks = {
+        name: Boolean(name) && name.value === doc.title,
+        description: /ranger/.test(sheet.querySelector('textarea')?.value ?? ''),
+        look: Boolean(look) && /Their look/.test(look.textContent),
+        voice: Boolean(voice) && voiceReady,
+        pictures: Boolean(sheet.querySelector('.chr-pics .chr-add')) && (!pics.length || (Boolean(rolePick) && rolePick.options.length === 6 && rolePick.value === 'front')),
+        model: Boolean(model) && /No 3D model yet|Making the 3D model/.test(model.textContent) || model?.tagName === 'MODEL-VIEWER',
+      };
+      for (const [k, v] of Object.entries(checks)) { t.metric(`section_${k}`, v ? 1 : 0); if (!v) t.problem('bug', `the character sheet's ${k} section is missing or wrong`); }
+      t.metric('voices', Math.max(0, (voice?.options.length ?? 1) - 1));
+      t.metric('roleChoices', rolePick?.options.length ?? 0);
+      t.event(`sections: ${Object.entries(checks).map(([k, v]) => `${k} ${v ? 'ok' : 'MISSING'}`).join(', ')}`);
+      // The buttons that would cost something are there to see, and are left alone.
+      const makers = ['Make their pictures', 'Make their look', 'Make the 3D model'].filter((x) => withText(sheet, 'button', new RegExp(x)));
+      t.metric('makeButtonsSeen', makers.length);
+      t.note(`Seen, not pressed: ${makers.join(', ') || 'none'}`);
+      if (!withText(sheet, 'button', /Stage them/)) t.problem('bug', 'the sheet has no Stage them button');
+      await sleep(800);
+      const started = jobs.sent.length;
+      jobs.stop();
+      t.metric('jobsStarted', started);
+      if (started) t.problem('blocker', `opening a character sheet started ${started} job(s): ${jobs.sent.join(', ')}`);
+      t.finish(Object.values(checks).every(Boolean) && !started ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'world') {
+      t.scene('Start a world');
+      const jobs = watchJobs();
+      await until(() => activeScene(), 10000);
+      const worlds0 = sceneList().filter((s) => s.kind === 'world').length;
+      const credits0 = Number(state.user?.credits ?? 0);
+      // Setup shortcut (named): the world AI's canned answer (the test account's mock) stands in for Claude.
+      const proposal = { say: 'A frozen moon of smugglers.', world: { title: 'Red Sky Run', logline: 'Smugglers work a frozen moon whose sky is always red.', tone: 'Dry, tense, a little tender.', look: { style: 'Cold blues against a red sky, grainy film', palette: ['#8c1d18', '#1f3a5f', '#d9e2ec'] }, rules: ['The sky is always red.'] },
+        characters: [{ title: 'Captain Oda', description: 'A weathered smuggler in a patched orange parka.' }, { title: 'Pip', description: 'A cargo-bot with one working lamp.' }],
+        places: [{ title: 'The Ice Dock', description: 'A frozen harbor of rusted cranes under the red sky.' }], props: [], story: { title: 'The Last Crate', logline: 'One crate must cross the ice before the sky goes dark.' } };
+      const mocked = await mockAi([{ match: 'frozen moon', cost: 0.01, json: proposal }]);
+      // The way in: "+" in the bar, then the Start a world idea.
+      click('#newSceneBtn');
+      const starter = await until(() => withText(document.querySelector('.menu .menu-starters'), '.menu-item', /Start a world/), 6000, 100) ? withText(document.querySelector('.menu .menu-starters'), '.menu-item', /Start a world/) : null;
+      if (!starter) { jobs.stop(); t.problem('bug', 'the + menu has no Start a world idea'); t.finish('stuck'); return; }
+      starter.click();
+      const sheet = await until(() => document.querySelector('#worldStart textarea'), 6000, 100) ? document.querySelector('#worldStart') : null;
+      t.metric('sheetOpened', sheet ? 1 : 0);
+      t.event(sheet ? 'start-sheet-open' : 'no-start-sheet');
+      if (!sheet) { jobs.stop(); t.finish('stuck'); return; }
+      const build = withText(sheet, 'button', /Build my world/);
+      t.metric('buildButton', build ? 1 : 0);
+      if (!mocked) {
+        t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session: the first card is not played');
+        t.event('mock-off');
+        sheet.querySelector('.sheet-head .icon-btn')?.click();
+        const started0 = jobs.sent.length; jobs.stop(); t.metric('jobsStarted', started0);
+        t.finish(build && !started0 ? 'done' : 'stuck');
+        return;
+      }
+      await typeInto(sheet.querySelector('textarea'), 'smugglers on a frozen moon where the sky is always red');
+      build?.click();
+      t.event('build-pressed');
+      const card = await until(() => sheet.querySelector('.ws-cards .ws-card'), 30000, 150);
+      t.metric('cardsShown', sheet.querySelectorAll('.ws-card').length);
+      t.event(card ? 'first-card-shown' : 'no-card');
+      if (!card) { jobs.stop(); t.problem('bug', 'Start a world did not reach its first card'); sheet.querySelector('.sheet-head .icon-btn')?.click(); t.finish('stuck'); return; }
+      const titleOk = sheet.querySelector('.ws-world-title')?.value === 'Red Sky Run';
+      const charCards = sheet.querySelectorAll('.ws-cards .ws-card .ws-card-name').length;
+      const story = sheet.querySelector('.ws-story');
+      t.metric('worldTitleOk', titleOk ? 1 : 0);
+      t.metric('characterCards', charCards);
+      t.metric('storyCard', story ? 1 : 0);
+      if (!titleOk) t.problem('bug', 'the proposal sheet does not show the world\'s name');
+      // Keep / Thrown away on a card, as a person taps it, and back.
+      const keepBtn = withText(card, 'button', /Keep/);
+      keepBtn?.click();
+      const thrown = await until(() => sheet.querySelector('.ws-card.off'), 2000, 100);
+      withText(sheet.querySelector('.ws-card.off'), 'button', /Thrown away/)?.click();
+      const back = await until(() => !sheet.querySelector('.ws-card.off'), 2000, 100);
+      t.metric('keepToggles', thrown && back ? 1 : 0);
+      t.event(thrown && back ? 'card-toggled' : 'card-toggle-failed');
+      // The price: the AI's own cost shows in the credits, and the pictures' price is known before anything is made.
+      await until(() => Number(state.user?.credits ?? 0) < credits0, 6000, 150);
+      t.metric('aiCreditsSpent', Math.round((credits0 - Number(state.user?.credits ?? 0)) * 100) / 100);
+      const quote = await api('/v1/billing/quote', { body: { tool: 'image.generate', params: { prompt: 'a frozen harbor under a red sky' }, project: state.user.project } }).catch(() => null);
+      const price = Number(quote?.credits ?? NaN);
+      t.metric('picturePrice', Number.isFinite(price) ? price : -1);
+      t.event(Number.isFinite(price) ? `price-known: ${price} credits a picture` : 'no-price');
+      if (!Number.isFinite(price)) t.problem('bug', 'the price of a picture could not be read');
+      const make = withText(sheet, 'button', /Make this world/);
+      t.metric('makeThisWorldOffered', make ? 1 : 0);
+      if (!make) t.problem('bug', 'the proposal has no Make this world button');
+      await sleep(1500);
+      // Make this world is never pressed: it would save scenes and offer pictures for credits. Close the sheet instead.
+      sheet.querySelector('.sheet-head .icon-btn')?.click();
+      const started = jobs.sent.length;
+      jobs.stop();
+      const worlds1 = sceneList().filter((s) => s.kind === 'world').length;
+      t.metric('jobsStarted', started);
+      t.metric('worldsMade', worlds1 - worlds0);
+      t.event(!started && worlds1 === worlds0 ? 'nothing-started' : 'something-started');
+      if (started) t.problem('blocker', `Start a world started ${started} job(s): ${jobs.sent.join(', ')}`);
+      if (worlds1 !== worlds0) t.problem('bug', 'a world was saved before Make this world was pressed');
+      t.finish(card && titleOk && make && Number.isFinite(price) && !started && worlds1 === worlds0 ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'scenes') {
+      t.scene('Scenes');
+      const jobs = watchJobs();
+      const stamp = new Date().toISOString().slice(11, 16).replace(':', '');
+      const yes = confirmYes();
+      const done = (ok) => { yes(); const started = jobs.sent.length; jobs.stop(); t.metric('jobsStarted', started); if (started) t.problem('blocker', `the scenes screens started ${started} job(s): ${jobs.sent.join(', ')}`); t.finish(ok && !started ? 'done' : 'stuck'); };
+      await until(() => activeScene(), 10000);
+      const KINDS = [['video', 'Video'], ['stage', 'Stage'], ['image', 'Image'], ['audio', 'Audio'], ['character', 'Character'], ['world', 'World'], ['place', 'Place'], ['prop', 'Prop'], ['story', 'Story']];
+      const mine = [];           // { id, kind, title }
+      const serverTitle = async (sid) => (await api(`/v1/scenes/${sid}`).catch(() => null))?.title ?? null;
+      // 1 One new scene of each kind from the "+" menu, each renamed by double-clicking its tab.
+      let renamed = 0;
+      for (const [kind, label] of KINDS) {
+        const prev = activeScene()?.id;
+        click('#newSceneBtn');
+        const rowEl = await until(() => blankRow(label), 6000, 100) ? blankRow(label) : null;
+        if (!rowEl) { t.problem('bug', `the + menu has no blank ${label}`); continue; }
+        rowEl.click();
+        if (!await until(() => activeScene()?.kind === kind && activeScene()?.id !== prev, 15000, 100)) { t.problem('bug', `a new ${label} scene did not open`); continue; }
+        const sid = activeScene().id;
+        extra.push(sid);
+        const title = `PT ${label} ${stamp}`;
+        mine.push({ id: sid, kind, title });
+        t.event(`made-${kind}`);
+        // Rename: double-click the tab, type, Enter.
+        const tab = document.querySelector(`#sceneTabs .scene-tab[data-id="${sid}"]`);
+        tab?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        const input = await until(() => document.querySelector('.scene-tab-input'), 2000, 50) ? document.querySelector('.scene-tab-input') : null;
+        if (!input) { t.problem('bug', `the ${label} tab did not open its rename box`); continue; }
+        await typeInto(input, title);
+        pressOn(input, 'Enter');
+        let ok = false;
+        for (let i = 0; i < 16 && !ok; i++) { await sleep(500); ok = (await serverTitle(sid)) === title; }
+        if (ok) renamed++; else t.problem('bug', `renaming the ${label} scene did not reach Gen`);
+        await sleep(100);
+      }
+      t.metric('kindsMade', mine.length);
+      t.metric('renamed', renamed);
+      t.event(`kinds-made: ${mine.map((m) => m.kind).join(',')}`);
+      t.event(renamed === mine.length ? 'all-renamed' : `renamed ${renamed} of ${mine.length}`);
+      if (mine.length !== KINDS.length) { done(false); return; }
+      const tabIds = () => [...document.querySelectorAll('#sceneTabs .scene-tab')].map((e) => e.dataset.id);
+      const tabTitle = (sid) => document.querySelector(`#sceneTabs .scene-tab[data-id="${sid}"] .scene-tab-t`)?.textContent.replace(/\s*\*$/, '').trim();
+      const tabOk = mine.every((m) => tabTitle(m.id) === m.title);
+      t.metric('tabsShowNewNames', tabOk ? 1 : 0);
+      if (!tabOk) t.problem('bug', 'a renamed scene\'s tab does not show its new name');
+      // 2 Reorder: drag the last tab onto the first (real drag events with one DataTransfer).
+      const before = tabIds();
+      const from = before[before.length - 1], to = before[0];
+      const dt = new DataTransfer();
+      const fire = (type, el) => el.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+      const tabEl = (sid) => document.querySelector(`#sceneTabs .scene-tab[data-id="${sid}"]`);
+      fire('dragstart', tabEl(from)); fire('dragover', tabEl(to)); fire('drop', tabEl(to)); fire('dragend', tabEl(from));
+      await sleep(300);
+      const after = tabIds();
+      const moved = after.indexOf(from) < after.indexOf(to) && after.length === before.length;
+      t.metric('reordered', moved ? 1 : 0);
+      t.event(moved ? 'tab-reordered' : 'tab-not-reordered');
+      if (!moved) t.problem('bug', 'dragging a tab before another did not reorder the tabs');
+      // 3 Duplicate and 4 Delete, from the Scenes pane's row menu.
+      const target = mine[0];
+      click('#paneTabs button[data-pane="scenes"]');
+      const search = document.querySelector('#scenesSearch');
+      const rowFor = (title) => [...document.querySelectorAll('#scenesList .scene-row')].find((r) => r.querySelector('b')?.textContent === title);
+      const findRow = async (title) => { await typeInto(search, title); search.dispatchEvent(new Event('input', { bubbles: true })); return await until(() => rowFor(title), 6000, 100) ? rowFor(title) : null; };
+      const listCount = async () => ((await api(`/v1/scenes?project=${encodeURIComponent(state.user.project)}`).catch(() => null))?.items ?? []);
+      const before1 = await listCount();
+      const row = await findRow(target.title);
+      if (!row) { t.problem('bug', 'the Scenes list does not show a scene that was just made'); done(false); return; }
+      row.querySelector('.icon-btn[title="More"]')?.click();
+      const dup = await until(() => withText(document.querySelector('.menu'), '.menu-item', /^Duplicate$/), 4000, 100) ? withText(document.querySelector('.menu'), '.menu-item', /^Duplicate$/) : null;
+      if (!dup) { t.problem('bug', 'the scene menu has no Duplicate'); done(false); return; }
+      dup.click();
+      let copy = null;
+      await until(() => { listCount().then((l) => { copy = l.find((x) => !before1.some((b) => b.id === x.id)) ?? copy; }); return copy; }, 8000, 400);
+      t.metric('duplicated', copy ? 1 : 0);
+      t.event(copy ? `duplicated: "${copy.title}"` : 'not-duplicated');
+      if (!copy) { done(false); return; }
+      extra.push(copy.id);
+      if (copy.title === target.title) t.problem('bug', 'the duplicate has the same name as the original');
+      await loadList();
+      const copyRow = await findRow(copy.title);
+      t.metric('duplicateListed', copyRow ? 1 : 0);
+      if (!copyRow) t.problem('bug', 'the duplicate is not in the Scenes list');
+      // Delete the duplicate (confirm answered yes, as a person presses OK): the row, the tab and the scene go.
+      copyRow?.querySelector('.icon-btn[title="More"]')?.click();
+      const del = await until(() => withText(document.querySelector('.menu'), '.menu-item', /^Delete$/), 4000, 100) ? withText(document.querySelector('.menu'), '.menu-item', /^Delete$/) : null;
+      if (!del) { t.problem('bug', 'the scene menu has no Delete'); done(false); return; }
+      del.click();
+      const rowGone = await until(() => !rowFor(copy.title), 6000, 100);
+      let gone = false;
+      for (let i = 0; i < 10 && !gone; i++) { gone = !(await api(`/v1/scenes/${copy.id}`).then(() => true).catch(() => false)); if (!gone) await sleep(400); }
+      t.metric('deleted', rowGone && gone ? 1 : 0);
+      t.event(rowGone && gone ? 'duplicate-deleted' : 'delete-failed');
+      if (!rowGone) t.problem('bug', 'the deleted scene is still in the Scenes list');
+      if (!gone) t.problem('bug', 'the deleted scene still exists in Gen');
+      // The original is untouched by all of that.
+      const intact = (await serverTitle(target.id)) === target.title;
+      t.metric('originalIntact', intact ? 1 : 0);
+      if (!intact) t.problem('bug', 'duplicating and deleting the copy changed the original');
+      await typeInto(search, ''); search.dispatchEvent(new Event('input', { bubbles: true }));
+      done(moved && Boolean(copy) && Boolean(copyRow) && rowGone && gone && intact && renamed > 0);
+      return;
+    }
+    if (id === 'media-upload') {
+      t.scene('Media upload');
+      const jobs = watchJobs();
+      click('#paneTabs button[data-pane="media"]');
+      await until(() => document.querySelectorAll('#mediaGrid .tile').length > 0 || document.querySelector('#mediaGrid .empty-note'), 15000);
+      // Setup shortcut (named): a 64x64 picture made in the page, different every run (Gen stores files by content).
+      const stamp = Date.now();
+      const name = `playtest-upload-${stamp}.png`;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = 64;
+      const g = cv.getContext('2d');
+      g.fillStyle = `hsl(${stamp % 360} 60% 45%)`; g.fillRect(0, 0, 64, 64);
+      g.fillStyle = '#fff'; g.fillRect(8 + (stamp % 24), 8, 24, 24);
+      const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+      const file = new File([blob], name, { type: 'image/png' });
+      t.metric('fileBytes', file.size);
+      // The action: the file input gets the file, as the browser's file picker leaves it, and says it changed.
+      const input = document.querySelector('#uploadInput');
+      const dt = new DataTransfer(); dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      t.event('file-chosen');
+      const tileFor = () => [...document.querySelectorAll('#mediaGrid .tile:not(.busy)')].find((x) => x.querySelector('.tile-cap')?.textContent === name);
+      const working = await until(() => [...document.querySelectorAll('#mediaGrid .tile.busy')].length > 0 || tileFor(), 4000, 50);
+      t.metric('showedProgress', working ? 1 : 0);
+      const tile = await until(() => tileFor(), 30000, 200) ? tileFor() : null;
+      t.metric('tileShown', tile ? 1 : 0);
+      t.event(tile ? 'upload-in-media' : 'upload-missing');
+      if (!tile) { jobs.stop(); t.problem('bug', 'the uploaded picture never showed in Media'); t.finish('stuck'); return; }
+      t.metric('tileIsImage', tile.classList.contains('kind-image') ? 1 : 0);
+      t.metric('tileHasPicture', tile.querySelector('img') ? 1 : 0);
+      if (!tile.querySelector('img')) t.problem('bug', 'the uploaded picture\'s tile shows no thumbnail');
+      // Its details: the drawer says what it is and how big.
+      tile.querySelector('.tile-info')?.click();
+      const drawer = await until(() => document.querySelector('#mediaDrawer .media-drawer'), 4000, 100) ? document.querySelector('#mediaDrawer') : null;
+      const text = drawer?.textContent ?? '';
+      t.metric('drawerOpened', drawer ? 1 : 0);
+      t.metric('drawerSize', /64\s*×\s*64/.test(text) ? 1 : 0);
+      t.event(drawer ? `drawer: ${/Image/.test(text) ? 'Image' : '?'}, ${/64\s*×\s*64/.test(text) ? '64 × 64' : 'size missing'}` : 'no-drawer');
+      if (drawer && !/64\s*×\s*64/.test(text)) t.problem('bug', 'the details do not say the picture is 64 × 64');
+      if (drawer) { pressOn(drawer, 'Escape'); await until(() => !document.querySelector('#mediaDrawer'), 3000, 100); }
+      // Media has no Delete (no button, no menu, no route): said here, so a missing delete is a known gap, not a hidden one.
+      t.note('Media has no Delete for files: the 64×64 test picture stays in the test account\'s library');
+      // Only a CPU conversion may have run (a picture that needs converting): never a GPU tool.
+      const gpu = jobs.sent.filter((x) => !/^(media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('jobsStarted', jobs.sent.length);
+      if (gpu.length) t.problem('blocker', `uploading started a job that isn't the conversion: ${gpu.join(', ')}`);
+      t.finish(tile && drawer && !gpu.length ? 'done' : 'stuck');
+      return;
+    }
     if (id === 'createprice') {
       t.scene('Create prices');
       click('#paneTabs button[data-pane="generate"]');
@@ -119,6 +773,185 @@ installPlaytest({
       }
       t.metric('forms', n); t.metric('formsPriced', priced); t.metric('priceChangedWithOption', changedCost);
       t.finish(priced > 0 ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'create') {
+      t.scene('Create forms');
+      const jobs = watchJobs();
+      click('#paneTabs button[data-pane="generate"]');
+      if (!await until(() => document.querySelectorAll('#createList .cat .cat-row').length > 0, 15000)) { jobs.stop(); t.note('the Create list did not load'); t.finish('stuck'); return; }
+      // One group at a time, by its heading: open its first tool that's on this Gen, look at the form, go back. Make is never pressed.
+      const groups = ['Images', 'Video', '3D', 'Animation', 'Voice', 'Chains'];
+      let opened = 0, ok = 0, priceFree = 0;
+      let sample = null;
+      for (const name of groups) {
+        const cat = [...document.querySelectorAll('#createList .cat')].find((c) => c.querySelector('h3')?.textContent.startsWith(name));
+        const row = cat?.querySelector('.cat-row');
+        if (!row) { t.problem('bug', `Create has no "${name}" group, or nothing in it on this Gen`); continue; }
+        row.click();
+        const shown = await until(() => document.querySelector('#createBody .gen-foot'), 5000, 100);
+        if (!shown) { t.problem('bug', `${name}: the form did not open`); click('#createBack'); continue; }
+        opened++;
+        // The price loads on open ("Pricing…", then credits): give it its moment.
+        await until(() => /credit|free/i.test(document.querySelector('#createBody .gen-foot .quote')?.textContent ?? ''), 6000, 150);
+        const form = document.querySelector('#createBody form') ?? document.querySelector('#createBody');
+        // A deliberately broken form (option broken): its price and Make button are taken away, so the scenario must say so.
+        if (options?.broken && name.startsWith('3D')) { form.querySelector('.gen-foot .quote')?.remove(); form.querySelector('.gen-foot .primary')?.remove(); }
+        const faults = formFaults(form);
+        const title = form.querySelector('.gen-head b')?.textContent ?? name;
+        const price = form.querySelector('.gen-foot .quote')?.textContent.trim() ?? '';
+        t.metric(`form_${name.toLowerCase()}_fields`, form.querySelectorAll('textarea, input:not([type=hidden]), select').length);
+        t.event(`form-${name.toLowerCase()}: ${title} · ${price || 'no price'}`);
+        if (faults.length) for (const f of faults) t.problem('bug', `${name} · ${title}: ${f}`); else ok++;
+        if (/^free$/i.test(price)) priceFree++;
+        if (!sample) sample = form;
+        click('#createBack');
+        await until(() => !document.querySelector('#createHome')?.hidden, 3000, 100);
+      }
+      t.metric('groupsOpened', opened); t.metric('formsComplete', ok); t.metric('freeForms', priceFree);
+      // The check must catch a form that lost its price and Make button, so a quiet pass means something.
+      const bad = document.createElement('form');
+      bad.innerHTML = '<div class="gen-foot"><span class="quote">…</span></div>';
+      const caught = formFaults(bad).length >= 2;
+      t.metric('brokenFormCaught', caught ? 1 : 0);
+      t.event(caught ? 'broken-form-reported' : 'broken-form-missed');
+      const started = jobs.sent.length;
+      jobs.stop();
+      t.metric('jobsStarted', started);
+      if (started) t.problem('blocker', `Create started ${started} job(s): ${jobs.sent.join(', ')}`);
+      t.finish(opened === groups.length && caught && !started ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'account') {
+      t.scene('Account');
+      const jobs = watchJobs();
+      const pill = document.querySelector('#creditsPill');
+      const shown = pill && !pill.hidden;
+      t.metric('creditsShown', shown ? 1 : 0);
+      t.metric('credits', Number(document.querySelector('#creditsCount')?.textContent.replace(/[^\d]/g, '')) || 0);
+      if (!shown) t.problem('bug', 'the credits pill is not on the bar');
+      // The credits pill opens the sheet.
+      pill?.click();
+      const open = await until(() => document.querySelector('#accountDialog[open]'), 5000, 100);
+      if (!open) t.problem('bug', 'the credits pill did not open the account sheet');
+      let packs = 0, plans = 0;
+      if (open) {
+        await until(() => document.querySelector('#packs .acct-pack, #packs .acct-note'), 6000, 150);
+        await until(() => document.querySelector('#plans .acct-pack, #plans .acct-note, #plans .plan-current'), 6000, 150);
+        packs = document.querySelectorAll('#packs .acct-pack').length;
+        plans = document.querySelectorAll('#plans .acct-pack, #plans .plan-current').length;
+        const sheetText = document.querySelector('#accountDialog').textContent;
+        t.metric('packs', packs); t.metric('plans', plans);
+        t.metric('sheetShowsBalance', document.querySelector('#accountCredits')?.textContent.trim() ? 1 : 0);
+        t.metric('sheetShowsWho', document.querySelector('#accountName')?.textContent.trim() ? 1 : 0);
+        t.event(`account-sheet: ${packs} packs, ${plans} plans`);
+        if (options?.broken) { document.querySelector('#packs')?.replaceChildren(); document.querySelector('#plans')?.replaceChildren(); packs = document.querySelectorAll('#packs .acct-pack').length; plans = 0; }
+        // Packs and plans come from Stripe's set-up: where it isn't open here the sheet says so in words (a note), never nothing.
+        if (!packs && !document.querySelector('#packs .acct-note')) t.problem('bug', 'the account sheet shows no credit packs and no note about them');
+        if (!plans && !document.querySelector('#plans .acct-note')) t.problem('bug', 'the account sheet shows no monthly plans and no note about them');
+        if (!/credit/i.test(sheetText)) t.problem('bug', 'the account sheet does not mention credits');
+        pressOn(document.querySelector('#accountDialog'), 'Escape');
+        document.querySelector('#accountClose')?.click();
+        t.metric('sheetCloses', await until(() => !document.querySelector('#accountDialog[open]'), 3000, 100) ? 1 : 0);
+      }
+      // The Help menu: its rows, the shortcuts overlay, and Terms and Privacy (the links, and that the pages say so).
+      click('#helpBtn');
+      const menu = await until(() => document.querySelector('.menu .menu-item'), 3000, 100);
+      const rows = [...document.querySelectorAll('.menu .menu-item')].map((b) => b.textContent.trim());
+      t.metric('helpRows', rows.length);
+      t.event(`help-menu: ${rows.join(' | ')}`);
+      if (!menu) t.problem('bug', 'the Help menu did not open');
+      const links = [...document.querySelectorAll('.menu-links a')].map((a) => ({ text: a.textContent.trim(), href: a.getAttribute('href') }));
+      const terms = links.find((l) => /terms/i.test(l.text)), privacy = links.find((l) => /privacy/i.test(l.text));
+      t.metric('termsLink', terms ? 1 : 0); t.metric('privacyLink', privacy ? 1 : 0);
+      if (!terms) t.problem('bug', 'the Help menu has no Terms link');
+      if (!privacy) t.problem('bug', 'the Help menu has no Privacy link');
+      for (const [name, l] of [['terms', terms], ['privacy', privacy]]) {
+        if (!l) continue;
+        const page = await fetch(l.href.split('#')[0]).then((r) => r.ok ? r.text() : '').catch(() => '');
+        const there = page.includes(`id="${name}"`);
+        t.metric(`${name}Page`, there ? 1 : 0);
+        t.event(there ? `${name}-page-has-its-section` : `${name}-page-missing`);
+        if (!there) t.problem('bug', `${l.href} does not have a ${name} section`);
+      }
+      const sc = [...document.querySelectorAll('.menu .menu-item')].find((b) => /shortcuts/i.test(b.textContent));
+      if (sc) {
+        sc.click();
+        const pop = await until(() => document.querySelector('#shortcutsPop kbd'), 3000, 100);
+        t.metric('shortcutKeys', document.querySelectorAll('#shortcutsPop kbd').length);
+        t.event(pop ? 'shortcuts-overlay-open' : 'no-shortcuts-overlay');
+        if (!pop) t.problem('bug', 'the shortcuts overlay did not open');
+        await sleep(600);
+        pressOn(document.body, 'Escape');
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        t.metric('shortcutsClose', await until(() => !document.querySelector('#shortcutsPop'), 3000, 100) ? 1 : 0);
+      } else t.problem('bug', 'the Help menu has no Keyboard shortcuts row');
+      click('#helpBtn'); // closes the menu if still open
+      const started = jobs.sent.length;
+      jobs.stop();
+      t.metric('jobsStarted', started);
+      if (started) t.problem('blocker', `the account screens started ${started} job(s)`);
+      t.finish(open && menu && !started ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'export') {
+      t.scene('Export');
+      const jobs = watchJobs();
+      const r = await api(`/v1/assets?${new URLSearchParams({ limit: '40', project: state.user.project, kind: 'video' })}`).catch(() => null);
+      const vids = (r?.items ?? []).filter((a) => a.kind === 'video' && a.meta?.duration > 1).slice(0, 2);
+      t.metric('videos', vids.length);
+      if (!vids.length) { jobs.stop(); t.note('The test account has no clips in its library: nothing to cut'); t.finish('done'); return; }
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video scene with the clips back to back on its main track, 2 s each: a plain cut.
+      made = await newScene('video', { title: `Playtest export ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { jobs.stop(); t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const track = mainTrack()?.id;
+      for (const a of vids) {
+        const c = addClip({ track, asset: a.id, kind: 'video', duration: a.meta.duration, label: a.title || 'clip' });
+        setClip(c.id, { out: Math.min(a.meta.duration, 2) }, { history: false });
+      }
+      const len = docLength();
+      t.metric('cutSeconds', Math.round(len * 10) / 10);
+      t.event('cut-built');
+      // The action: the bar's Export button, then Export video, as a person presses them.
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      if (!action) { jobs.stop(); t.problem('bug', 'the bar has no Export button for a video scene'); t.finish('stuck'); return; }
+      click('#sceneAction');
+      if (!await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) { jobs.stop(); t.problem('bug', 'the Export sheet did not open'); t.finish('stuck'); return; }
+      t.metric('exportNote', document.querySelector('#exportNote')?.textContent.trim() ? 1 : 0);
+      t.event(`export-sheet: ${document.querySelector('#exportNote')?.textContent.trim()}`);
+      if (options?.broken) document.querySelector('#exportGo').disabled = true;  // a sheet whose button never wakes
+      const go = document.querySelector('#exportGo');
+      if (go.disabled) { jobs.stop(); t.problem('bug', 'Export video is disabled for a plain cut of existing clips'); click('#exportClose'); t.finish('stuck'); return; }
+      const t0 = performance.now();
+      go.click();
+      t.event('export-pressed');
+      const video = await until(() => document.querySelector('#exportResult video'), 120000, 300) ? document.querySelector('#exportResult video') : null;
+      const failed = document.querySelector('#exportError:not([hidden])')?.textContent;
+      t.metric('exportSeconds', Math.round((performance.now() - t0) / 100) / 10);
+      if (!video) { jobs.stop(); t.problem('bug', `the export gave no file${failed ? `: ${failed}` : ''}`); click('#exportClose'); t.finish('stuck'); return; }
+      t.event('export-finished');
+      // The file plays: its metadata loads, it has a picture and a length, and the clock moves when it's played.
+      const meta = await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+      t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+      t.metric('fileWidth', video.videoWidth || 0); t.metric('fileHeight', video.videoHeight || 0);
+      video.muted = true;
+      let played = false;
+      try { await video.play(); played = await until(() => video.currentTime > 0.3, 8000, 100); } catch (e) { t.note(`play() refused: ${e.message}`); }
+      t.metric('filePlays', played ? 1 : 0);
+      t.event(played ? 'file-plays' : 'file-does-not-play');
+      if (!meta || !video.videoWidth) t.problem('bug', 'the exported file has no picture');
+      else if (!played) t.problem('bug', 'the exported file does not play');
+      if (meta && Math.abs(video.duration - len) > 1.5) t.problem('bug', `the file is ${video.duration.toFixed(1)} s but the cut is ${len.toFixed(1)} s`);
+      video.pause();
+      // Only the cut's own CPU render may have run (video.compose, and video.still for pictures): nothing on a GPU.
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('jobsStarted', jobs.sent.length); t.metric('gpuJobsStarted', gpu.length);
+      t.note(`Jobs: ${jobs.sent.join(', ') || 'none'}`);
+      if (gpu.length) t.problem('blocker', `Export started a job that isn't the CPU render: ${gpu.join(', ')}`);
+      click('#exportClose');
+      t.finish(meta && played && !gpu.length ? 'done' : 'stuck');
       return;
     }
     if (id === 'media') {
@@ -404,6 +1237,39 @@ installPlaytest({
         click('#sceneAction');
         if (await until(() => document.querySelector('#exportDialog[open]'), 4000)) { await visit('export', () => document.querySelector('#exportDialog'), () => [document.querySelector('#exportGo')]); document.querySelector('#exportClose')?.click(); }
       }
+      // The five bottom tabs, the timeline on screen at the same time, and no page zoom.
+      {
+        const bar = document.querySelector('#mobileTabs');
+        const names = [...(bar?.querySelectorAll('button') ?? [])].map((b) => b.textContent.trim());
+        const need = [['media', /media/i], ['generate', /create/i], ['scenes', /scenes/i], ['kind', /inspect/i], ['ai', /^ai$/i]];
+        const missing = need.filter(([m, re]) => { const b = bar?.querySelector(`button[data-m="${m}"]`); return !b || !visible(b) || !re.test(b.textContent.trim()) || !inView(b); });
+        t.metric('bottomTabs', names.length); t.metric('bottomTabsMissing', missing.length);
+        t.event(`bottom-tabs: ${names.join(' | ')}`);
+        for (const [m] of missing) { bad++; t.problem('bug', `phone: the ${m} tab is missing or off screen`); }
+        const atBottom = bar && Math.abs(bar.getBoundingClientRect().bottom - window.innerHeight) < 40;
+        t.metric('tabsAtBottom', atBottom ? 1 : 0);
+        if (!atBottom) { bad++; t.problem('bug', 'phone: the tabs are not at the bottom of the screen'); }
+        for (const [m] of need) {
+          await tab(m);
+          const tl = document.querySelector('#timelinePane');
+          const r = tl?.getBoundingClientRect();
+          const ok = tl && visible(tl) && r.height >= 30 && r.top < window.innerHeight - 20;
+          t.metric(`timelineOn_${m}`, ok ? 1 : 0);
+          if (!ok) { bad++; t.problem('bug', `phone: the timeline is not on screen on the ${m} tab`); }
+        }
+        await tab('edit');
+        const meta = document.querySelector('meta[name=viewport]')?.content ?? '';
+        const noZoomTag = /user-scalable\s*=\s*no/.test(meta) && /maximum-scale\s*=\s*1(\.0)?\b/.test(meta);
+        const wheel = new WheelEvent('wheel', { ctrlKey: true, deltaY: -120, bubbles: true, cancelable: true });
+        document.body.dispatchEvent(wheel);
+        const gesture = new Event('gesturestart', { bubbles: true, cancelable: true });
+        document.body.dispatchEvent(gesture);
+        const noZoom = noZoomTag && wheel.defaultPrevented && gesture.defaultPrevented && window.visualViewport?.scale <= 1.001;
+        t.metric('noZoom', noZoom ? 1 : 0); t.metric('viewportScale', window.visualViewport?.scale ?? 1);
+        t.event(noZoom ? 'zoom-blocked' : 'zoom-possible');
+        if (!noZoom) { bad++; t.problem('bug', `phone: page zoom is possible (viewport "${meta}", pinch ${gesture.defaultPrevented ? 'stopped' : 'not stopped'}, ctrl+wheel ${wheel.defaultPrevented ? 'stopped' : 'not stopped'})`); }
+        t.metric('pageScrollsSideways', document.documentElement.scrollWidth > W() + 1 ? 1 : 0);
+      }
       // The detector must catch a deliberately overflowing element, so a quiet pass means something.
       const canary = document.createElement('div');
       canary.id = 'phone-canary'; canary.textContent = 'overflow canary';
@@ -641,6 +1507,44 @@ installPlaytest({
       t.finish('done');
       return;
     }
+    if (id === 'uploads') {
+      t.scene('Big uploads');
+      await until(() => state.user && activeScene(), 15000);
+      const mb = Math.max(1, Math.min(900, Number(options?.mb) || 64));
+      // Setup shortcut (named): the files are made in memory by repeating one random block, as .mp4 named files; they go up
+      // through the app's own upload path (the same one the Media button and a drop use), four started at the same moment.
+      const block = new Uint8Array(1024 * 1024);
+      crypto.getRandomValues(block.subarray(0, 65536));
+      const make = (i) => new File(Array.from({ length: mb }, () => block), `playtest-big-${i}-${Date.now()}.mp4`, { type: 'video/mp4' });
+      const health0 = await api('/v1/health').catch(() => ({}));
+      t.event('uploading-four');
+      const toasts = new Set();
+      const watch = new MutationObserver(() => { const el = document.querySelector('#toast'); if (el && !el.hidden) toasts.add(el.textContent); });
+      watch.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+      click('#paneTabs button[data-pane="media"]');
+      const files = [0, 1, 2, 3].map(make);
+      // Not awaited: they run together. Each call is one drop of one file.
+      const runs = files.map((f) => uploadFiles([f]));
+      const sawPercent = await until(() => /Uploading \d+%/.test(document.querySelector('#mediaGrid, #media')?.textContent ?? document.body.textContent), 30000, 100);
+      t.metric('progressShown', sawPercent ? 1 : 0);
+      t.event(sawPercent ? 'progress-shown' : 'no-progress');
+      const refused = await until(() => [...toasts].some((x) => /uploads at once/.test(x)), 60000, 200);
+      t.metric('plain429', refused ? 1 : 0);
+      t.event(refused ? 'fourth-refused-plainly' : 'no-429-message');
+      if (!refused) t.problem('bug', 'a fourth upload at once did not show the "uploads at once" message');
+      if (!sawPercent) t.problem('bug', 'no upload percentage was shown');
+      await Promise.race([Promise.allSettled(runs), sleep(150000)]);
+      watch.disconnect();
+      // The server must still be the same process, with a bounded memory.
+      const health1 = await api('/v1/health').catch(() => ({}));
+      const restarted = Boolean(health0?.process?.pid && health1?.process?.pid && (health0.process.pid !== health1.process.pid || Math.abs(Date.parse(health0.process.startedAt) - Date.parse(health1.process.startedAt)) > 5000));
+      t.metric('restarted', restarted ? 1 : 0);
+      if (health1?.process?.rssMb != null) t.metric('serverRssMb', health1.process.rssMb);
+      t.event(restarted ? 'server-restarted' : 'server-stayed-up');
+      if (restarted) t.problem('blocker', 'the server restarted during the uploads');
+      t.finish(refused && sawPercent && !restarted ? 'done' : 'stuck');
+      return;
+    }
     if (id === 'aimock') {
       t.scene('AI mock');
       await until(() => activeScene(), 10000);
@@ -745,5 +1649,7 @@ installPlaytest({
   async stop() {
     // The scene the smoke made goes again (the test account doesn't fill up).
     if (made?.id) { const id = made.id; made = null; await api(`/v1/scenes/${id}`, { method: 'DELETE' }).catch(() => {}); }
+    // Scenes the stage, scenes and world scenarios made beside it go too.
+    while (extra.length) await api(`/v1/scenes/${extra.pop()}`, { method: 'DELETE' }).catch(() => {});
   },
 });

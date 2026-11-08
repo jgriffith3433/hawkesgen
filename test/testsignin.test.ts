@@ -49,6 +49,34 @@ test("a Studio token signs in the project's own test account, on beta only, once
   }
 });
 
+test("load-* test accounts skip the starter grant and the sign-up cap, others keep both, and a load account deletes itself", async () => {
+  const server = http.createServer((req, res) => handle(req, res).catch((e) => { res.writeHead(500); res.end(String(e)); }));
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const base = `http://127.0.0.1:${(server.address() as any).port}`;
+  const post = (route: string, body: unknown) => fetch(`${base}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const { db } = await import('../src/db.ts');
+  process.env.HAWKESGEN_TEST_SIGNIN = '1';
+  process.env.HAWKESGEN_STARTER_CREDITS = '500';
+  TS.setTestSignInSecret(SECRET);
+  try {
+    const before = (db.prepare('SELECT COUNT(*) AS n FROM signup_log').get() as any).n;
+    const load = await (await post('/v1/users/test-session', token('load-0001'))).json();
+    assert.equal((db.prepare('SELECT credits FROM users WHERE id = ?').get(load.user.id) as any).credits, 0, 'no starter grant');
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM signup_log').get() as any).n, before, 'not counted against the caps');
+    const other = await (await post('/v1/users/test-session', token('hawkesgen-other'))).json();
+    assert.equal((db.prepare('SELECT credits FROM users WHERE id = ?').get(other.user.id) as any).credits, 500, 'other test accounts keep the grant');
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM signup_log').get() as any).n, before + 1);
+    assert.equal((await post('/v1/users/test-session/delete', token('hawkesgen-other'))).status, 403, 'only load-* can be deleted');
+    const del = await post('/v1/users/test-session/delete', token('load-0001'));
+    assert.equal(del.status, 200);
+    assert.equal(db.prepare('SELECT id FROM users WHERE id = ?').get(load.user.id), undefined);
+    assert.equal((await (await post('/v1/users/test-session/delete', token('load-0001'))).json()).deleted, null, 'already gone');
+  } finally {
+    delete process.env.HAWKESGEN_TEST_SIGNIN; delete process.env.HAWKESGEN_STARTER_CREDITS;
+    server.close();
+  }
+});
+
 test("the app's 🐞 line: a Studio project's report script, at a Studio's root or under its org", async () => {
   const R = await import('../src/studioreport.ts');
   const key = `rk_${'b'.repeat(32)}`;
