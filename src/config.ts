@@ -14,6 +14,10 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 export function readEnv(root = ROOT): Record<string, string> {
   const out: Record<string, string> = {};
+  // Under `node --test` the suite runs as CI does, with no .env: a developer's real keys (ANTHROPIC_API_KEY...) made
+  // tests that expect "no AI set up here" reach Claude, pass where CI fails and spend money. HAWKESGEN_TEST_DOTENV=1
+  // reads it anyway.
+  if (process.env.NODE_TEST_CONTEXT && process.env.HAWKESGEN_TEST_DOTENV !== '1') return out;
   for (const name of ['.env', '.env.local']) {
     const file = path.join(root, name);
     if (!fs.existsSync(file)) continue;
