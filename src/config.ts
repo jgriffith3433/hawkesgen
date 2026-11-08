@@ -113,6 +113,9 @@ export type Settings = {
    *  (https://studio.hawkesgen.ai; empty: HAWKESGEN_ORG_CREDITS_URL, else off). Its key is the secret
    *  HAWKESGEN_ORG_CREDITS_KEY (.env, Secret Manager on the cloud lanes), never a setting. */
   orgCredits: { url: string };
+  /** Starter-credit limits (src/signupcap.ts): `perIpPerDay` new accounts from one address a (UTC) day that get the starter
+   *  credits, `starterCreditsPerDay` the most starter credits Gen hands out in a day. Over either, the account still signs in, without the grant. 0 turns the grant off. */
+  signups: { perIpPerDay: number; starterCreditsPerDay: number };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number; lod: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
@@ -347,6 +350,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'], gpuWaitMinutes: 15 },
   platform: { issuer: '', freeOrgs: [] },
   orgCredits: { url: '' },
+  signups: { perIpPerDay: 3, starterCreditsPerDay: 5000 },
   claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
   brain: 'claude',
   model: '',
@@ -567,6 +571,10 @@ function clean(s: Settings): Settings {
     platform: {
       issuer: typeof s.platform?.issuer === 'string' && /^https?:\/\/[^\s]+$/.test(s.platform.issuer) ? s.platform.issuer : '',
       freeOrgs: Array.isArray(s.platform?.freeOrgs) ? s.platform!.freeOrgs.map(String).filter((o) => /^org_[0-9a-f]{8,32}$/.test(o)).slice(0, 200) : [],
+    },
+    signups: {
+      perIpPerDay: n(s.signups?.perIpPerDay, 0, 1000, SETTINGS_DEFAULTS.signups.perIpPerDay),
+      starterCreditsPerDay: n(s.signups?.starterCreditsPerDay, 0, 10_000_000, SETTINGS_DEFAULTS.signups.starterCreditsPerDay),
     },
     orgCredits: { url: typeof s.orgCredits?.url === 'string' && /^https?:\/\/[^\s]+$/.test(s.orgCredits.url) ? s.orgCredits.url.replace(/\/+$/, '') : '' },
     claude: {

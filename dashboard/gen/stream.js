@@ -11,6 +11,8 @@
 
 export const RETRY_MIN = 2000;
 export const RETRY_MAX = 30000;
+/** After a `bye` the wait is the longest one (30 s plus jitter). */
+const BYE_TRIES = 10;
 
 /** The wait before try n (0, 1, 2 ...): 2 s doubling to 30 s, plus up to a fifth more so many tabs don't line up. */
 export const retryDelay = (n, rand = Math.random) => {
@@ -61,6 +63,17 @@ export function openStream(handlers, opts = {}) {
       cancel(timer);
       timer = later(connect, retryDelay(tries++, opts.random));
     };
+    // Too many streams for this account (3 tabs hold one each): the server closes the oldest with `bye`. Stand down for a
+    // long wait, so the tabs don't evict each other in a loop, then open again and catch up (onReconnect).
+    es.addEventListener('bye', () => {
+      if (closed) return;
+      dropped = true;
+      state('reconnecting');
+      es.close();
+      es = null;
+      cancel(timer);
+      timer = later(connect, retryDelay(BYE_TRIES, opts.random));
+    });
     for (const [name, fn] of Object.entries(handlers)) {
       es.addEventListener(name, (e) => {
         let data;

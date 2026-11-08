@@ -6,6 +6,7 @@
 // then never returns on its own; "Guided first project" in the ? menu runs it again. Kept per account in this browser.
 
 import { h, icon, bus, api, toast, plainError } from './lib.js';
+import { trouble } from './trouble.js';
 import { state } from './account.js';
 import { P } from './project.js';
 import { isPlaying, play } from './player.js';
@@ -64,7 +65,7 @@ async function pickExisting() {
     if (!a) return toast('You have no pictures in Media yet. Make one here, it takes a minute.');
     G.asset = { id: a.id, kind: 'image', title: a.title || G.idea?.title || 'My picture' };
     go(2);
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 async function makePicture() {
   if (G.busy) return;
@@ -85,7 +86,7 @@ async function putOnTimeline() {
       await new Promise((r) => { const t0 = performance.now(); const tick = () => (P.active || performance.now() - t0 > 8000 ? r() : setTimeout(tick, 100)); tick(); });
     }
     if (!P.doc.clips.some((c) => c.asset === G.asset.id)) await placeAsset({ id: G.asset.id, kind: 'image', title: G.asset.title });
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
   if (G) { G.busy = false; if (G.step === 2 && P.active && P.doc.clips.some((c) => c.asset === G.asset.id)) go(3); else draw(); }
 }
 

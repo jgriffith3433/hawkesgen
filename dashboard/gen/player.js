@@ -78,6 +78,7 @@ export function initPlayer() {
   new ResizeObserver(fitStage).observe($('#viewer'));
   canvas.addEventListener('pointerdown', onCanvasDown);
   handles.addEventListener('pointerdown', onCanvasDown);
+  stagePinch($('#viewer'));
   onFrames(() => { S.dirty = true; });
   fitStage();
   frameLoop();
@@ -780,7 +781,8 @@ function drawSound(ctx, t, live) {
 // ------------------------------------------------------------------ handles on the canvas
 // The stage's width is only read when it changes (fitStage), not every frame: reading it forces a layout.
 let stageW = 0;
-const scale = () => (stageW || (stageW = stage.getBoundingClientRect().width)) / P.doc.width;
+// offsetWidth, not the on-screen width: the handles sit inside the stage, so a pinch zoom (a CSS scale) must not count.
+const scale = () => (stageW || (stageW = stage.offsetWidth)) / P.doc.width;
 /** The one selected visual clip under the playhead, if it can be moved there. */
 function handled() {
   const cs = selectedClips();
@@ -819,7 +821,7 @@ function hit(p) {
   return null;
 }
 function onCanvasDown(e) {
-  if (S.source || painter || e.button > 0) return;
+  if (S.source || painter || e.button > 0 || stageView.touches.size > 1) return;
   const p0 = toScene(e);
   const hd = e.target.dataset?.h;
   let c = hd ? handled() : hit(p0);
@@ -836,6 +838,7 @@ function onCanvasDown(e) {
   const start = { x: c.x ?? 0.5, y: c.y ?? 0.5, w: b0.w / W, size: c.size ?? (c.kind === 'text' ? 0.055 : null), rot: c.rotation ?? 0, cx: b0.x, cy: b0.y };
   let first = true;
   const move = (ev) => {
+    if (ev.pointerId !== e.pointerId) return;
     const p = toScene(ev);
     const patch = {};
     if (hd === 'rot') {
@@ -855,9 +858,62 @@ function onCanvasDown(e) {
     setClip(c.id, patch, { history: first });
     first = false;
   };
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  const up = (ev) => {
+    if (ev && ev.pointerId !== e.pointerId) return;
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+    if (stageView.stopDrag === stop) stageView.stopDrag = null;
+  };
+  // A second finger on the stage turns this into a pinch: the object stays where it was moved to.
+  const stop = () => up();
+  stageView.stopDrag = stop;
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+  addEventListener('pointercancel', up);
+}
+
+// ------------------------------------------------------------------ pinch to zoom the stage (touch)
+// Two fingers on the stage zoom and pan the picture itself (1x to 5x), never the page; one finger still moves an object.
+// Pinching back to about 1x lets go of the zoom. A mouse never starts it, so desktop is as before.
+const stageView = { z: 1, x: 0, y: 0, touches: new Map(), pinch: null, stopDrag: null };
+function applyView() {
+  if (stageView.z <= 1.02) { stageView.z = 1; stageView.x = 0; stageView.y = 0; }
+  stage.style.transform = stageView.z === 1 ? '' : `translate(${stageView.x}px, ${stageView.y}px) scale(${stageView.z})`;
+  stage.classList.toggle('zoomed', stageView.z !== 1);
+}
+function stagePinch(viewer) {
+  if (!viewer) return;
+  const two = () => { const [a, b] = [...stageView.touches.values()]; return { d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }; };
+  viewer.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    stageView.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (stageView.touches.size === 2) {
+      stageView.stopDrag?.();
+      const r = viewer.getBoundingClientRect();
+      stageView.pinch = { ...two(), z: stageView.z, x: stageView.x, y: stageView.y, ox: r.left + r.width / 2, oy: r.top + r.height / 2 };
+    }
+  }, true);
+  const move = (e) => {
+    if (!stageView.touches.has(e.pointerId)) return;
+    stageView.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const p = stageView.pinch;
+    if (!p || stageView.touches.size !== 2) return;
+    const n = two();
+    const z = Math.min(5, Math.max(1, p.z * (n.d / p.d)));
+    // Keep the point between the fingers under the fingers: scale about the viewer's centre, then follow the midpoint.
+    const k = z / p.z;
+    stageView.z = z;
+    stageView.x = (p.cx - p.ox) - (p.cx - p.ox - p.x) * k + (n.cx - p.cx);
+    stageView.y = (p.cy - p.oy) - (p.cy - p.oy - p.y) * k + (n.cy - p.cy);
+    applyView();
+  };
+  const end = (e) => {
+    if (!stageView.touches.delete(e.pointerId)) return;
+    if (stageView.touches.size < 2) stageView.pinch = null;
+    if (!stageView.touches.size) applyView();
+  };
+  viewer.addEventListener('pointermove', move, true);
+  addEventListener('pointerup', end, true);
+  addEventListener('pointercancel', end, true);
 }
 
 // ------------------------------------------------------------------ renders

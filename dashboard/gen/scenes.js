@@ -7,6 +7,7 @@
 // (a character onto a stage, a stage or image into a video, an audio scene into a track): that's plug and play.
 
 import { $, $$, h, api, toast, bus, icon, fileUrl, keyedRedraw, plainError } from './lib.js';
+import { trouble } from './trouble.js';
 import { state, needSignIn } from './account.js';
 import { showPane } from './media.js';
 import { popMenu, closeMenus, lendTimeline } from './timeline.js';
@@ -136,6 +137,10 @@ export async function newScene(kind, { title, doc, open = true } = {}) {
   return s;
 }
 
+/** What the Inspector pane says for a scene that has none. */
+const noInspector = (ed) => h('div', { class: 'ins ins-none', 'data-none': ed?.kind ?? '' },
+  h('p', { class: 'muted' }, ed ? `A ${ed.label.toLowerCase()} has no inspector: everything about it is on the page itself.` : 'Nothing to inspect here.'));
+
 /** Brings a tab to the front: the editor in front saves and lets go, the tab's editor takes the panes. */
 async function activate(id) {
   if (W.switching) await W.switching;
@@ -151,6 +156,9 @@ async function activate(id) {
     lendTimeline(ed?.timelineKind ? null : ed?.timeline ?? NO_LANES);
     $('#kindTab').hidden = !ed?.panel;
     $('#kindTab').textContent = ed?.panel ?? '';
+    // A scene with no inspector (a character, place, prop, story or world keeps its settings on the page itself) must
+    // not leave the last timeline scene's Inspector, with its Add buttons, in the pane: say what's there instead.
+    if (!ed?.panel) $('#kindPanel')?.replaceChildren(noInspector(ed));
     if (!ed) { toast(`No editor for ${t.kind} scenes yet.`); return; }
     if (W.editor === ed) return;
     try {
@@ -162,7 +170,7 @@ async function activate(id) {
       else if (!ed.panel && !$('#pane-kind').hidden) showPane('media');
       if (ed.timeline) lendTimeline(ed.timeline);
     } catch (err) {
-      toast(plainError(err.message));
+      trouble(err);
       if (err.status === 404) closeTab(id, { quiet: true });
     }
     drawAction();

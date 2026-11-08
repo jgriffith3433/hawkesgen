@@ -1,6 +1,9 @@
 // The HTTP API (JSON, under /v1) and the dashboard (static files at /).
 // docs/api.md lists every route with examples.
 
+import { clientIp } from './analytics/collect.ts';
+import { signupStats } from './signupcap.ts';
+import { addStream } from './eventhub.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -48,6 +51,7 @@ import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { genOAuth } from './genoauth.ts';
+import { limit as limitRequest } from './ratelimit.ts';
 import { handleUpload, downloadTarget, linkTarget, shareLink, signedFileUrl, verifyFileSig } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
@@ -228,6 +232,9 @@ export function isCustomer(c: Client) {
 }
 const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|playtest\/capacity|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
 
+const plainStreamEvent = (_name: string, d: any) => d;
+const publicStreamEvent = (name: string, d: any) => (name === 'job' ? publicJob(d, true) : d);
+
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
 }
@@ -288,6 +295,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   const method = req.method ?? 'GET';
   noteRoute(method, route);
+
+  // The request limiter (src/ratelimit.ts): a token bucket per caller and class of route, before any routing.
+  // /v1/health and the Stripe webhook are never limited.
+  const wait = limitRequest(req, method, route);
+  if (wait !== null) {
+    res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(wait), 'Cache-Control': 'no-store' });
+    return void res.end(JSON.stringify({ error: `That's a lot at once: wait ${wait} second${wait === 1 ? '' : 's'}, then try again.`, retryAfter: wait }));
+  }
 
   // Signing in to the MCP from an editor (src/genoauth.ts, src/mcp-oauth.ts): discovery, registration, the consent page
   // and tokens. Before the CORS below: these carry their own.
@@ -450,6 +465,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         elevenlabsBilling: eleven.billingState(),
         // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
         orgCredits: orgCreditsOn(),
+        // New accounts and starter grants refused by the caps today and in total (src/signupcap.ts).
+        signups: signupStats(),
         queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),
         // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
         // (the deploy script waits for these only; everything else resumes after a restart).
@@ -518,26 +535,26 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/users/test-session' && method === 'POST') {
       const ts = await import('./testsignin.ts');
       const project = ts.checkTestToken(await readJson(req));
-      const result = googleSignin(ts.testAccountOf(project));
+      const result = googleSignin(ts.testAccountOf(project), clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
     }
     if (route === '/v1/users/test-session/github' && method === 'POST') {
       // A GitHub Actions run of an allowed repo, as its test account, on beta only (src/githubsignin.ts).
       const gh = await import('./githubsignin.ts');
       const project = await gh.checkGitHubToken((await readJson(req))?.token);
       const ts = await import('./testsignin.ts');
-      const result = googleSignin(ts.testAccountOf(project));
+      const result = googleSignin(ts.testAccountOf(project), clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
     }
     if (route === '/v1/users/google' && method === 'POST') {
       const { credential } = await readJson(req);
       let who;
       try { who = await checkGoogleToken(String(credential ?? '')); } catch (e: any) { return send(res, 401, { error: e.message }); }
-      const result = googleSignin(who);
+      const result = googleSignin(who, clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: result.user, created: result.created });
+      return send(res, 200, { user: result.user, created: result.created, notice: result.notice });
     }
     if ((route === '/v1/users/signup' || route === '/v1/users/login') && method === 'POST' && !passwordsAllowed()) {
       return send(res, 410, { error: 'Sign in with Google.', code: 'google_only' });
@@ -591,6 +608,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     await primePlatform(req);
     const client = authenticateRequest(req);
+    // The app asks "who am I?" on every visit: a signed-out visitor (no key sent) is told "nobody" rather than a 401, so a
+    // first visit logs no error in the browser's console. A key that's sent and refused is still a 401 (2026-11-08).
+    if (!client && route === '/v1/users/me' && method === 'GET' && !req.headers.authorization) return send(res, 200, { user: null });
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
     // The editors connected to this account's MCP (src/genoauth.ts): listed, and disconnected one at a time.
     if (route === '/v1/users/me/connections' && method === 'GET') {
@@ -1416,36 +1436,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       // X-Accel-Buffering keep proxies from holding events back; the 20 s ping below keeps idle connections open.
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       res.write('retry: 5000\n: hello\n\n');
-      const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(publicJob(j, isCustomer(client)))}\n\n`);
-      // Library changes (src/entities.ts): an entity edited, a take filed, picked or discarded.
-      const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
-      events.on('job', onJob);
-      events.on('library', onLibrary);
-      // Productions (src/showrunner/production.ts): progress, and "done" when one finishes.
-      const onProduction = (e: any) => canProject(client, String(e.project)) && res.write(`event: production
-data: ${JSON.stringify(e)}
-
-`);
-      events.on('production', onProduction);
-      // A scene saved (src/scenes.ts): an open editor, character sheet or world picks up edits made elsewhere (the AI, MCP,
-      // another tab) and fills in finished jobs without asking on a timer. Only ids and versions; the page reads the scene.
-      const onScene = (e: any) => canProject(client, String(e.project)) && res.write(`event: scene\ndata: ${JSON.stringify(e)}\n\n`);
-      events.on('scene', onScene);
-      // The studio's machinery (admins only): a machines reading was taken, or a bench run moved on. The page reads what it shows.
-      const ops = !isCustomer(client);
-      const onMachines = (e: any) => res.write(`event: machines\ndata: ${JSON.stringify(e)}\n\n`);
-      const onBench = (e: any) => res.write(`event: bench\ndata: ${JSON.stringify(e)}\n\n`);
-      if (ops) { events.on('machines', onMachines); events.on('bench', onBench); }
+      // One hub for every stream (src/eventhub.ts): events serialised once, sent only to their owner's streams, at most
+      // 3 streams per user (the oldest is told `bye` and closed; the page opens one again).
+      const forgetStream = addStream(client, res, { ops: !isCustomer(client), transform: isCustomer(client) ? publicStreamEvent : plainStreamEvent });
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
-      req.on('close', () => {
-        events.off('job', onJob);
-        events.off('library', onLibrary);
-        events.off('production', onProduction);
-        events.off('scene', onScene);
-        events.off('machines', onMachines);
-        events.off('bench', onBench);
-        clearInterval(ping);
-      });
+      req.on('close', () => { forgetStream(); clearInterval(ping); });
       return;
     }
 

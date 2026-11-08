@@ -10,6 +10,7 @@ import http from 'node:http';
 
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-testsignin-'));
 process.env.HAWKESGEN_SECRETS_KEY = Buffer.alloc(32, 5).toString('base64');
+process.env.HAWKESGEN_RATELIMIT = 'off'; // this file tries many sign-ins from one address; the limiter has its own test
 delete process.env.HAWKESGEN_LANE;
 delete process.env.HAWKESGEN_TEST_SIGNIN;
 

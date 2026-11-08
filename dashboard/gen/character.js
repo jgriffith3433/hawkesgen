@@ -8,6 +8,7 @@
 // is offered "Keep <name> consistent everywhere" (a LoRA, priced first).
 
 import { $, h, api, toast, fileUrl, bus, icon, plainError, keepingFocus } from './lib.js';
+import { trouble } from './trouble.js';
 import { runJob, quote, credits } from './media.js';
 import { libraryPicker, hasTool, toolReady } from './studio.js';
 import { registerEditor, newScene, setRender, refreshBar } from './scenes.js';
@@ -109,7 +110,7 @@ async function makeLook() {
     D.take(r.scene, { keepHistory: true });
     C.look = { ...(C.look ?? {}), pack: r.pack, lora: r.lora };
     toast('Their look is ready: check it, then lock it.');
-  } catch (err) { toast(plainError(err.message)); } finally { busy(''); }
+  } catch (err) { trouble(err); } finally { busy(''); }
 }
 async function lockLook(on) {
   try {
@@ -118,7 +119,7 @@ async function lockLook(on) {
     D.take(r.scene, { keepHistory: true });
     C.look = { ...(C.look ?? {}), pack: r.pack, lora: r.lora };
     if (on) toast(`${D.doc.title}'s look is locked: every shot they're in uses it.`);
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 /** "Keep <name> consistent everywhere": Gen learns their look (a LoRA), priced first. */
 async function keepConsistent() {
@@ -129,7 +130,7 @@ async function keepConsistent() {
     const r = await api(`/v1/scenes/${D.scene.id}/identity/lora`, { body: {} });
     D.take(r.scene, { keepHistory: true });
     C.look = { ...(C.look ?? {}), pack: r.pack, lora: r.lora };
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 
 /** The look section: the sheet, the fixed words, Make / Lock / Unlock, and the LoRA's state or offer. */

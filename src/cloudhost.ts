@@ -117,12 +117,29 @@ export function startCloudHost({ every = 30_000, ping = 45_000 } = {}) {
   // stops, so nothing it writes afterwards is lost on a copy nobody reads.
   void import('./cloudlease.ts').then((L) => L.watchLease((by) => {
     console.log(`[cloudhost] ${by.rev ?? 'another instance'} took over the database: saving state and stopping`);
-    void flushOnStop().finally(() => process.exit(0));
+    void drainJobs().catch(() => {}).then(() => flushOnStop()).finally(() => process.exit(0));
   })).catch((e) => console.warn(`[cloudhost] lease: ${e.message}`));
   const url = selfUrl();
   if (url) {
     setInterval(() => void busy().then(async (b) => { if (b) await fetch(`${url}/v1/health`, { signal: AbortSignal.timeout(20_000) }); }).catch(() => {}), ping).unref();
   } else console.warn('[cloudhost] HAWKESGEN_PUBLIC_URL is not set: nothing keeps the instance up while jobs run');
+}
+
+/**
+ * How long a stop waits for running jobs (HAWKESGEN_DRAIN_SECONDS). Cloud Run gives a stopping instance 10 s in all and the
+ * state push takes up to 8, so there the default is short; on a host of our own the jobs get two minutes.
+ */
+export const drainMs = () => {
+  const v = Number(process.env.HAWKESGEN_DRAIN_SECONDS);
+  return (Number.isFinite(v) && v >= 0 ? v : process.env.K_SERVICE ? 2 : 120) * 1000;
+};
+
+/** A stop or a hand-over: no new jobs start, running ones finish up to the cap, the rest are marked for a planned pick-up. */
+export async function drainJobs(maxMs = drainMs()) {
+  const { queue } = await import('./jobs.ts');
+  const left = await queue.drain(maxMs);
+  if (left) console.log(`[queue] ${left} job(s) still running at the stop: picked up again on the next start`);
+  return left;
 }
 
 /** Cloud Run sends SIGTERM and allows 10 s: push the state first. Returns once it's done or after 8 s. */

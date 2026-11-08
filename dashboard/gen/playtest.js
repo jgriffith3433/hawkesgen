@@ -16,7 +16,9 @@ import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from 
 import { activeScene, newScene } from './scenes.js';
 import { startGuide, guideOpen } from './guide.js';
 import { api } from './lib.js';
+import { openStream } from './stream.js';
 import { runJob } from './media.js';
+import { streamState } from './trouble.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
@@ -49,9 +51,12 @@ installPlaytest({
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
+    { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
+    { id: 'signupcap', title: 'Starter credits are capped: health counts signups and refused grants, and the limits are shown; this account sees its balance', seconds: 30 },
     { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
     { id: 'phone', title: 'Phone (390x844, touch): every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
+    { id: 'eventstreams', title: 'Live streams: four tabs open on one account, the oldest is closed with a bye and opens again by itself, and all jobs still reach the page', seconds: 90 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -72,6 +77,10 @@ installPlaytest({
         const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/') && p !== '/v1/users/me');
         t.metric('v1CallsSignedOut', v1.length);
         for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
+        // The "who am I?" check answers a signed-out visit with nobody, not a 401 the console shows as an error.
+        const me = await window.__hgMe;
+        t.metric('meStatus', me?.status ?? 0);
+        if (me && me.status !== 200) t.problem('bug', `signed-out load: /v1/users/me answered ${me.status} (a console error)`);
         t.event('welcome-checked');
       }
       t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
@@ -494,6 +503,142 @@ installPlaytest({
       const h2 = await fetch('/v1/health').then((r) => r.json()).catch(() => null);
       t.metric('realCostAfter', h2?.mock?.realCost ?? -1);
       t.finish(st === 'done' && (h2?.mock?.realCost ?? 1) === 0 ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'signupcap') {
+      t.scene('Starter-credit caps');
+      const h = await fetch('/v1/health').then((r) => r.json()).catch(() => null);
+      const sg = h?.signups;
+      t.metric('signupsToday', sg?.today?.signups ?? -1);
+      t.metric('refusedGrantsToday', sg?.today?.refusedGrants ?? -1);
+      t.metric('signupsTotal', sg?.total?.signups ?? -1);
+      t.metric('refusedGrantsTotal', sg?.total?.refusedGrants ?? -1);
+      t.metric('perIpPerDay', sg?.limits?.perIpPerDay ?? -1);
+      t.event(sg ? 'health-counts-signups' : 'health-missing-signups');
+      t.note(`Health: ${JSON.stringify(sg ?? null)}. This account's balance: ${state.user?.credits ?? '?'} credits.`);
+      t.finish(sg ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'eventstreams') {
+      // Four tabs' worth of GET /v1/events on this account (the page's own stream makes a fifth): the server keeps three
+      // per account, closes the oldest with `bye`, and stream.js opens it again after its longest wait. No timer asks Gen
+      // for anything; the streams are opened by the same client the page uses.
+      t.scene('Event streams');
+      const tabs = [];
+      let byes = 0, reconnects = 0, opened = 0;
+      for (let i = 0; i < 4; i++) {
+        const tab = openStream({ bye: () => { byes++; t.event(`stream-${i}-bye`); } }, { onState: (st) => { if (st === 'live') opened++; }, onReconnect: () => { reconnects++; t.event(`stream-${i}-reconnected`); } });
+        tabs.push(tab);
+        await sleep(400);
+      }
+      t.metric('tabsOpened', 4);
+      const gotBye = await until(() => byes >= 1, 15000);
+      t.metric('byes', byes);
+      t.event(gotBye ? 'oldest-closed-with-bye' : 'no-bye');
+      if (!gotBye) t.problem('bug', 'a user\'s extra streams were never closed by the server');
+      // The closed one waits 30 s and more, then comes back; that is the reconnect.
+      const back = await until(() => reconnects >= 1, 60000, 500);
+      t.metric('reconnects', reconnects);
+      t.event(back ? 'closed-stream-reconnected' : 'no-reconnect');
+      if (!back) t.problem('bug', 'the stream closed by the server did not open again by itself');
+      for (const tab of tabs) tab.close();
+      t.note(`${opened} opens, ${byes} bye(s), ${reconnects} reconnect(s)`);
+      t.finish(gotBye && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'trouble') {
+      t.scene('When a call fails');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video scene with one text clip, made before any call is forced to fail.
+      made = await newScene('video', { title: `Playtest trouble ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const me = state.user;
+      // Setup shortcut (named): every /v1 call but the session probe and the stream answers the way Gen does when it's in
+      // that state (the junk in the bodies is what a raw error would have shown; none of it may reach the screen).
+      const realFetch = window.fetch.bind(window);
+      let mode = null;
+      const junk = 'Traceback (most recent call last):\n  File "x.py", line 3\n{"error":"boom"} hg_0123456789abcdef sk-ant-oat01-abcdefghijkl';
+      const answers = {
+        offline: () => Promise.reject(new TypeError('Failed to fetch')),
+        401: () => new Response(JSON.stringify({ error: junk }), { status: 401, headers: { 'Content-Type': 'application/json' } }),
+        402: () => new Response(JSON.stringify({ error: `not enough credits ${junk}` }), { status: 402, headers: { 'Content-Type': 'application/json' } }),
+        429: () => new Response(JSON.stringify({ error: 'slow down', retryAfter: 7 }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } }),
+        503: () => new Response(JSON.stringify({ error: `no gpu available ${junk}` }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+      };
+      window.fetch = (input, init) => {
+        const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+        if (!mode || !path.startsWith('/v1/') || path === '/v1/users/me' || path.startsWith('/v1/events')) return realFetch(input, init);
+        return Promise.resolve(answers[mode]());
+      };
+      const RAW = /[{}]|"error"|Traceback|File "|\bat \S+:\d+|hg_[0-9a-f]{6}|sk-ant|undefined|\[object/;
+      const words = { offline: /Can.t reach Gen/, 401: /signed out/, 402: /out of credits.*\$10/, 429: /Too many requests, try again in 7 s/, 503: /busy or resting/ };
+      const next = { offline: /Try again/, 401: /Sign in/, 402: /Add credits/, 429: /Try again/, 503: /Try again/ };
+      const judge = (state_, surface, text, button) => {
+        const ok = Boolean(text) && words[state_].test(text) && !RAW.test(text) && next[state_].test(button ?? '');
+        t.metric(`${surface}-${state_}`, ok ? 1 : 0);
+        t.event(`${surface}-${state_}-${ok ? 'ok' : 'bad'}`);
+        if (!ok) t.problem('bug', `${surface} on ${state_}: "${String(text).slice(0, 160)}" / button "${button ?? ''}"`);
+      };
+      const toastNow = () => { const el = document.querySelector('#toast'); return el && !el.hidden ? { text: el.querySelector('span')?.textContent ?? '', button: el.querySelector('button')?.textContent ?? '' } : null; };
+      for (const m of ['offline', 402, 429, 503, 401]) {
+        const key = String(m);
+        mode = null;
+        t.scene(`State: ${key}`);
+        state.user = me;
+        if (m === 'offline') Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+        mode = key;
+        if (m === 'offline') { window.dispatchEvent(new Event('offline')); const chip = document.querySelector('#netChip'); t.metric('offlineChip', chip && !chip.hidden && /offline/i.test(chip.textContent) ? 1 : 0); t.event('offline-chip'); }
+        // The AI pane: type a message and press Enter.
+        const box = document.querySelector('#aiInput');
+        box.focus(); box.value = 'add a title'; box.dispatchEvent(new Event('input', { bubbles: true })); pressOn(box, 'Enter');
+        await until(() => document.querySelector('#aiMessages .msg.err'), 8000, 100);
+        const msg = [...document.querySelectorAll('#aiMessages .msg.err')].pop();
+        judge(key, 'ai', msg?.textContent ?? '', msg?.querySelector('button')?.textContent ?? '');
+        // Library: a filter click reloads Media, which can't.
+        state.user = me;
+        click('#paneTabs button[data-pane="media"]');
+        const chips = [...document.querySelectorAll('#mediaFilter button')];
+        (chips.find((b) => !b.classList.contains('on') && !b.classList.contains('active')) ?? chips[1])?.click();
+        await until(() => document.querySelector('#mediaTrouble'), 5000, 100);
+        const note = document.querySelector('#mediaTrouble');
+        judge(key, 'library', note?.querySelector('p')?.textContent ?? '', note?.querySelector('button')?.textContent ?? '');
+        chips[0]?.click();
+        // Create: open a form and press its primary button.
+        state.user = me;
+        click('#paneTabs button[data-pane="generate"]');
+        await until(() => document.querySelectorAll('#createList .cat .cat-row').length > 0, 8000);
+        const row = [...document.querySelectorAll('#createList .cat .cat-row')].find((r) => !r.classList.contains('director-row'));
+        if (row) { row.click(); await until(() => document.querySelector('#createBody .gen-foot .primary'), 5000, 100); }
+        const runBtn = document.querySelector('#createBody .gen-foot .primary');
+        if (runBtn) { runBtn.disabled = false; runBtn.click(); }
+        await until(() => toastNow(), 6000, 100);
+        const tc = toastNow();
+        judge(key, 'create', tc?.text ?? '', tc?.button ?? '');
+        click('#createBack');
+        // Timeline: a change that can't be saved says so, with its next step.
+        state.user = me;
+        P.saveFailed = false;
+        addClip({ track: mainTrack().id, kind: 'fill', color: '#203a5c', start: P.playhead, seconds: 2 });
+        await until(() => document.querySelector('#saveState')?.dataset.s === 'error', 12000, 100);
+        const tt = await until(() => toastNow(), 3000, 100) ? toastNow() : null;
+        judge(key, 'timeline', tt?.text ?? '', tt?.button ?? '');
+        mode = null;
+        if (m === 'offline') { Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true }); window.dispatchEvent(new Event('online')); }
+        await sleep(300);
+      }
+      // The stream dropping: the chip says so and clears by itself when it is live again (no fetch, no timer of ours).
+      t.scene('State: stream drop');
+      streamState('reconnecting');
+      const chip = document.querySelector('#netChip');
+      t.metric('reconnectingChip', chip && !chip.hidden && /Reconnecting…/.test(chip.textContent) ? 1 : 0);
+      t.event('reconnecting-chip');
+      await sleep(600);
+      streamState('live');
+      t.metric('chipClears', chip.hidden ? 1 : 0);
+      t.event('chip-cleared');
+      window.fetch = realFetch;
+      state.user = me;
+      t.finish('done');
       return;
     }
     if (id === 'aimock') {

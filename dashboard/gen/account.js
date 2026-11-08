@@ -27,7 +27,7 @@ export async function loadAi() {
 // or subscription still works, and comes first.
 export const hasAi = () => Boolean(state.ai?.house?.ready || state.ai?.anthropic?.set || state.ai?.claudeSubscription?.set);
 
-function showMe() {
+export function showMe() {
   const u = state.user;
   $('#signInBtn').hidden = Boolean(u);
   $('#accountBtn').hidden = !u;
@@ -65,17 +65,17 @@ function loadGoogle() {
   }).catch(() => {});
   return signin.ready;
 }
-async function signedIn(created) {
+async function signedIn(created, notice) {
   $('#authDialog').close();
   await loadMe();
   bus.emit('signedIn', state.user);
-  if (created) { toast(`Welcome! You have ${state.user?.credits ?? 0} free credits.`); bus.emit('welcome'); }
+  if (created) { toast(notice || `Welcome! You have ${state.user?.credits ?? 0} free credits.`); bus.emit('welcome'); }
   const then = afterSignIn;
   afterSignIn = null;
   if (then) then();
 }
 async function googleDone(credential) {
-  try { const r = await api('/v1/users/google', { body: { credential } }); await signedIn(r.created); } catch (err) { showAuthError(err.message); }
+  try { const r = await api('/v1/users/google', { body: { credential } }); await signedIn(r.created, r.notice); } catch (err) { showAuthError(err.message); }
 }
 function showAuthError(msg) { $('#authError').textContent = msg; $('#authError').hidden = false; }
 async function showSignIn() {

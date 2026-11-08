@@ -2,6 +2,7 @@
 // at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Create (every tool) is studio.js.
 // Also the one way every tool runs (runJob).
 
+import { trouble, troubleNote, explain } from './trouble.js';
 import { $, $$, h, api, toast, fileUrl, keyedRedraw, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
 import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor, PROGRESS, stopClip } from './project.js';
 import { showSource, seek } from './player.js';
@@ -91,7 +92,12 @@ export async function loadMedia() {
     const r = await api(`/v1/assets?${q}`);
     if (seq !== loadSeq) return;
     M.items = (r.items ?? []).filter((a) => ['image', 'video', 'audio', 'mesh', 'file'].includes(a.kind));
-  } catch { if (seq !== loadSeq) return; /* a failed reload keeps what's shown */ }
+    M.loadError = null;
+  } catch (err) {
+    if (seq !== loadSeq) return;
+    // A failed reload keeps what's shown; with nothing shown, the grid says why and offers the next step.
+    M.loadError = err;
+  }
   drawMedia();
 }
 
@@ -117,6 +123,9 @@ function drawMedia() {
       update: (el) => setBusy(el, PROGRESS.get(c.job) ?? 'Making', c.label ?? 'Being made') });
   }
   for (const a of M.items) rows.push({ key: a.id, sig: tileSig(a), make: () => tileFor(a), update: (el) => decorate(el, a) });
+  // A failed load says why above the tiles (or instead of them), with the next step.
+  grid.parentElement.querySelector('#mediaTrouble')?.remove();
+  if (M.loadError) { const n = troubleNote(M.loadError, loadMedia); n.id = 'mediaTrouble'; if (rows.length) grid.before(n); else { grid.replaceChildren(n); return; } }
   if (!rows.length) {
     grid.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'),
       M.q || M.kind ? '' : h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: () => $('#uploadInput').click() }, icon('upload'), 'Upload'), h('button', { class: 'primary small', onclick: () => showPane('generate') }, icon('sparkle'), 'Make something'))));
@@ -299,7 +308,7 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart, 
     } catch (err) {
       M.inflight.forEach((v, k) => { if (v.label === (label ?? tool)) M.inflight.delete(k); });
       drawMedia();
-      for (const c of P.doc.clips.filter((x) => x.pending && !x.asset && x.label === (label ?? tool))) { c.failed = plainError(err.message); delete c.pending; }
+      for (const c of P.doc.clips.filter((x) => x.pending && !x.asset && x.label === (label ?? tool))) { c.failed = explain(err).text; delete c.pending; }
       changed();
       showError(err);
       reject(err);
@@ -356,8 +365,7 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
         else if (P.active) toast(`${file.name} is in Media.`, { action: 'Add to the timeline', onAction: () => placeAsset(asset) });
       } catch (err) {
         M.inflight.delete(key);
-        const f = friendly(err);
-        toast(`${file.name}: ${f.text}`);
+        toast(`${file.name}: ${explain(err).text}`);
       }
       drawMedia();
     }
@@ -366,12 +374,7 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
 }
 
 /** Shows an error with the thing that fixes it (Add credits, Try again). */
-export function showError(err, retry) {
-  const f = friendly(err);
-  if (f.fix === 'credits') return toast(f.text, { action: 'Add credits', onAction: () => openAccount(), ms: 8000 });
-  if (f.fix === 'retry' && retry) return toast(f.text, { action: 'Try again', onAction: retry, ms: 8000 });
-  toast(f.text, { ms: 6500 });
-}
+export function showError(err, retry) { trouble(err, retry); }
 
 /** A share link anyone can open for a week (the file plays in their browser): copied, or the phone's share sheet. */
 export async function shareAsset(id, name) {

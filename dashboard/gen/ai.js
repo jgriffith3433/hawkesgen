@@ -11,6 +11,7 @@
 // approval card (showrunner.js). Each answer says which role gave it (showrunner, editor, director, art director, sound).
 
 import { $, h, api, toast, fmt, bus, icon, plainError, friendly } from './lib.js';
+import { trouble, explain } from './trouble.js';
 import { P, selectedClips, remember, take, save, docLength, clipLength, changed } from './project.js';
 import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './account.js';
 import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions, directorShotId } from './director.js';
@@ -201,9 +202,22 @@ function drawMessages() {
     h('div', { class: 'msg-ctx' }, 'Next, when the AI is free · ', h('button', { class: 'link small', onclick: () => { A.queue.splice(i, 1); drawMessages(); } }, 'Remove')))));
   list.scrollTop = list.scrollHeight;
 }
+/** An AI failure as a message: one plain sentence, and (when there is one) the next step as a button. */
+function failMsg(err, list) {
+  const e = explain(err);
+  const lastAsk = [...list].reverse().find((x) => x.role === 'user')?.text ?? '';
+  return { role: 'assistant', text: e.text, error: true, ...(e.label ? { fix: e.fix, label: e.label, again: lastAsk } : {}) };
+}
+function failAction(m) {
+  if (m.fix === 'credits') return import('./account.js').then((a) => a.openAccount('credits'));
+  const again = () => { if (m.again) { $('#aiInput').value = m.again; send(); } };
+  if (m.fix === 'signin') return import('./account.js').then((a) => a.needSignIn(again, 'login'));
+  again();
+}
 function msgEl(m) {
   if (m.role === 'user') return h('div', { class: 'msg user' }, m.text, m.context ? h('div', { class: 'msg-ctx' }, m.context) : '');
   const el = h('div', { class: `msg ai${m.error ? ' err' : ''}${m.pending ? ' pending' : ''}` }, m.aiRole ? h('div', { class: 'msg-role' }, ROLE_WORDS[m.aiRole] ?? m.aiRole) : '', m.text);
+  if (m.error && m.label) el.append(h('div', { class: 'row' }, h('button', { class: 'ghost small', 'data-fail': m.fix, onclick: () => failAction(m) }, m.label)));
   if (m.production) el.append(productionCard(m.production, { onChange: changePlan }));
   if (m.results?.length) el.append(h('ul', { class: 'msg-ops' }, ...m.results.map((r) => h('li', { class: r.ok ? 'ok' : 'bad' }, r.ok ? '✓ ' : '✗ ', describe(r), r.error ? ` (${r.error})` : ''))));
   if (m.proposed && !m.proposedDone) {
@@ -309,8 +323,7 @@ async function send() {
     list.splice(list.indexOf(thinking), 1);
     if (err.status === 402) { await loadAi(); drawGate(); }
     const f = friendly(err);
-    list.push({ role: 'assistant', text: f.fix ? f.text : `I couldn't do that: ${f.text}`, error: true });
-    if (f.fix === 'credits') import('./media.js').then((m) => m.showError(err));
+    list.push(failMsg(err, list));
     // An admin can fix an unavailable AI: Admin > AI takes a key or a Claude login.
     if (f.fix === 'ai' && state.admin) toast('The house AI has no working key or login.', { action: 'Open Admin > AI', onAction: () => open('/admin#ai', '_blank'), ms: 9000 });
     if (!here()) answeredElsewhere(asked);
@@ -373,7 +386,7 @@ async function sendDirector(text) {
     if (!r.here) answeredElsewhere(asked);
   } catch (err) {
     list.splice(list.indexOf(thinking), 1);
-    list.push({ role: 'assistant', text: `I couldn't do that: ${plainError(err.message)}`, error: true });
+    list.push(failMsg(err, list));
     if (directorShotId() !== id) answeredElsewhere(asked);
   } finally {
     A.busy = false;
@@ -414,7 +427,7 @@ async function sendScene(text) {
     if (!here()) answeredElsewhere(t);
   } catch (err) {
     list.splice(list.indexOf(thinking), 1);
-    list.push({ role: 'assistant', text: `I couldn't do that: ${plainError(err.message)}`, error: true });
+    list.push(failMsg(err, list));
     if (!here()) answeredElsewhere(t);
   } finally {
     A.busy = false;
@@ -440,7 +453,7 @@ async function runProposed(m) {
       if (activeScene()?.id === m.scene) activeEditor()?.take?.(r.scene);
       m.proposedDone = 'ran';
       refreshCredits();
-    } catch (err) { toast(plainError(err.message)); }
+    } catch (err) { trouble(err); }
     keep();
     drawMessages();
     return;
@@ -454,7 +467,7 @@ async function runProposed(m) {
     m.results = [...(m.results ?? []), ...r.results.map((x) => ({ ...x, label: r.project.doc.clips.find((c) => c.id === x.id)?.label ?? null }))];
     refreshCredits();
   } catch (err) {
-    toast(plainError(err.message));
+    trouble(err);
   }
   keep();
   drawMessages();
