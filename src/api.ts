@@ -720,6 +720,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       requireRole(client, 'owner');
       const by = client.name ?? 'owner';
       if (route === '/v1/admin/ai' && method === 'GET') return send(res, 200, house.houseStatus());
+      // A consistent online backup of the databases to the backup bucket (src/backup.ts; Cloud Scheduler calls it daily).
+      if (route === '/v1/admin/backup' && method === 'POST') {
+        const { runBackup } = await import('./backup.ts');
+        try { return send(res, 200, { backups: await runBackup({ dbFile: paths.db, analyticsFile: paths.analytics }) }); }
+        catch (e) { throw new GenError(`Backup failed: ${(e as Error).message}`, { status: 503 }); }
+      }
       if (route === '/v1/admin/ai' && (method === 'PUT' || method === 'POST')) {
         const b = await readJson(req);
         return send(res, 200, house.saveHouseSettings({ source: b.source, markup: b.markup, minCredits: b.minCredits }));
