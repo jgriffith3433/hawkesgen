@@ -19,6 +19,7 @@ import { activeKind, activeScene, activeEditor } from './scenes.js';
 import { pickedMedia, clearPicked } from './media.js';
 import { card as productionCard } from './showrunner.js';
 import { aiView } from './aiview.js';
+import { jobWatch } from './jobwatch.js';
 
 /** What's picked in Media, added to any AI's selection (J, 2026-10-30: "use this" with a Media tile picked). */
 const withMedia = (sel = {}) => { const m = pickedMedia(); return m.length ? { ...sel, media: m } : sel; };
@@ -174,6 +175,27 @@ function drawGate() {
 /** Suggestions are for starting: once a conversation has begun they go away (J, 2026-10-30). */
 function drawTips() { $('#aiSuggest').hidden = msgs().some((m) => m.role === 'user'); }
 
+/**
+ * While an AI turn waits for a free slot the server says its place in line (the `ai` event, src/aigate.ts): the pending
+ * message shows it ("In line for the AI, 2 ahead"), and goes back to `base` when the turn starts. Stops by itself once
+ * the message is gone from its list. Push, not polling: nothing is asked for.
+ */
+export function lineWords(e, base) {
+  if (e.state !== 'waiting') return base;
+  return `In line for the AI, ${e.ahead ? `${e.ahead} ahead of you` : 'you are next'}…`;
+}
+async function followLine(list, thinking, base) {
+  let stop = () => {};
+  try {
+    const w = await jobWatch();
+    stop = w.on('ai', (e) => {
+      if (!list.includes(thinking)) { stop(); return; }
+      thinking.text = lineWords(e, base);
+      drawMessages();
+    });
+  } catch { /* no live stream: the plain message stays */ }
+}
+
 function drawMessages() {
   drawTips();
   const list = $('#aiMessages');
@@ -292,6 +314,7 @@ async function send() {
   $('#aiInput').style.height = 'auto';
   const thinking = { role: 'assistant', text: 'Working on it…', pending: true };
   list.push(thinking);
+  void followLine(list, thinking, 'Working on it…');
   drawMessages();
   A.busy = true;
   drawBusy();
@@ -375,6 +398,7 @@ async function sendDirector(text) {
   $('#aiInput').style.height = 'auto';
   const thinking = { role: 'assistant', text: 'Blocking the shot…', pending: true };
   list.push(thinking);
+  void followLine(list, thinking, 'Blocking the shot…');
   drawMessages();
   A.busy = true;
   drawBusy();
@@ -408,6 +432,7 @@ async function sendScene(text) {
   $('#aiInput').style.height = 'auto';
   const thinking = { role: 'assistant', text: 'Thinking…', pending: true };
   list.push(thinking);
+  void followLine(list, thinking, 'Thinking…');
   drawMessages();
   A.busy = true;
   drawBusy();

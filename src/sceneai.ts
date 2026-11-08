@@ -84,7 +84,7 @@ export function scenePrompt(a: SceneTurnInput) {
 
 export async function sceneTurn(a: SceneTurnInput) {
   if (!DOCS[a.scene.kind]) throw new GenError(`No AI for ${a.scene.kind} scenes here`, { status: 400 });
-  const r = await callScope.run({ customer: true, org: orgOfProject(a.scene.project), house: isHouseProject(a.scene.project) }, () => ask(scenePrompt(a)));
+  const r = await callScope.run({ customer: true, org: orgOfProject(a.scene.project), house: isHouseProject(a.scene.project), who: a.scene.project }, () => ask(scenePrompt(a)));
   return { answer: parseScene(r.text, a.scene.doc), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }
 

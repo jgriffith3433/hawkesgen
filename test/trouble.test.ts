@@ -54,3 +54,12 @@ test('raw JSON, traces and keys never reach a sentence', () => {
   assert.doesNotMatch(scrub('failed with hg_0123456789abcdef'), /hg_0123/);
   assert.doesNotMatch(explain(new ApiError(junk, 500, null)).text, /Traceback|hg_|File/);
 });
+
+test('a full AI line, a full queue and a busy day keep Gen\'s own plain sentence', async () => {
+  const { friendly } = await import('../dashboard/gen/lib.js');
+  for (const [status, raw] of [[503, 'The AI is busy right now (you were number 2 in line). Nothing was used: try again in a minute.'], [429, 'You already have 2 AI requests going. Wait for one to finish, then ask again.'], [429, 'Too many jobs are waiting (20). Let some finish or cancel a few, then try again. Nothing was charged.'], [503, 'Hawkes Gen is busy right now. Nothing was charged: please try again later.']] as const) {
+    const f = friendly({ status, message: raw });
+    assert.equal(f.text, raw);
+    assert.equal(f.fix, 'retry');
+  }
+});

@@ -180,6 +180,7 @@ installPlaytest({
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
+    { id: 'aibusy', title: 'An AI turn that has to wait for a free slot shows its place in line, and gives up after the bound with one plain sentence (test account, AI mock)', seconds: 120 },
     { id: 'signupcap', title: 'Starter credits are capped: health counts signups and refused grants, and the limits are shown; this account sees its balance', seconds: 30 },
     { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
     { id: 'phone', title: 'Phone (390x844, touch): the five bottom tabs and the timeline stay on screen, no page zoom; every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
@@ -1505,6 +1506,35 @@ installPlaytest({
       window.fetch = realFetch;
       state.user = me;
       t.finish('done');
+      return;
+    }
+    if (id === 'aibusy') {
+      t.scene('AI line');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): two canned answers; the first holds its AI slot for 45 s, like a slow Claude (needs HAWKESGEN_AI_MOCK=1).
+      const q = await api('/v1/test/ai-mock', { method: 'POST', body: { answers: [{ match: 'slow first', holdMs: 45000, json: { say: 'Slow answer.', ops: [] } }, { match: 'second turn', json: { say: 'Second answer.', ops: [] } }] } }).catch((e) => ({ error: e.message }));
+      if (!q?.queued) { t.event('mock-off'); t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session'); t.finish('done'); return; }
+      made = await newScene('video', { title: `Playtest AI line ${new Date().toISOString().slice(0, 16)}` });
+      await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
+      // Setup shortcut (named): another AI turn of this account already holds the only slot (it is not awaited).
+      void api(`/v1/editor/projects/${made.id}/assistant`, { body: { messages: [{ role: 'user', text: 'slow first' }] } }).catch(() => {});
+      await sleep(1500);
+      // Real input: type the second message in the AI pane and press Enter.
+      const box = document.querySelector('#aiInput');
+      box.focus();
+      box.value = 'second turn: add a title';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      pressOn(box, 'Enter');
+      t.event('asked-while-busy');
+      const line = await until(() => /In line for the AI/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 15000);
+      t.metric('lineShown', line ? 1 : 0);
+      t.event(line ? 'queue-position-shown' : 'no-queue-position');
+      const gaveUp = await until(() => /The AI is busy right now|busy/.test(document.querySelector('#aiMessages .msg.err')?.textContent ?? ''), 50000);
+      const words = document.querySelector('#aiMessages .msg.err')?.textContent ?? '';
+      t.metric('gaveUp', gaveUp ? 1 : 0);
+      t.event(gaveUp ? 'gave-up-plainly' : 'no-give-up');
+      t.note(words.slice(0, 200));
+      t.finish(line && gaveUp && !/[{}]|status|Error:/.test(words) ? 'done' : 'stuck');
       return;
     }
     if (id === 'uploads') {

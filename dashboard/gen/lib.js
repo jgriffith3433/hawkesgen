@@ -134,6 +134,8 @@ export function friendly(err) {
   if (err?.data?.offline || (!status && (/failed to fetch|networkerror|load failed|network|^offline$/i.test(raw) || (typeof navigator !== 'undefined' && navigator.onLine === false)))) return { kind: 'offline', text: 'Can\'t reach Gen right now. Your work is kept here and saves as soon as you\'re back online.', fix: 'connection' };
   if (/AI isn.t available|no AI|connect your AI/i.test(raw)) return { kind: 'ai', text: 'The AI is not available right now. Try again in a little while.', fix: 'ai' };
   if (status === 413 || /too large|payload/i.test(raw)) return { kind: 'big', text: 'That file is too big (1.5 GB at most).' };
+  // Gen's own plain words for a full line or a busy day (src/aigate.ts, src/jobs.ts admitJob): they say what to do already.
+  if ((status === 429 || status === 503) && /^(The AI is busy right now|You already have \d+ AI requests|Too many jobs are waiting|Hawkes Gen is busy right now)/.test(raw)) return { kind: 'busy', text: plainError(raw), fix: 'retry' };
   if (status === 429 || /rate limit|too many/i.test(raw)) {
     const n = Math.max(1, Math.ceil(Number(err?.retryAfter) || 0));
     return { kind: 'slow', text: err?.retryAfter ? `Too many requests, try again in ${n} s.` : 'Too many requests, try again in a few seconds.', fix: 'retry', wait: err?.retryAfter ? n : null };
