@@ -10,6 +10,9 @@
 //   account  credits pill, account sheet with packs and plans, Help menu, shortcuts overlay, Terms and Privacy
 //   export   a short plain cut from the library's clips, exported: the file loads and plays
 //            (create, account, export: option {"broken":true} sabotages what they look at, and each must then report a problem)
+//   ai-edit, ai-undo, ai-proposal, ai-nocredits, ai-signedout, ai-outage: the AI pane (docs/ai-mock.md). The test account's canned
+//            answers (POST /v1/test/ai-mock, a named setup shortcut) stand in for Claude, so no house AI is spent; the message is typed
+//            with key events into #aiInput, and nothing here ever presses Make it on a proposal (that would be GPU money)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
@@ -19,7 +22,7 @@ import { snapStats } from './timeline.js';
 import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
 import { activeScene, newScene } from './scenes.js';
 import { startGuide, guideOpen } from './guide.js';
-import { api } from './lib.js';
+import { api, bus } from './lib.js';
 import { openStream } from './stream.js';
 import { runJob } from './media.js';
 import { streamState } from './trouble.js';
@@ -74,6 +77,49 @@ function formFaults(form) {
   return out;
 }
 
+
+/** Types into #aiInput one key at a time (keydown, input, keyup), then Enter: the way a person sends a message. */
+async function typeAi(text) {
+  const box = document.querySelector('#aiInput');
+  box.focus();
+  box.value = '';
+  for (const ch of text) {
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+    box.value += ch;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+    await sleep(8);
+  }
+  pressOn(box, 'Enter');
+}
+/** Setup shortcut (named): the test account's canned AI answers, replacing any left over. Null when the mock is off here. */
+async function mockAi(answers) {
+  await api('/v1/test/ai-mock', { method: 'DELETE' }).catch(() => {});
+  const q = await api('/v1/test/ai-mock', { method: 'POST', body: { answers } }).catch(() => null);
+  return q?.queued ? q : null;
+}
+/** Setup shortcut (named): a fresh video scene for the AI to work in. */
+async function aiScene(title) {
+  await until(() => activeScene(), 10000);
+  made = await newScene('video', { title: `${title} ${new Date().toISOString().slice(0, 16)}` });
+  return until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
+}
+/** Setup shortcut (named): the AI turn's call (POST /v1/showrunner/turn) answers the way Gen does in a bad moment; everything else is real. */
+function forceTurn(answer) {
+  const real = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+    if (url.pathname === '/v1/showrunner/turn') return Promise.resolve(answer());
+    return real(input, init);
+  };
+  return () => { window.fetch = real; };
+}
+const lastAi = () => [...document.querySelectorAll('#aiMessages .msg.ai:not(.pending)')].pop();
+const aiIdle = () => !document.querySelector('#aiSend')?.classList.contains('busy') && !document.querySelector('#aiMessages .msg.pending');
+/** What nothing on screen may show: JSON, a trace, a key, a stray "undefined". */
+const RAW_AI = /[{}<>]|"error"|Traceback|File "|\bat \S+:\d+|hg_[0-9a-f]{6}|sk-ant|hgm_|undefined|\[object/;
+const TITLE_OP = (text) => ({ op: 'add', track: 'T1', kind: 'text', text, start: 0, duration: 3 });
+
 let made = null;
 installPlaytest({
   product: 'hawkesgen-app',
@@ -96,6 +142,12 @@ installPlaytest({
     { id: 'create', title: 'Create: one tool form from each group (images, video, 3D, animation, audio, chains) shows its fields, its price and a Make button; Make is never pressed and no job starts', seconds: 90 },
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
+    { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
+    { id: 'ai-undo', title: 'AI pane: Undo this removes what the AI added, and Ctrl+Z brings it back', seconds: 60 },
+    { id: 'ai-proposal', title: 'AI pane: an answer over 40 credits shows a proposal card with its price, and nothing starts (Make it is never pressed)', seconds: 60 },
+    { id: 'ai-nocredits', title: 'AI pane: with no credits left the answer is a plain 402 line with Add credits, and the timeline is unchanged', seconds: 60 },
+    { id: 'ai-signedout', title: 'AI pane signed out: the sign-in gate shows, a typed message opens Sign in and nothing is sent', seconds: 40 },
+    { id: 'ai-outage', title: 'AI pane in an outage: 503, 429, an unreadable page and a garbled answer each show one plain line (no JSON, trace or key) and the pane unlocks', seconds: 90 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -123,6 +175,166 @@ installPlaytest({
         t.event('welcome-checked');
       }
       t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
+      return;
+    }
+    if (id.startsWith('ai-')) {
+      if (id === 'ai-signedout') {
+        t.scene('Signed out');
+        await until(() => activeScene() || document.querySelector('#landing:not([hidden])'), 10000);
+        const me = state.user;
+        // Setup shortcut (named): a signed-in test account looks signed out for a moment (the session itself is untouched).
+        state.user = null;
+        bus.emit('ready');
+        const gate = document.querySelector('#aiGate');
+        t.metric('gateShown', gate && !gate.hidden && /Sign in/.test(gate.textContent) ? 1 : 0);
+        t.event('gate-shown');
+        const jobs = watchJobs();
+        const calls = [];
+        const real = window.fetch.bind(window);
+        window.fetch = (input, init) => { calls.push(new URL(typeof input === 'string' ? input : input.url, location.href).pathname); return real(input, init); };
+        const msgs0 = document.querySelectorAll('#aiMessages .msg').length;
+        await typeAi('add a title that says Hello');
+        const dlg = await until(() => document.querySelector('#authDialog')?.open, 4000, 100);
+        t.metric('signInOpened', dlg ? 1 : 0);
+        t.event(dlg ? 'sign-in-opened' : 'no-sign-in');
+        const sent = calls.filter((p) => p.startsWith('/v1/') && !/^\/v1\/users\//.test(p));
+        t.metric('sentToAi', sent.length + document.querySelectorAll('#aiMessages .msg').length - msgs0);
+        if (sent.length) t.problem('bug', `signed out, the AI pane called ${sent.join(', ')}`);
+        click('#authCancel');
+        window.fetch = real; jobs.stop();
+        state.user = me;
+        bus.emit('ready');
+        t.finish(dlg && !sent.length ? 'done' : 'stuck');
+        return;
+      }
+      if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
+      t.scene('AI pane');
+      const credits = () => Number(state.user?.credits ?? 0);
+      const clips = () => P.doc?.clips?.length ?? 0;
+      const titles = () => (P.doc?.clips ?? []).filter((c) => c.kind === 'text').length;
+      const mockOff = () => { t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session: nothing to play'); t.event('mock-off'); t.finish('done'); };
+      const HELLO = { match: 'says Hello', cost: 0.01, json: { say: 'Added a title that says Hello.', ops: [TITLE_OP('Hello')] } };
+      if (id === 'ai-edit' || id === 'ai-undo') {
+        if (!await mockAi([HELLO])) return mockOff();
+        if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const before = { clips: clips(), titles: titles(), credits: credits() };
+        await typeAi('add a title that says Hello');
+        t.event('asked');
+        const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
+        const added = await until(() => titles() > before.titles, 5000, 100);
+        t.metric('clipsAdded', clips() - before.clips);
+        t.event(added ? 'title-added' : 'no-title');
+        const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
+        t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
+        if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
+        const paid = await until(() => credits() < before.credits, 8000, 150);
+        t.metric('creditsDelta', before.credits - credits());
+        t.event(paid ? 'credits-dropped' : 'credits-unchanged');
+        if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
+        if (id === 'ai-edit') { t.finish(reply && added && paid ? 'done' : 'stuck'); return; }
+        // Undo this: a click on the reply's own button, then Ctrl+Z.
+        const undo = [...document.querySelectorAll('#aiMessages button')].find((b) => /Undo this/.test(b.textContent));
+        t.metric('undoOffered', undo ? 1 : 0);
+        if (!undo || !added) { t.finish('stuck'); return; }
+        undo.click();
+        const gone = await until(() => titles() === before.titles, 5000, 100);
+        t.metric('undoRemoved', gone ? 1 : 0);
+        t.event(gone ? 'undone' : 'undo-failed');
+        press('z', { ctrlKey: true });
+        const back = await until(() => titles() > before.titles, 5000, 100);
+        t.metric('undoRestored', back ? 1 : 0);
+        t.event(back ? 'ctrl-z-restored' : 'ctrl-z-failed');
+        t.finish(gone && back ? 'done' : 'stuck');
+        return;
+      }
+      if (id === 'ai-proposal') {
+        // Setup shortcut (named): price a generate op, and ask for enough of them to pass the 40-credit limit.
+        const quote = await api('/v1/billing/quote', { body: { tool: 'video.t2v', params: { prompt: 'a sunrise' } } }).catch(() => null);
+        const each = Math.max(1, Number(quote?.credits ?? 0));
+        const n = Math.min(8, Math.ceil(45 / each));
+        t.metric('opPrice', each);
+        const gen = Array.from({ length: n }, (_, i) => ({ op: 'generate', tool: 'video.t2v', params: { prompt: `a sunrise over the sea, take ${i + 1}` }, place: { track: 'V1' } }));
+        if (!await mockAi([{ match: 'sunrise clips', cost: 0.01, json: { say: 'Here are the sunrise clips. They cost enough that I want your OK first.', ops: gen } }])) return mockOff();
+        if (!await aiScene('Playtest AI proposal')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const jobs = watchJobs();
+        const before = clips();
+        await typeAi('put in some sunrise clips');
+        t.event('asked');
+        const card = await until(() => document.querySelector('#aiMessages .proposal'), 20000, 100);
+        const price = Number(/(\d+) credits/.exec(card?.textContent ?? '')?.[1] ?? 0);
+        t.metric('proposalShown', card ? 1 : 0);
+        t.metric('proposalCredits', price);
+        t.event(card ? 'proposal-shown' : 'no-proposal');
+        const hasMake = [...(card?.querySelectorAll('button') ?? [])].some((b) => /Make it/.test(b.textContent));
+        t.metric('makeItOffered', hasMake ? 1 : 0);
+        await sleep(2500);
+        // Nothing started before Make it: no job sent and no waiting clip. Make it itself is left alone (it is GPU money); Skip closes the card.
+        t.metric('jobsStarted', jobs.sent.length);
+        t.metric('clipsAdded', clips() - before);
+        t.event(!jobs.sent.length && clips() === before ? 'nothing-started' : 'something-started');
+        if (jobs.sent.length) t.problem('bug', `a proposal started ${jobs.sent.join(', ')} before Make it`);
+        if (price <= 40) t.problem('bug', `the proposal shows ${price} credits: not over the 40-credit limit`);
+        [...(card?.querySelectorAll('button') ?? [])].find((b) => /Skip/.test(b.textContent))?.click();
+        jobs.stop();
+        t.finish(card && hasMake && price > 40 && !jobs.sent.length && clips() === before ? 'done' : 'stuck');
+        return;
+      }
+      if (id === 'ai-nocredits') {
+        if (!await aiScene('Playtest AI no credits')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const before = { clips: clips(), credits: credits() };
+        // Setup shortcut (named): the AI turn answers 402, the way Gen does at zero credits (the account's real balance is kept).
+        const restore = forceTurn(() => new Response(JSON.stringify({ error: 'Not enough credits: this needs 1 and you have 0 Traceback hg_0123456789abcdef' }), { status: 402, headers: { 'Content-Type': 'application/json' } }));
+        await typeAi('add a title that says Hello');
+        t.event('asked');
+        await until(() => document.querySelector('#aiMessages .msg.err'), 10000, 100);
+        restore();
+        const msg = [...document.querySelectorAll('#aiMessages .msg.err')].pop();
+        const text = msg?.textContent ?? '';
+        const button = msg?.querySelector('button')?.textContent ?? '';
+        const ok = /out of credits/i.test(text) && !RAW_AI.test(text) && /Add credits/.test(button);
+        t.metric('plainLine', ok ? 1 : 0);
+        t.metric('timelineChanged', clips() - before.clips);
+        t.metric('creditsDelta', before.credits - credits());
+        t.event(ok ? '402-plain' : '402-bad');
+        if (!ok) t.problem('bug', `the 402 line is "${text.slice(0, 160)}" / button "${button}"`);
+        if (clips() !== before.clips) t.problem('bug', 'the timeline changed on a refused turn');
+        t.finish(ok && clips() === before.clips ? 'done' : 'stuck');
+        return;
+      }
+      // ai-outage
+      if (!await mockAi([{ match: 'garbled one', json: undefined, text: 'zxq ```{{ ~~ ### 0xDEAD', cost: 0.01 }])) return mockOff();
+      if (!await aiScene('Playtest AI outage')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const start = clips();
+      const cases = [
+        { key: '503', ask: 'add a title during the 503', answer: () => new Response(JSON.stringify({ error: 'The AI is not available Traceback sk-ant-oat01-abcdefghijkl' }), { status: 503, headers: { 'Content-Type': 'application/json' } }), words: /busy or resting|isn.t available|not available/i, strict: true },
+        { key: '429', ask: 'add a title during the 429', answer: () => new Response(JSON.stringify({ error: 'slow down', retryAfter: 7 }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } }), words: /Too many requests, try again in 7 s/, strict: true },
+        { key: 'page', ask: 'add a title on a broken page', answer: () => new Response('<!DOCTYPE html><html><body>502 Bad Gateway Traceback hg_0123456789abcdef</body></html>', { status: 200, headers: { 'Content-Type': 'text/html' } }), words: /interrupted|try again/i, strict: true },
+        { key: 'garbled', ask: 'add a title, garbled one', answer: null, words: /./, strict: false },
+      ];
+      let plain = 0, unlocked = 0;
+      for (const c of cases) {
+        t.scene(`Outage: ${c.key}`);
+        const restore = c.answer ? forceTurn(c.answer) : () => {};
+        const seen = document.querySelectorAll('#aiMessages .msg').length;
+        await typeAi(c.ask);
+        await until(() => document.querySelectorAll('#aiMessages .msg').length >= seen + 2 && aiIdle(), 15000, 100);
+        restore();
+        const m = c.key === 'garbled' ? lastAi() : [...document.querySelectorAll('#aiMessages .msg.err')].pop();
+        const text = m?.textContent ?? '';
+        // A garbled model answer is shown as the words it was; a trace or a key in it never is.
+        const clean = c.strict ? !RAW_AI.test(text) : !/Traceback|File "|\bat \S+:\d+|hg_[0-9a-f]{6}|sk-ant|hgm_/.test(text);
+        const ok = Boolean(text) && c.words.test(text) && clean;
+        const free = aiIdle() && !document.querySelector('#aiInput').disabled && !document.querySelector('#aiForm')?.classList.contains('locked');
+        if (ok) plain++;
+        if (free) unlocked++;
+        t.metric(`plain-${c.key}`, ok ? 1 : 0);
+        t.metric(`unlocked-${c.key}`, free ? 1 : 0);
+        t.event(`${c.key}-${ok && free ? 'ok' : 'bad'}`);
+        if (!ok) t.problem('bug', `AI outage "${c.key}" shows "${text.slice(0, 160)}"`);
+        if (!free) t.problem('bug', `the AI pane stayed locked after "${c.key}"`);
+      }
+      t.metric('clipsAddedByOutages', clips() - start);
+      t.finish(plain === cases.length && unlocked === cases.length ? 'done' : 'stuck');
       return;
     }
     if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
