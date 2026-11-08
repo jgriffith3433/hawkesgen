@@ -3,6 +3,7 @@
 
 import { clientIp } from './analytics/collect.ts';
 import { signupStats } from './signupcap.ts';
+import { addStream } from './eventhub.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -230,6 +231,9 @@ export function isCustomer(c: Client) {
   return c.projects.length > 0 && c.projects.every((p) => p !== '*' && globs.some((g) => (g.endsWith('*') ? p.startsWith(g.slice(0, -1)) : p === g)));
 }
 const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|playtest\/capacity|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
+
+const plainStreamEvent = (_name: string, d: any) => d;
+const publicStreamEvent = (name: string, d: any) => (name === 'job' ? publicJob(d, true) : d);
 
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
@@ -1429,36 +1433,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       // X-Accel-Buffering keep proxies from holding events back; the 20 s ping below keeps idle connections open.
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       res.write('retry: 5000\n: hello\n\n');
-      const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(publicJob(j, isCustomer(client)))}\n\n`);
-      // Library changes (src/entities.ts): an entity edited, a take filed, picked or discarded.
-      const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
-      events.on('job', onJob);
-      events.on('library', onLibrary);
-      // Productions (src/showrunner/production.ts): progress, and "done" when one finishes.
-      const onProduction = (e: any) => canProject(client, String(e.project)) && res.write(`event: production
-data: ${JSON.stringify(e)}
-
-`);
-      events.on('production', onProduction);
-      // A scene saved (src/scenes.ts): an open editor, character sheet or world picks up edits made elsewhere (the AI, MCP,
-      // another tab) and fills in finished jobs without asking on a timer. Only ids and versions; the page reads the scene.
-      const onScene = (e: any) => canProject(client, String(e.project)) && res.write(`event: scene\ndata: ${JSON.stringify(e)}\n\n`);
-      events.on('scene', onScene);
-      // The studio's machinery (admins only): a machines reading was taken, or a bench run moved on. The page reads what it shows.
-      const ops = !isCustomer(client);
-      const onMachines = (e: any) => res.write(`event: machines\ndata: ${JSON.stringify(e)}\n\n`);
-      const onBench = (e: any) => res.write(`event: bench\ndata: ${JSON.stringify(e)}\n\n`);
-      if (ops) { events.on('machines', onMachines); events.on('bench', onBench); }
+      // One hub for every stream (src/eventhub.ts): events serialised once, sent only to their owner's streams, at most
+      // 3 streams per user (the oldest is told `bye` and closed; the page opens one again).
+      const forgetStream = addStream(client, res, { ops: !isCustomer(client), transform: isCustomer(client) ? publicStreamEvent : plainStreamEvent });
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
-      req.on('close', () => {
-        events.off('job', onJob);
-        events.off('library', onLibrary);
-        events.off('production', onProduction);
-        events.off('scene', onScene);
-        events.off('machines', onMachines);
-        events.off('bench', onBench);
-        clearInterval(ping);
-      });
+      req.on('close', () => { forgetStream(); clearInterval(ping); });
       return;
     }
 

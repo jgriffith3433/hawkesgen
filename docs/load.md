@@ -53,3 +53,27 @@ A token bucket per caller and class of route, checked first in `handle` (api.ts)
 - **Harness:** each load user gets its own address (`X-Forwarded-For`, trusted on loopback), and the `limits` storm hammers
   sign-in from one address (expects 429 + Retry-After) and `/v1/health` (expects none). Those calls are not in the route table,
   so "429s under 1%" still judges normal use.
+
+## Live streams (`src/eventhub.ts`, `GET /v1/events`) and the Cloud Run settings
+- **One hub, not a listener per connection.** The hub holds one bus listener per event name for the whole process; each event is
+  serialised once (twice at most: a customer's public shape and the plain one) and written to the streams that may see it.
+  Streams are bucketed by the project a customer key is fixed to, so an event touches only its owner's streams; owner, admin
+  and pattern keys (the portal's `usr_*`) are checked with `canProject`. `machines` and `bench` go to admin streams only.
+  `events.setMaxListeners(50)` stays only as a leak alarm: streams no longer add listeners.
+- **Cap: 3 streams per account** (the key plus the projects it is narrowed to). The 4th closes the oldest after
+  `event: bye` `{"reason":"limit"}`. `dashboard/gen/stream.js` closes on `bye`, waits the longest delay (30 s plus jitter, so
+  tabs don't evict each other in a loop) and opens again, then calls `onReconnect` so the page catches up. HTTP errors and drops
+  keep their growing wait. No timer fetches anything.
+- **Harness:** `--tabs N` opens N streams per account. With 4 or more the check "tabs hold streams (3 per account at most)"
+  expects the server to keep 3 each.
+- **Measured locally** (mock providers, 150 accounts x 3 tabs = 450 held streams, 0.2 jobs/s each, no storms): sign-in p95 546 ms,
+  job submit p95 6 ms, peak RSS 259 MB (heap 64 MB), event-loop lag worst 479 ms, 0 errors. 60 accounts with 1 tab or with 4
+  tabs (180 held): submit p95 7 ms either way, so extra tabs do not move submit latency. The sign-up storm (all accounts sign in
+  at once) is slow with or without streams (about 3 s p95 at 60 accounts: password hashing), as before.
+- **Cloud Run recommendation (not applied):** each stream is an open request, so it uses one of the instance's `--concurrency`
+  slots for as long as it is open. `tools/gen-cloudrun/deploy.mjs` has `--max-instances=1 --concurrency=80`: 80 streams fill the
+  instance and the 81st connection waits for a slot, long before memory matters (450 streams took about 260 MB of the 4 GiB).
+  Raise concurrency to about 400 (the cap of 3 per account keeps tabs bounded; Node is single-threaded and each idle stream
+  costs a socket and a 20 s ping) and keep `--cpu=2`; 2 GiB would be enough but the saving is small, so leave memory at 4Gi.
+  This was reasoned from the local run above, which cannot reproduce Cloud Run's slot accounting, so `deploy.mjs` is unchanged:
+  run `tools/load` against beta with `--url` after setting `--concurrency=400` there first (J's deploy), then change the script.

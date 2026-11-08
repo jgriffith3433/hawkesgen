@@ -243,3 +243,33 @@ test('Gen Bench and the quality door are the studio\'s: a customer gets 403', as
     assert.equal((await call(portal, route, { body, method: body ? 'POST' : 'GET', project: 'usr_aaaa' })).status, 403, `${route} (portal key)`);
   }
 });
+
+test('live streams: a customer hears only their own project\'s events, and a 4th stream closes the oldest', async () => {
+  const { events } = await import('../src/bus.ts');
+  const other = createClient('another customer (test)', 'user', ['usr_dddd']).key;
+  const open = async (key: string) => {
+    const ac = new AbortController();
+    const r = await fetch(base + '/v1/events', { headers: { authorization: `Bearer ${key}` }, signal: ac.signal });
+    assert.equal(r.status, 200);
+    const o = { text: '', ended: false, ac };
+    (async () => { const dec = new TextDecoder(); try { for await (const c of r.body as any) o.text += dec.decode(c, { stream: true }); } catch {} o.ended = true; })();
+    return o;
+  };
+  const wait = async (fn: () => boolean) => { for (let i = 0; i < 100 && !fn(); i++) await new Promise((r) => setTimeout(r, 20)); };
+  const mine = await open(own), theirs = await open(other);
+  await wait(() => mine.text.includes('hello') && theirs.text.includes('hello'));
+  events.emit('scene', { id: 'sn_x', project: 'usr_cccc', kind: 'image', version: 1 });
+  events.emit('library', { entity: 'usr_cccc/thing', slot: 'a' });
+  events.emit('production', { project: 'usr_cccc', id: 'p_1' });
+  events.emit('machines', { at: 1 });
+  await wait(() => mine.text.includes('event: production'));
+  assert.match(mine.text, /event: scene/);
+  assert.match(mine.text, /event: library/);
+  assert.ok(!theirs.text.includes('event:'), 'another customer hears none of it');
+  assert.ok(!mine.text.includes('event: machines'), 'a customer never gets the studio\'s machinery events');
+  const extra = [await open(own), await open(own), await open(own)];
+  await wait(() => mine.ended);
+  assert.ok(mine.text.includes('event: bye') && mine.ended, 'the oldest stream is told to come back and closed');
+  assert.ok(!extra[2].ended);
+  for (const o of [mine, theirs, ...extra]) o.ac.abort();
+});
