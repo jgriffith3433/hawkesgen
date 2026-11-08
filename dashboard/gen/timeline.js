@@ -557,7 +557,9 @@ function clipPointer(e, c) {
   const sp = c.speed || 1;
   let marker = null, targetIndex = null, targetTrack = c.track;
   const room = neighbours(c);
+  // Only the finger that took the clip moves it: a second one landing (a pinch to zoom the timeline) stops the drag.
   const move = (ev) => {
+    if (ev.pointerId !== e.pointerId) return;
     const dx = ev.clientX - x0;
     if (!active && Math.abs(dx) < 4 && Math.abs(ev.clientY - y0) < 6) return;
     active = true;
@@ -604,10 +606,13 @@ function clipPointer(e, c) {
       el.style.left = `${xOf(c.start)}px`;
     }
   };
-  const up = () => {
+  const second = (ev) => { if (ev.pointerType === 'touch' && ev.pointerId !== e.pointerId) up({ pointerId: e.pointerId }); };
+  const up = (ev) => {
+    if (ev && ev.pointerId !== e.pointerId) return;
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', up);
     removeEventListener('pointercancel', up);
+    removeEventListener('pointerdown', second, true);
     marker?.remove();
     hideGuide(true);
     if (!active) return;
@@ -627,6 +632,7 @@ function clipPointer(e, c) {
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
   addEventListener('pointercancel', up);
+  addEventListener('pointerdown', second, true);
 }
 
 /** The transition menu at a join of the main track. */
