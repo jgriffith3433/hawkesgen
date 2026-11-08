@@ -165,7 +165,7 @@ export function isGenAdmin(user: Pick<UserRow, 'id' | 'email'>): boolean {
   return Boolean(db.prepare('SELECT 1 FROM user_google WHERE user_id = ?').get(user.id));
 }
 
-export function googleSignin(who: { sub: string | null; email: string; name: string | null }, ip?: string | null) {
+export function googleSignin(who: { sub: string | null; email: string; name: string | null }, ip?: string | null, opts: { loadTest?: boolean } = {}) {
   if (!who.sub) throw new GenError('That Google sign-in has no account id. Try again.', { status: 401 });
   const email = who.email.trim().toLowerCase();
   if (!EMAIL_RE.test(email)) throw new GenError('That Google account has no usable email');
@@ -175,11 +175,13 @@ export function googleSignin(who: { sub: string | null; email: string; name: str
   if (!user) {
     // A new account: no password (an unusable hash), the starter credits, its own project and key, as signupUser does.
     // Over the per-address or daily cap (src/signupcap.ts) the account is made and signed in, without the starter grant.
-    const asked = starterCredits();
+    // A load-test account (the test sign-in on beta, project `load-*`, src/testsignin.ts) takes no starter grant and is not
+    // counted against the per-address or daily caps, which stay as they are for everyone else.
+    const asked = opts.loadTest ? 0 : starterCredits();
     const verdict = decideStarter(ip ?? null, asked);
     const starter = verdict.grant ? asked : 0;
     const made = signupUser({ email, password: crypto.randomBytes(24).toString('base64url'), name: who.name ?? undefined }, { starter });
-    recordSignup(ip ?? null, starter, verdict.grant ? null : verdict.reason);
+    if (!opts.loadTest) recordSignup(ip ?? null, starter, verdict.grant ? null : verdict.reason);
     db.prepare("UPDATE users SET password_hash = 'google' WHERE id = ?").run(made.user.id);
     db.prepare('INSERT INTO user_google (user_id, sub, linked) VALUES (?, ?, ?)').run(made.user.id, who.sub, Date.now());
     return { user: made.user, sessionToken: made.sessionToken, created: true, notice: verdict.grant || asked <= 0 ? undefined : STARTER_REFUSED_MESSAGE };

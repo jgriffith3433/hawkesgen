@@ -1,0 +1,68 @@
+# Load test on beta (docs/load.md, "Remote mode"): N test accounts x tabs held /v1/events streams, sign-ins and free
+# POST /v1/estimate calls. No tool, provider or GPU runs. Beta's test sign-in secret (the one set with
+# PUT /v1/admin/test-signin) is read while it runs from beta's own state bucket (gs://<project>-gen-beta-state/state/
+# test-signin.json, which src/cloudhost.ts syncs from DATA_DIR), as gen-deployer through the same keyless sign-in as
+# ci.yml (J, 2026-11-08: "Yes, read it"). It is masked at once, kept only in the load step's environment and never
+# printed, written to a file or uploaded. The GitHub secret GEN_TEST_SIGNIN_SECRET (beta environment) overrides it if set.
+# The load-NNNN accounts are deleted at the end. Sign-in is a strict route (15 a minute per address), so 150 accounts
+# take about ten minutes to sign in and ten more to delete.
+#   gh workflow run ops-load-beta.yml --repo jgriffith3433/hawkesgen --ref beta -f accounts=30 -f tabs=3
+name: ops-load-beta
+on:
+  workflow_dispatch:
+    inputs:
+      accounts:
+        description: Test accounts (30 x 3 = 90 streams, then 150 x 3 = 450)
+        default: '30'
+      tabs:
+        description: Streams per account (3 at most)
+        default: '3'
+      duration:
+        description: Seconds of free estimate calls while streams are held
+        default: '60'
+permissions:
+  contents: read
+env:
+  PROJECT: hawkes-staging
+  PROJECT_NUMBER: '388576319982'
+concurrency:
+  group: ops-load-beta
+  cancel-in-progress: false
+jobs:
+  load:
+    name: Load test beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: beta
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # The same keyless sign-in as ci.yml: only this repo's main and beta may become gen-deployer (run it on beta).
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ env.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-gen
+          service_account: gen-deployer@${{ env.PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Run
+        env:
+          OVERRIDE: ${{ secrets.GEN_TEST_SIGNIN_SECRET }}
+          ACCOUNTS: ${{ inputs.accounts }}
+          TABS: ${{ inputs.tabs }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          set +x
+          GEN_TEST_SIGNIN_SECRET="$OVERRIDE"; unset OVERRIDE
+          if [ -z "$GEN_TEST_SIGNIN_SECRET" ]; then
+            # Read straight into a variable: never echoed, never on disk. Only the .secret field is kept.
+            GEN_TEST_SIGNIN_SECRET=$(gcloud storage cat "gs://$PROJECT-gen-beta-state/state/test-signin.json" --project "$PROJECT" \
+              | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{process.stdout.write(String(JSON.parse(d).secret||""))}catch{}})') || true
+          fi
+          [ -n "$GEN_TEST_SIGNIN_SECRET" ] || { echo "No test sign-in secret: beta has none set (owner: PUT /v1/admin/test-signin on beta.hawkesgen.ai) and the GitHub secret GEN_TEST_SIGNIN_SECRET in the beta environment is empty"; exit 1; }
+          echo "::add-mask::$GEN_TEST_SIGNIN_SECRET"
+          export GEN_TEST_SIGNIN_SECRET
+          node tools/load/remote.mjs --accounts "$ACCOUNTS" --tabs "$TABS" --duration "$DURATION"

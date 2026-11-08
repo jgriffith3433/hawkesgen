@@ -77,3 +77,24 @@ A token bucket per caller and class of route, checked first in `handle` (api.ts)
   costs a socket and a 20 s ping) and keep `--cpu=2`; 2 GiB would be enough but the saving is small, so leave memory at 4Gi.
   This was reasoned from the local run above, which cannot reproduce Cloud Run's slot accounting, so `deploy.mjs` is unchanged:
   run `tools/load` against beta with `--url` after setting `--concurrency=400` there first (J's deploy), then change the script.
+
+## Remote mode: the same crowd against beta, nothing paid (`tools/load/remote.mjs`, workflow `ops-load-beta`)
+J, 2026-11-08: no secrets handed over and nothing paid. Remote mode holds `/v1/events` streams (`--tabs` per account, 3 at most)
+and signs in `--accounts` test accounts (`load-NNNN`), then calls **`POST /v1/estimate`** (reads job history only: no tool,
+provider or GPU) where the local harness submits jobs. `https://beta.hawkesgen.ai` only (a local copy is accepted to try the
+harness), health must say lane `beta`. `GEN_TEST_SIGNIN_SECRET` comes from the environment and is never printed.
+- **Limiter-aware:** sign-in is strict (15 a minute per address, one address from CI), so a 429 waits its `Retry-After`; the first
+  429 per route is reported. 150 accounts take about ten minutes to sign in and ten to delete.
+- **Accounts:** a project named `load-*` through the test sign-in (beta, or a local copy with the flag) gets no starter grant and is
+  not counted in `signup_log`, so the per-address and daily caps stay as they are for everyone else (`users.ts googleSignin`
+  `loadTest`). `POST /v1/users/test-session/delete` (same signed token, `load-*` only) removes the account and what it made; the
+  harness calls it at the end, on Ctrl+C and on error (`--keep` skips it).
+- **Run it:** Actions > ops-load-beta (workflow_dispatch, `beta` environment), `accounts` 30 x `tabs` 3 = 90 streams first, then
+  150 x 3 = 450. The secret is read while the job runs from beta's own state bucket (`gs://hawkes-staging-gen-beta-state/
+  state/test-signin.json`, synced from `DATA_DIR` by `src/cloudhost.ts`) as gen-deployer, through ci.yml's keyless sign-in (J,
+  2026-11-08: "Yes, read it"; no IAM grants added), masked at once and kept only in the load step's environment: never printed,
+  written or uploaded. The GitHub secret `GEN_TEST_SIGNIN_SECRET` (`beta` environment) overrides it when set; with neither, the
+  job stops and says so. So the only setup is beta's own secret (`PUT /v1/admin/test-signin`). The table and checks go to the
+  run's summary.
+- Passes when more than 80 streams are open at once (proves Cloud Run concurrency above 80), no drops, no 5xx, no errors,
+  estimate p95 in bounds, no restart, all accounts removed.

@@ -52,3 +52,6 @@ export function checkTestToken(b: any, now = Date.now()): string {
 
 /** The project's test account, as a Google sign-in would make it. */
 export const testAccountOf = (project: string) => ({ sub: `playtest:${project}`, email: `playtest+${project}@playtest.hawkesgen.ai`, name: `Playtest (${project})` });
+
+/** Load-test accounts (tools/load/remote.mjs): project `load-*`. They skip the starter grant and the sign-up caps, and may be deleted by their own token. */
+export const isLoadProject = (project: string) => /^load-[a-z0-9-]{1,32}$/.test(project);
