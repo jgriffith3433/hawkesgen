@@ -626,3 +626,57 @@ test('bots: isbot user agents, crawler and cloud ranges (a touch makes a cloud v
   await markIt({ kind: home.kind, value: home.value, on: false });
   useRanges([]);
 });
+
+test('the overview says every product is alive or quiet: last event, events and bot events in 24 hours (no events = quiet)', async () => {
+  resetRateLimits();
+  const { products } = await import('../src/analytics/registry.ts');
+  const now = Date.now();
+  // One batch through the collect door's own rules, at a given server time, from a given origin and agent.
+  const put = (product: string, origin: string, at: number, events: any[], flags: any = {}, ua = CHROME) => {
+    const anon = ids().anon;
+    const session = ids().session;
+    const r = normalize({ product, anon, session, build: { version: '3.1' }, flags, events: events.map((e, i) => ({ seq: i, t: at + i, page: '/', ...e })) },
+      { origin, ua, ip: null, now: at });
+    assert.ok(r.batch, r.reason);
+    ingest(r.batch!);
+  };
+  const LTV = 'https://imaginelivetv.com';
+  put('imaginelivetv', LTV, now - 30 * 3600_000, [{ name: 'page_view' }]); // a day and a bit old: history, but quiet now
+  put('imaginelivetv', LTV, now - 3600_000, [{ name: 'page_view' }, { name: 'session_end', props: { active: 5 } }]); // the last human event
+  put('imaginelivetv', LTV, now - 600_000, [{ name: 'page_view' }], { internal: true }); // J's own device: left out
+  put('imaginelivetv', LTV, now - 2 * 3600_000, [{ name: 'page_view' }, { name: 'level_start' }, { name: 'level_end' }], { playtest: true }); // a playtest run: bot events
+  put('imaginelivetv', LTV, now - 5 * 60_000, [{ name: 'page_view' }], {}, 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'); // a crawler: a bot too
+  put('hawkesbiomedical', 'https://hawkesbiomedical.com', now - 72 * 3600_000, [{ name: 'page_view' }]); // only old events
+
+  const ov = await (await fetch(`${base}/v1/analytics/overview?env=all`)).json();
+  const byId = new Map<string, any>(ov.products.map((p: any) => [p.product, p]));
+  // 1. every registered product, with the four fields
+  for (const id of products().keys()) {
+    const p = byId.get(id);
+    assert.ok(p, `${id} listed`);
+    for (const k of ['lastEventAt', 'events24h', 'botEvents24h', 'quiet']) assert.ok(k in p, `${id}.${k}`);
+    assert.equal(typeof p.quiet, 'boolean');
+  }
+  // 2. a product with no events at all is quiet, with nothing to show
+  assert.deepEqual(
+    { lastEventAt: byId.get('icanbe').lastEventAt, events24h: byId.get('icanbe').events24h, botEvents24h: byId.get('icanbe').botEvents24h, quiet: byId.get('icanbe').quiet },
+    { lastEventAt: null, events24h: 0, botEvents24h: 0, quiet: true });
+  // Old events only: the last one is shown, and the product is quiet now.
+  assert.equal(byId.get('hawkesbiomedical').lastEventAt, now - 72 * 3600_000);
+  assert.equal(byId.get('hawkesbiomedical').quiet, true);
+  assert.equal(byId.get('hawkesbiomedical').events24h, 0);
+  // Recent traffic: human and bot events counted apart, J's internal device left out, quiet false.
+  const ltv = byId.get('imaginelivetv');
+  assert.equal(ltv.events24h, 2, 'two human page views in 24 hours (the internal one is left out, the 30-hour-old one too)');
+  assert.equal(ltv.botEvents24h, 4, 'the playtest run (3 events) and the crawler batch (1)');
+  assert.equal(ltv.quiet, false);
+  assert.equal(ltv.lastEventAt, now - 5 * 60_000, 'the newest event the filters let through (the crawler batch; J\'s internal one is left out)');
+  // The 24-hour figures ignore the range and build filters, and internal=1 brings J's events in.
+  const ltvInternal = (await (await fetch(`${base}/v1/analytics/overview?env=all&internal=1&range=24h&build=nope`)).json()).products.find((p: any) => p.product === 'imaginelivetv');
+  assert.equal(ltvInternal.events24h, 3);
+  assert.equal(ltvInternal.quiet, false);
+  // The same without a query string (env live by default).
+  const live = Q.overview(Q.parseFilters(() => undefined, now), now).products.find((p: any) => p.product === 'imaginelivetv');
+  assert.equal(live.events24h, 2);
+  assert.equal(live.botEvents24h, 4);
+});

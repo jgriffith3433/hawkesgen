@@ -198,6 +198,23 @@ function period(product: string, f: Filters, from: number, to: number) {
 }
 const trend = (cur: number, prev: number) => (prev ? round((cur - prev) / prev, 3) : null);
 
+/**
+ * Whether a product is alive: the time of its last stored event, and its events in the last 24 hours, human and bot
+ * apart (bot = a session the verdict flagged: a playtest, a crawler, a data centre, automation). The env and J's
+ * internal filter apply as on the rest of the page; the range, build and other filters don't (this is about now).
+ * Two index-friendly reads: events_time (product, at) for the window, and the same index backwards for the last one.
+ */
+export function liveness(product: string, f: Filters, now = Date.now()) {
+  const w = sessionWhere(product, { ...f, bots: true, build: undefined, device: undefined, browser: undefined, country: undefined, user: undefined, engaged: false }, 's');
+  const counts = adb.prepare(`SELECT s.bot AS bot, COUNT(*) AS n FROM events e JOIN sessions s ON s.product = e.product AND s.id = e.session WHERE e.product = ? AND e.at >= ? AND ${w.sql} GROUP BY s.bot`)
+    .all(product, now - DAY, ...w.args) as { bot: number; n: number }[];
+  const human = counts.find((r) => !r.bot)?.n ?? 0;
+  const bot = counts.find((r) => r.bot)?.n ?? 0;
+  const last = adb.prepare(`SELECT e.at AS at FROM events e JOIN sessions s ON s.product = e.product AND s.id = e.session WHERE e.product = ? AND ${w.sql} ORDER BY e.at DESC LIMIT 1`)
+    .get(product, ...w.args) as { at: number } | undefined;
+  return { lastEventAt: last?.at ?? null, events24h: human, botEvents24h: bot, quiet: human + bot === 0 };
+}
+
 /** Every product: active now, visitors and sessions today / 7d / 30d with the trend, a daily series and the headline KPIs. */
 export function overview(f: Filters, now = Date.now()) {
   const out: any[] = [];
@@ -234,6 +251,7 @@ export function overview(f: Filters, now = Date.now()) {
       biggestDropoff: drop.biggest,
       errorRate: rate(rows.filter((r) => r.errors > 0).length, rows.length),
       rating: fb.rating,
+      ...liveness(p.id, f, now),
     });
   }
   return { from: f.from, to: f.to, env: f.env ?? 'all', products: out };

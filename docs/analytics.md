@@ -327,7 +327,9 @@ Times are UTC. A session belongs to the range it started in; events to the range
 | Route | What |
 |---|---|
 | `GET /v1/analytics/products` | The registry |
-| `GET /v1/analytics/overview` | Every product: `activeNow` (sessions with a batch in the last 5 minutes), `today` / `7d` / `30d` visitors and sessions with `previous` and `trend` (against the period before of the same length), `daily` (30 days), new vs returning visitors, median active seconds, D1/D7 retention, the biggest drop-off, error rate, rating |
+| `GET /v1/analytics/overview` | Every product in the registry (even one with no events): `activeNow` (sessions with a batch in the last 5 minutes), `today` / `7d` / `30d` visitors and sessions with `previous` and `trend` (against the period before of the same length), `daily` (30 days), new vs returning visitors, median active seconds, D1/D7 retention, the biggest drop-off, error rate, rating, and whether it is alive: `lastEventAt` (ms, the newest stored event, null when none), `events24h` (events in the last 24 hours from people), `botEvents24h` (events in the last 24 hours from sessions flagged as bots: playtests, crawlers, data centres, automation), `quiet` (true when there was no event in the last 24 hours, human or bot) |
+
+The liveness fields follow the `env` filter (live by default; `env=all` for every env) and leave out J's internal sessions unless `internal=1`. They ignore the range, `build`, `device`, `browser`, `country`, `user` and `engaged` filters, since they are about now. They are read from `events` joined to `sessions` on the events' indexes (`events_time`: a 24-hour range, and the same index backwards for the last event), so the overview stays cheap as the table grows.
 | `GET /v1/analytics/:product` | Every section below at once |
 | `…/:product/traffic` | Referrers (host, and host + path), UTM source / medium / campaign, landing pages, countries, regions, cities, browsers, OS, devices, screen sizes, languages, time zones: sessions and visitors each |
 | `…/:product/sessions` | Length distribution (active time), sessions per player, median and p90 active seconds |

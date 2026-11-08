@@ -175,7 +175,9 @@ test('the 3D image installs code and venvs only (no weights, no disk check), fro
   assert.match(hash, /^[0-9a-f]{10}$/);
   const wf = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'gpu3d-image.yml'), 'utf8');
   assert.match(wf, /gpu3d-image-\*/);
-  assert.match(wf, /image-context-3d\.mjs/);
+  assert.match(wf, /image-3d-cloudbuild\.mjs/, 'built on Cloud Build: a runner disk is too small');
+  assert.match(wf, /crane copy/);
+  assert.match(wf, /hawkes-gen-gpu/, 'into the public package');
 });
 
 // ------------------------------------------------------------------ motion.from-video
