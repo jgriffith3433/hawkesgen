@@ -56,7 +56,7 @@ test('characterScript: the ops in Blender, then each preview shot rendered and e
   assert.match(s, /res\/preview-\$n\.mp4/);
   const tool = getTool('blender.character');
   assert.ok(tool && tool.family === 'blender' && tool.output === 'mesh' && tool.inputs.files.multiple);
-  assert.equal(tool!.version, 6);
+  assert.equal(tool!.version, 7);
 });
 
 test('checkOps: angles op (four stills for mesh judging)', () => {
@@ -371,4 +371,34 @@ test('blender.character bake and lod: gaps filled (no black between islands), ea
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+const pyOk = spawnSync('python3', ['--version']).status === 0;
+test('bone names: a Unity-named body with Mixamo-named fingers imports with no map (per family vote)', { skip: pyOk ? false : 'no python3' }, () => {
+  const r = spawnSync('python3', ['-I', 'test/fixtures/check_canon_map.py', 'post/blender/hawkes_character.py'], { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  const limbs = ['LeftUpLeg', 'LeftLeg', 'RightUpLeg', 'RightLeg', 'LeftArm', 'LeftForeArm', 'RightArm', 'RightForeArm'];
+  // Unity-named rig: thighs, shins, arms found as Unity names, no map.
+  assert.equal(out.unity.scheme, 'unity');
+  assert.deepEqual(out.unity.limbs, limbs);
+  assert.equal(out.unity.map.LeftUpLeg, 'LeftUpperLeg');
+  assert.equal(out.unity.map.LeftToeBase, 'LeftToes');
+  // Mixed rig (Person.fbx): Unity limbs, Mixamo fingers: both families found.
+  assert.equal(out.mixed.scheme, 'unity+mixamo');
+  assert.deepEqual(out.mixed.limbs, limbs);
+  assert.equal(out.mixed.map.LeftArm, 'LeftUpperArm');
+  assert.equal(out.mixed.map.LeftHandIndex1, 'LeftHandIndex1');
+  assert.equal(out.mixed.map.RightHandPinky4, 'RightHandPinky4');
+  // A plain Mixamo rig is unchanged.
+  assert.equal(out.mixamo.scheme, 'mixamo');
+  assert.deepEqual(out.mixamo.limbs, limbs);
+  assert.equal(out.mixamo.map.LeftUpLeg, 'mixamorig:LeftUpLeg');
+  // Asking for a scheme still means that scheme only.
+  assert.equal(out.forced.hasFinger, false);
+});
+
+test('the Blender script fails a retarget that maps no limb bone', () => {
+  const py = fs.readFileSync('post/blender/hawkes_character.py', 'utf8');
+  assert.match(py, /none of the 8 limb bones/);
 });

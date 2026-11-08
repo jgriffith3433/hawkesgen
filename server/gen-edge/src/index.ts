@@ -42,6 +42,19 @@ export function unreachable(request: Request): Response {
  */
 export const restarting = (r: Response) => r.headers.get('X-Hawkes-Restarting') === '1' || (r.status >= 500 && /text\/html/i.test(r.headers.get('Content-Type') ?? ''));
 
+/**
+ * A 429 that isn't Gen's own (Cloud Run's front end answers "Rate exceeded." as plain text when it has no room for a
+ * request): the API's JSON shape with Retry-After, so a client waits and asks again instead of choking on text
+ * (2026-11-08: a client following 20 jobs got the plain words). Gen's own 429s are JSON already and pass through.
+ */
+export function busy(r: Response): Response {
+  const after = Math.max(1, Math.min(120, Math.ceil(Number(r.headers.get('Retry-After'))) || 5));
+  void r.body?.cancel();
+  return new Response(JSON.stringify({ error: `Gen is busy for a moment: wait ${after} second${after === 1 ? '' : 's'}, then try again.`, kind: 'busy', retryAfter: after }), {
+    status: 429, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': String(after) },
+  });
+}
+
 /** The waits between tries of a read while Gen restarts: about 25 s in all, a deploy's handover. */
 export const RETRY_WAITS = [1000, 2000, 3000, 4000, 5000, 5000, 5000];
 let wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -71,6 +84,7 @@ async function forward(request: Request, target: string, body: BodyInit | null):
       console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname} to ${new URL(target).hostname} failed: ${(e as Error)?.message ?? e}`);
       return unreachable(request);
     }
+    if (r.status === 429 && isApi(new URL(request.url).pathname) && !/json/i.test(r.headers.get('Content-Type') ?? '')) return busy(r);
     if (!restarting(r)) {
       // Workers Logs keep only error lines (wrangler.jsonc): a 5xx from Gen is one, a routine hit is never logged.
       if (r.status >= 500) console.error(`gen-edge: ${request.method} ${new URL(request.url).pathname}: ${r.status} from ${new URL(target).hostname}`);

@@ -30,6 +30,9 @@ import { runpodCreditProblem } from '../gpu/credit.ts';
 import { healthOf } from '../gpu/health.ts';
 
 /** A heartbeat younger than this means the run is still going on some instance. */
+/** A worker's error that is a provider's rate limit ("HTTP Error 429: Too Many Requests"). Exported for tests. */
+export const RATE_LIMITED = /HTTP Error 429|Too Many Requests/i;
+
 const FRESH_MS = 60_000;
 /** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
 const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
@@ -143,6 +146,11 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
 
   /** The final line of a run: its files, or an error that says what happened. */
   const finish = (m: any): CloudFile[] => {
+    // A provider (or Gen's own limiter) answered "429 Too Many Requests" to the worker part way: not the job's fault and
+    // nothing it ran is billed. The queue puts it back with a backoff (jobs.ts, `rateLimited`).
+    if (m.t !== 'done' && !m.cancelled && RATE_LIMITED.test(String(m.message ?? ''))) {
+      throw Object.assign(new Error(`${svc.name}: ${m.message}`), { rateLimited: true });
+    }
     hooks.addSeconds(Number(m.seconds) || 0, Number(m.cold?.startupSeconds) || 0);
     // What the graph held on the card at its peak (the worker samples it; older images don't send it).
     if (m.vram?.peakMB) hooks.step(`${svc.name}: GPU memory at peak ${(m.vram.peakMB / 1024).toFixed(1)} GB of ${(m.vram.totalMB / 1024).toFixed(0)} GB${m.vram.gpu ? ` (${m.vram.gpu})` : ''}, ${m.seconds} s on the worker`);

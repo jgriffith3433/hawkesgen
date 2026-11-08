@@ -118,3 +118,8 @@ test('the address is believed only from the trusted hop: a forged header cannot 
   assert.equal(callerKey(req('127.0.0.1', { 'x-forwarded-for': '1.2.3.4', authorization: 'Bearer abc' }), 'strict'), 'ip:1.2.3.4');
   assert.match(callerKey(req('127.0.0.1', { authorization: 'Bearer abc' }), 'moderate'), /^k:/);
 });
+
+test("the GPU workers' storage broker is never limited (its run token is the credential)", () => {
+  assert.equal(classify('POST', '/v1/gpu/broker'), null);
+  assert.equal(classify('GET', '/v1/jobs/j_1'), 'generous');
+});

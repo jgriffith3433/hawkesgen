@@ -30,7 +30,7 @@ import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { expandMotionRequest, motionFile } from './motions.ts';
-import { ensureInputs } from './storage.ts';
+import { ensureInputs, ensureLocal } from './storage.ts';
 import { autoStartRound, offRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, type Backoff } from './autostart.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, serverFreeDisk, markDiskFull, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
@@ -239,8 +239,23 @@ export function submit(client: Client, spec0: JobSpec): Job {
   return 'id' in p ? p : createJob(client, p.tool, p.s);
 }
 
+const RATE_TRIES = 6;
+
+/** An `asset:` input whose library file isn't on this disk (a scale-to-zero restart) comes back from storage before the
+ * job is checked, the way a download restores it; otherwise the submit's own reads fail with ENOENT. */
+export async function restoreAssetInputs(inputs: Record<string, unknown> | undefined) {
+  for (const v of Object.values(inputs ?? {})) {
+    for (const ref of Array.isArray(v) ? v : [v]) {
+      if (typeof ref !== 'string' || !ref.startsWith('asset:')) continue;
+      const a = getAsset(ref.slice(6));
+      if (a && !fs.existsSync(a.path) && !(await ensureLocal(a))) throw new GenError(`${ref}'s file is missing here and not in the library's storage`, { status: 404 });
+    }
+  }
+}
+
 /** submit, charging a customer Studio's balance first when its key's jobs are billed there (every HTTP route). */
 export async function submitJob(client: Client, spec0: JobSpec): Promise<Job> {
+  await restoreAssetInputs(spec0.inputs);
   const p = prepareSubmit(client, spec0);
   return 'id' in p ? p : createJobCharged(client, p.tool, p.s);
 }
@@ -1348,6 +1363,26 @@ class Queue {
         job.log.push(`error: ${e.message}`, job.detail);
         save(job, ['labels']);
         return;
+      }
+      // A provider's 429 (too many requests, e.g. several jobs behind one 3D worker): back in the line after a wait that
+      // grows, never failed or charged for it. A run that keeps being refused fails after RATE_TRIES.
+      if (cloud && e.rateLimited && !cancelled) {
+        const tries = Number(job.labels.rateLimitTries ?? 0) + 1;
+        if (tries <= RATE_TRIES) {
+          const wait = Math.min(300, 15 * 2 ** (tries - 1));
+          job.log.push(`error: ${e.message}`, `rate limited; trying again in ${wait} s (${tries} of ${RATE_TRIES})`);
+          Object.assign(job, { detail: `the GPU provider asked us to slow down; trying again in ${wait} s` });
+          save(job, ['detail', 'log']);
+          await new Promise<void>((done) => {
+            const t = setTimeout(done, wait * 1000);
+            abort.signal.addEventListener('abort', () => { clearTimeout(t); done(); }, { once: true });
+          });
+          if (!abort.signal.aborted) {
+            Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: 'back in the line after a rate limit', labels: { ...job.labels, rateLimitTries: tries } });
+            save(job, ['labels']);
+            return;
+          }
+        }
       }
       // A graph that ran past Cloud Run's request limit goes back in the line once, for the fleet (no time limit there).
       if (cloud && e.overLimit && !cancelled && job.labels.gpuBackend !== 'fleet') {

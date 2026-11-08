@@ -112,7 +112,11 @@ export type Tool = {
   /** Model files the tool uses (recorded in recipes). */
   models?: (params: Record<string, any>) => string[];
   /** Rough GPU seconds per output, for estimates. */
-  gpuSeconds?: (params: Record<string, any>) => number;
+  gpuSeconds?: (params: Record<string, any>, inputs?: Record<string, any>) => number;
+  /** Which kind of run a job is, when one tool's cost splits by it (motion.from-text with a character or BVH only).
+   * Estimates take their history, and their default, from jobs of the same mode. `inputs` is undefined when the caller
+   * of an estimate didn't say. */
+  estimateMode?: (params: Record<string, any>, inputs?: Record<string, any>) => string;
   /** Set for tools that come from a workflow folder (workflows/). */
   workflow?: { dir: string; source: unknown; models: ModelRef[]; tags: string[] };
   /** Refuses a call before it is queued (throw a GenError saying what to do instead). Runs at submit, after the params are checked. */

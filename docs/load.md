@@ -37,7 +37,7 @@ synchronously per new account), not a harness fault.
 
 ## The request limiter (`src/ratelimit.ts`, test `test/ratelimit.test.ts`)
 A token bucket per caller and class of route, checked first in `handle` (api.ts), before any routing. Over the limit: `429`,
-`Retry-After` (whole seconds) and `{ error, retryAfter }` in plain words; the app already words a 429 (`lib.js friendly`).
+`Retry-After` (whole seconds) and `{ error, retryAfter }` in plain words; the app already words a 429 (`lib.js friendly`). A plain-text 429 (Cloud Run's front end says "Rate exceeded." when it has no room) is turned into the same JSON shape with `Retry-After` by the edge Worker (`server/gen-edge`, `busy`). Following 20 jobs with GET /v1/jobs/:id every 30 s is about 40 reads a minute against 3000 (generous), so the limiter is not what stops it; the GPU workers' storage broker is never limited.
 | Class | Routes | Burst / per minute |
 |---|---|---|
 | strict | `/oauth/*`, non-GET `/v1/users/*` (sign-in, sign-up, keys); keyed by address only | 20 / 15 |
