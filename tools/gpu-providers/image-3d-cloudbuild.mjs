@@ -27,9 +27,10 @@ const tag = `3d-${hash}`;
 const image = `${region}-docker.pkg.dev/${project}/${repo}/hawkes-gen-3d`;
 
 const win = process.platform === 'win32';
-const gcloud = (args) => {
-  const r = spawnSync(win ? 'gcloud.cmd' : 'gcloud', args, { stdio: 'inherit', shell: win });
+const gcloud = (args, capture = false) => {
+  const r = spawnSync(win ? 'gcloud.cmd' : 'gcloud', args, { stdio: capture ? ['ignore', 'pipe', 'inherit'] : 'inherit', shell: win, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`gcloud ${args.slice(0, 3).join(' ')} failed (exit ${r.status})`);
+  return capture ? r.stdout.trim() : '';
 };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gen3d-ctx-'));
@@ -48,6 +49,19 @@ if (!APPLY) {
   say('\n(dry run: --apply builds and pushes)');
   process.exit(0);
 }
-gcloud(['builds', 'submit', dir, `--project=${project}`, `--region=${region}`, '--config', path.join(dir, 'cloudbuild.json')]);
+// As tools/gen-cloudrun/build.mjs does for CI's deployer: a named staging folder (gcloud then skips the default bucket's
+// owner check, which needs project-wide listing), started without waiting, its status read every 30 s (streaming the
+// logs needs project Viewer).
+const id = gcloud(['builds', 'submit', dir, `--project=${project}`, `--region=${region}`, '--config', path.join(dir, 'cloudbuild.json'),
+  `--gcs-source-staging-dir=gs://${project}_cloudbuild/source`, '--async', '--format=value(id)'], true);
+if (!id) throw new Error('Cloud Build gave no build id');
+say(`build ${id} started: https://console.cloud.google.com/cloud-build/builds;region=${region}/${id}?project=${project}`);
+for (let i = 0; ; i++) {
+  await new Promise((r) => setTimeout(r, 30_000));
+  const st = gcloud(['builds', 'describe', id, `--project=${project}`, `--region=${region}`, '--format=value(status)'], true);
+  if (i % 4 === 0 || !['QUEUED', 'WORKING'].includes(st)) say(`${new Date().toISOString()} ${st}`);
+  if (st === 'SUCCESS') break;
+  if (!['QUEUED', 'WORKING', 'PENDING'].includes(st)) throw new Error(`Cloud Build ${id} ended ${st}`);
+}
 say(`\nbuilt and pushed ${image}:${tag}`);
 if (out) fs.appendFileSync(out, `IMAGE=${image}\nTAG=${tag}\n`);
