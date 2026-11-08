@@ -27,7 +27,7 @@ const workerToken = secret('GPU_WORKER_TOKEN');
 
 function gcpSecret(id) {
   try {
-    return execFileSync('gcloud', ['secrets', 'versions', 'access', 'latest', `--secret=${id}`, `--project=${arg('gcp-project', 'hawkes-staging')}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell: process.platform === 'win32' }).trim();
+    return execFileSync(process.platform === 'win32' ? 'gcloud.cmd' : 'gcloud', ['secrets', 'versions', 'access', 'latest', `--secret=${id}`, `--project=${arg('gcp-project', 'hawkes-staging')}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], shell: process.platform === 'win32' }) // gcloud is a .cmd on Windows.trim();
   } catch { return ''; }
 }
 const unity = () => ({ email: secret('UNITY_EMAIL') || gcpSecret('unity-email'), password: secret('UNITY_PASSWORD') || gcpSecret('unity-password') });
@@ -56,9 +56,9 @@ if (APPLY) {
   say(`pools ${gpu.pools.join(', ')}; excluded there: ${gpu.excludedTypes.join(', ') || 'none'}`);
   let volume = arg('volume');
   if (!volume && dc) {
-    const vols = await api.list('/networkvolumes', 'networkVolumes').catch(() => []);
+    const vols = await api.list('/network-volumes', 'networkVolumes').catch(() => []);
     const have = vols.find((v) => v.name === `${name}-vol` && (v.dataCenterId ?? v.dataCenter) === dc);
-    volume = have?.id ?? (await api.req('POST', '/networkvolumes', { name: `${name}-vol`, size: volumeGb, dataCenterId: dc })).id;
+    volume = have?.id ?? (await api.req('POST', '/network-volumes', { name: `${name}-vol`, size: volumeGb, dataCenter: dc })).id;
     say(`${have ? 'kept' : 'made'} network volume ${volume} (${volumeGb} GB, ${dc}; about $${(volumeGb * 0.07).toFixed(2)} a month)`);
   }
   const [t, madeT] = await upsertTemplate(api, template(u));
