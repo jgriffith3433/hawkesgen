@@ -2,6 +2,7 @@
 // at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Create (every tool) is studio.js.
 // Also the one way every tool runs (runJob).
 
+import { needsGlb, prepareModels, MODEL_FILE } from './model3d.js';
 import { trouble, troubleNote, explain } from './trouble.js';
 import { $, $$, h, api, toast, fileUrl, thumbUrl, keyedRedraw, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
 import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor, PROGRESS, stopClip } from './project.js';
@@ -359,10 +360,22 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
   if (!files.length) return;
   needSignIn(async () => {
     if (!toTimeline && !then) showPane('media');
+    // FBX and OBJ become GLB here first (model3d.js): everything in Gen reads GLB. Pictures dropped with one are its textures.
+    if (files.some(needsGlb)) {
+      const key = `cv_${newId()}`;
+      const mine = { label: 'Converting 3D', step: 'Converting to GLB' };
+      M.inflight.set(key, mine);
+      drawMedia();
+      try {
+        const r = await prepareModels(files, (s) => { mine.step = s; drawMedia(); });
+        files = r.files;
+        r.notes.forEach((n) => toast(n));
+      } finally { M.inflight.delete(key); drawMedia(); }
+    }
     for (const file of files) {
       if (file.size > 1024 * 1024 * 1024) { toast(`${file.name} is over 1 GB.`); continue; }
-      const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') || /\.(mov|mkv|avi|m4v|webm|mp4)$/i.test(file.name) ? 'video' : file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name) ? 'audio' : null;
-      if (!kind) { toast(`${file.name}: images, videos and sounds only.`); continue; }
+      const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') || /\.(mov|mkv|avi|m4v|webm|mp4)$/i.test(file.name) ? 'video' : file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name) ? 'audio' : MODEL_FILE.test(file.name) ? 'mesh' : null;
+      if (!kind) { toast(`${file.name}: images, videos, sounds and 3D models (GLB, FBX, OBJ) only.`); continue; }
       const key = `up_${newId()}`;
       const mine = { label: file.name, step: 'Uploading' };
       M.inflight.set(key, mine);
@@ -389,6 +402,7 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
         M.inflight.delete(key);
         if (then) await then(asset);
         else if (toTimeline) await placeAsset(asset);
+        else if (asset.kind === 'mesh') toast(`${asset.title} is in Media: drop it on a stage, or use it as a character's model.`);
         else if (P.active) toast(`${file.name} is in Media.`, { action: 'Add to the timeline', onAction: () => placeAsset(asset) });
       } catch (err) {
         M.inflight.delete(key);
