@@ -189,6 +189,7 @@ installPlaytest({
     { id: 'phone', title: 'Phone (390x844, touch): the five bottom tabs and the timeline stay on screen, no page zoom; every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
     { id: 'eventstreams', title: 'Live streams: four tabs open on one account, the oldest is closed with a bye and opens again by itself, and all jobs still reach the page', seconds: 90 },
     { id: 'create', title: 'Create: one tool form from each group (images, video, 3D, animation, audio, chains) shows its fields, its price and a Make button; Make is never pressed and no job starts', seconds: 90 },
+    { id: 'checkout', title: 'Buying credits: the packs (and the test-mode card note on beta), one tap opens checkout while the others wait, a failed start says one plain line and frees the packs, and coming back paid, processing, declined or cancelled each says so (paid: the new balance on the pill and a Receipt); on a phone each pack is one row at least 44 px tall with no sideways scroll. Stripe is never called', seconds: 60, tags: ['mobile'] },
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
     { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
@@ -824,6 +825,102 @@ installPlaytest({
       t.metric('jobsStarted', started);
       if (started) t.problem('blocker', `Create started ${started} job(s): ${jobs.sent.join(', ')}`);
       t.finish(opened === groups.length && caught && !started ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'checkout') {
+      t.scene('Buying credits');
+      if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
+      const jobs = watchJobs();
+      // Setup shortcut (named): the checkout routes answer from here, so Stripe is never called and no money moves. Starting
+      // a checkout fails like Stripe being down (502), and each return reads one of four made-up sessions.
+      const realFetch = window.fetch.bind(window);
+      const start = state.user.credits ?? 0;
+      const sessions = {
+        cs_test_ptpaid: { status: 'paid', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: 'https://pay.stripe.com/receipts/playtest', declined: null, balance: start + 1000 },
+        cs_test_ptproc: { status: 'processing', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: null, declined: null, balance: start },
+        cs_test_ptdecl: { status: 'declined', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: null, declined: 'Your card was declined.', balance: start },
+        cs_test_ptopen: { status: 'open', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: null, declined: null, balance: start },
+      };
+      let starts = 0;
+      window.fetch = async (input, init) => {
+        const u = String(input?.url ?? input);
+        const sid = u.match(/\/v1\/billing\/checkout\/(cs_test_pt\w+)/)?.[1];
+        if (sid) return new Response(JSON.stringify(sessions[sid]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (/\/v1\/(billing|subscriptions)\/checkout$/.test(u.split('?')[0]) && (init?.method ?? 'GET') === 'POST') { starts++; return new Response(JSON.stringify({ error: 'Stripe error {"type":"api_error"} sk_test_abcdefghijklmnop' }), { status: 502, headers: { 'Content-Type': 'application/json' } }); }
+        if (/\/v1\/users\/me$/.test(u.split('?')[0])) { const r = await realFetch(input, init); const j = await r.json(); if (j.user && sessions.__paid) j.user.credits = sessions.cs_test_ptpaid.balance; return new Response(JSON.stringify(j), { status: r.status, headers: { 'Content-Type': 'application/json' } }); }
+        return realFetch(input, init);
+      };
+      const toastText = () => { const el = document.querySelector('#toast'); return el && !el.hidden ? el.textContent.trim() : ''; };
+      const raw = (s) => /[{}]|sk_test_|sk_live_|Traceback|api_error/.test(s);
+      try {
+        document.querySelector('#creditsPill')?.click();
+        const open = await until(() => document.querySelector('#accountDialog[open]'), 5000, 100);
+        if (!open) { t.problem('bug', 'the credits pill did not open the account sheet'); t.finish('stuck'); return; }
+        await until(() => document.querySelector('#packs .acct-pack, #packs .acct-note'), 6000, 150);
+        const packs = [...document.querySelectorAll('#packs .acct-pack')];
+        t.metric('packs', packs.length);
+        const packs0 = await realFetch('/v1/billing/packs').then((r) => r.json()).catch(() => ({}));
+        t.metric('stripeTestMode', packs0?.stripe?.mode === 'test' ? 1 : 0);
+        if (packs0?.stripe?.mode === 'test' && !document.querySelector('#packs .acct-test')) t.problem('bug', 'Stripe is in test mode here but the sheet does not say so (the test card note)');
+        if (packs0?.stripe?.mode === 'live' && document.querySelector('#packs .acct-test')) t.problem('bug', 'the test card note shows on a live Gen');
+        if (!packs.length) t.note('Buying credits is not open on this Gen (no Stripe key): the pack taps were not played');
+        // On a phone: the sheet fits, every pack is one row at least 44 px tall and fully on screen once scrolled to.
+        if (window.innerWidth <= 600 && packs.length) {
+          const sheet = document.querySelector('#accountDialog');
+          t.metric('sheetOverflowX', sheet.scrollWidth > sheet.clientWidth + 1 ? 1 : 0);
+          if (sheet.scrollWidth > sheet.clientWidth + 1) t.problem('bug', 'the account sheet scrolls sideways on a phone');
+          for (const p of packs) {
+            p.scrollIntoView({ block: 'center' });
+            await sleep(50);
+            const r = p.getBoundingClientRect();
+            if (r.height < 44) t.problem('bug', `a pack is under 44 px tall on a phone (${Math.round(r.height)})`);
+            if (r.left < -1 || r.right > window.innerWidth + 1) t.problem('bug', 'a pack is cut off at the side on a phone');
+          }
+          const price = packs[0].querySelector('.acct-pack-price')?.getBoundingClientRect();
+          t.metric('phonePackRow', price && price.top < packs[0].getBoundingClientRect().top + packs[0].getBoundingClientRect().height / 2 + 4 ? 1 : 0);
+        }
+        // One tap: the others wait while checkout opens; Stripe down: one plain line and every pack free again.
+        if (packs.length) {
+          packs[0].click();
+          const waited = packs.slice(1).every((b) => b.disabled);
+          t.metric('othersWaitWhileOpening', waited ? 1 : 0);
+          if (!waited) t.problem('bug', 'the other packs can be tapped while a checkout opens');
+          await until(() => !document.querySelector('#accountError')?.hidden, 5000, 100);
+          const err = document.querySelector('#accountError')?.textContent.trim() ?? '';
+          t.event(`checkout failed to start: ${err}`);
+          if (!err) t.problem('bug', 'a checkout that failed to start says nothing');
+          if (raw(err)) t.problem('bug', `a checkout that failed to start shows raw text: ${err.slice(0, 80)}`);
+          if (packs.some((b) => b.disabled)) t.problem('bug', 'the packs stay locked after a checkout failed to start');
+          if (starts !== 1) t.problem('bug', `one tap started ${starts} checkouts`);
+        }
+        document.querySelector('#accountClose')?.click();
+        await until(() => !document.querySelector('#accountDialog[open]'), 3000, 100);
+        // Coming back from Stripe: each outcome in words, never raw, the paid one with the new balance and a Receipt.
+        const { checkoutReturned } = await import('./account.js');
+        const want = { cs_test_ptpaid: /credits added/i, cs_test_ptproc: /processing/i, cs_test_ptdecl: /declined.*nothing was charged/i, cs_test_ptopen: /cancelled.*nothing was charged/i };
+        for (const [sid, re] of Object.entries(want)) {
+          if (sid === 'cs_test_ptpaid') sessions.__paid = true;
+          await checkoutReturned(sid);
+          await sleep(150);
+          const said = toastText();
+          t.event(`${sid.slice(11)}: ${said}`);
+          if (!re.test(said)) t.problem('bug', `coming back ${sessions[sid].status} said "${said.slice(0, 80)}"`);
+          if (raw(said)) t.problem('bug', `coming back ${sessions[sid].status} shows raw text`);
+          if (sid === 'cs_test_ptpaid') {
+            const pill = Number(document.querySelector('#creditsCount')?.textContent.replace(/[^\d]/g, '')) || 0;
+            t.metric('pillAfterPaid', pill);
+            if (pill !== sessions.cs_test_ptpaid.balance) t.problem('bug', `the credits pill shows ${pill} after a paid return, not ${sessions.cs_test_ptpaid.balance}`);
+            if (![...document.querySelectorAll('#toast button')].some((b) => /receipt/i.test(b.textContent))) t.problem('bug', 'a paid return offers no Receipt');
+          }
+        }
+        if (jobs.sent.length) t.problem('bug', `buying credits started ${jobs.sent.length} job(s)`);
+        t.finish('done');
+      } finally {
+        window.fetch = realFetch;
+        jobs.stop();
+        // Back to the real balance (the made-up paid return showed a made-up one).
+        (await import('./account.js')).refreshCredits();
+      }
       return;
     }
     if (id === 'account') {
