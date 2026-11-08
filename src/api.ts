@@ -573,7 +573,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // Hawkes Studio's playtests signed in (src/testsignin.ts): beta only, a token signed with the project's secret.
     if (route === '/v1/users/test-session' && method === 'POST') {
       const ts = await import('./testsignin.ts');
-      const project = ts.checkTestToken(await readJson(req));
+      const project = await ts.checkTestTokenAny(await readJson(req));
       const result = googleSignin(ts.testAccountOf(project), clientIp(req), { loadTest: ts.isLoadProject(project) });
       setSessionCookie(res, req, result.sessionToken);
       return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
