@@ -149,7 +149,7 @@ if (egressIp) envVars.push(`HAWKES_PUBLIC_IP=${egressIp}`);
 gcloud(['run', 'deploy', service, `--image=${image}`, `--region=${region}`, P,
   `--service-account=${sa}`, '--allow-unauthenticated',
   '--min-instances=0', '--max-instances=1', '--no-cpu-throttling', '--cpu=2', '--memory=4Gi',
-  '--concurrency=80', '--timeout=3600', '--execution-environment=gen2',
+  '--concurrency=400', '--timeout=3600', '--execution-environment=gen2',
   `--set-env-vars=${envVars.join(',')}`, `--set-secrets=${mounted.join(',')}`, '--format=none']);
 if (!APPLY) { done(); process.exit(0); }
 

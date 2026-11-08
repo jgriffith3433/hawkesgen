@@ -2,6 +2,7 @@
 // Hawkes Gen load harness, remote mode (docs/load.md): hold /v1/events streams and sign in test accounts on BETA only.
 //
 //   GEN_TEST_SIGNIN_SECRET=tss_... node tools/load/remote.mjs --accounts 30 --tabs 3
+//   ... node tools/load/remote.mjs --duration 0 --accounts 130   (cleanup only: deletes load-0000..load-0129, retrying 429s)
 //
 // Nothing paid runs: no tool, provider or GPU is touched. The "load" is sign-ins (POST /v1/users/test-session, project
 // load-NNNN: no starter grant, not counted against the sign-up caps), held GET /v1/events streams (--tabs per account),
@@ -24,6 +25,7 @@ const OPT = {
   p95: Number(arg('p95-ms', 2000)),
   keep: process.argv.includes('--keep'),
 };
+const CLEAN_ONLY = OPT.duration === 0; // --duration 0: sign nobody in, only delete load-0000 .. --accounts
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log('[load]', ...a);
 const die = (m) => { console.error(`[load] ABORT: ${m}`); process.exit(2); };
@@ -45,7 +47,7 @@ const token = (project) => {
   const exp = Math.floor(Date.now() / 1000) + 300, nonce = crypto.randomBytes(12).toString('hex');
   return { project, exp, nonce, sig: crypto.createHmac('sha256', SECRET).update(`${project}.${exp}.${nonce}`).digest('base64url') };
 };
-async function call(u, method, route, body, { retry = false } = {}) {
+async function call(u, method, route, body, { retry = false, always = false } = {}) {
   for (;;) {
     const t = performance.now(); let status = 0, json = null, ra = 0;
     try {
@@ -55,7 +57,7 @@ async function call(u, method, route, body, { retry = false } = {}) {
       json = await r.json().catch(() => null);
     } catch { status = 0; }
     note(`${method} ${norm(route)}`, performance.now() - t, status);
-    if (status === 429 && retry && !stopping) { await sleep((ra || 5) * 1000 + 250); continue; } // the limiter says wait: wait
+    if (status === 429 && retry && (always || !stopping)) { await sleep((ra || 5) * 1000 + 250); continue; } // the limiter says wait: wait
     return { status, json };
   }
 }
@@ -88,13 +90,15 @@ async function holdStream(u) {
 }
 
 async function deleteAll() {
-  let gone = 0, left = 0;
+  let gone = 0, absent = 0, left = 0;
   for (const u of users) {
-    if (!u.ok && !u.tried) continue;
-    const r = await call(null, 'POST', '/v1/users/test-session/delete', token(u.project), { retry: true });
-    if (r.status === 200) gone++; else left++;
+    if (!u.ok && !u.tried && !CLEAN_ONLY) continue;
+    // always: cleanup must outlast the limiter (stopping is already true here, which stops ordinary retries)
+    const r = await call(null, 'POST', '/v1/users/test-session/delete', token(u.project), { retry: true, always: true });
+    if (r.status === 200 && r.json?.deleted === null) absent++;
+    else if (r.status === 200) gone++; else left++;
   }
-  return { gone, left };
+  return { gone, absent, left };
 }
 async function shutdown() { stopping = true; for (const a of aborts) a.abort(); }
 let cleaned = null;
@@ -106,6 +110,12 @@ async function main() {
   if (!h0) die('beta health did not answer');
   if (h0.lane !== 'beta' && !(LOCAL && h0.lane === 'local')) die(`health says lane ${h0.lane}: refusing to run`);
   log(`beta ok: commit ${String(h0.commit ?? '?').slice(0, 7)}, rss ${h0.process?.rssMb} MB; ${OPT.accounts} accounts x ${OPT.tabs} tabs = ${OPT.accounts * OPT.tabs} streams wanted`);
+  if (CLEAN_ONLY) {
+    stopping = true; // nothing is held; deletes retry 429s regardless (see deleteAll)
+    const c = await deleteAll();
+    log(`cleanup only: removed ${c.gone} of ${users.length} load accounts (${c.absent} were already gone, ${c.left} left)`);
+    process.exit(c.left ? 1 : 0);
+  }
   await sampleHealth();
   const ticker = setInterval(sampleHealth, 5000);
   let signedIn = 0;
