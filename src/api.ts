@@ -535,9 +535,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (route === '/v1/users/test-session' && method === 'POST') {
       const ts = await import('./testsignin.ts');
       const project = ts.checkTestToken(await readJson(req));
-      const result = googleSignin(ts.testAccountOf(project), clientIp(req));
+      const result = googleSignin(ts.testAccountOf(project), clientIp(req), { loadTest: ts.isLoadProject(project) });
       setSessionCookie(res, req, result.sessionToken);
       return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
+    }
+    if (route === '/v1/users/test-session/delete' && method === 'POST') {
+      // The load harness (tools/load/remote.mjs) removes its own `load-*` accounts with a token signed the same way.
+      const ts = await import('./testsignin.ts');
+      const project = ts.checkTestToken(await readJson(req));
+      if (!ts.isLoadProject(project)) throw new GenError('Only load-test accounts (load-*) can be removed this way', { status: 403 });
+      const acc = await import('./accounts.ts');
+      const who = ts.testAccountOf(project);
+      const row = db.prepare('SELECT user_id FROM user_google WHERE sub = ?').get(who.sub) as { user_id: string } | undefined;
+      if (!row) return send(res, 200, { deleted: null });
+      return send(res, 200, await acc.deleteAccount(row.user_id, who.email, `test sign-in (${project})`));
     }
     if (route === '/v1/users/test-session/github' && method === 'POST') {
       // A GitHub Actions run of an allowed repo, as its test account, on beta only (src/githubsignin.ts).

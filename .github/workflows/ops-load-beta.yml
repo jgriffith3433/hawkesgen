@@ -1,0 +1,45 @@
+# Load test on beta (docs/load.md, "Remote mode"): N test accounts x tabs held /v1/events streams, sign-ins and free
+# POST /v1/estimate calls. No tool, provider or GPU runs. Reads beta's test sign-in secret (the one set with
+# PUT /v1/admin/test-signin) from the GitHub secret GEN_TEST_SIGNIN_SECRET in the "beta" environment; never prints it.
+# The load-NNNN accounts are deleted at the end. Sign-in is a strict route (15 a minute per address), so 150 accounts
+# take about ten minutes to sign in and ten more to delete.
+#   gh workflow run ops-load-beta.yml --repo jgriffith3433/hawkesgen --ref beta -f accounts=30 -f tabs=3
+name: ops-load-beta
+on:
+  workflow_dispatch:
+    inputs:
+      accounts:
+        description: Test accounts (30 x 3 = 90 streams, then 150 x 3 = 450)
+        default: '30'
+      tabs:
+        description: Streams per account (3 at most)
+        default: '3'
+      duration:
+        description: Seconds of free estimate calls while streams are held
+        default: '60'
+permissions:
+  contents: read
+concurrency:
+  group: ops-load-beta
+  cancel-in-progress: false
+jobs:
+  load:
+    name: Load test beta
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: beta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Run
+        env:
+          GEN_TEST_SIGNIN_SECRET: ${{ secrets.GEN_TEST_SIGNIN_SECRET }}
+          ACCOUNTS: ${{ inputs.accounts }}
+          TABS: ${{ inputs.tabs }}
+          DURATION: ${{ inputs.duration }}
+        run: |
+          [ -n "$GEN_TEST_SIGNIN_SECRET" ] || { echo "The GitHub secret GEN_TEST_SIGNIN_SECRET is empty or missing in the beta environment (it is beta's tss_ test sign-in secret)"; exit 1; }
+          echo "::add-mask::$GEN_TEST_SIGNIN_SECRET"
+          node tools/load/remote.mjs --accounts "$ACCOUNTS" --tabs "$TABS" --duration "$DURATION"
