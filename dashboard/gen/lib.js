@@ -46,13 +46,20 @@ export function keyedRedraw(box, rows) {
 }
 
 export class ApiError extends Error {
-  constructor(message, status, data) { super(message); this.status = status; this.data = data; }
+  constructor(message, status, data, retryAfter) { super(message); this.status = status; this.data = data; this.retryAfter = retryAfter ?? data?.retryAfter ?? null; }
 }
 export async function api(path, { method, body } = {}) {
-  const r = await fetch(path, {
-    method: method ?? (body ? 'POST' : 'GET'), credentials: 'same-origin',
-    headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
-  });
+  let r;
+  try {
+    r = await fetch(path, {
+      method: method ?? (body ? 'POST' : 'GET'), credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    // No answer at all: offline, or Gen is unreachable. Status 0 says so (trouble.js words it).
+    throw new ApiError('offline', 0, { offline: true });
+  }
+  const retryAfter = Number(r.headers?.get?.('Retry-After')) || null;
   const text = await r.text().catch(() => '');
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch {
@@ -60,7 +67,12 @@ export async function api(path, { method, body } = {}) {
     // Gen restarted mid-request. Its words are never shown (2026-11-02: the AI pane printed "<!DOCTYPE html>").
     throw new ApiError(unreadableAnswer(r.status), r.ok ? 502 : r.status, { error: unreadableAnswer(r.status), unreadable: true });
   }
-  if (!r.ok) throw new ApiError(data?.error ?? `HTTP ${r.status}`, r.status, data);
+  if (!r.ok) {
+    const err = new ApiError(data?.error ?? `HTTP ${r.status}`, r.status, data, retryAfter);
+    // A 401 anywhere but the session probe means the session ended mid-work: trouble.js offers to sign in again.
+    if (r.status === 401 && !/^\/v1\/users\/(?:me|google|login|signup)\b/.test(path)) bus.emit('sessionEnded', path);
+    throw err;
+  }
   return data;
 }
 /** What to say when an answer came back that isn't Gen's (an HTML error page, or JSON cut off part way). */
@@ -118,14 +130,17 @@ export function plainError(msg) {
 export function friendly(err) {
   const raw = String(err?.message ?? err ?? '');
   const status = err?.status ?? 0;
-  if (status === 402 || /not enough credits|insufficient credits|out of credits|top up/i.test(raw)) return { text: 'You\'re out of credits for that. Add some and it goes straight on.', fix: 'credits' };
-  if (/failed to fetch|networkerror|load failed|network/i.test(raw) && !status) return { text: 'Can\'t reach Gen right now. Your work is kept here; it saves as soon as you\'re back online.', fix: 'connection' };
-  if (/AI isn.t available|no AI|connect your AI/i.test(raw)) return { text: 'The AI is not available right now. Try again in a little while.', fix: 'ai' };
-  if (status === 413 || /too large|payload/i.test(raw)) return { text: 'That file is too big (1.5 GB at most).' };
-  if (status === 429 || /rate limit|too many/i.test(raw)) return { text: 'That\'s a lot at once: give it a few seconds, then try again.', fix: 'retry' };
-  if (status === 503 || /offline|unavailable|no gpu|no server|busy/i.test(raw)) return { text: 'Those servers are busy or resting right now. It waits in line on its own, or try another tool.', fix: 'retry' };
-  if (status === 401) return { text: 'You\'ve been signed out. Sign in again and carry on.' };
-  return { text: plainError(raw) };
+  if (status === 402 || /not enough credits|insufficient credits|out of credits|top up/i.test(raw)) return { kind: 'credits', text: 'You\'re out of credits for that. Credits are 1 cent each, and packs start at $10.', fix: 'credits' };
+  if (err?.data?.offline || (!status && (/failed to fetch|networkerror|load failed|network|^offline$/i.test(raw) || (typeof navigator !== 'undefined' && navigator.onLine === false)))) return { kind: 'offline', text: 'Can\'t reach Gen right now. Your work is kept here and saves as soon as you\'re back online.', fix: 'connection' };
+  if (/AI isn.t available|no AI|connect your AI/i.test(raw)) return { kind: 'ai', text: 'The AI is not available right now. Try again in a little while.', fix: 'ai' };
+  if (status === 413 || /too large|payload/i.test(raw)) return { kind: 'big', text: 'That file is too big (1.5 GB at most).' };
+  if (status === 429 || /rate limit|too many/i.test(raw)) {
+    const n = Math.max(1, Math.ceil(Number(err?.retryAfter) || 0));
+    return { kind: 'slow', text: err?.retryAfter ? `Too many requests, try again in ${n} s.` : 'Too many requests, try again in a few seconds.', fix: 'retry', wait: err?.retryAfter ? n : null };
+  }
+  if (status === 503 || /offline|unavailable|no gpu|no server|busy/i.test(raw)) return { kind: 'busy', text: 'Those servers are busy or resting right now. It waits in line on its own, or try another tool.', fix: 'retry' };
+  if (status === 401) return { kind: 'signedOut', text: 'You\'ve been signed out. Sign in again and your work is right where you left it.', fix: 'signin' };
+  return { kind: 'other', text: plainError(raw) };
 }
 
 /**

@@ -31,11 +31,13 @@ import { dropTarget } from './dragdrop.js';
 import { initAccount, loadMe, state } from './account.js';
 import './report.js';
 import './playtest.js';
+import { initTrouble } from './trouble.js';
 
 // Icons in the markup: <span class="ico-wrap" data-icon="name">.
 for (const el of $$('.ico-wrap[data-icon]')) el.innerHTML = ICON[el.dataset.icon] ?? '';
 
 initAccount();
+initTrouble();
 initPlayer();
 initTimeline();
 initMedia();

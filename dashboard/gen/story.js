@@ -5,6 +5,7 @@
 // props dropped on a shot join it.
 
 import { $, h, api, toast, icon, plainError, keepingFocus } from './lib.js';
+import { trouble } from './trouble.js';
 import { registerEditor, openScene, refreshBar, loadList } from './scenes.js';
 import { sceneDoc } from './scenedoc.js';
 import { fineTune, textField, worldHome } from './worldbits.js';
@@ -77,7 +78,7 @@ async function makeShot(s) {
     D.take(r.story, { keepHistory: true });
     await loadList();
     await openScene(r.stage.id);
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 
 /** The state of things at a shot, in a line or two. */

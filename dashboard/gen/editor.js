@@ -8,6 +8,7 @@
 // size, turn, opacity, blend, text, color, sound, fades, speed), a track, or the scene itself.
 
 import { $, $$, h, api, toast, bus, icon, mediaInfo, fmt, fileUrl, plainError, ApiError } from './lib.js';
+import { trouble } from './trouble.js';
 import { P, take, save, canUndo, canRedo, doUndo, doRedo, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, retryClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
 import { seek, pause, frameAt, mixdown, recordTimeline, refresh } from './player.js';
 import { fit, timelineRefusal, viewState, setView } from './timeline.js';
@@ -175,7 +176,7 @@ export async function exportPicture() {
     P.doc.render = s.doc.render;
     bus.emit('jobDone');
     toast(`The frame at ${fmt(P.playhead, 1)} is the picture now. It's in Media, and scenes that use this one can update to it.`, { action: 'Animate it', onAction: () => bus.emit('useIn', { tool: 'video.i2v', asset: { id, kind: 'image', title: P.doc.title } }) });
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 
 /** WAV (16-bit PCM) from an AudioBuffer. */
@@ -206,7 +207,7 @@ export async function exportMix() {
     P.doc.render = s.doc.render;
     bus.emit('jobDone');
     toast(`Mixed down (${fmt(end, 1)}). It's in Media, and scenes that use this one can update to it.`);
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 
 /**

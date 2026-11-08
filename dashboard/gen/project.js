@@ -5,6 +5,7 @@
 
 import { state } from './account.js';
 import { api, bus, toast, plainError, friendly, jobStatusText, sendFeedback } from './lib.js';
+import { trouble } from './trouble.js';
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -368,6 +369,7 @@ export async function save() {
     const r = await api(`/v1/editor/projects/${P.id}`, { method: 'PUT', body: { doc: P.doc, version: P.version } });
     P.version = r.version;
     P.dirty = snap() !== sent;
+    P.saveFailed = false;
     bus.emit('save', P.dirty ? 'dirty' : 'saved');
     announce();
   } catch (err) {
@@ -378,6 +380,8 @@ export async function save() {
       toast('This scene was changed in another tab or by the AI, so you have the newest version now. Undo brings back what you just did.');
     } else {
       bus.emit('save', 'error');
+      // Once per failure, not on every retry: the sentence and the next step (the work stays in this browser meanwhile).
+      if (!P.saveFailed) { P.saveFailed = true; if (err.status !== 401) trouble(err, save); }
     }
   } finally {
     P.saving = false;
@@ -442,7 +446,7 @@ export async function retryClip(id) {
     delete c.failed;
     changed();
     watchJobs();
-  } catch (err) { toast(friendly(err).text); }
+  } catch (err) { trouble(err); }
 }
 
 // Waiting clips: follow their jobs and fill them in. Edits made elsewhere: picked up while the page is visible.

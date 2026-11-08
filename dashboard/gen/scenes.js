@@ -7,6 +7,7 @@
 // (a character onto a stage, a stage or image into a video, an audio scene into a track): that's plug and play.
 
 import { $, $$, h, api, toast, bus, icon, fileUrl, keyedRedraw, plainError } from './lib.js';
+import { trouble } from './trouble.js';
 import { state, needSignIn } from './account.js';
 import { showPane } from './media.js';
 import { popMenu, closeMenus, lendTimeline } from './timeline.js';
@@ -162,7 +163,7 @@ async function activate(id) {
       else if (!ed.panel && !$('#pane-kind').hidden) showPane('media');
       if (ed.timeline) lendTimeline(ed.timeline);
     } catch (err) {
-      toast(plainError(err.message));
+      trouble(err);
       if (err.status === 404) closeTab(id, { quiet: true });
     }
     drawAction();
