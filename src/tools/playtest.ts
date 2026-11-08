@@ -31,6 +31,7 @@ import { awsConfig } from '../providers/comfy/fleet.ts';
 import { startLiveShots, endLiveShots } from './liveShots.ts';
 import { beginLive } from './livePlay.ts';
 import { FeelLog, PUSH_BINDING, cutFeelClips, pickPolishFrames, polishScan, feelBrief } from './playtest-feel.ts';
+import { pickMotionWindows, motionMarks, motionStrips, motionLegend, videoFreezes, MOTION_FPS } from './playtest-motion.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
@@ -1782,6 +1783,9 @@ Rules:
   or props clipping through floors and walls, z-fighting, floating or sunk objects, stretched or missing textures, ugly
   placeholder buildings, frame hitches. When FEEL AND POLISH lists flags, say where (scene and position) so the fix can be
   checked at the same spot.
+- MOTION sheets are the video at 15 fps. Movement problems (a camera snap, jump or shake between neighbouring frames,
+  the camera passing into a wall, a body sliding through geometry, jitter, a repeated frame) are bugs, not polish, when
+  a player would see them in normal play; cite the sheet. VIDEO HITCHES are stutters the recording itself shows.
 - If VISUAL CHANGES are listed, the same moment looked different in the previous run. Say whether each big change is an
   improvement, a regression, or just a different moment (camera, animation, random content); report regressions.`;
 
@@ -1838,9 +1842,32 @@ export function settleCriteria(review: any, criteria: string[]) {
   return review;
 }
 
+/**
+ * The motion the review watches (playtest-motion.ts): contact sheets cut from the run's video around its flags,
+ * problems and scenes, kept in the library so findings can cite them, and the video's hitches. Never fails the review:
+ * no video (a native run, an old job) or no ffmpeg means stills only, said in note.
+ */
+async function reviewMotion(ctx: RunContext, result: any, shots: any[], max: number) {
+  const none = (note: string) => ({ strips: [] as { file: string; asset: string | null; start: number; end: number; t: number; reason: string; scene?: string }[], hitches: null as { t: number; ms: number }[] | null, note });
+  if (!max) return none('motion off');
+  const vid = result?.video ? getAsset(result.video) : null;
+  if (!vid?.path || !fs.existsSync(vid.path)) return none('no video to watch');
+  const seconds = Number(result.seconds) || 0;
+  const windows = pickMotionWindows(motionMarks(result, shots), seconds, { max: Math.min(12, max) });
+  const cut = await motionStrips(ctx, vid.path, windows);
+  const strips: { file: string; asset: string | null; start: number; end: number; t: number; reason: string; scene?: string }[] = [];
+  for (const m of cut) {
+    await ctx.emit({ data: fs.readFileSync(m.file), ext: '.jpg', mime: 'image/jpeg', title: `Motion ${m.start}s to ${m.end}s (${m.reason})`, meta: { playtest: 'motion', t: m.t, start: m.start, end: m.end, reason: m.reason, scene: m.scene } });
+    strips.push({ ...m, asset: (ctx.outputs[ctx.outputs.length - 1] as any)?.asset ?? null });
+  }
+  // A browser without a GPU stalls for reasons no player has: its freezes say nothing.
+  const frozen = result.software ? null : await videoFreezes(ctx, vid.path);
+  return { strips, hitches: frozen?.hitches ?? null, note: cut.length < windows.length ? `${windows.length - cut.length} of ${windows.length} motion sheets couldn't be cut` : '' };
+}
+
 export const playtestReviewTool: Tool = {
   id: 'playtest.review',
-  version: 4,
+  version: 5,
   title: 'Review a playtest (Claude)',
   description:
     'Claude watches a playtest.run job (its screenshots, report, console and metrics) against the product\'s story, art ' +
@@ -1849,7 +1876,10 @@ export const playtestReviewTool: Tool = {
     'Give the known findings (the backlog) and it reports only new problems, saying by id which known ones look fixed or ' +
     'still present. mode: full (daily), verify (did a change work, did anything regress: regressions and blockers only), ' +
     'regression (live checks: regressions and blockers only). Give a previous review to hear what changed. Give acceptance ' +
-    'criteria (a task\'s "done when") and each is judged yes, no or unclear with its evidence (result.criteria).',
+    'criteria (a task\'s "done when") and each is judged yes, no or unclear with its evidence (result.criteria). It also ' +
+    'watches motion: short stretches of the run\'s video at 15 fps (around feel flags, problems and scenes) as contact ' +
+    'sheets, and the video\'s hitches (short freezes in the middle of motion), so camera snaps, jitter and clipping in ' +
+    'movement are judged, not only stills.',
   provider: 'anthropic',
   output: 'json',
   inputs: {},
@@ -1865,6 +1895,7 @@ export const playtestReviewTool: Tool = {
     criteria: { type: 'json', description: 'Acceptance criteria to judge, e.g. ["The main menu shows Training"]: result.criteria says for each yes, no or unclear, with evidence', advanced: true },
     previous:{ type: 'json', description: 'A previous review of the same scenario, to report what changed', advanced: true },
     frames: { type: 'integer', default: 16, min: 4, max: 40, description: 'How many screenshots Claude sees', advanced: true },
+    motion: { type: 'integer', default: 6, min: 0, max: 12, description: 'How many motion contact sheets Claude sees (each 1.2 s of the video at 15 fps, around feel flags, problems and scenes first). 0: stills only', advanced: true },
     model: { type: 'string', default: DEFAULT_MODEL, advanced: true },
   },
   async run(ctx) {
@@ -1893,6 +1924,7 @@ export const playtestReviewTool: Tool = {
       ...frames.map((a: any, i: number) => `[${i}] t=${a.meta.t}s ${a.meta.reason}${a.meta.scene ? ` (${a.meta.scene})` : ''}`),
       ...before.map((b: any, i: number) => `[${frames.length + i}] PREVIOUS RUN at "${b.x.key}" (compare with this run's frame at t=${b.x.t}s)`),
     ].join('\n');
+    const motion = await reviewMotion(ctx, result, assets, Number(p.motion ?? 6));
     const phone = result.device === 'phone';
     const brief = {
       url: result.url, mode: result.mode, scenario: result.scenario, outcome: result.outcome, seconds: result.seconds,
@@ -1916,20 +1948,23 @@ export const playtestReviewTool: Tool = {
       `SCREENSHOTS (in order; refer to them by index)\n${legend}`,
       p.previous ? `PREVIOUS REVIEW\n${JSON.stringify(p.previous).slice(0, 8000)}` : '',
       feelBrief(result),
+      motionLegend(motion.strips, frames.length + before.length),
+      motion.hitches?.length ? `VIDEO HITCHES (the recording froze for this long in the middle of motion; a player sees a stutter)\n${motion.hitches.slice(0, 20).map((h) => `- t=${h.t}s: ${h.ms} ms`).join('\n')}` : '',
       big.length ? `VISUAL CHANGES SINCE THE LAST RUN (perceptual difference of the same moment: 0 = same, 1 = different)\n${big.slice(0, 12).map((x: any) => `- ${x.key} at t=${x.t}s: ${Math.round(x.score * 100)}% different, ${Math.round((x.changed ?? 0) * 100)}% of the screen changed`).join('\n')}` : '',
       phone ? PHONE_RULES : '',
       'Review this playtest.',
     ].filter(Boolean).join('\n\n');
-    ctx.step(`Claude is reviewing ${frames.length} screenshots`);
-    const r = await ask({ prompt, system: REVIEW_SYSTEM, images: [...frames.map((a: any) => a.path), ...before.map((b: any) => b.asset.path)], model: p.model, effort: 'high', maxTokens: 16000, schema: REVIEW_SCHEMA }, ctx.signal);
+    ctx.step(`Claude is reviewing ${frames.length} screenshots${motion.strips.length ? ` and ${motion.strips.length} motion sheets` : ''}`);
+    const r = await ask({ prompt, system: REVIEW_SYSTEM, images: [...frames.map((a: any) => a.path), ...before.map((b: any) => b.asset.path), ...motion.strips.map((m) => m.file)], model: p.model, effort: 'high', maxTokens: 16000, schema: REVIEW_SCHEMA }, ctx.signal);
     ctx.usage(usageOf(r));
     const review = settleCriteria(settleReview(JSON.parse(r.text), { mode, maxFindings: p.maxFindings, known }), criteria);
     // Evidence indexes -> the library's asset ids, so reports can show the frames.
-    const shown = [...frames.map((a: any) => a.id), ...before.map((b: any) => b.asset.id)];
+    const shown = [...frames.map((a: any) => a.id), ...before.map((b: any) => b.asset.id), ...motion.strips.map((m) => m.asset)];
     for (const f of review.findings) f.shots = (f.evidence ?? []).map((i: number) => shown[i]).filter(Boolean);
     if (!phone) delete review.phone;
     review.visual = big.length ? { big: big.length, top: big.slice(0, 6).map((x: any) => ({ key: x.key, score: x.score, diff: x.diff })) } : null;
     review.frames = frames.map((a: any) => ({ asset: a.id, t: a.meta.t, reason: a.meta.reason, scene: a.meta.scene }));
+    review.motion = { fps: MOTION_FPS, sheets: motion.strips.map((m) => ({ asset: m.asset, start: m.start, end: m.end, reason: m.reason, scene: m.scene })), hitches: motion.hitches, worstHitchMs: motion.hitches?.length ? Math.max(...motion.hitches.map((h) => h.ms)) : 0, note: motion.note };
     review.playtest = { job: p.job, url: result.url, scenario: result.scenario, outcome: result.outcome, seconds: result.seconds, fps: result.fps, problems: result.problems?.length ?? 0, device: result.device ?? 'desktop', feel: Array.isArray(result.feel) ? result.feel.length : 0, polish: result.polish?.score ?? null };
     review.model = r.model;
     await ctx.emit({ data: Buffer.from(JSON.stringify(review, null, 2)), ext: '.json', mime: 'application/json', title: 'Playtest review' });
