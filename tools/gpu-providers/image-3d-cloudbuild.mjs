@@ -37,7 +37,7 @@ const gcloud = (args, capture = false) => {
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gen3d-ctx-'));
 for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), body.toString('utf8').replace(/\r\n/g, '\n'));
 const config = {
-  steps: [{ name: 'gcr.io/cloud-builders/docker', args: ['build', '--provenance=false', '-t', `${image}:${tag}`, '-t', `${image}:latest`, '.'] }],
+  steps: [{ name: 'gcr.io/cloud-builders/docker', args: ['build', '-t', `${image}:${tag}`, '-t', `${image}:latest`, '.'] }],
   images: [`${image}:${tag}`, `${image}:latest`],
   options: { ...(machine ? { machineType: machine } : {}), diskSizeGb: disk },
   timeout: '10800s',
