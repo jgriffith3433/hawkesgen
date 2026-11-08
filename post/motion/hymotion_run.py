@@ -10,8 +10,38 @@ import sys
 import numpy as np
 
 
+WOODEN = os.path.join("scripts", "gradio", "static", "assets", "dump_wooden")
+
+
+def lfs_assets(repo):
+    """The wooden body template HY-Motion loads is in Git LFS: a shallow fetch leaves 130-byte pointers. Replace each
+    pointer with the real file from GitHub's LFS media URL at the checked-out commit (once; they stay in the repo)."""
+    import subprocess
+    import urllib.request
+
+    folder = os.path.join(repo, WOODEN)
+    if not os.path.isdir(folder):
+        return
+    commit = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        with open(path, "rb") as fh:
+            head = fh.read(64)
+        if not head.startswith(b"version https://git-lfs"):
+            continue
+        url = f"https://media.githubusercontent.com/media/Tencent-Hunyuan/HY-Motion-1.0/{commit}/{WOODEN.replace(os.sep, '/')}/{name}"
+        print(f"HB step fetching HY-Motion's body template ({name})", flush=True)
+        with urllib.request.urlopen(url, timeout=120) as r:
+            data = r.read()
+        if data.startswith(b"version https://git-lfs"):
+            raise SystemExit(f"{name}: GitHub returned the LFS pointer, not the file")
+        with open(path, "wb") as fh:
+            fh.write(data)
+
+
 def main():
-    repo, model = sys.argv[1], sys.argv[2]
+    repo, model = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
+    job = os.getcwd()
     sys.path.insert(0, repo)
     os.environ.setdefault("USE_HF_MODELS", "1")
     prompt = open("prompt.txt", encoding="utf-8").read().strip()
@@ -20,15 +50,20 @@ def main():
     takes = int(open("takes.txt", encoding="utf-8").read().strip())
     seed = int(open("seed.txt", encoding="utf-8").read().strip())
     seeds = [seed + i for i in range(takes)]
+    lfs_assets(repo)
+    # HY-Motion opens its assets by paths relative to its repo: run from there, write into the job folder.
+    os.chdir(repo)
     from hymotion.utils.t2m_runtime import T2MRuntime
     cfg = os.path.join(model, "config.yml")
     ckpt = os.path.join(model, "latest.ckpt")
     runtime = T2MRuntime(config_path=cfg, ckpt_name=ckpt, device_ids=[0], disable_prompt_engineering=True)
-    os.makedirs("out/hy", exist_ok=True)
+    out = os.path.join(job, "out", "hy")
+    os.makedirs(out, exist_ok=True)
     runtime.generate_motion(
         text=prompt, seeds_csv=",".join(str(s) for s in seeds), duration=seconds, cfg_scale=5.0,
-        output_format="dict", output_dir="out/hy", output_filename="take", original_text=prompt,
+        output_format="dict", output_dir=out, output_filename="take", original_text=prompt,
     )
+    os.chdir(job)
     files = sorted(n for n in os.listdir("out/hy") if n.endswith(".npz"))
     if not files:
         raise SystemExit("HY-Motion wrote no npz")

@@ -16,7 +16,7 @@
 //
 // Source of truth: C:\Projects\hawkesgen\clients\js\hawkesgen.mjs. Version 6 (the library: entities, slots, versions, make, revise, watch, exportSlots).
 
-export const CLIENT_VERSION = 7;
+export const CLIENT_VERSION = 8;
 
 /** ~/.hawkes/client.json (Node only): where Hawkes Gen and Studio are, for every project on this PC. */
 function userConfig() {
@@ -99,7 +99,9 @@ export class HawkesGen {
     if (this.local || !isNode) return inputs;
     const out = {};
     for (const [k, v] of Object.entries(inputs)) {
-      const one = async (x) => (typeof x === 'string' && !/^(asset|blob):/.test(x) ? this.upload(x) : x);
+      // References the service resolves itself stay as they are: library assets and blobs, entity slots, the CC0 motion
+      // library (motion:ual1/Walk_Loop), elements, URLs and chain references ($prev, $step1). Only local paths upload.
+      const one = async (x) => (typeof x === 'string' && !/^(asset|blob|slot|motion|el|https?):|^\$/.test(x) ? this.upload(x) : x);
       out[k] = Array.isArray(v) ? await Promise.all(v.map(one)) : await one(v);
     }
     return out;
