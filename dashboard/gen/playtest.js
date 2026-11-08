@@ -16,6 +16,7 @@ import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from 
 import { activeScene, newScene } from './scenes.js';
 import { startGuide, guideOpen } from './guide.js';
 import { api } from './lib.js';
+import { openStream } from './stream.js';
 import { runJob } from './media.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -53,6 +54,7 @@ installPlaytest({
     { id: 'signupcap', title: 'Starter credits are capped: health counts signups and refused grants, and the limits are shown; this account sees its balance', seconds: 30 },
     { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
     { id: 'phone', title: 'Phone (390x844, touch): every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
+    { id: 'eventstreams', title: 'Live streams: four tabs open on one account, the oldest is closed with a bye and opens again by itself, and all jobs still reach the page', seconds: 90 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -509,6 +511,33 @@ installPlaytest({
       t.event(sg ? 'health-counts-signups' : 'health-missing-signups');
       t.note(`Health: ${JSON.stringify(sg ?? null)}. This account's balance: ${state.user?.credits ?? '?'} credits.`);
       t.finish(sg ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'eventstreams') {
+      // Four tabs' worth of GET /v1/events on this account (the page's own stream makes a fifth): the server keeps three
+      // per account, closes the oldest with `bye`, and stream.js opens it again after its longest wait. No timer asks Gen
+      // for anything; the streams are opened by the same client the page uses.
+      t.scene('Event streams');
+      const tabs = [];
+      let byes = 0, reconnects = 0, opened = 0;
+      for (let i = 0; i < 4; i++) {
+        const tab = openStream({ bye: () => { byes++; t.event(`stream-${i}-bye`); } }, { onState: (st) => { if (st === 'live') opened++; }, onReconnect: () => { reconnects++; t.event(`stream-${i}-reconnected`); } });
+        tabs.push(tab);
+        await sleep(400);
+      }
+      t.metric('tabsOpened', 4);
+      const gotBye = await until(() => byes >= 1, 15000);
+      t.metric('byes', byes);
+      t.event(gotBye ? 'oldest-closed-with-bye' : 'no-bye');
+      if (!gotBye) t.problem('bug', 'a user\'s extra streams were never closed by the server');
+      // The closed one waits 30 s and more, then comes back; that is the reconnect.
+      const back = await until(() => reconnects >= 1, 60000, 500);
+      t.metric('reconnects', reconnects);
+      t.event(back ? 'closed-stream-reconnected' : 'no-reconnect');
+      if (!back) t.problem('bug', 'the stream closed by the server did not open again by itself');
+      for (const tab of tabs) tab.close();
+      t.note(`${opened} opens, ${byes} bye(s), ${reconnects} reconnect(s)`);
+      t.finish(gotBye && back ? 'done' : 'stuck');
       return;
     }
     if (id === 'aimock') {

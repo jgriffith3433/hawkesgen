@@ -14,6 +14,7 @@ import { createJobWatch } from '../dashboard/gen/jobwatch.js';
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-nopoll-'));
 const { handle } = await import('../src/api.ts');
 const { events } = await import('../src/bus.ts');
+const { streamCount } = await import('../src/eventhub.ts');
 
 test('GET /v1/events carries scene, machines and bench events, unbuffered, with keep-alive', async () => {
   const server = http.createServer((req, res) => handle(req, res).catch((e) => { res.writeHead(500); res.end(String(e)); }));
@@ -40,9 +41,9 @@ test('GET /v1/events carries scene, machines and bench events, unbuffered, with 
     assert.match(text, /event: bench\ndata: \{"run":"br_1"\}\n\n/);
     res.destroy();
     await new Promise((r) => setTimeout(r, 50));
-    assert.equal(events.listenerCount('scene'), 0, 'a closed stream leaves no listeners');
-    assert.equal(events.listenerCount('machines'), 0);
-    assert.equal(events.listenerCount('bench'), 0);
+    // The hub (src/eventhub.ts) holds one listener per event name for every stream; a closed one leaves none of its own.
+    assert.equal(streamCount(), 0, 'a closed stream is forgotten');
+    assert.equal(events.listenerCount('scene'), 1);
   } finally {
     server.close();
   }

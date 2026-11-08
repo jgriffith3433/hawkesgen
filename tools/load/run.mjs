@@ -34,6 +34,7 @@ const OPT = {
   p95: Number(arg('p95-ms', 2000)),
   lag: Number(arg('lag-ms', 1000)),
   rssMb: Number(arg('rss-mb', 1500)),
+  tabs: Math.max(1, Number(arg('tabs', 1))), // open event streams per account (browser tabs); the server holds 3 and closes the oldest
   drain: Number(arg('drain', 120)),       // seconds to wait for the last jobs
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -131,22 +132,26 @@ async function signIn(u) {
 }
 
 // The event stream, held open for the whole run (the harness reconnects after a restart; the product has no timer for it).
-let stopping = false;
-async function holdStream(u) {
+let stopping = false, heldTabs = 0;
+async function holdStream(u, tab = 0) {
   while (!stopping) {
+    let bye = false, opened = false;
     const ac = new AbortController();
-    u.stream = ac;
+    (u.streams ??= []).push(ac);
+    if (tab === 0) u.stream = ac;
     try {
       const r = await fetch(`${BASE}/v1/events`, { headers: { cookie: u.cookie }, signal: ac.signal });
       note('GET /v1/events (open)', 0, r.status);
       if (r.status !== 200) { await sleep(1000); continue; }
-      u.open = true;
+      opened = true;
+      u.openCount = (u.openCount ?? 0) + 1; u.open = true;
       const dec = new TextDecoder(); let buf = '';
       for await (const chunk of r.body) {
         buf += dec.decode(chunk, { stream: true });
         let k;
         while ((k = buf.indexOf('\n\n')) >= 0) {
           const block = buf.slice(0, k); buf = buf.slice(k + 2);
+          if (block.startsWith('event: bye')) { u.byes = (u.byes ?? 0) + 1; bye = true; continue; }
           if (!block.startsWith('event: job')) continue;
           u.events++;
           try {
@@ -156,8 +161,9 @@ async function holdStream(u) {
         }
       }
     } catch { /* closed: server restarted or we are stopping */ }
-    u.open = false;
-    if (!stopping) { u.reconnects++; await sleep(500 + Math.random() * 500); }
+    if (opened) u.openCount--;
+    u.open = u.openCount > 0;
+    if (!stopping) { u.reconnects++; await sleep(bye ? 30000 + Math.random() * 6000 : 500 + Math.random() * 500); }
   }
 }
 
@@ -231,7 +237,7 @@ async function stormRestart() {
 // ------------------------------------------------------------------------------------------------ the run
 async function shutdown() {
   stopping = true;
-  for (const u of users) u.stream?.abort();
+  for (const u of users) for (const a of u.streams ?? []) a.abort();
   if (child && !OPT.keep && child.exitCode === null) { child.kill('SIGTERM'); await new Promise((r) => { child.once('exit', r); setTimeout(() => { try { child.kill('SIGKILL'); } catch {} r(); }, 5000); }); }
 }
 process.on('SIGINT', async () => { await shutdown(); process.exit(130); });
@@ -260,10 +266,13 @@ async function main() {
   if (!live.length) { clearInterval(ticker); await shutdown(); die('no account could sign in'); }
 
   // 2. one held event stream each
-  live.forEach((u) => { holdStream(u); });
+  live.forEach((u) => { for (let t = 0; t < OPT.tabs; t++) holdStream(u, t); });
   const opened = Date.now() + 15000;
   while (live.some((u) => !u.open) && Date.now() < opened) await sleep(100);
-  log(`${live.filter((u) => u.open).length}/${live.length} event streams open`);
+  await sleep(OPT.tabs > 1 ? 1500 : 0);
+  heldTabs = live.reduce((a, u) => a + (u.openCount ?? 0), 0);
+  // (every tab that opens counts; with more than 3 tabs the server has already closed each account's oldest)
+  log(`${live.filter((u) => u.open).length}/${live.length} event streams open${OPT.tabs > 1 ? ` (+ ${OPT.tabs - 1} more tab(s) each; the server keeps 3 per account)` : ''}`);
 
   // 3. load: every user submits mock jobs at --rate, with some reads between; storms land partway through
   const end = Date.now() + OPT.duration * 1000;
@@ -303,10 +312,10 @@ async function main() {
   const noEvents = live.filter((u) => u.submitted.size && u.events === 0).length;
   const reconnects = live.reduce((a, u) => a + u.reconnects, 0);
   await shutdown();
-  report({ final, drained, noEvents, reconnects, liveCount: live.length });
+  report({ final, drained, noEvents, reconnects, liveCount: live.length, live });
 }
 
-function report({ final, drained, noEvents, reconnects, liveCount }) {
+function report({ final, drained, noEvents, reconnects, liveCount, live }) {
   const rows = []; let failed = 0;
   const check = (name, ok, detail) => { rows.push({ name, ok, detail }); if (!ok) failed++; };
   console.log('\nroute'.padEnd(34) + 'n'.padStart(7) + 'p50'.padStart(8) + 'p95'.padStart(8) + 'p99'.padStart(8) + '  429'.padStart(6) + '  5xx'.padStart(6) + '  err'.padStart(6) + '  result');
@@ -328,6 +337,7 @@ function report({ final, drained, noEvents, reconnects, liveCount }) {
   check(`connection errors only from the restart`, restartRan || nErr === 0, `${nErr}${restartRan ? ' (restart storm on)' : ''}`);
   check(`every submitted job finished`, drained.done + drained.failed === drained.submitted && drained.failed === 0, `${drained.done} done, ${drained.failed} failed of ${drained.submitted}`);
   check(`every user's event stream heard its jobs`, noEvents === 0, `${noEvents} silent of ${liveCount}${reconnects ? `, ${reconnects} reconnects` : ''}`);
+  if (OPT.tabs > 1) { const held = heldTabs; const cap = liveCount * Math.min(OPT.tabs, 3); check(`tabs hold streams (3 per account at most)`, held <= cap && held >= Math.min(cap, liveCount * Math.min(OPT.tabs, 3)) * 0.9, `${held} open of at most ${cap}`); }
   check(`server memory under ${OPT.rssMb} MB`, health.maxRss <= OPT.rssMb, `peak rss ${health.maxRss} MB, heap ${health.maxHeap} MB`);
   check(`event-loop lag under ${OPT.lag} ms`, health.maxLag <= OPT.lag, `worst ${health.maxLag} ms, p99 ${final?.loop?.p99Ms ?? '?'} ms`);
   const unexpected = restartRan ? Math.max(0, spawns - 2) : Math.max(0, spawns - 1);

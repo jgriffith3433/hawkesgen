@@ -73,3 +73,14 @@ test('only JSON events reach the handlers; close stops for good', () => {
   FakeES.all[0].fail(true);
   assert.equal(h.timers.length, 0);
 });
+
+test('a bye (the account has too many streams): closed, opened again after the longest wait, and the page catches up', () => {
+  const h = harness();
+  FakeES.all[0].open();
+  FakeES.all[0].emit('bye', '{"reason":"limit"}');
+  assert.equal(FakeES.all[0].closed, true);
+  assert.deepEqual(h.timers.map((t) => t.ms), [30000]);
+  h.timers[0].fn();
+  FakeES.all[1].open();
+  assert.equal(h.reconnects(), 1);
+});
