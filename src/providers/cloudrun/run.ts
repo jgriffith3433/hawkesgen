@@ -29,10 +29,10 @@ import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, PRE_WORKER_MS, WARM_MS, healthOf } from '../gpu/health.ts';
 
-/** A heartbeat younger than this means the run is still going on some instance. */
 /** A worker's error that is a provider's rate limit ("HTTP Error 429: Too Many Requests"). Exported for tests. */
 export const RATE_LIMITED = /HTTP Error 429|Too Many Requests/i;
 
+/** A heartbeat younger than this means the run is still going on some instance. */
 const FRESH_MS = 60_000;
 /** How many times Gen re-asks a RunPod worker to stay with a run past one load-balancer hold (12 x 5.5 min > 1 h). */
 const MAX_ATTACHES = 12;
