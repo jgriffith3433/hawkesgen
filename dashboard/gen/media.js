@@ -3,7 +3,7 @@
 // Also the one way every tool runs (runJob).
 
 import { trouble, troubleNote, explain } from './trouble.js';
-import { $, $$, h, api, toast, fileUrl, keyedRedraw, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
+import { $, $$, h, api, toast, fileUrl, thumbUrl, keyedRedraw, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
 import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor, PROGRESS, stopClip } from './project.js';
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
@@ -155,15 +155,27 @@ function decorate(el, a) {
   else el.querySelector('.badge.used')?.remove();
 }
 
+/**
+ * A clip tile's link, given to the element only when it scrolls near the screen: a library of forty clips otherwise opens
+ * forty connections for their first frames while the editor is still starting (the phone, 4x slower, felt it most).
+ */
+const SEEN = typeof IntersectionObserver === 'function' ? new IntersectionObserver((list) => {
+  for (const e of list) if (e.isIntersecting) { e.target.src = e.target.dataset.src; SEEN.unobserve(e.target); }
+}, { rootMargin: '200px' }) : null;
+function lazySrc(src) {
+  if (!SEEN) return { src };
+  return { 'data-src': src };
+}
 const durationOf = (a) => a.meta?.duration ?? null;
 function tileFor(a) {
   // The tile stays while Media is read again: what it does uses the newest copy of the file's row.
   const now = () => M.items.find((x) => x.id === a.id) ?? a;
   const prompt = a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? a.title ?? '';
-  const media = a.kind === 'image' ? h('img', { src: fileUrl(a.id, a.sha256), alt: '', loading: 'lazy', draggable: 'false' })
-    : a.kind === 'video' ? h('video', { src: `${fileUrl(a.id, a.sha256)}#t=0.1`, muted: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => { e.target.pause(); } })
+  const media = a.kind === 'image' ? h('img', { src: thumbUrl(a.id, a.sha256), alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' })
+    : a.kind === 'video' ? h('video', { ...lazySrc(`${fileUrl(a.id, a.sha256)}#t=0.1`), muted: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => { e.target.pause(); } })
     : a.kind === 'audio' ? h('div', { class: 'tile-audio' }, icon(a.tool === 'audio.music' ? 'music' : a.tool?.startsWith('audio.voice') ? 'mic' : 'volume', 'ico big'))
     : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
+  if (a.kind === 'video') SEEN?.observe(media);
   const d = durationOf(a);
   const el = h('div', { class: `tile kind-${a.kind}`, 'data-asset': a.id, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
 ` : ''}Double-click to look at it; drag it onto a track` },
