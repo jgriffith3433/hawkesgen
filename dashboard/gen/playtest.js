@@ -77,6 +77,10 @@ installPlaytest({
         const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/') && p !== '/v1/users/me');
         t.metric('v1CallsSignedOut', v1.length);
         for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
+        // The "who am I?" check answers a signed-out visit with nobody, not a 401 the console shows as an error.
+        const me = await window.__hgMe;
+        t.metric('meStatus', me?.status ?? 0);
+        if (me && me.status !== 200) t.problem('bug', `signed-out load: /v1/users/me answered ${me.status} (a console error)`);
         t.event('welcome-checked');
       }
       t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');

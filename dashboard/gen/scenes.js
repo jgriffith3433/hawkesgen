@@ -137,6 +137,10 @@ export async function newScene(kind, { title, doc, open = true } = {}) {
   return s;
 }
 
+/** What the Inspector pane says for a scene that has none. */
+const noInspector = (ed) => h('div', { class: 'ins ins-none', 'data-none': ed?.kind ?? '' },
+  h('p', { class: 'muted' }, ed ? `A ${ed.label.toLowerCase()} has no inspector: everything about it is on the page itself.` : 'Nothing to inspect here.'));
+
 /** Brings a tab to the front: the editor in front saves and lets go, the tab's editor takes the panes. */
 async function activate(id) {
   if (W.switching) await W.switching;
@@ -152,6 +156,9 @@ async function activate(id) {
     lendTimeline(ed?.timelineKind ? null : ed?.timeline ?? NO_LANES);
     $('#kindTab').hidden = !ed?.panel;
     $('#kindTab').textContent = ed?.panel ?? '';
+    // A scene with no inspector (a character, place, prop, story or world keeps its settings on the page itself) must
+    // not leave the last timeline scene's Inspector, with its Add buttons, in the pane: say what's there instead.
+    if (!ed?.panel) $('#kindPanel')?.replaceChildren(noInspector(ed));
     if (!ed) { toast(`No editor for ${t.kind} scenes yet.`); return; }
     if (W.editor === ed) return;
     try {

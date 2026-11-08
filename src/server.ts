@@ -81,7 +81,8 @@ server.listen(PORT, HOST, () => {
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, async () => {
-    console.log('stopping (running jobs resume on the next start)');
+    console.log('stopping: no new jobs, letting running ones finish first');
+    await import('./cloudhost.ts').then((m) => m.drainJobs()).catch(() => {});
     // Cloud Run: the state files go up first (the databases are Litestream's).
     if (process.env.K_SERVICE) await import('./cloudhost.ts').then((m) => m.flushOnStop()).catch(() => {});
     process.exit(0);

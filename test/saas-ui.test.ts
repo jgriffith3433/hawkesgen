@@ -147,11 +147,12 @@ test('all endpoints referenced by /home and /app respond properly', async () => 
   assert.ok(Array.isArray(motions.items) && motions.items.length > 0);
   assert.ok(motions.total > 0);
 
-  // 2. Unauthenticated /v1/users/me when HAWKESGEN_PUBLIC_SAAS=1 returns 401
+  // 2. Unauthenticated /v1/users/me when HAWKESGEN_PUBLIC_SAAS=1 answers "nobody" (no console error for a signed-out visit)
   process.env.HAWKESGEN_PUBLIC_SAAS = '1';
   try {
     const meAnon = await fetchRoute('/v1/users/me');
-    assert.equal(meAnon.status, 401);
+    assert.equal(meAnon.status, 200);
+    assert.equal(JSON.parse(meAnon.text).user, null);
   } finally {
     delete process.env.HAWKESGEN_PUBLIC_SAAS;
   }

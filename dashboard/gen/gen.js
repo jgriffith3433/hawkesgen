@@ -324,7 +324,16 @@ $$('#mobileTabs button').forEach((b) => b.addEventListener('click', () => {
   setTimeout(fit, 60);
 }));
 $('#app').dataset.m = 'edit';
-bus.on('sceneActive', () => { const k = $('#mobileTabs button[data-m="kind"]'); if (k) k.lastChild.textContent = activeEditor()?.panel === 'Inspector' ? 'Inspect' : activeEditor()?.panel ?? 'Inspect'; });
+// The Inspect tab is the scene's own panel (Inspector, Shot...). A scene with none (a character, place, prop, story or
+// world) hides the tab, as the desktop hides its pane tab, and a phone showing it goes back to Edit.
+bus.on('sceneActive', () => {
+  const k = $('#mobileTabs button[data-m="kind"]');
+  if (!k) return;
+  const panel = activeEditor()?.panel;
+  k.hidden = !panel;
+  k.lastChild.textContent = panel === 'Inspector' ? 'Inspect' : panel ?? 'Inspect';
+  if (!panel && $('#app').dataset.m === 'kind') $('#mobileTabs button[data-m="edit"]').click();
+});
 // A finger dragging a tile: the sheet steps aside a little so the timeline is easy to reach.
 bus.on('touchDrag', (on) => $('#app').classList.toggle('touch-dragging', on));
 
