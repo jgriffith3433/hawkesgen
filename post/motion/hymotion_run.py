@@ -14,27 +14,31 @@ WOODEN = os.path.join("scripts", "gradio", "static", "assets", "dump_wooden")
 
 
 def lfs_assets(repo):
-    """The wooden body template HY-Motion loads is in Git LFS: a shallow fetch leaves 130-byte pointers. Replace each
-    pointer with the real file from GitHub's LFS media URL at the checked-out commit (once; they stay in the repo)."""
+    """HY-Motion keeps its wooden body template (scripts/gradio/static/assets/dump_wooden/*.bin) and its motion stats
+    (stats/Mean.npy, Std.npy) in Git LFS: a shallow fetch leaves ~130-byte pointers. Replace every pointer in the repo
+    with the real file from GitHub's LFS media URL at the checked-out commit (once; they stay in the repo)."""
     import subprocess
     import urllib.request
 
-    folder = os.path.join(repo, WOODEN)
-    if not os.path.isdir(folder):
-        return
     commit = subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
-    for name in sorted(os.listdir(folder)):
-        path = os.path.join(folder, name)
-        with open(path, "rb") as fh:
-            head = fh.read(64)
-        if not head.startswith(b"version https://git-lfs"):
-            continue
-        url = f"https://media.githubusercontent.com/media/Tencent-Hunyuan/HY-Motion-1.0/{commit}/{WOODEN.replace(os.sep, '/')}/{name}"
-        print(f"HB step fetching HY-Motion's body template ({name})", flush=True)
+    pointers = []
+    for base, dirs, names in os.walk(repo):
+        dirs[:] = [d for d in dirs if d not in (".git", ".venv", "__pycache__", "node_modules")]
+        for name in names:
+            path = os.path.join(base, name)
+            if os.path.getsize(path) > 200:
+                continue
+            with open(path, "rb") as fh:
+                if fh.read(64).startswith(b"version https://git-lfs"):
+                    pointers.append(path)
+    for path in sorted(pointers):
+        rel = os.path.relpath(path, repo).replace(os.sep, "/")
+        url = f"https://media.githubusercontent.com/media/Tencent-Hunyuan/HY-Motion-1.0/{commit}/{rel}"
+        print(f"HB step fetching HY-Motion's {rel} (Git LFS)", flush=True)
         with urllib.request.urlopen(url, timeout=120) as r:
             data = r.read()
         if data.startswith(b"version https://git-lfs"):
-            raise SystemExit(f"{name}: GitHub returned the LFS pointer, not the file")
+            raise SystemExit(f"{rel}: GitHub returned the LFS pointer, not the file")
         with open(path, "wb") as fh:
             fh.write(data)
 
