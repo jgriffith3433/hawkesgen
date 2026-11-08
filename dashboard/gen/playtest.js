@@ -13,6 +13,12 @@
 //   ai-edit, ai-undo, ai-proposal, ai-nocredits, ai-signedout, ai-outage: the AI pane (docs/ai-mock.md). The test account's canned
 //            answers (POST /v1/test/ai-mock, a named setup shortcut) stand in for Claude, so no house AI is spent; the message is typed
 //            with key events into #aiInput, and nothing here ever presses Make it on a proposal (that would be GPU money)
+//   stage    the Director: a stage scene, a character cast, a prop added, camera keyed at two moments, scrubbed and played; the 3D view draws and the console stays clean
+//   character a character sheet: look, voice, pictures by role and 3D model sections draw; nothing is generated
+//   world    Start a world (canned AI answer): the sheet opens, the first proposal cards show, the pictures' price is known; Make this world is never pressed
+//   scenes   a new scene of each kind from the + menu, renamed, reordered, duplicated and deleted
+//   media-upload a small picture is uploaded by the Media pane's file input and shows as a tile and in its details (Media has no delete)
+//            (stage, character, world, scenes, media-upload: free, no paid job; every one watches the jobs it could start)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
@@ -20,7 +26,8 @@ import { state } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
 import { snapStats } from './timeline.js';
 import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
-import { activeScene, newScene } from './scenes.js';
+import { activeScene, newScene, sceneList, loadList } from './scenes.js';
+import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
 import { api, bus } from './lib.js';
 import { openStream } from './stream.js';
@@ -120,6 +127,44 @@ const aiIdle = () => !document.querySelector('#aiSend')?.classList.contains('bus
 const RAW_AI = /[{}<>]|"error"|Traceback|File "|\bat \S+:\d+|hg_[0-9a-f]{6}|sk-ant|hgm_|undefined|\[object/;
 const TITLE_OP = (text) => ({ op: 'add', track: 'T1', kind: 'text', text, start: 0, duration: 3 });
 
+
+/** Everything the console and the window say went wrong while a scenario plays (console.error, uncaught errors, rejected promises). */
+function watchConsole() {
+  const errors = [];
+  const real = console.error;
+  const text = (a) => a.map((x) => (x instanceof Error ? x.message : typeof x === 'string' ? x : (() => { try { return JSON.stringify(x); } catch { return String(x); } })())).join(' ').slice(0, 220);
+  console.error = (...a) => { errors.push(text(a)); real.apply(console, a); };
+  const onErr = (e) => errors.push(e.message || 'error');
+  const onRej = (e) => errors.push(`unhandled: ${e.reason?.message ?? e.reason}`);
+  window.addEventListener('error', onErr);
+  window.addEventListener('unhandledrejection', onRej);
+  return { errors, stop: () => { console.error = real; window.removeEventListener('error', onErr); window.removeEventListener('unhandledrejection', onRej); } };
+}
+/** Types into any field one key at a time (keydown, input, keyup): the way a person fills it in. */
+async function typeInto(box, text) {
+  box.focus();
+  box.value = '';
+  for (const ch of text) {
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+    box.value += ch;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.dispatchEvent(new KeyboardEvent('keyup', { key: ch, bubbles: true }));
+    await sleep(6);
+  }
+}
+/** The first element under `root` that matches `sel` and whose words match `re`. */
+const withText = (root, sel, re) => [...(root ?? document).querySelectorAll(sel)].find((el) => re.test(el.textContent));
+/** The "+" menu's blank-scene row for a kind (the starters above it are skipped). */
+const blankRow = (label) => [...document.querySelectorAll('.menu .menu-item')].find((b) => !b.closest('.menu-starters') && b.querySelector('b')?.textContent === label);
+/** Scenes this run made (all but the ones the bot opens through `made`), taken away again when it stops. */
+const extra = [];
+/** Setup shortcut (named): a confirm() that says yes, for Delete (a person would press OK). Returns the way back. */
+function confirmYes(log) {
+  const real = window.confirm;
+  window.confirm = (msg) => { log?.push(String(msg)); return true; };
+  return () => { window.confirm = real; };
+}
+
 let made = null;
 installPlaytest({
   product: 'hawkesgen-app',
@@ -148,6 +193,11 @@ installPlaytest({
     { id: 'ai-nocredits', title: 'AI pane: with no credits left the answer is a plain 402 line with Add credits, and the timeline is unchanged', seconds: 60 },
     { id: 'ai-signedout', title: 'AI pane signed out: the sign-in gate shows, a typed message opens Sign in and nothing is sent', seconds: 40 },
     { id: 'ai-outage', title: 'AI pane in an outage: 503, 429, an unreadable page and a garbled answer each show one plain line (no JSON, trace or key) and the pane unlocks', seconds: 90 },
+    { id: 'stage', title: 'Stage: open the Director, cast a character, add a prop, key the camera at two moments and scrub; the 3D view draws, the console has no errors and no job starts', seconds: 90 },
+    { id: 'character', title: 'Character: the sheet shows their look, voice, pictures by role and 3D model sections; nothing is generated and no job starts', seconds: 60 },
+    { id: 'world', title: 'World: Start a world (canned AI answer) opens its sheet and reaches the first proposal cards with the pictures\' price known; Make this world is never pressed and no job starts', seconds: 60 },
+    { id: 'scenes', title: 'Scenes: a new scene of each kind from the + menu is renamed, reordered, duplicated and deleted; no job starts', seconds: 150 },
+    { id: 'media-upload', title: 'Media: a small picture is uploaded with the file button and shows as a tile and in its details; no job starts but the CPU conversion, if any', seconds: 60 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -338,6 +388,358 @@ installPlaytest({
       return;
     }
     if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
+    if (id === 'stage') {
+      t.scene('Stage');
+      const jobs = watchJobs(), con = watchConsole();
+      const stamp = new Date().toISOString().slice(0, 16);
+      const finish = (ok) => { const started = jobs.sent.length; jobs.stop(); con.stop(); t.metric('jobsStarted', started); t.metric('consoleErrors', con.errors.length); if (started) t.problem('blocker', `the stage started ${started} job(s): ${jobs.sent.join(', ')}`); for (const e of con.errors.slice(0, 5)) t.problem('bug', `console error on the stage: ${e}`); t.finish(ok && !started && !con.errors.length ? 'done' : 'stuck'); };
+      await until(() => activeScene(), 10000);
+      // Setup shortcuts (named): a character to cast (no pictures, no model) and a new stage scene. Everything after is clicks and the time bar.
+      const chr = await newScene('character', { title: `Playtest Mara ${stamp}`, open: false });
+      extra.push(chr.id);
+      made = await newScene('stage', { title: `Playtest stage ${stamp}` });
+      if (!await until(() => activeScene()?.id === made?.id && currentShot()?.id === made.id, 20000)) { t.note('the stage did not open'); finish(false); return; }
+      t.event('stage-opened');
+      // The 3D view: the canvas is on the page with a size, and the "couldn't start" note is not.
+      const canvas = await until(() => { const c = document.querySelector('#dirStage canvas.dir-canvas'); return c && c.clientWidth > 50 && c.clientHeight > 50; }, 20000, 150);
+      const failedNote = /couldn.t start/i.test(document.querySelector('#dirStage')?.textContent ?? '');
+      t.metric('canvasDrawn', canvas && !failedNote ? 1 : 0);
+      t.metric('canvasWidth', document.querySelector('#dirStage canvas.dir-canvas')?.clientWidth ?? 0);
+      t.event(canvas && !failedNote ? 'stage-drawn' : 'stage-not-drawn');
+      if (!canvas || failedNote) { t.problem('bug', failedNote ? 'the 3D stage says it could not start' : 'the 3D stage has no canvas'); finish(false); return; }
+      await until(() => document.querySelector('#dirTime') && document.querySelector('#kindPanel .dir-sec'), 8000, 100);
+      // Cast a character: Add a character, then them in the menu.
+      withText(document.querySelector('#kindPanel'), 'button', /Add a character/)?.click();
+      const row = await until(() => withText(document.querySelector('.menu'), '.menu-item', new RegExp(chr.title.replace(/[^\w ]/g, '.'))), 5000, 100) ? withText(document.querySelector('.menu'), '.menu-item', new RegExp(chr.title.replace(/[^\w ]/g, '.'))) : null;
+      if (!row) { t.problem('bug', 'Add a character did not list the new character'); finish(false); return; }
+      row.click();
+      let saw = false;
+      const cast = await until(() => currentShot()?.doc.cast.some((c) => c.character === chr.id), 5000, 100);
+      t.metric('cast', currentShot()?.doc.cast.length ?? 0);
+      t.event(cast ? 'character-cast' : 'character-not-cast');
+      // Add a prop: after the cast member has been saved and the shot read back (a read-back lands over an edit made before it).
+      await until(() => { api(`/v1/scenes/${made.id}`).then((x) => { if (x.doc?.cast?.length === 1) saw = true; }).catch(() => {}); return saw; }, 8000, 400);
+      await sleep(900);
+      withText(document.querySelector('#kindPanel'), 'button', /Add a prop/)?.click();
+      const prop = await until(() => currentShot()?.doc.props.length === 1, 5000, 100);
+      t.metric('props', currentShot()?.doc.props.length ?? 0);
+      t.event(prop ? 'prop-added' : 'prop-not-added');
+      // Camera keys at two moments, with the time bar (the range input a person drags) and the key button.
+      const bar = document.querySelector('#dirTime');
+      const scrub = async (frac) => { bar.value = String(frac); bar.dispatchEvent(new Event('input', { bubbles: true })); await sleep(250); return document.querySelector('#dirTc')?.textContent ?? ''; };
+      const stamps = new Set();
+      stamps.add(await scrub(0.25));
+      withText(document.querySelector('#kindPanel'), 'button', /Key the camera at/)?.click();
+      await until(() => (currentShot()?.doc.camera.keys?.length ?? 0) === 1, 4000, 100);
+      stamps.add(await scrub(0.75));
+      withText(document.querySelector('#kindPanel'), 'button', /Key the camera at/)?.click();
+      const keyed = await until(() => (currentShot()?.doc.camera.keys?.length ?? 0) === 2, 4000, 100);
+      const marks = await until(() => document.querySelectorAll('#dirMarks .dir-key').length === 2, 3000, 100);
+      t.metric('cameraKeys', currentShot()?.doc.camera.keys?.length ?? 0);
+      t.metric('keyMarks', document.querySelectorAll('#dirMarks .dir-key').length);
+      t.event(keyed ? 'camera-keyed-twice' : 'camera-not-keyed');
+      if (keyed && !marks) t.problem('bug', 'the time bar does not show the two camera keys');
+      // Scrub across the shot and play it a moment: the clock must move and the stage keep drawing.
+      for (const f of [0, 0.5, 1, 0.1]) stamps.add(await scrub(f));
+      t.metric('distinctTimecodes', stamps.size);
+      t.event('scrubbed');
+      const t0 = document.querySelector('#dirTc')?.textContent;
+      click('#dirPlay');
+      await sleep(1200);
+      const t1 = document.querySelector('#dirTc')?.textContent;
+      click('#dirPlay');
+      t.metric('playMoved', t0 !== t1 ? 1 : 0);
+      t.event(t0 !== t1 ? 'played' : 'play-did-not-move');
+      const still = document.querySelector('#dirStage canvas.dir-canvas')?.clientWidth > 50 && !document.querySelector('#dirStage .empty-note');
+      t.metric('stillDrawn', still ? 1 : 0);
+      // Saved with its cast, prop and keys (Ctrl+S saves now).
+      press('s', { ctrlKey: true });
+      let saved = null;
+      await until(() => { api(`/v1/scenes/${made.id}`).then((s) => { saved = s; }).catch(() => {}); return saved?.doc?.cast?.length === 1 && saved.doc.props?.length === 1 && saved.doc.camera?.keys?.length === 2; }, 8000, 500);
+      const savedOk = saved?.doc?.cast?.length === 1 && saved.doc.props?.length === 1 && saved.doc.camera?.keys?.length === 2;
+      t.metric('saved', savedOk ? 1 : 0);
+      t.event(savedOk ? 'stage-saved' : 'stage-not-saved');
+      if (!savedOk) t.problem('bug', 'the stage did not save its cast, prop and camera keys');
+      finish(Boolean(cast && prop && keyed && stamps.size >= 3 && t0 !== t1 && still && savedOk));
+      return;
+    }
+    if (id === 'character') {
+      t.scene('Character sheet');
+      const jobs = watchJobs();
+      const stamp = new Date().toISOString().slice(0, 16);
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a character scene, with the library's newest picture as their front when it has one.
+      const pics = ((await api(`/v1/assets?${new URLSearchParams({ limit: '5', project: state.user.project, kind: 'image' })}`).catch(() => null))?.items ?? []);
+      t.metric('libraryPictures', pics.length);
+      const doc = { title: `Playtest Iris ${stamp}`, description: 'A tall ranger in a green coat, grey eyes, a scar over the left brow.', ...(pics.length ? { pictures: [{ role: 'front', asset: pics[0].id }] } : {}) };
+      made = await newScene('character', { title: doc.title, doc });
+      if (!await until(() => activeScene()?.id === made?.id && document.querySelector('#chrWrap .chr-sheet'), 15000, 150)) { jobs.stop(); t.note('the character sheet did not open'); t.finish('stuck'); return; }
+      t.event('sheet-open');
+      const sheet = document.querySelector('#chrWrap');
+      // Each section the sheet promises. Every one is looked at, none is pressed.
+      const name = sheet.querySelector('.chr-name');
+      const look = sheet.querySelector('.chr-look');
+      const voiceReady = await until(() => (sheet.querySelectorAll('.chr-voice select option').length ?? 0) > 1, 8000, 200);
+      const voice = sheet.querySelector('.chr-voice select');
+      const rolePick = sheet.querySelector('.chr-pic select');
+      const model = sheet.querySelector('.chr-model');
+      const checks = {
+        name: Boolean(name) && name.value === doc.title,
+        description: /ranger/.test(sheet.querySelector('textarea')?.value ?? ''),
+        look: Boolean(look) && /Their look/.test(look.textContent),
+        voice: Boolean(voice) && voiceReady,
+        pictures: Boolean(sheet.querySelector('.chr-pics .chr-add')) && (!pics.length || (Boolean(rolePick) && rolePick.options.length === 6 && rolePick.value === 'front')),
+        model: Boolean(model) && /No 3D model yet|Making the 3D model/.test(model.textContent) || model?.tagName === 'MODEL-VIEWER',
+      };
+      for (const [k, v] of Object.entries(checks)) { t.metric(`section_${k}`, v ? 1 : 0); if (!v) t.problem('bug', `the character sheet's ${k} section is missing or wrong`); }
+      t.metric('voices', Math.max(0, (voice?.options.length ?? 1) - 1));
+      t.metric('roleChoices', rolePick?.options.length ?? 0);
+      t.event(`sections: ${Object.entries(checks).map(([k, v]) => `${k} ${v ? 'ok' : 'MISSING'}`).join(', ')}`);
+      // The buttons that would cost something are there to see, and are left alone.
+      const makers = ['Make their pictures', 'Make their look', 'Make the 3D model'].filter((x) => withText(sheet, 'button', new RegExp(x)));
+      t.metric('makeButtonsSeen', makers.length);
+      t.note(`Seen, not pressed: ${makers.join(', ') || 'none'}`);
+      if (!withText(sheet, 'button', /Stage them/)) t.problem('bug', 'the sheet has no Stage them button');
+      await sleep(800);
+      const started = jobs.sent.length;
+      jobs.stop();
+      t.metric('jobsStarted', started);
+      if (started) t.problem('blocker', `opening a character sheet started ${started} job(s): ${jobs.sent.join(', ')}`);
+      t.finish(Object.values(checks).every(Boolean) && !started ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'world') {
+      t.scene('Start a world');
+      const jobs = watchJobs();
+      await until(() => activeScene(), 10000);
+      const worlds0 = sceneList().filter((s) => s.kind === 'world').length;
+      const credits0 = Number(state.user?.credits ?? 0);
+      // Setup shortcut (named): the world AI's canned answer (the test account's mock) stands in for Claude.
+      const proposal = { say: 'A frozen moon of smugglers.', world: { title: 'Red Sky Run', logline: 'Smugglers work a frozen moon whose sky is always red.', tone: 'Dry, tense, a little tender.', look: { style: 'Cold blues against a red sky, grainy film', palette: ['#8c1d18', '#1f3a5f', '#d9e2ec'] }, rules: ['The sky is always red.'] },
+        characters: [{ title: 'Captain Oda', description: 'A weathered smuggler in a patched orange parka.' }, { title: 'Pip', description: 'A cargo-bot with one working lamp.' }],
+        places: [{ title: 'The Ice Dock', description: 'A frozen harbor of rusted cranes under the red sky.' }], props: [], story: { title: 'The Last Crate', logline: 'One crate must cross the ice before the sky goes dark.' } };
+      const mocked = await mockAi([{ match: 'frozen moon', cost: 0.01, json: proposal }]);
+      // The way in: "+" in the bar, then the Start a world idea.
+      click('#newSceneBtn');
+      const starter = await until(() => withText(document.querySelector('.menu .menu-starters'), '.menu-item', /Start a world/), 6000, 100) ? withText(document.querySelector('.menu .menu-starters'), '.menu-item', /Start a world/) : null;
+      if (!starter) { jobs.stop(); t.problem('bug', 'the + menu has no Start a world idea'); t.finish('stuck'); return; }
+      starter.click();
+      const sheet = await until(() => document.querySelector('#worldStart textarea'), 6000, 100) ? document.querySelector('#worldStart') : null;
+      t.metric('sheetOpened', sheet ? 1 : 0);
+      t.event(sheet ? 'start-sheet-open' : 'no-start-sheet');
+      if (!sheet) { jobs.stop(); t.finish('stuck'); return; }
+      const build = withText(sheet, 'button', /Build my world/);
+      t.metric('buildButton', build ? 1 : 0);
+      if (!mocked) {
+        t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session: the first card is not played');
+        t.event('mock-off');
+        sheet.querySelector('.sheet-head .icon-btn')?.click();
+        const started0 = jobs.sent.length; jobs.stop(); t.metric('jobsStarted', started0);
+        t.finish(build && !started0 ? 'done' : 'stuck');
+        return;
+      }
+      await typeInto(sheet.querySelector('textarea'), 'smugglers on a frozen moon where the sky is always red');
+      build?.click();
+      t.event('build-pressed');
+      const card = await until(() => sheet.querySelector('.ws-cards .ws-card'), 30000, 150);
+      t.metric('cardsShown', sheet.querySelectorAll('.ws-card').length);
+      t.event(card ? 'first-card-shown' : 'no-card');
+      if (!card) { jobs.stop(); t.problem('bug', 'Start a world did not reach its first card'); sheet.querySelector('.sheet-head .icon-btn')?.click(); t.finish('stuck'); return; }
+      const titleOk = sheet.querySelector('.ws-world-title')?.value === 'Red Sky Run';
+      const charCards = sheet.querySelectorAll('.ws-cards .ws-card .ws-card-name').length;
+      const story = sheet.querySelector('.ws-story');
+      t.metric('worldTitleOk', titleOk ? 1 : 0);
+      t.metric('characterCards', charCards);
+      t.metric('storyCard', story ? 1 : 0);
+      if (!titleOk) t.problem('bug', 'the proposal sheet does not show the world\'s name');
+      // Keep / Thrown away on a card, as a person taps it, and back.
+      const keepBtn = withText(card, 'button', /Keep/);
+      keepBtn?.click();
+      const thrown = await until(() => sheet.querySelector('.ws-card.off'), 2000, 100);
+      withText(sheet.querySelector('.ws-card.off'), 'button', /Thrown away/)?.click();
+      const back = await until(() => !sheet.querySelector('.ws-card.off'), 2000, 100);
+      t.metric('keepToggles', thrown && back ? 1 : 0);
+      t.event(thrown && back ? 'card-toggled' : 'card-toggle-failed');
+      // The price: the AI's own cost shows in the credits, and the pictures' price is known before anything is made.
+      await until(() => Number(state.user?.credits ?? 0) < credits0, 6000, 150);
+      t.metric('aiCreditsSpent', Math.round((credits0 - Number(state.user?.credits ?? 0)) * 100) / 100);
+      const quote = await api('/v1/billing/quote', { body: { tool: 'image.generate', params: { prompt: 'a frozen harbor under a red sky' }, project: state.user.project } }).catch(() => null);
+      const price = Number(quote?.credits ?? NaN);
+      t.metric('picturePrice', Number.isFinite(price) ? price : -1);
+      t.event(Number.isFinite(price) ? `price-known: ${price} credits a picture` : 'no-price');
+      if (!Number.isFinite(price)) t.problem('bug', 'the price of a picture could not be read');
+      const make = withText(sheet, 'button', /Make this world/);
+      t.metric('makeThisWorldOffered', make ? 1 : 0);
+      if (!make) t.problem('bug', 'the proposal has no Make this world button');
+      await sleep(1500);
+      // Make this world is never pressed: it would save scenes and offer pictures for credits. Close the sheet instead.
+      sheet.querySelector('.sheet-head .icon-btn')?.click();
+      const started = jobs.sent.length;
+      jobs.stop();
+      const worlds1 = sceneList().filter((s) => s.kind === 'world').length;
+      t.metric('jobsStarted', started);
+      t.metric('worldsMade', worlds1 - worlds0);
+      t.event(!started && worlds1 === worlds0 ? 'nothing-started' : 'something-started');
+      if (started) t.problem('blocker', `Start a world started ${started} job(s): ${jobs.sent.join(', ')}`);
+      if (worlds1 !== worlds0) t.problem('bug', 'a world was saved before Make this world was pressed');
+      t.finish(card && titleOk && make && Number.isFinite(price) && !started && worlds1 === worlds0 ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'scenes') {
+      t.scene('Scenes');
+      const jobs = watchJobs();
+      const stamp = new Date().toISOString().slice(11, 16).replace(':', '');
+      const yes = confirmYes();
+      const done = (ok) => { yes(); const started = jobs.sent.length; jobs.stop(); t.metric('jobsStarted', started); if (started) t.problem('blocker', `the scenes screens started ${started} job(s): ${jobs.sent.join(', ')}`); t.finish(ok && !started ? 'done' : 'stuck'); };
+      await until(() => activeScene(), 10000);
+      const KINDS = [['video', 'Video'], ['stage', 'Stage'], ['image', 'Image'], ['audio', 'Audio'], ['character', 'Character'], ['world', 'World'], ['place', 'Place'], ['prop', 'Prop'], ['story', 'Story']];
+      const mine = [];           // { id, kind, title }
+      const serverTitle = async (sid) => (await api(`/v1/scenes/${sid}`).catch(() => null))?.title ?? null;
+      // 1 One new scene of each kind from the "+" menu, each renamed by double-clicking its tab.
+      let renamed = 0;
+      for (const [kind, label] of KINDS) {
+        const prev = activeScene()?.id;
+        click('#newSceneBtn');
+        const rowEl = await until(() => blankRow(label), 6000, 100) ? blankRow(label) : null;
+        if (!rowEl) { t.problem('bug', `the + menu has no blank ${label}`); continue; }
+        rowEl.click();
+        if (!await until(() => activeScene()?.kind === kind && activeScene()?.id !== prev, 15000, 100)) { t.problem('bug', `a new ${label} scene did not open`); continue; }
+        const sid = activeScene().id;
+        extra.push(sid);
+        const title = `PT ${label} ${stamp}`;
+        mine.push({ id: sid, kind, title });
+        t.event(`made-${kind}`);
+        // Rename: double-click the tab, type, Enter.
+        const tab = document.querySelector(`#sceneTabs .scene-tab[data-id="${sid}"]`);
+        tab?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+        const input = await until(() => document.querySelector('.scene-tab-input'), 2000, 50) ? document.querySelector('.scene-tab-input') : null;
+        if (!input) { t.problem('bug', `the ${label} tab did not open its rename box`); continue; }
+        await typeInto(input, title);
+        pressOn(input, 'Enter');
+        let ok = false;
+        for (let i = 0; i < 16 && !ok; i++) { await sleep(500); ok = (await serverTitle(sid)) === title; }
+        if (ok) renamed++; else t.problem('bug', `renaming the ${label} scene did not reach Gen`);
+        await sleep(100);
+      }
+      t.metric('kindsMade', mine.length);
+      t.metric('renamed', renamed);
+      t.event(`kinds-made: ${mine.map((m) => m.kind).join(',')}`);
+      t.event(renamed === mine.length ? 'all-renamed' : `renamed ${renamed} of ${mine.length}`);
+      if (mine.length !== KINDS.length) { done(false); return; }
+      const tabIds = () => [...document.querySelectorAll('#sceneTabs .scene-tab')].map((e) => e.dataset.id);
+      const tabTitle = (sid) => document.querySelector(`#sceneTabs .scene-tab[data-id="${sid}"] .scene-tab-t`)?.textContent.replace(/\s*\*$/, '').trim();
+      const tabOk = mine.every((m) => tabTitle(m.id) === m.title);
+      t.metric('tabsShowNewNames', tabOk ? 1 : 0);
+      if (!tabOk) t.problem('bug', 'a renamed scene\'s tab does not show its new name');
+      // 2 Reorder: drag the last tab onto the first (real drag events with one DataTransfer).
+      const before = tabIds();
+      const from = before[before.length - 1], to = before[0];
+      const dt = new DataTransfer();
+      const fire = (type, el) => el.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true }));
+      const tabEl = (sid) => document.querySelector(`#sceneTabs .scene-tab[data-id="${sid}"]`);
+      fire('dragstart', tabEl(from)); fire('dragover', tabEl(to)); fire('drop', tabEl(to)); fire('dragend', tabEl(from));
+      await sleep(300);
+      const after = tabIds();
+      const moved = after.indexOf(from) < after.indexOf(to) && after.length === before.length;
+      t.metric('reordered', moved ? 1 : 0);
+      t.event(moved ? 'tab-reordered' : 'tab-not-reordered');
+      if (!moved) t.problem('bug', 'dragging a tab before another did not reorder the tabs');
+      // 3 Duplicate and 4 Delete, from the Scenes pane's row menu.
+      const target = mine[0];
+      click('#paneTabs button[data-pane="scenes"]');
+      const search = document.querySelector('#scenesSearch');
+      const rowFor = (title) => [...document.querySelectorAll('#scenesList .scene-row')].find((r) => r.querySelector('b')?.textContent === title);
+      const findRow = async (title) => { await typeInto(search, title); search.dispatchEvent(new Event('input', { bubbles: true })); return await until(() => rowFor(title), 6000, 100) ? rowFor(title) : null; };
+      const listCount = async () => ((await api(`/v1/scenes?project=${encodeURIComponent(state.user.project)}`).catch(() => null))?.items ?? []);
+      const before1 = await listCount();
+      const row = await findRow(target.title);
+      if (!row) { t.problem('bug', 'the Scenes list does not show a scene that was just made'); done(false); return; }
+      row.querySelector('.icon-btn[title="More"]')?.click();
+      const dup = await until(() => withText(document.querySelector('.menu'), '.menu-item', /^Duplicate$/), 4000, 100) ? withText(document.querySelector('.menu'), '.menu-item', /^Duplicate$/) : null;
+      if (!dup) { t.problem('bug', 'the scene menu has no Duplicate'); done(false); return; }
+      dup.click();
+      let copy = null;
+      await until(() => { listCount().then((l) => { copy = l.find((x) => !before1.some((b) => b.id === x.id)) ?? copy; }); return copy; }, 8000, 400);
+      t.metric('duplicated', copy ? 1 : 0);
+      t.event(copy ? `duplicated: "${copy.title}"` : 'not-duplicated');
+      if (!copy) { done(false); return; }
+      extra.push(copy.id);
+      if (copy.title === target.title) t.problem('bug', 'the duplicate has the same name as the original');
+      await loadList();
+      const copyRow = await findRow(copy.title);
+      t.metric('duplicateListed', copyRow ? 1 : 0);
+      if (!copyRow) t.problem('bug', 'the duplicate is not in the Scenes list');
+      // Delete the duplicate (confirm answered yes, as a person presses OK): the row, the tab and the scene go.
+      copyRow?.querySelector('.icon-btn[title="More"]')?.click();
+      const del = await until(() => withText(document.querySelector('.menu'), '.menu-item', /^Delete$/), 4000, 100) ? withText(document.querySelector('.menu'), '.menu-item', /^Delete$/) : null;
+      if (!del) { t.problem('bug', 'the scene menu has no Delete'); done(false); return; }
+      del.click();
+      const rowGone = await until(() => !rowFor(copy.title), 6000, 100);
+      let gone = false;
+      for (let i = 0; i < 10 && !gone; i++) { gone = !(await api(`/v1/scenes/${copy.id}`).then(() => true).catch(() => false)); if (!gone) await sleep(400); }
+      t.metric('deleted', rowGone && gone ? 1 : 0);
+      t.event(rowGone && gone ? 'duplicate-deleted' : 'delete-failed');
+      if (!rowGone) t.problem('bug', 'the deleted scene is still in the Scenes list');
+      if (!gone) t.problem('bug', 'the deleted scene still exists in Gen');
+      // The original is untouched by all of that.
+      const intact = (await serverTitle(target.id)) === target.title;
+      t.metric('originalIntact', intact ? 1 : 0);
+      if (!intact) t.problem('bug', 'duplicating and deleting the copy changed the original');
+      await typeInto(search, ''); search.dispatchEvent(new Event('input', { bubbles: true }));
+      done(moved && Boolean(copy) && Boolean(copyRow) && rowGone && gone && intact && renamed > 0);
+      return;
+    }
+    if (id === 'media-upload') {
+      t.scene('Media upload');
+      const jobs = watchJobs();
+      click('#paneTabs button[data-pane="media"]');
+      await until(() => document.querySelectorAll('#mediaGrid .tile').length > 0 || document.querySelector('#mediaGrid .empty-note'), 15000);
+      // Setup shortcut (named): a 64x64 picture made in the page, different every run (Gen stores files by content).
+      const stamp = Date.now();
+      const name = `playtest-upload-${stamp}.png`;
+      const cv = document.createElement('canvas');
+      cv.width = cv.height = 64;
+      const g = cv.getContext('2d');
+      g.fillStyle = `hsl(${stamp % 360} 60% 45%)`; g.fillRect(0, 0, 64, 64);
+      g.fillStyle = '#fff'; g.fillRect(8 + (stamp % 24), 8, 24, 24);
+      const blob = await new Promise((r) => cv.toBlob(r, 'image/png'));
+      const file = new File([blob], name, { type: 'image/png' });
+      t.metric('fileBytes', file.size);
+      // The action: the file input gets the file, as the browser's file picker leaves it, and says it changed.
+      const input = document.querySelector('#uploadInput');
+      const dt = new DataTransfer(); dt.items.add(file);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      t.event('file-chosen');
+      const tileFor = () => [...document.querySelectorAll('#mediaGrid .tile:not(.busy)')].find((x) => x.querySelector('.tile-cap')?.textContent === name);
+      const working = await until(() => [...document.querySelectorAll('#mediaGrid .tile.busy')].length > 0 || tileFor(), 4000, 50);
+      t.metric('showedProgress', working ? 1 : 0);
+      const tile = await until(() => tileFor(), 30000, 200) ? tileFor() : null;
+      t.metric('tileShown', tile ? 1 : 0);
+      t.event(tile ? 'upload-in-media' : 'upload-missing');
+      if (!tile) { jobs.stop(); t.problem('bug', 'the uploaded picture never showed in Media'); t.finish('stuck'); return; }
+      t.metric('tileIsImage', tile.classList.contains('kind-image') ? 1 : 0);
+      t.metric('tileHasPicture', tile.querySelector('img') ? 1 : 0);
+      if (!tile.querySelector('img')) t.problem('bug', 'the uploaded picture\'s tile shows no thumbnail');
+      // Its details: the drawer says what it is and how big.
+      tile.querySelector('.tile-info')?.click();
+      const drawer = await until(() => document.querySelector('#mediaDrawer .media-drawer'), 4000, 100) ? document.querySelector('#mediaDrawer') : null;
+      const text = drawer?.textContent ?? '';
+      t.metric('drawerOpened', drawer ? 1 : 0);
+      t.metric('drawerSize', /64\s*×\s*64/.test(text) ? 1 : 0);
+      t.event(drawer ? `drawer: ${/Image/.test(text) ? 'Image' : '?'}, ${/64\s*×\s*64/.test(text) ? '64 × 64' : 'size missing'}` : 'no-drawer');
+      if (drawer && !/64\s*×\s*64/.test(text)) t.problem('bug', 'the details do not say the picture is 64 × 64');
+      if (drawer) { pressOn(drawer, 'Escape'); await until(() => !document.querySelector('#mediaDrawer'), 3000, 100); }
+      // Media has no Delete (no button, no menu, no route): said here, so a missing delete is a known gap, not a hidden one.
+      t.note('Media has no Delete for files: the 64×64 test picture stays in the test account\'s library');
+      // Only a CPU conversion may have run (a picture that needs converting): never a GPU tool.
+      const gpu = jobs.sent.filter((x) => !/^(media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('jobsStarted', jobs.sent.length);
+      if (gpu.length) t.problem('blocker', `uploading started a job that isn't the conversion: ${gpu.join(', ')}`);
+      t.finish(tile && drawer && !gpu.length ? 'done' : 'stuck');
+      return;
+    }
     if (id === 'createprice') {
       t.scene('Create prices');
       click('#paneTabs button[data-pane="generate"]');
@@ -1208,5 +1610,7 @@ installPlaytest({
   async stop() {
     // The scene the smoke made goes again (the test account doesn't fill up).
     if (made?.id) { const id = made.id; made = null; await api(`/v1/scenes/${id}`, { method: 'DELETE' }).catch(() => {}); }
+    // Scenes the stage, scenes and world scenarios made beside it go too.
+    while (extra.length) await api(`/v1/scenes/${extra.pop()}`, { method: 'DELETE' }).catch(() => {});
   },
 });
