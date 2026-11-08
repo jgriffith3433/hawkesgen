@@ -88,6 +88,8 @@ JOB_ROOT = "/var/tmp/hawkes-blender"
 HEARTBEAT_S = 15
 CANCEL_CHECK_S = 5
 CHUNK = 64 * 1024 * 1024
+DIRECT_UPLOAD_BYTES = 8 * 1024 * 1024  # bigger files go straight to Cloud Storage (signed URL), not through Gen's broker
+PROXY_WRITE_MAX = 30 * 1024 * 1024  # Cloud Run refuses request bodies over 32 MiB
 BOOT = time.time()
 
 state = {"ready": False, "detail": "starting", "readyAt": None, "cold": True, "error": None}
@@ -269,13 +271,50 @@ class BrokerStore:
             raise
 
     def write(self, uri, data, content_type="application/octet-stream"):
+        # Cloud Run refuses request bodies over 32 MiB (HTTP 413), so anything sizeable goes straight to Cloud Storage
+        # with a signed URL from the broker; small files (heartbeats, manifests) stay on the broker's own write.
+        if len(data) > DIRECT_UPLOAD_BYTES:
+            where = self._signed_put(uri)
+            if where:
+                return self._put_signed(where, uri, data, content_type)
+            if len(data) > PROXY_WRITE_MAX:
+                raise RuntimeError(f"{uri} is {len(data) // (1024 * 1024)} MB: over Cloud Run's 32 MB request limit and Gen gave no signed upload link (it can't sign)")
         for attempt in range(4):
             try:
                 with self._req("write", uri, "PUT", data, {"Content-Type": content_type, "Content-Length": str(len(data))}, 600) as r:
                     return json.load(r)
             except (urllib.error.URLError, TimeoutError) as e:
-                if isinstance(e, urllib.error.HTTPError) and e.code < 500:
+                if isinstance(e, urllib.error.HTTPError):
+                    log(f"upload {uri} ({len(data)} bytes) through the broker: HTTP {e.code} {e.reason}")
+                    if e.code < 500:
+                        raise
+                if attempt == 3:
                     raise
+                log(f"upload {uri}: {e}; again")
+                time.sleep(2 * (attempt + 1))
+
+    def _signed_put(self, uri):
+        try:
+            with self._req("put", uri) as r:
+                return json.load(r).get("url")
+        except urllib.error.HTTPError as e:
+            log(f"signed upload link for {uri}: HTTP {e.code} {e.reason}")
+            if e.code < 500:
+                raise
+            return None
+
+    def _put_signed(self, url, uri, data, content_type):
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, data=data, method="PUT", headers={"Content-Type": content_type, "Content-Length": str(len(data))})
+                with urllib.request.urlopen(req, timeout=900) as r:
+                    r.read()
+                return {"ok": True, "direct": True}
+            except (urllib.error.URLError, TimeoutError) as e:
+                if isinstance(e, urllib.error.HTTPError):
+                    log(f"upload {uri} ({len(data)} bytes) to Cloud Storage: HTTP {e.code} {e.reason}")
+                    if e.code < 500:
+                        raise
                 if attempt == 3:
                     raise
                 log(f"upload {uri}: {e}; again")
@@ -800,6 +839,8 @@ class Run:
             final = {"t": "error", "message": str(e)}
             if isinstance(e.__cause__, Missing):
                 final["missingModels"] = e.__cause__.models
+        if final.get("t") == "error" and getattr(self, "sizes", None):
+            final["outputs"] = self.sizes
         final["seconds"] = round(time.time() - t0, 1)
         final["cold"] = cold
         if getattr(self, "vram", None):
@@ -1022,13 +1063,20 @@ class Run:
                 restart_comfy()
                 files = run_graph(graph, req.get("extra"), self)
             out = []
+            self.sizes = []
+            for i, f in enumerate(files):
+                src = os.path.join(COMFY_DIR, "output", f["subfolder"], f["filename"])
+                self.sizes.append({"filename": f["filename"], "bytes": os.path.getsize(src)})
             for i, f in enumerate(files):
                 src = os.path.join(COMFY_DIR, "output", f["subfolder"], f["filename"])
                 with open(src, "rb") as fh:
                     data = fh.read()
                 uri = f"{self.out}{i:02d}-{f['filename']}"
                 self.step(f"saving {f['filename']} ({len(data) // 1024} KB)")
-                self.store.write(uri, data)
+                try:
+                    self.store.write(uri, data)
+                except Exception as e:  # noqa: BLE001 - say which file and how big, then fail as before
+                    raise RuntimeError(f"saving {f['filename']} ({len(data) // 1024} KB) failed: {e}") from e
                 out.append({**f, "uri": uri, "bytes": len(data)})
             return {"t": "done", "files": out}
         finally:

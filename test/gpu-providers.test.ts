@@ -487,6 +487,76 @@ print(json.dumps({"size": size, "manifest": json.loads(st.read(out + "manifest.j
   } finally { srv.close(); }
 });
 
+test('the broker hands out a signed upload link (put) for the run\'s own folder only; no signer: proxy', async () => {
+  resetBrokerKey();
+  const signer = { email: 'gen@p.iam.gserviceaccount.com', sign: async () => Buffer.from('sig') };
+  const { srv, url } = await brokerServer(new Map(), signer);
+  const none = await brokerServer(new Map(), null);
+  try {
+    const tok = brokerToken(KEY, 'bkt');
+    const call = (base: string, op: string, uri: string, method = 'GET') => fetch(`${base}?op=${op}&uri=${encodeURIComponent(uri)}`, { method, headers: { 'X-Hawkes-Run-Token': tok } });
+    const out = `gs://bkt/cloudrun/runs/${KEY}/00-model.glb`;
+    const u = new URL(((await (await call(url, 'put', out)).json()) as any).url);
+    assert.equal(u.host, 'storage.googleapis.com');
+    assert.equal(u.pathname, `/bkt/cloudrun/runs/${KEY}/00-model.glb`);
+    assert.ok(u.searchParams.get('X-Goog-Signature'));
+    assert.equal((await call(url, 'put', 'gs://bkt/models/vae/ae.safetensors')).status, 403, 'not outside this run');
+    assert.equal((await call(url, 'put', out, 'PUT')).status, 403, 'put is a GET');
+    assert.deepEqual(await (await call(none.url, 'put', out)).json(), { proxy: true });
+  } finally { srv.close(); none.srv.close(); }
+});
+
+test('worker.py BrokerStore: an output over 32 MiB goes straight to storage with the signed link, never through the broker', async (t) => {
+  const py = ['python3', 'python', 'py'].find((p) => spawnSync(p, ['--version']).status === 0);
+  if (!py) return t.skip('no Python here');
+  resetBrokerKey();
+  const signer = { email: 'gen@p.iam.gserviceaccount.com', sign: async () => Buffer.from('sig') };
+  const objects = new Map<string, Buffer>();
+  const { srv, url } = await brokerServer(objects, signer);
+  // The broker as Cloud Run is: a request body over 32 MiB is refused.
+  const via = { writes: 0 };
+  const front = http.createServer((req, res) => {
+    if (req.method === 'PUT') {
+      via.writes++;
+      if (Number(req.headers['content-length'] ?? 0) > 32 * 1024 * 1024) { req.resume(); res.writeHead(413); return res.end('Request Entity Too Large'); }
+    }
+    void fetch(`${url}${req.url!.replace('/v1/gpu/broker', '')}`, { method: req.method, headers: { 'X-Hawkes-Run-Token': String(req.headers['x-hawkes-run-token']) }, body: req.method === 'PUT' ? (req as any) : undefined, duplex: 'half' } as any)
+      .then(async (r) => { res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(Buffer.from(await r.arrayBuffer())); });
+  });
+  await new Promise<void>((r) => front.listen(0, '127.0.0.1', () => r()));
+  // Cloud Storage: takes the PUT the signed link names.
+  let stored = 0;
+  const storage = http.createServer((req, res) => {
+    req.on('data', (c: Buffer) => { stored += c.length; });
+    req.on('end', () => { res.writeHead(200); res.end(); });
+  });
+  await new Promise<void>((r) => storage.listen(0, '127.0.0.1', () => r()));
+  const code = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(path.join(ROOT, 'server', 'cloudrun'))})
+import worker
+st = worker.store_for({"store": {"broker": sys.argv[1], "token": sys.argv[2]}})
+real = st._put_signed
+st._put_signed = lambda link, uri, data, ct: real(sys.argv[3] + "/upload", uri, data, ct)  # the signed link, pointed at the fake bucket
+out = "gs://bkt/cloudrun/runs/${KEY}/00-model.glb"
+r = st.write(out, b"g" * (33 * 1024 * 1024), "model/gltf-binary")
+print(json.dumps(r))
+`;
+  try {
+    const r = await new Promise<{ code: number; out: string; err: string }>((resolve) => {
+      const p = spawn(py, ['-c', code, `http://127.0.0.1:${(front.address() as any).port}/v1/gpu/broker`, brokerToken(KEY, 'bkt'), `http://127.0.0.1:${(storage.address() as any).port}`], { env: { ...process.env, STORAGE: 'broker' } });
+      let out = '', err = '';
+      p.stdout.on('data', (d) => { out += d; });
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('close', (c) => resolve({ code: c ?? 1, out, err }));
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(JSON.parse(r.out.trim().split('\n').pop()!).direct, true);
+    assert.equal(stored, 33 * 1024 * 1024, 'all of it reached storage');
+    assert.equal(via.writes, 0, 'no body passed through the broker');
+  } finally { srv.close(); front.close(); storage.close(); }
+});
+
 // ------------------------------------------------------------------ cold starts and RunPod's credit
 
 test('a cold provider says it is starting a GPU (not "waiting for a free" one) and gets the cold start\'s time for 429/503', async () => {

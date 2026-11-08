@@ -61,7 +61,7 @@ export function allowed(run: { key: string; bucket: string }, op: string, uri: s
   const pre = `gs://${run.bucket}/`;
   if (!uri.startsWith(pre) || uri.includes('..') || /[\r\n]/.test(uri)) return false;
   const name = uri.slice(pre.length);
-  if (name.startsWith(`cloudrun/runs/${run.key}/`)) return ['stat', 'read', 'url', 'write'].includes(op);
+  if (name.startsWith(`cloudrun/runs/${run.key}/`)) return ['stat', 'read', 'url', 'write', 'put'].includes(op);
   if (name.startsWith('cloudrun/inputs/') || name.startsWith('models/')) return ['stat', 'read', 'url'].includes(op);
   return false;
 }

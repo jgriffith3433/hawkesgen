@@ -147,6 +147,10 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     // What the graph held on the card at its peak (the worker samples it; older images don't send it).
     if (m.vram?.peakMB) hooks.step(`${svc.name}: GPU memory at peak ${(m.vram.peakMB / 1024).toFixed(1)} GB of ${(m.vram.totalMB / 1024).toFixed(0)} GB${m.vram.gpu ? ` (${m.vram.gpu})` : ''}, ${m.seconds} s on the worker`);
     if (m.t === 'done') return (m.files ?? []) as CloudFile[];
+    // A failed run keeps what the graph made (names and sizes) in the job's log: the files themselves are gone with the worker.
+    if (Array.isArray(m.outputs) && m.outputs.length) {
+      hooks.step(`${svc.name}: the graph made ${m.outputs.map((o: any) => `${o.filename} (${(Number(o.bytes) / 1048576).toFixed(1)} MB)`).join(', ')}`);
+    }
     if (m.cancelled) throw new Error('Cancelled');
     if (m.missingModels?.length) {
       throw new GenError(`${m.message}\n${svc.name} doesn't have ${m.missingModels.join(', ')}: copy it into the models bucket (node tools/cloudrun/models-sync.mjs --apply) and add it to the service in server/cloudrun/services.json.`);
