@@ -26,8 +26,10 @@ export type CannedAnswer = {
   model?: string;
   /** How many calls it answers. Default 1. */
   times?: number;
+  /** Milliseconds the call holds its AI slot before answering (up to 120 s): a slow Claude, so a second turn can be seen waiting in line (src/aigate.ts). Default 0. */
+  holdMs?: number;
 };
-type Queued = { match: string | null; text: string; cost: number; model: string; times: number };
+type Queued = { match: string | null; text: string; cost: number; model: string; times: number; holdMs: number };
 
 export const aiMockOn = () => env('HAWKESGEN_AI_MOCK') === '1';
 
@@ -56,7 +58,7 @@ export function queueAnswers(userId: string, answers: CannedAnswer[]) {
     if (text == null) throw new GenError('A canned answer needs text or json', { status: 400 });
     const cost = a.cost == null ? 0 : Number(a.cost);
     if (!Number.isFinite(cost) || cost < 0) throw new GenError('A canned answer\'s cost is dollars, 0 or more', { status: 400 });
-    q.push({ match: a.match ? String(a.match) : null, text, cost, model: a.model ? String(a.model) : 'mock', times: Math.max(1, Math.floor(Number(a.times ?? 1)) || 1) });
+    q.push({ match: a.match ? String(a.match) : null, text, cost, model: a.model ? String(a.model) : 'mock', times: Math.max(1, Math.floor(Number(a.times ?? 1)) || 1), holdMs: Math.max(0, Math.min(120_000, Math.floor(Number(a.holdMs ?? 0)) || 0)) });
   }
   queues.set(project, q);
   return mockStatus(userId);
@@ -75,7 +77,7 @@ export function mockStatus(userId: string) {
 }
 
 /** The canned answer for a call from `org` (the org a Gen account's project maps to), or null to run the call for real. */
-export function takeAnswer(org: string | null | undefined, p: { prompt: string; system?: string }): { text: string; model: string; cost: number } | null {
+export function takeAnswer(org: string | null | undefined, p: { prompt: string; system?: string }): { text: string; model: string; cost: number; holdMs: number } | null {
   if (!aiMockOn() || !org || !queues.size) return null;
   // Only a test account's org: look it up now, so a flag on a real user's call changes nothing.
   const rows = db.prepare("SELECT u.project FROM users u JOIN user_google g ON g.user_id = u.id WHERE g.sub LIKE 'playtest:%'").all() as { project: string }[];
@@ -90,7 +92,7 @@ export function takeAnswer(org: string | null | undefined, p: { prompt: string; 
   const a = q[i];
   if (--a.times <= 0) q.splice(i, 1);
   if (!q.length) queues.delete(project);
-  return { text: a.text, model: a.model, cost: a.cost };
+  return { text: a.text, model: a.model, cost: a.cost, holdMs: a.holdMs };
 }
 
 const orgOfTestProject = (project: string) => genAccountOrg(project.split('.')[0]);

@@ -402,7 +402,7 @@ export function applyDirector(project: string, from: ShotRow, ans: DirectorAnswe
 
 /** One director turn, on the account's own Claude or the house AI (like the AI editor: src/houseai.ts). */
 export async function directorTurn(a: DirectorTurn) {
-  const r = await callScope.run({ customer: true, org: orgOfProject(a.project), house: isHouseProject(a.project) }, () => ask(directorPrompt(a)));
+  const r = await callScope.run({ customer: true, org: orgOfProject(a.project), house: isHouseProject(a.project), who: a.project }, () => ask(directorPrompt(a)));
   return { answer: parseDirector(r.text, a.shot, a.shotId ?? null), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }
 
