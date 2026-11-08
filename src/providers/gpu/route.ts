@@ -57,6 +57,7 @@ export function endpointService(ep: GpuEndpoint, family: string, map: ServiceMap
     headers: () => endpointHeaders(ep.provider, get),
     // Elsewhere is waiting in line: a busy endpoint hands the job on after a short wait.
     waitForInstanceMs: 3 * 60_000,
+    ...(ep.coldStartSeconds ? { coldStartMs: ep.coldStartSeconds * 1000 } : {}),
   };
 }
 

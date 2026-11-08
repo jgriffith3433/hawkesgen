@@ -299,6 +299,11 @@ export type GpuEndpoint = {
    */
   graphLimitSeconds: number;
   enabled: boolean;
+  /**
+   * How long a worker's first start may take past the wait for a free one (it pulls the image), in seconds. Default 720.
+   * The 3D image (server/gpu3d, about 25 GB) needs more on a host that hasn't pulled it yet: 1800.
+   */
+  coldStartSeconds?: number;
 };
 
 /** What a playtest plays (playtest.run's `target`): a page, an Electron app, or a desktop build on Linux, Proton or Windows. */
@@ -529,6 +534,7 @@ export function cleanProviders(g: Partial<Settings['gpu']> | undefined): Pick<Se
       gpu: String(p.gpu ?? '').trim().slice(0, 40) || 'gpu',
       pricePerHour: n(p.pricePerHour, 0, 100, 0), maxConcurrent: Math.round(n(p.maxConcurrent, 1, 64, 1)),
       graphLimitSeconds: Math.round(n(p.graphLimitSeconds, 60, 86_400, p.provider === 'runpod' ? RUNPOD_GRAPH_SECONDS : 3300)), enabled: p.enabled !== false,
+      ...(p.coldStartSeconds != null && String(p.coldStartSeconds) !== '' ? { coldStartSeconds: Math.round(n(p.coldStartSeconds, 60, 7200, 720)) } : {}),
     });
   }
   const known = new Set(['fleet', 'cloudrun', ...providers.map((p) => p.id)]);

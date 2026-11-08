@@ -45,6 +45,8 @@ export type CloudService = {
   headers?: () => Record<string, string>;
   /** How long a run waits for a free instance before the job goes to the next provider. */
   waitForInstanceMs?: number;
+  /** How long past that a provider's cold worker may take to answer at all (its first pull of the image). */
+  coldStartMs?: number;
 };
 
 export const SERVICES_FILE = () => path.join(paths.server, 'cloudrun', 'services.json');
