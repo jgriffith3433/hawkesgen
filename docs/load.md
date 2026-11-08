@@ -34,3 +34,22 @@ took ~12 s, p95 11 s; the rest of the run is fast: POST /v1/jobs p95 ~240 ms, 83
 ~1.4 s, peak memory 340 MB). So `node tools/load/run.mjs --users 300` currently prints FAIL on the sign-in route and on
 event-loop lag; that is the stability item's (i_c8587ff818df) first thing to fix (look at what `googleSignin` does
 synchronously per new account), not a harness fault.
+
+## The request limiter (`src/ratelimit.ts`, test `test/ratelimit.test.ts`)
+A token bucket per caller and class of route, checked first in `handle` (api.ts), before any routing. Over the limit: `429`,
+`Retry-After` (whole seconds) and `{ error, retryAfter }` in plain words; the app already words a 429 (`lib.js friendly`).
+| Class | Routes | Burst / per minute |
+|---|---|---|
+| strict | `/oauth/*`, non-GET `/v1/users/*` (sign-in, sign-up, keys); keyed by address only | 20 / 15 |
+| moderate | POST `/v1/jobs`, `/v1/estimate`, `/v1/assistant/*`, `.../assistant` | 60 / 120 |
+| standard | every other write under `/v1` | 120 / 600 |
+| generous | GET reads, `/v1/events`, GET `/v1/users/*` | 300 / 3000 |
+| never | `/v1/health`, `/v1/billing/webhook`, anything outside `/v1` and `/oauth` (the app's files, `/mcp`, `/dl`) | |
+- **Who:** the API key or session (hashed, never stored) plus `X-Hawkesgen-Project` (the portal's one key acts for many customers),
+  else the address. The address is `clientIp` (analytics/collect.ts): Cloudflare's header only from Cloudflare's ranges,
+  `X-Forwarded-For` only from Cloud Run's front end or a loopback proxy. Never a header from a direct connection.
+- **Tune:** `settings.rateLimit` `{ enabled, strict|moderate|standard|generous: { burst, perMinute } }`; `HAWKESGEN_RATELIMIT=off`.
+- **One instance:** buckets live in memory, so they reset on restart and are per instance (Gen runs one).
+- **Harness:** each load user gets its own address (`X-Forwarded-For`, trusted on loopback), and the `limits` storm hammers
+  sign-in from one address (expects 429 + Retry-After) and `/v1/health` (expects none). Those calls are not in the route table,
+  so "429s under 1%" still judges normal use.
