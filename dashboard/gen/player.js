@@ -41,19 +41,22 @@ const POOL_MAX = 24; // empty media elements of each kind blessed by a tap, for 
 // no picture (kept: the last picture stayed on screen; blank: it was drawn without one), and the clips warmed up early.
 const STATS = { holds: 0, holdMs: 0, maxHoldMs: 0, driftSeeks: 0, nudges: 0, keptFrames: 0, blankFrames: 0, primed: 0 };
 export const playbackStats = () => ({ ...STATS, holdMs: Math.round(STATS.holdMs), maxHoldMs: Math.round(STATS.maxHoldMs) });
-export function resetPlaybackStats() { for (const k of Object.keys(STATS)) STATS[k] = 0; FT.length = 0; FT.last = 0; SEEKS.length = 0; SEEKS.pending = null; }
+export function resetPlaybackStats() { for (const k of Object.keys(STATS)) STATS[k] = 0; FT.length = 0; FT.last = 0; SEEKS.length = 0; SEEKS.pending = null; SCRUBS.length = 0; SCRUBS.pending = 0; }
 // Frame pacing while playing (J, 2026-11-06: "timeline playback smoothness pass"): the gap between drawn frames, kept so
 // the playtest can say fps and its 5th percentile (the slow end: what hitching is), and how long a seek took to get the
 // playhead moving again. Only recorded while playing; at most 4000 frames kept.
 const FT = []; FT.last = 0;
 const SEEKS = []; SEEKS.pending = null;
+// A scrub (a seek while paused): from the seek to the first canvas draw that shows the new spot (no clip under the
+// playhead still seeking), the "time to the new frame" the phone budget is judged on.
+const SCRUBS = []; SCRUBS.pending = 0;
 export function pacingStats() {
   const d = [...FT].sort((a, b) => a - b);
   const n = d.length;
   const at = (q) => (n ? d[Math.min(n - 1, Math.floor(q * n))] : 0);
   const mean = n ? d.reduce((a, b) => a + b, 0) / n : 0;
   const r = (x) => Math.round(x * 10) / 10;
-  return { frames: n, fps: mean ? r(1000 / mean) : 0, p5fps: at(0.95) ? r(1000 / at(0.95)) : 0, worstMs: r(d[n - 1] ?? 0), seeks: SEEKS.length, seekResumeMs: SEEKS.length ? Math.round(Math.max(...SEEKS)) : 0, seekPending: SEEKS.pending ? 1 : 0 };
+  return { frames: n, fps: mean ? r(1000 / mean) : 0, p5fps: at(0.95) ? r(1000 / at(0.95)) : 0, worstMs: r(d[n - 1] ?? 0), seeks: SEEKS.length, seekResumeMs: SEEKS.length ? Math.round(Math.max(...SEEKS)) : 0, seekPending: SEEKS.pending ? 1 : 0, scrubs: SCRUBS.length, scrubMs: SCRUBS.length ? Math.round(Math.max(...SCRUBS)) : 0 };
 }
 const M = new Map(); // clip id -> { el, asset, src (MediaElementSource), gain }
 const IMGS = new Map(); // asset -> Image
@@ -84,6 +87,19 @@ export function initPlayer() {
   frameLoop();
 }
 
+/**
+ * The live canvas's pixels. The scene is drawn in its own coordinates (draw() scales), but on a phone the screen is 390
+ * px wide, so a 1920x1080 backing store is four times the pixels anyone can see, and every frame pays for them (the
+ * 4x-slowed phone measured by the `phoneperf` scenario). A phone gets about the pixels it shows; recording an export
+ * (and every other canvas, e.g. frameAt) is full size.
+ */
+const phone = matchMedia('(max-width: 900px)');
+function backing(shownW) {
+  const W = P.doc.width, H = P.doc.height;
+  if (!phone.matches || S.recording || S.source) return [W, H];
+  const w = Math.min(W, Math.max(480, Math.round(shownW * Math.min(devicePixelRatio || 1, 1.5))));
+  return [w, Math.max(1, Math.round(w * H / W))];
+}
 /** The stage keeps the scene's shape inside the viewer; the canvas draws at the scene's own size. */
 function fitStage() {
   const box = $('#viewer').getBoundingClientRect();
@@ -93,7 +109,8 @@ function fitStage() {
   stage.style.width = `${Math.max(40, w)}px`;
   stage.style.height = `${Math.max(40, hh)}px`;
   stageW = 0;
-  if (canvas.width !== P.doc.width || canvas.height !== P.doc.height) { canvas.width = P.doc.width; canvas.height = P.doc.height; }
+  const [cw, ch] = backing(w);
+  if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
   sizeTag.textContent = S.source ? '' : `${P.doc.width} × ${P.doc.height}${P.kind === 'image' && !P.doc.background ? ' · transparent' : ''}`;
   if (painter) painter.fit();
   S.dirty = true;
@@ -161,6 +178,7 @@ export function seek(t) {
   if (S.source) { if (S.source.el) S.source.el.currentTime = Math.max(0, t); return; }
   P.playhead = Math.max(0, Math.min(Math.max(docLength(), 0), t));
   if (S.playing) { S.p0 = P.playhead; S.t0 = performance.now(); endWait(S.t0); S.lead = null; SEEKS.pending = { at: S.t0, from: P.playhead }; }
+  if (!S.playing) SCRUBS.pending = performance.now();
   syncMedia(P.playhead, S.playing, true);
   prepare();
   S.dirty = true;
@@ -197,6 +215,11 @@ function frameLoop() {
         if (gap) STATS.blankFrames++; else S.keepSince = 0;
         S.dirty = false; S.drawn = true;
         draw(g, P.playhead, { live: true }); drawHandles();
+        if (SCRUBS.pending && !S.playing) {
+          let waiting = false;
+          for (const x of underPlayhead(P.playhead)) if (x.m.el.seeking) { waiting = true; break; }
+          if (!waiting && SCRUBS.length < 200) { SCRUBS.push(performance.now() - SCRUBS.pending); SCRUBS.pending = 0; }
+        }
       }
     }
     if (!S.source) {
@@ -614,7 +637,8 @@ function textStyle(c) {
 function draw(ctx, t, { live = false } = {}) {
   const W = P.doc.width, H = P.doc.height;
   ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const k = ctx.canvas.width / W; // 1 except on the phone's smaller live canvas
+  ctx.setTransform(k, 0, 0, k, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
   ctx.clearRect(0, 0, W, H);
@@ -989,6 +1013,7 @@ export async function recordTimeline(onProgress) {
   await AU.ctx.resume().catch(() => {});
   AU.dest ??= AU.ctx.createMediaStreamDestination();
   AU.master.connect(AU.dest);
+  S.recording = { done() {} }; fitStage(); // full size while recording (backing() looks at S.recording)
   const stream = new MediaStream([...canvas.captureStream(P.doc.fps).getVideoTracks(), ...AU.dest.stream.getAudioTracks()]);
   const type = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'].find((x) => MediaRecorder.isTypeSupported(x));
   const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 8_000_000 });
@@ -1004,12 +1029,12 @@ export async function recordTimeline(onProgress) {
     S.recording = {
       done() {
         clearInterval(timer);
-        S.recording = null;
+        S.recording = null; fitStage();
         rec.onstop = () => { try { AU.master.disconnect(AU.dest); } catch { /* */ } resolve(new Blob(parts, { type: 'video/webm' })); };
         setTimeout(() => rec.stop(), 120);
       },
     };
-    rec.onerror = (e) => { clearInterval(timer); S.recording = null; reject(e.error ?? new Error('Recording failed')); };
+    rec.onerror = (e) => { clearInterval(timer); S.recording = null; fitStage(); reject(e.error ?? new Error('Recording failed')); };
     rec.start(500);
     play();
   });

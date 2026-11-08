@@ -19,6 +19,8 @@
 //   scenes   a new scene of each kind from the + menu, renamed, reordered, duplicated and deleted
 //   media-upload a small picture is uploaded by the Media pane's file input and shows as a tile and in its details (Media has no delete)
 //            (stage, character, world, scenes, media-upload: free, no paid job; every one watches the jobs it could start)
+//   phoneperf phone size (390x844, touch; Studio slows the CPU 4x): how long a project takes to become usable, a 3-clip
+//            timeline played 20 s (fps, p5), and how long a scrub takes to show the new frame (metrics openMs, p5fps, scrubMs)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
@@ -175,6 +177,7 @@ installPlaytest({
     { id: 'createprice', title: 'Every Create form shows its credit price when opened, and it changes when an option that changes the cost changes', seconds: 120 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
+    { id: 'phoneperf', title: 'Phone speed (390x844, touch, CPU slowed 4x): the editor is usable within 5 s of opening a project, a 3-clip timeline plays 20 s with p5 fps above 30, and a scrub shows the new frame within 200 ms', seconds: 120, tags: ['mobile'] },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
@@ -1105,6 +1108,71 @@ installPlaytest({
       t.event('delete undo/redo');
       press('z', { ctrlKey: true });
       t.finish(snapped && overlay && gone && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'phoneperf') {
+      t.scene('Phone speed');
+      if (window.innerWidth > 900) { t.note('Not a phone-sized screen: run this scenario with mobile: true (390x844, touch)'); t.finish('stuck'); return; }
+      const list = async (kind) => ((await api(`/v1/assets?${new URLSearchParams({ limit: '40', project: state.user.project, kind })}`).catch(() => null))?.items ?? []).filter((a) => a.meta?.duration > 1);
+      const vids = await list('video');
+      t.metric('videos', vids.length);
+      await until(() => activeScene(), 10000);
+      t.metric('sinceNavigationMs', Math.round(performance.now()));
+      // Opening a project: from asking for the scene to the editor being usable (the tabs, the picture drawn, the
+      // timeline's ruler there), measured with the page's own clock so the CPU slowdown counts.
+      const t0 = performance.now();
+      made = await newScene('video', { title: `Playtest phone speed ${new Date().toISOString().slice(0, 16)}` });
+      const usable = () => activeScene()?.id === made?.id && P.active && P.id === made.id && document.querySelector('#mobileTabs')?.offsetHeight > 0
+        && document.querySelector('#tlRuler')?.children.length > 0 && document.querySelector('#stage canvas')?.offsetHeight > 0;
+      const opened = await until(usable, 15000, 20);
+      const openMs = Math.round(performance.now() - t0);
+      t.metric('openMs', openMs); t.event(`editor-usable ${openMs}ms`);
+      if (!opened) { t.note('the new scene did not become usable'); t.finish('stuck'); return; }
+      const canvasPx = document.querySelector('#stage canvas')?.width ?? 0;
+      t.metric('canvasWidthPx', canvasPx);
+      // Setup shortcut (named): three clips on the main track for 20 s (library clips, else colors), then words.
+      const SEC = 20, n = 3, each = SEC / n, main = mainTrack()?.id;
+      for (let i = 0; i < n; i++) {
+        const at = i * each;
+        if (vids.length) {
+          const a = vids[i % vids.length], len = Math.min(each, a.meta.duration);
+          const c = addClip({ track: main, asset: a.id, kind: 'video', duration: a.meta.duration, start: at, label: a.title || 'clip', history: false });
+          setClip(c.id, { start: at, out: len }, { history: false });
+        } else addClip({ track: main, kind: 'fill', color: ['#203a5c', '#5c2040', '#2c5c20'][i], start: at, seconds: each, history: false });
+      }
+      const len = Math.min(docLength(), SEC);
+      t.metric('clips', P.doc.clips.length); t.event('three-clips-ready');
+      await sleep(2500);
+      resetPlaybackStats();
+      press('Home');
+      click('#playBtn');
+      t.event('play-20s');
+      const through = await until(() => P.playhead >= len - 0.1, Math.max(30000, len * 3000), 100);
+      if (isPlaying()) click('#playBtn');
+      const run = pacingStats();
+      t.metric('fps', run.fps); t.metric('p5fps', run.p5fps); t.metric('worstFrameMs', run.worstMs); t.metric('frames', run.frames);
+      t.event(through ? `played-20s p5=${run.p5fps}fps` : 'play-stalled');
+      t.progress(0.7);
+      // Scrubs with the finger: a touch on the ruler at five places; each time the new frame is drawn is measured.
+      resetPlaybackStats();
+      const ruler = document.querySelector('#tlRuler');
+      const r = ruler.getBoundingClientRect();
+      for (const f of [0.15, 0.7, 0.35, 0.9, 0.5]) {
+        const before = pacingStats().scrubs;
+        const x = r.left + Math.max(8, Math.min(r.width - 8, r.width * f));
+        const o = { clientX: x, clientY: r.top + r.height / 2, pointerId: 7, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true };
+        ruler.dispatchEvent(new PointerEvent('pointerdown', o));
+        window.dispatchEvent(new PointerEvent('pointerup', o));
+        await until(() => pacingStats().scrubs > before, 3000, 10);
+        await sleep(400);
+      }
+      const sc = pacingStats();
+      t.metric('scrubMs', sc.scrubMs); t.metric('scrubs', sc.scrubs);
+      t.event(`scrub-to-frame max ${sc.scrubMs}ms of ${sc.scrubs}`);
+      const fine = openMs <= 5000 && run.p5fps > 30 && sc.scrubs >= 5 && sc.scrubMs <= 200;
+      t.metric('withinBudget', fine ? 1 : 0);
+      if (!fine) t.problem('bug', `phone speed over budget: open ${openMs} ms (5000), p5 ${run.p5fps} fps (>30), scrub ${sc.scrubMs} ms (200)`);
+      t.finish(through ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback4') {
