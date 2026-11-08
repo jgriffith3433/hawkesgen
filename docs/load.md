@@ -90,7 +90,11 @@ harness), health must say lane `beta`. `GEN_TEST_SIGNIN_SECRET` comes from the e
   `loadTest`). `POST /v1/users/test-session/delete` (same signed token, `load-*` only) removes the account and what it made; the
   harness calls it at the end, on Ctrl+C and on error (`--keep` skips it).
 - **Run it:** Actions > ops-load-beta (workflow_dispatch, `beta` environment), `accounts` 30 x `tabs` 3 = 90 streams first, then
-  150 x 3 = 450. It needs the GitHub secret `GEN_TEST_SIGNIN_SECRET` in the `beta` environment (the value of beta's `tss_`
-  test sign-in secret); empty, the job stops and says so. The table and checks go to the run's summary.
+  150 x 3 = 450. The secret is read while the job runs from beta's own state bucket (`gs://hawkes-staging-gen-beta-state/
+  state/test-signin.json`, synced from `DATA_DIR` by `src/cloudhost.ts`) as gen-deployer, through ci.yml's keyless sign-in (J,
+  2026-11-08: "Yes, read it"; no IAM grants added), masked at once and kept only in the load step's environment: never printed,
+  written or uploaded. The GitHub secret `GEN_TEST_SIGNIN_SECRET` (`beta` environment) overrides it when set; with neither, the
+  job stops and says so. So the only setup is beta's own secret (`PUT /v1/admin/test-signin`). The table and checks go to the
+  run's summary.
 - Passes when more than 80 streams are open at once (proves Cloud Run concurrency above 80), no drops, no 5xx, no errors,
   estimate p95 in bounds, no restart, all accounts removed.
