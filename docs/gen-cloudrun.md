@@ -116,6 +116,32 @@ and the route answers 404, so a leaked hash of a customer's private file shows n
 only Cloudflare's edge (the last hop in Cloud Run's X-Forwarded-For), so nobody can skip the cache and wake Gen.
 Anyone holding a hash of an allowed file can read it: that is what a CDN link is.
 
+## Health and alerts
+
+`GET /v1/health` answers from a 5 s in-process cache (J, 2026-11-08): the body runs three db queries and Cloud Run, Studio's
+checks and the keep-alive all ask. It still carries `version`, `commit`, `lane`, `queue` and `loop`; the numbers in it are at
+most 5 s old. This is not an HTTP cache (no headers, nothing at the edge). `GET /v1/health?deep=1` with an owner or admin
+key is always fresh and adds `deep` (when it was made, how long each query took); from anyone else it gets the cached answer.
+
+`tools/gen-cloudrun/alerts.mjs` prints Cloud Monitoring alert policies for a lane and **creates nothing without `--apply`**
+(it never deletes; a metric or policy that exists by name is left alone, so it is safe to repeat):
+
+```
+node tools/gen-cloudrun/alerts.mjs --lane beta                       # print
+node tools/gen-cloudrun/alerts.mjs --lane beta --channel <id> --apply   # J: create (needs gcloud signed in)
+```
+
+| Policy | Fires when |
+|---|---|
+| 5xx rate | more than 5 `5xx` responses in 5 minutes (Cloud Run's `request_count`) |
+| instance restarts | more than 2 boots in 15 minutes (log metric `gen_<lane>_boots`, the "Hawkes Gen on http://" line) |
+| event-loop lag | more than 3 blocks of 500 ms or more in 10 minutes (`gen_<lane>_loop_blocks`, `src/lag.ts`'s `[lag]` line) |
+| queue depth | more than 50 jobs waiting for 10 minutes (`gen_<lane>_queue_depth`, from the `[queue-depth]` line) |
+
+`--channel` takes a notification channel id (made once in the console); without one the alerts show in the console only.
+The queue-depth line is logged when the health cache refreshes while jobs wait, so it is sampled whenever something asks
+for health (the keep-alive and Studio do, but an instance nobody asks about logs nothing).
+
 ## Known limits
 
 - **One instance**: fine for Studio and a few customers; a crowd needs the database off SQLite first.

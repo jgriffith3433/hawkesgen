@@ -300,6 +300,56 @@ function analyticsSdk() {
   return sdkCache;
 }
 
+const HEALTH_TTL_MS = 5000;
+let healthCache: { at: number; body: any } | null = null;
+/** /v1/health's body, at most 5 s old. The loop and process numbers in it are as old as the cache. */
+export function cachedHealth() {
+  const now = Date.now();
+  if (!healthCache || now - healthCache.at >= HEALTH_TTL_MS) healthCache = { at: now, body: healthBody(false) };
+  return healthCache.body;
+}
+/** For tests: forget the cached answer. */
+export function resetHealthCache() { healthCache = null; }
+
+function healthBody(deep: boolean) {
+  const t0 = performance.now();
+  const queue = Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n]));
+  const t1 = performance.now();
+  // The line tools/gen-cloudrun/alerts.mjs turns into the queue-depth metric: written when the cache refreshes, only while jobs wait.
+  if (!deep && (queue as any).queued > 0) console.log(`[queue-depth] queued=${(queue as any).queued} running=${(queue as any).running ?? 0}`);
+  const building = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND tool IN ('unity.build', 'unity.test')").get() as any).n;
+  const t2 = performance.now();
+  return {
+    // commit: what this deploy runs (CI sets it), for Hawkes Studio's beta and go-live checks (its versionPath).
+    ok: true, name: 'hawkesgen', version: VERSION, commit: process.env.HAWKESGEN_COMMIT || null, lane: process.env.HAWKESGEN_LANE || 'live',
+    providers: {
+      aws: (() => { try { fleet.awsConfig(); return true; } catch { return false; } })(),
+      elevenlabs: eleven.configured() && !eleven.billingState().blocked,
+      anthropic: claude.configured(),
+      claude: claude.backend(),
+      xai: xaiConfigured(),
+      brain: loadSettings().brain,
+      python: fs.existsSync(path.join(paths.post, '..', '.venv')),
+    },
+    elevenlabsBilling: eleven.billingState(),
+    // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
+    orgCredits: orgCreditsOn(),
+    // New accounts and starter grants refused by the caps today and in total (src/signupcap.ts).
+    signups: signupStats(),
+    queue,
+    // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
+    // (the deploy script waits for these only; everything else resumes after a restart).
+    building,
+    client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
+    // Event-loop lag: the worst delay seen and the recent blocks over 500 ms, with the requests around them.
+    loop: lagReport(),
+    // HAWKESGEN_MOCK_PROVIDERS (src/mockproviders.ts): whether providers are stand-ins, and any real spend since boot.
+    mock: mockHealth(),
+    process: { pid: process.pid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(), rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576) },
+    ...(deep ? { deep: { fresh: true, at: new Date().toISOString(), queryMs: { queue: +(t1 - t0).toFixed(2), building: +(t2 - t1).toFixed(2) } } } : {}),
+  };
+}
+
 export async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = url.pathname;
@@ -461,34 +511,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return;
     }
     if (route === '/v1/health') {
-      return send(res, 200, {
-        // commit: what this deploy runs (CI sets it), for Hawkes Studio's beta and go-live checks (its versionPath).
-        ok: true, name: 'hawkesgen', version: VERSION, commit: process.env.HAWKESGEN_COMMIT || null, lane: process.env.HAWKESGEN_LANE || 'live',
-        providers: {
-          aws: (() => { try { fleet.awsConfig(); return true; } catch { return false; } })(),
-          elevenlabs: eleven.configured() && !eleven.billingState().blocked,
-          anthropic: claude.configured(),
-          claude: claude.backend(),
-          xai: xaiConfigured(),
-          brain: loadSettings().brain,
-          python: fs.existsSync(path.join(paths.post, '..', '.venv')),
-        },
-        elevenlabsBilling: eleven.billingState(),
-        // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
-        orgCredits: orgCreditsOn(),
-        // New accounts and starter grants refused by the caps today and in total (src/signupcap.ts).
-        signups: signupStats(),
-        queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),
-        // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
-        // (the deploy script waits for these only; everything else resumes after a restart).
-        building: (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND tool IN ('unity.build', 'unity.test')").get() as any).n,
-        client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
-        // Event-loop lag: the worst delay seen and the recent blocks over 500 ms, with the requests around them.
-        loop: lagReport(),
-        // HAWKESGEN_MOCK_PROVIDERS (src/mockproviders.ts): whether providers are stand-ins, and any real spend since boot.
-        mock: mockHealth(),
-        process: { pid: process.pid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(), rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576) },
-      });
+      // Answered from a 5 s cache (J, 2026-11-08): the body runs three db queries and Cloud Run, Studio's checks and the
+      // keep-alive all ask. `?deep=1` is for ops: always fresh, with how long each query took, but only for an owner or
+      // admin key (anyone else gets the cached answer, so it can't be used to skip the cache). Not an HTTP cache: no headers.
+      let deep = false;
+      if (q('deep') === '1') { try { const c = authenticateRequest(req); deep = !!c && c.role !== 'user'; } catch { /* not signed in: cached answer */ } }
+      return send(res, 200, deep ? healthBody(true) : cachedHealth());
     }
 
     // --------------------------------------------------- public SaaS routes
