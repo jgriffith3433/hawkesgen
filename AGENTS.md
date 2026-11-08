@@ -656,6 +656,12 @@ returns a verdict, scores and findings.
   look fixed or still present; `mode` full / verify / regression (the last two report only regressions and blockers);
   `bar` (the product's quality bar) is judged as `meetsBar`. `settleReview` enforces the caps and mode on the answer
   (tested in `test/playtest.test.ts`). Studio's side: `hawkesstudio/docs/daily.md` ("Reviews converge").
+- **Motion** (`playtest.review` v5, `src/tools/playtest-motion.ts`): besides the stills, the judge sees `motion`
+  (default 6) contact sheets, each 1.2 s of the run's video at 15 fps tiled 6x3, placed on the feel flags (bugs first),
+  problems and scenes, the rest spread over the run; they're filed as `playtest: 'motion'` assets so findings cite them.
+  ffmpeg's `freezedetect` on the recording finds hitches with nothing from the game (a freeze of 150 ms to 1 s in the
+  middle of motion; not on software rendering). `review.motion` has the sheets, the hitches and `worstHitchMs`; Studio
+  holds the hard limits (`hawkesstudio/docs/quality.md`). No video or no ffmpeg: stills only, said in `motion.note`.
 - **Multiplayer:** `peers: 2..4` opens that many contexts in one browser, each at the URL with a shared random `room` and
   `peer=<i>` (peer 0 plays `scenario`, the others `scenarioPeers` or the same), and needs the contract. The videos are
   stacked here with ffmpeg (two side by side, three or four in a half-size 2x2 grid; `stackArgs`); problems, events and

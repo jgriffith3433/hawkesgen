@@ -215,7 +215,8 @@ export function playtestCost(toolId: string, params: Record<string, any>): { usd
     return { usd: minutes * perMinute, floor: PLAYTEST_FLOOR_CREDITS[target] ?? 15, basis: `${target}: ${minutes} min at $${perMinute}/min (provisional)` };
   }
   if (toolId === 'playtest.review') {
-    const frames = Math.max(4, Math.min(40, Number(params.frames) || 16));
+    // Each motion contact sheet is one more image, about a screenshot's size.
+    const frames = Math.max(4, Math.min(40, Number(params.frames) || 16)) + Math.max(0, Math.min(12, Number(params.motion ?? 6) || 0));
     const model = String(params.model || DEFAULT_MODEL);
     const usd = costOf(model, { input_tokens: REVIEW_TOKENS.prompt + frames * REVIEW_TOKENS.perFrame, output_tokens: REVIEW_TOKENS.answer });
     return { usd, floor: 3, basis: `${frames} frames on ${model} (provisional)` };
