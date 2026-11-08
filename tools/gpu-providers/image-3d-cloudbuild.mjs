@@ -6,9 +6,9 @@
 //
 //   node tools/gpu-providers/image-3d-cloudbuild.mjs                     print the plan
 //   node tools/gpu-providers/image-3d-cloudbuild.mjs --apply [--out F]   build and push; F gets IMAGE= and TAG= lines
-//   options: --project hawkes-staging  --region us-east4  --repo hawkes  --machine E2_HIGHCPU_32  --disk 300
+//   options: --project hawkes-staging  --region us-east4  --repo hawkes  --machine <type>  --disk 300
 //
-// Cloud Build bills by the build minute (an e2-highcpu-32 build of about 40 minutes is a dollar or two).
+// Cloud Build bills by the build minute (the default machine, about an hour: well under a dollar).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,7 +19,8 @@ import { APPLY, arg, say, header } from './lib.mjs';
 const project = arg('project', 'hawkes-staging');
 const region = arg('region', 'us-east4');
 const repo = arg('repo', 'hawkes');
-const machine = arg('machine', 'E2_HIGHCPU_32');
+// The default machine: larger ones need a quota this project doesn't have (FAILED_PRECONDITION on E2_HIGHCPU_32).
+const machine = arg('machine', '');
 const disk = Number(arg('disk', '300'));
 const out = arg('out');
 const { files, hash } = contextFiles3d();
@@ -38,13 +39,13 @@ for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(dir
 const config = {
   steps: [{ name: 'gcr.io/cloud-builders/docker', args: ['build', '--provenance=false', '-t', `${image}:${tag}`, '-t', `${image}:latest`, '.'] }],
   images: [`${image}:${tag}`, `${image}:latest`],
-  options: { machineType: machine, diskSizeGb: disk },
-  timeout: '7200s',
+  options: { ...(machine ? { machineType: machine } : {}), diskSizeGb: disk },
+  timeout: '10800s',
 };
 fs.writeFileSync(path.join(dir, 'cloudbuild.json'), JSON.stringify(config, null, 2));
 
 header(`3D worker image on Cloud Build (${project}, ${region})`);
-say(`image: ${image}:${tag} (and :latest), machine ${machine}, disk ${disk} GB`);
+say(`image: ${image}:${tag} (and :latest), machine ${machine || 'default'}, disk ${disk} GB`);
 if (!APPLY) {
   say('\n(dry run: --apply builds and pushes)');
   process.exit(0);
