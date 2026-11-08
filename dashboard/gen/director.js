@@ -739,7 +739,10 @@ async function makeStage(wrap) {
   });
   const loader = new GLTFLoader();
   const gltfCache = new Map();
-  const loadGltf = (id) => { if (!gltfCache.has(id)) gltfCache.set(id, new Promise((ok) => loader.load(fileUrl(id), ok, undefined, () => ok(null)))); return gltfCache.get(id); };
+  // A model that isn't a GLB (an FBX uploaded before the app converted them, model3d.js) is read with FBXLoader instead
+  // of falling back to a box.
+  const fbxFallback = (id) => import('./model3d.js').then((m) => m.readModel(fileUrl(id))).then((r) => ({ scene: r.scene, animations: r.animations })).catch(() => null);
+  const loadGltf = (id) => { if (!gltfCache.has(id)) gltfCache.set(id, new Promise((ok) => loader.load(fileUrl(id), ok, undefined, () => fbxFallback(id).then(ok)))); return gltfCache.get(id); };
   const clipsKnown = new Map();
   const texCache = new Map();
   let actors = [], propsObj = [], markers = [], build = 0, groundObj = null;

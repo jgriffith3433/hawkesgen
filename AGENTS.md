@@ -395,7 +395,7 @@ portal and Studio use Gen in the back end with their own keys.
     audio jobs on gen right? We should use those"; "fast and cheap ... AND we want quality"): voices on Qwen3-TTS in the
     house voices (`GET /v1/editor/voices`, `editorVoices`, `src/audio/house.ts`: `hv_` ids, never ElevenLabs or the
     account's own character voices), sound effects on Stable Audio 3, both on RunPod or Modal like every GPU job
-    (docs/audio.md, "Where it runs"). `audio.revoice` stays out: changing a voice is ElevenLabs only. **Uploads** by button or drop anywhere (on the timeline: placed too).
+    (docs/audio.md, "Where it runs"). `audio.revoice` stays out: changing a voice is ElevenLabs only. **Uploads** by button or drop anywhere (on the timeline: placed too). **3D files** (`model3d.js`; J, 2026-11-08: an FBX on a stage "just turns into a box"): everything reads GLB, so an FBX or OBJ is converted to GLB in the browser before it goes up (FBXLoader/OBJLoader, vertices merged, GLTFExporter with the skeleton and every clip). Pictures dropped or picked with it become its textures by name, then by shared words (`head_basemap.png` gets `Person_Head.png`), and a lone picture fills the first texture asked for. Material maps (normal, gloss...) are left out of Media. The note says what was kept and what is missing. FBX files uploaded before this are read by the stage's FBXLoader fallback.
   - **Export** (a video scene) maps a plain cut onto `video.compose` (pictures first become clips with `video.still`;
     captions burned in; a track named Voice is dialogue, one named Music ducks under it), and renders a layered one in
     the browser (above).
