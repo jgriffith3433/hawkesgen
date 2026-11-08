@@ -21,6 +21,11 @@ export const h = (tag, attrs = {}, ...kids) => {
  * immutable and the browser never asks for it again (J, 2026-11-01: Media kept reloading its pictures and clips).
  */
 export const fileUrl = (id, sha) => `/v1/assets/${encodeURIComponent(id)}/file${sha ? `?v=${String(sha).slice(0, 16)}` : ''}`;
+/**
+ * A picture's small copy for a tile or a row (the library's level of detail, 256 px on a phone, 512 elsewhere; the
+ * original where it has no levels yet). A phone's tile is about 170 px wide: it never needs the full-size file.
+ */
+export const thumbUrl = (id, sha) => `${fileUrl(id, sha)}${sha ? '&' : '?'}lod=${matchMedia('(max-width: 900px)').matches ? 256 : 512}`;
 
 /**
  * Redraws a list in place instead of rebuilding it (J, 2026-11-01: "I hope in general the app doesn't refresh constantly").
