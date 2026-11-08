@@ -23,7 +23,8 @@ import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
 import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, typicalRunSeconds, type JobSpec, type Job } from './jobs.ts';
-import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, findByRecipe, recipeKey } from './library.ts';
+import { takeUpload, streamBody, uploadLimits, type Streamed } from './uploads.ts';
+import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, putAssetUpload, putBlobUpload, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
@@ -129,6 +130,16 @@ async function readBody(req: IncomingMessage, limit = 64 * 1024 * 1024): Promise
   }
   return Buffer.concat(chunks);
 }
+
+/** A second name for an uploaded temp file (a hard link, else a copy) so it can become both the blob and the asset's file. */
+async function linkOrCopy(up: Streamed, _ext: string): Promise<string> {
+  const other = `${up.file}.blob`;
+  try { fs.linkSync(up.file, other); } catch { await fs.promises.copyFile(up.file, other); }
+  return other;
+}
+
+/** The app sends X-Filename percent-encoded (headers are ASCII); plain names pass through. */
+const decodeName = (n: string) => { try { return decodeURIComponent(n); } catch { return n; } };
 
 async function readJson(req: IncomingMessage) {
   const buf = await readBody(req);
@@ -1514,8 +1525,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const targetProject = fixedProject(client) ?? (q('project') || 'sandbox');
       if (!canProject(client, targetProject)) throw new GenError('No access to that project', { status: 403 });
       const ctype = String(req.headers['content-type'] ?? '').toLowerCase();
-      let buf: Buffer;
-      let filename = String(req.headers['x-filename'] ?? q('filename') ?? '').trim();
+      let buf: Buffer | null = null;
+      let streamed: Streamed | null = null;
+      let filename = decodeName(String(req.headers['x-filename'] ?? q('filename') ?? '')).trim();
       let title = q('title') ?? '';
       if (ctype.includes('application/json')) {
         const b = await readJson(req);
@@ -1526,23 +1538,29 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const base64Part = rawData.includes(',') ? rawData.slice(rawData.indexOf(',') + 1) : rawData;
         buf = Buffer.from(base64Part, 'base64');
       } else {
-        buf = await readBody(req, 2 * 1024 * 1024 * 1024);
+        // Raw bytes stream to a temp file (src/uploads.ts): a slot per caller and in total, a size cap by role.
+        const release = takeUpload(client.id);
+        try { streamed = await streamBody(req, uploadLimits().maxBytes(client.role)); } finally { release(); }
         if (!title) title = filename;
       }
-      if (!buf.length) throw new GenError('Send the file as the request body');
+      if (!buf?.length && !streamed?.bytes) { if (streamed) fs.rmSync(streamed.file, { force: true }); throw new GenError('Send the file as the request body'); }
       const rawExt = path.extname(filename).toLowerCase().replace(/[^.a-z0-9]/g, '');
       const ext = rawExt || (ctype && !ctype.includes('json') && !ctype.includes('octet-stream') ? extOf(ctype.split(';')[0].trim()) : '.png');
-      const sha = putBlob(buf, ext);
+      const sha = streamed ? streamed.sha256 : putBlob(buf!, ext);
+      if (streamed) {
+        // The library file and the blob are one stream: the blob is a hard link to the library copy, else a copy.
+        putBlobUpload(await linkOrCopy(streamed, ext), sha, ext);
+      }
       ownBlob(sha, client);
-      const asset = putAsset({
-        data: buf,
+      const common = {
         ext,
         client: client.id,
         project: targetProject,
         tool: 'file.import',
         recipe: { tool: 'file.import', version: 1, params: { title: title || null }, inputs: { file: sha } },
         title: (title || filename || 'Uploaded file').slice(0, 200),
-      });
+      };
+      const asset = streamed ? putAssetUpload({ ...common, file: streamed.file, sha256: streamed.sha256, bytes: streamed.bytes }) : putAsset({ ...common, data: buf! });
       // An uploaded image or model gets its levels of detail like a made one (src/lod.ts).
       queueLods([asset.id]);
       // A video, image or sound that the editor's tools or a browser can't use as it is (WebM, HEVC, variable frame rate,
@@ -1589,6 +1607,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         if (lod) cache['X-Lod-Level'] = String(lod.level);
         if (String(req.headers['if-none-match'] ?? '') === etag) { res.writeHead(304, cache); return void res.end(); }
         const name = `${a.project}-${a.tool}-${a.id}${lod ? `.lod${lod.level}` : ''}${path.extname(file.path)}`;
+        // A large file leaves through the CDN when storage.cdn is set and its project may use it: this instance never
+        // streams it (a redirect, no caching rule of ours). Ranges and small files are served here as before.
+        const cdn = !q('download') && !req.headers.range && fs.existsSync(file.path) && fs.statSync(file.path).size > CHUNK_OVER ? storage.cdnUrl(file.sha256) : undefined;
+        if (cdn) { res.writeHead(302, { Location: cdn, 'Cache-Control': 'no-store' }); return void res.end(); }
         return serveFile(req, res, file.path, file.mime, { ...cache, ...(q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {}) });
       }
       // Share (the app): a link anyone can open for a week, that shows the file in their browser.
@@ -1637,12 +1659,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(res, 200, { ...(await pruneLods({ project: typeof b.project === 'string' ? b.project : undefined, dryRun: b.dryRun === true, limit: Number(b.limit) || undefined })), status: lodStatus() });
     }
     if (route === '/v1/blobs' && method === 'POST') {
-      const data = await readBody(req, 2 * 1024 * 1024 * 1024);
-      if (!data.length) throw new GenError('Send the file as the request body');
-      const ext = path.extname(String(req.headers['x-filename'] ?? '')).toLowerCase().replace(/[^.a-z0-9]/g, '');
-      const sha = putBlob(data, ext);
+      const release = takeUpload(client.id);
+      let up: Streamed;
+      try { up = await streamBody(req, uploadLimits().maxBytes(client.role)); } finally { release(); }
+      if (!up.bytes) { fs.rmSync(up.file, { force: true }); throw new GenError('Send the file as the request body'); }
+      const ext = path.extname(decodeName(String(req.headers['x-filename'] ?? ''))).toLowerCase().replace(/[^.a-z0-9]/g, '');
+      const sha = putBlobUpload(up.file, up.sha256, ext);
       ownBlob(sha, client);
-      return send(res, 200, { blob: `blob:${sha}`, bytes: data.length });
+      return send(res, 200, { blob: `blob:${sha}`, bytes: up.bytes });
     }
     // The library's files in S3 (src/storage.ts): what's backed up, back up the rest, bring missing files back.
     if (route === '/v1/storage' && method === 'GET') return send(res, 200, storage.status());

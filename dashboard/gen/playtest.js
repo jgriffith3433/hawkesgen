@@ -31,7 +31,7 @@ import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
 import { api, bus } from './lib.js';
 import { openStream } from './stream.js';
-import { runJob } from './media.js';
+import { runJob, uploadFiles } from './media.js';
 import { streamState } from './trouble.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -198,6 +198,7 @@ installPlaytest({
     { id: 'world', title: 'World: Start a world (canned AI answer) opens its sheet and reaches the first proposal cards with the pictures\' price known; Make this world is never pressed and no job starts', seconds: 60 },
     { id: 'scenes', title: 'Scenes: a new scene of each kind from the + menu is renamed, reordered, duplicated and deleted; no job starts', seconds: 150 },
     { id: 'media-upload', title: 'Media: a small picture is uploaded with the file button and shows as a tile and in its details; no job starts but the CPU conversion, if any', seconds: 60 },
+    { id: 'uploads', title: 'Uploads: three big files go up together with a percentage each and the server stays up; a fourth at once is refused with a plain "uploads at once" message; options {"mb":500}', seconds: 240 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -1504,6 +1505,44 @@ installPlaytest({
       window.fetch = realFetch;
       state.user = me;
       t.finish('done');
+      return;
+    }
+    if (id === 'uploads') {
+      t.scene('Big uploads');
+      await until(() => state.user && activeScene(), 15000);
+      const mb = Math.max(1, Math.min(900, Number(options?.mb) || 64));
+      // Setup shortcut (named): the files are made in memory by repeating one random block, as .mp4 named files; they go up
+      // through the app's own upload path (the same one the Media button and a drop use), four started at the same moment.
+      const block = new Uint8Array(1024 * 1024);
+      crypto.getRandomValues(block.subarray(0, 65536));
+      const make = (i) => new File(Array.from({ length: mb }, () => block), `playtest-big-${i}-${Date.now()}.mp4`, { type: 'video/mp4' });
+      const health0 = await api('/v1/health').catch(() => ({}));
+      t.event('uploading-four');
+      const toasts = new Set();
+      const watch = new MutationObserver(() => { const el = document.querySelector('#toast'); if (el && !el.hidden) toasts.add(el.textContent); });
+      watch.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true });
+      click('#paneTabs button[data-pane="media"]');
+      const files = [0, 1, 2, 3].map(make);
+      // Not awaited: they run together. Each call is one drop of one file.
+      const runs = files.map((f) => uploadFiles([f]));
+      const sawPercent = await until(() => /Uploading \d+%/.test(document.querySelector('#mediaGrid, #media')?.textContent ?? document.body.textContent), 30000, 100);
+      t.metric('progressShown', sawPercent ? 1 : 0);
+      t.event(sawPercent ? 'progress-shown' : 'no-progress');
+      const refused = await until(() => [...toasts].some((x) => /uploads at once/.test(x)), 60000, 200);
+      t.metric('plain429', refused ? 1 : 0);
+      t.event(refused ? 'fourth-refused-plainly' : 'no-429-message');
+      if (!refused) t.problem('bug', 'a fourth upload at once did not show the "uploads at once" message');
+      if (!sawPercent) t.problem('bug', 'no upload percentage was shown');
+      await Promise.race([Promise.allSettled(runs), sleep(150000)]);
+      watch.disconnect();
+      // The server must still be the same process, with a bounded memory.
+      const health1 = await api('/v1/health').catch(() => ({}));
+      const restarted = Boolean(health0?.process?.pid && health1?.process?.pid && (health0.process.pid !== health1.process.pid || Math.abs(Date.parse(health0.process.startedAt) - Date.parse(health1.process.startedAt)) > 5000));
+      t.metric('restarted', restarted ? 1 : 0);
+      if (health1?.process?.rssMb != null) t.metric('serverRssMb', health1.process.rssMb);
+      t.event(restarted ? 'server-restarted' : 'server-stayed-up');
+      if (restarted) t.problem('blocker', 'the server restarted during the uploads');
+      t.finish(refused && sawPercent && !restarted ? 'done' : 'stuck');
       return;
     }
     if (id === 'aimock') {
