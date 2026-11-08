@@ -763,7 +763,7 @@ body.landing-open { overflow: hidden; }
 .ld-hero h1 { font-size: clamp(32px, 4.6vw, 54px); line-height: 1.06; letter-spacing: -.025em; margin: 0 0 18px; }
 .ld-sub { font-size: clamp(15px, 1.4vw, 18px); color: var(--muted); max-width: 520px; margin: 0 0 26px; line-height: 1.55; }
 .ld-cta { display: flex; gap: 10px; flex-wrap: wrap; }
-.ld-cta button { padding: 12px 22px; font-size: 15px; border-radius: 12px; }
+.ld-cta button { padding: 12px 22px; font-size: 15px; border-radius: 12px; justify-content: center; text-align: center; }
 .ld-cta.big { justify-content: center; }
 .ld-note { color: var(--muted); font-size: 13px; margin: 12px 0 4px; }
 .ld-look { color: var(--muted); padding: 4px 0; }
