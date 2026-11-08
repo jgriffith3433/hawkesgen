@@ -245,12 +245,31 @@ SCHEMES = {
 }
 
 
+LIMBS = ("LeftUpLeg", "LeftLeg", "RightUpLeg", "RightLeg", "LeftArm", "LeftForeArm", "RightArm", "RightForeArm")
+
+
+def _is_finger(c):
+    return any(f in c for f in FINGERS) and "Hand" in c and c not in ("LeftHand", "RightHand")
+
+
 def canon_map(arm, scheme="auto", extra=None):
-    """Canonical name -> this rig's bone, by the scheme that matches most of its bones (or the one given), plus any
-    explicit {bone: canonical} pairs."""
+    """Canonical name -> this rig's bone, plus any explicit {bone: canonical} pairs. By the scheme given, else per bone
+    family: the body (limbs, spine, head) by the scheme that names most of its limb bones, the fingers by the one that
+    names most of its fingers (a Unity-named body with Mixamo-named fingers imports with no map). Returns the map and
+    the scheme's name (the body's; "unity+mixamo" when the fingers differ)."""
     keys = {key(b.name): b.name for b in arm.data.bones}
+    finger_best = None
     if scheme in (None, "", "auto"):
-        best = max(SCHEMES, key=lambda s: sum(1 for k in keys if k in SCHEMES[s]))
+        def body(s):
+            hits = [SCHEMES[s][k] for k in keys if k in SCHEMES[s] and not _is_finger(SCHEMES[s][k])]
+            return (sum(1 for c in hits if c in LIMBS), len(hits))
+
+        def fingers(s):
+            return sum(1 for k in keys if k in SCHEMES[s] and _is_finger(SCHEMES[s][k]))
+        best = max(SCHEMES, key=body)
+        finger_best = max(SCHEMES, key=lambda s: (fingers(s), s == best))
+        if fingers(finger_best) == 0:
+            finger_best = best
     elif scheme in SCHEMES:
         best = scheme
     else:
@@ -258,6 +277,11 @@ def canon_map(arm, scheme="auto", extra=None):
     out = {}
     for k, bone in keys.items():
         c = SCHEMES[best].get(k)
+        if finger_best and finger_best != best:
+            c = c if c and not _is_finger(c) else None
+            f = SCHEMES[finger_best].get(k)
+            if not c and f and _is_finger(f):
+                c = f
         if c and c not in out:
             out[c] = bone
     for bone, c in (extra or {}).items():
@@ -267,6 +291,8 @@ def canon_map(arm, scheme="auto", extra=None):
             fail(f"map: {c!r} isn't a bone name this tool knows (Mixamo names without the prefix: Hips, LeftArm, ...)")
         out = {k: v for k, v in out.items() if v != bone}
         out[c] = bone
+    if finger_best and finger_best != best:
+        best = f"{best}+{finger_best}"
     return out, best
 
 
@@ -994,6 +1020,12 @@ def retarget_file(o, path, several):
     pairs = {c: smap[c] for c in CHAR["map"] if c in smap}
     if "Hips" not in pairs:
         fail(f"retarget: no hips in {os.path.basename(path)} ({scheme} names matched {sorted(smap)[:12]}); say which bone is which with map")
+    limbs = [c for c in LIMBS if c in pairs]
+    if not limbs:
+        remove(objs)
+        fail(f"retarget: none of the 8 limb bones (thighs, shins, upper arms, forearms) is matched between {os.path.basename(path)} "
+             f"({scheme} names) and the character ({CHAR['scheme']} names); the arms and legs would not move. "
+             f"Say which bone is which with map (and names at import)")
     rest = rest_data(arm)
     W = src.matrix_world.copy()
     Wq = W.to_quaternion()

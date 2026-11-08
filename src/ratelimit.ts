@@ -5,7 +5,7 @@
 //   moderate  POST /v1/jobs, /v1/estimate and the assistant routes (the AI pane, the scene, director and editor AIs).
 //   generous  GET reads (and /v1/events opening, /v1/users/me).
 //   standard  every other write.
-//   never     /v1/health and the Stripe webhook; anything outside /v1 and /oauth (the app's own files, /mcp, /dl).
+//   never     /v1/health, the Stripe webhook and the GPU workers' storage broker (its run token is the credential); anything outside /v1 and /oauth (the app's own files, /mcp, /dl).
 //
 // A caller is its API key or session (hashed, never stored), plus X-Hawkesgen-Project (the portal's one key acts for many
 // customers), else its client address. The address is only believed from trusted places: `clientIp` (analytics/collect.ts)
@@ -31,7 +31,7 @@ export const DEFAULT_RULES: Record<LimitClass, Rule> = {
 
 /** Which class a request is in, or null when it is never limited. */
 export function classify(method: string, route: string): LimitClass | null {
-  if (route === '/v1/health' || route === '/v1/billing/webhook' || /^\/v1\/[\w/-]*webhooks?(\/|$)/.test(route)) return null;
+  if (route === '/v1/health' || route === '/v1/billing/webhook' || route === '/v1/gpu/broker' || /^\/v1\/[\w/-]*webhooks?(\/|$)/.test(route)) return null;
   if (route.startsWith('/oauth/')) return 'strict';
   if (!route.startsWith('/v1/')) return null;
   const read = method === 'GET' || method === 'HEAD';

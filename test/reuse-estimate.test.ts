@@ -74,3 +74,33 @@ test('estimates scale history by size only where both jobs give it', () => {
   assert.equal(scaleFrom({ width: 1280, height: 704 }, { prompt: 'x' }), 1);
   assert.equal(scaleFrom({ count: 3 }, {}), 3);
 });
+
+test('submit with an asset: input whose library file is gone says so (404), not ENOENT', async () => {
+  const { submitJob } = await import('../src/jobs.ts');
+  const a = putAsset({ data: Buffer.from('BVH-ish'), ext: '.bvh', client: 'test', project: 'sandbox', tool: 'upload', recipe: { tool: 'upload', version: 1, params: {}, inputs: {} } as any });
+  fs.rmSync(a.path);
+  await assert.rejects(
+    submitJob(owner, { tool: 'blender.character', project: 'sandbox', params: {}, inputs: { files: [`asset:${a.id}`] } } as any),
+    (e: any) => e.status === 404 && /missing here/.test(e.message) && !/ENOENT/.test(e.message),
+  );
+});
+
+test('estimates price a tool by its mode: motion.from-text with a character vs BVH only', () => {
+  const tool = getTool('motion.from-text')!;
+  const add = (inputs: Record<string, string>, gpu: number) => {
+    const job = submit(owner, { tool: tool.id, project: 'sandbox', params: { prompt: 'a person walks', seconds: 2, takes: 2 }, inputs });
+    db.prepare('UPDATE jobs SET status = ?, gpu_seconds = ?, finished = ? WHERE id = ?').run('done', gpu, Date.now(), job.id);
+  };
+  const a = putAsset({ data: Buffer.from('glb-ish'), ext: '.glb', client: 'test', project: 'sandbox', tool: 'upload', recipe: { tool: 'upload', version: 1, params: {}, inputs: {} } as any });
+  const item = { tool: tool.id, params: { prompt: 'a person walks', takes: 2 } };
+  const before = estimate('sandbox', [{ ...item, inputs: {} }]).gpu.work;
+  assert.ok(before <= 40, `BVH-only guess ${before}`);
+  add({ character: a.path }, 340); add({ character: a.path }, 360); add({}, 28); add({}, 32);
+  const bvh = estimate('sandbox', [{ ...item, inputs: {} }]);
+  const withChar = estimate('sandbox', [{ ...item, inputs: { character: a.path } }]);
+  const unsaid = estimate('sandbox', [item]);
+  assert.ok(bvh.gpu.work <= 40, `${bvh.gpu.work}`);
+  assert.ok(withChar.gpu.work >= 330 && withChar.gpu.work <= 370, `${withChar.gpu.work}`);
+  assert.equal(unsaid.gpu.work, withChar.gpu.work);
+  assert.match(String(bvh.lines[0].basis), /bvh-only/);
+});

@@ -495,6 +495,19 @@ also files a video on `preview/<name>`. The character file is the rigged GLB or 
 
 ## motion.from-text
 
+> **For J: Kimodo never runs yet (2026-11-08).** Gen's Hugging Face token has no access to `meta-llama/Meta-Llama-3-8B-Instruct`,
+> the text encoder Kimodo needs. The log says "Kimodo will be skipped", then "using HY-Motion 1.0", so **every take is made
+> by the HY-Motion fallback**. To get Kimodo: sign in to Hugging Face with the account that owns Gen's token, open the Llama 3
+> model page and request access (Meta approves it, usually quickly). HY-Motion makes no finger motion, and "float" prompts give
+> kneeling with the head back unless "upright, head level looking straight ahead" is in the prompt and every key pose.
+
+**Bone names (2026-11-08).** The import reads a rig's body (limbs, spine, head) and its fingers separately, so a rig that names
+its limbs the Unity way (LeftUpperLeg, LeftLowerArm, Chest, LeftToes) and its fingers the Mixamo way (LeftHandIndex1) imports with
+no map (`names: "unity+mixamo"` in the report). A retarget that finds none of the eight limb bones (thighs, shins, upper arms,
+forearms) fails the job instead of warning. `motion.from-text` and `motion.from-video` take `names` and `map` for the character
+(passed to the import op), and their `checks` also say when the retarget lost a limb or the FBX isn't a Unity Humanoid.
+
+
 `motion.from-text` (version 1, family `motion`) makes a humanoid clip from a sentence. It is not a ComfyUI node and
 it is not on the fleet image. It runs on a GPU worker with the 3D image (docs/3d-animation.md) or on a fleet server, where
 the first job installs two venvs under `/opt/hawkes-motion` and refuses to
