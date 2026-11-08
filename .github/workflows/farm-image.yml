@@ -1,0 +1,54 @@
+# The unity-render worker image (docs/unity-render.md): GameCI's Unity 6000.3.7f1 editor plus an X display, ffmpeg, Node
+# and Gen's worker.py, for the `unity.render` tool (the TK Shock render farm). Push a tag farm-image-<anything> (or run it
+# by hand). GitHub builds server/unity-render (with server/cloudrun's worker.py and entrypoint.sh copied in) and pushes
+# ghcr.io/jgriffith3433/hawkes-gen-gpu:unity-render-<context hash> and :unity-render-latest, in the package that is already
+# public (RunPod's API has no registry credentials). GitHub's own token writes it: no secret. No keys are in the image;
+# the Unity account reaches a worker only through its endpoint's env. Nothing runs the image until an endpoint points at it.
+name: Farm image
+on:
+  push:
+    tags: ['farm-image-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # The editor image is about 15 GB unpacked; a runner starts with about 20 GB free. Drop the toolchains we don't use.
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/local/.ghcup
+          sudo docker image prune -af > /dev/null
+          df -h /
+      - name: Build folder
+        id: ctx
+        run: |
+          ctx="$RUNNER_TEMP/farm"
+          mkdir -p "$ctx"
+          cp server/unity-render/Dockerfile server/unity-render/worker.sh server/unity-render/Farm.cs "$ctx/"
+          cp server/cloudrun/worker.py server/cloudrun/entrypoint.sh "$ctx/"
+          tag="unity-render-$(cat "$ctx"/* | sha256sum | cut -c1-12)"
+          echo "CTX=$ctx" >> "$GITHUB_OUTPUT"
+          echo "TAG=$tag" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        run: |
+          img=ghcr.io/jgriffith3433/hawkes-gen-gpu
+          tag="${{ steps.ctx.outputs.TAG }}"
+          docker build "${{ steps.ctx.outputs.CTX }}" --provenance=false \
+            --label org.opencontainers.image.source=https://github.com/jgriffith3433/hawkesgen \
+            -t "$img:$tag" -t "$img:unity-render-latest"
+          docker run --rm --entrypoint bash "$img:$tag" -c 'node --version && ffmpeg -version | head -1 && Xvfb -help 2>&1 | head -1; find /opt/unity -name Unity.Licensing.Client -type f | head -1 | grep . && ls /hawkes/worker.sh /hawkes/unity/Farm.cs /opt/hawkes/worker.py'
+          docker push "$img:$tag"
+          docker push "$img:unity-render-latest"
+          echo "Pushed $img:$tag (and unity-render-latest)" >> "$GITHUB_STEP_SUMMARY"

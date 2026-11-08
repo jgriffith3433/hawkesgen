@@ -114,7 +114,7 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     if (!ep.enabled) { skip(`${id}: turned off`, true); continue; }
     if (!ep.families.includes('*') && !ep.families.includes(family)) { skip(`${id}: doesn't run the ${family || 'job\'s'} family`, true); continue; }
     // "*" is the ComfyUI image: a 3D tool's script needs an endpoint running the 3D image, which names its family.
-    if (tool.image === '3d' && !ep.families.includes(family)) { skip(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the 3D image that names it`, true); continue; }
+    if (tool.image && !ep.families.includes(family)) { skip(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the ${tool.image} image that names it`, true); continue; }
     if (perGraph > ep.graphLimitSeconds) { skip(`${id}: one graph may run ${Math.round(perGraph / 60)} min, past its limit`, true); continue; }
     if (!bucket) { skip(`${id}: settings.gpu.cloudrun.bucket is not set (the worker's files go there)`, true); continue; }
     if (!env('HAWKESGEN_PUBLIC_URL')) { skip(`${id}: HAWKESGEN_PUBLIC_URL is not set (the worker reaches the bucket through Gen)`, true); continue; }
@@ -134,8 +134,8 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
 export function toolReady(tool: Pick<Tool, 'server' | 'family' | 'image'> | undefined | null, o: { fleetDown: boolean; settings: Pick<Settings, 'gpu'> | null }): boolean {
   if (!tool) return false;
   if (tool.server === 'ssh') return !o.fleetDown;
-  if (tool.image !== '3d') return true;
-  if (!o.fleetDown) return true;
+  if (!tool.image) return true;
+  if (!o.fleetDown && tool.image === '3d') return true; // the fleet has Blender and the venvs, never Unity
   const family = typeof tool.family === 'string' ? tool.family : '';
   return Boolean(o.settings?.gpu.providers?.some((p) => p.enabled && p.families.includes(family)));
 }

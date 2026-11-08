@@ -7,6 +7,7 @@
 //     PATCH /v2/serverless/<id> {image}: everything else (env, worker token, disk, ports) stays; RunPod makes a new
 //     release and rolls it out as workers cycle. --recycle lists the workers still on the old release (API v2 has no
 //     call to end one worker; set the endpoint's max workers to 0 and back in the console to cycle them at once)
+//   --kind unity-render: the render farm endpoint (tools/gpu-providers/runpod-unity.mjs)
 //   options: --name gen-gpu  --gpu "NVIDIA L40S"  --max 2  --disk 120  --registry-auth <id>  --endpoint <id>
 //
 // What it makes (--apply, with RUNPOD_API_KEY in hawkesgen/.env; costs nothing until a worker runs):
@@ -18,6 +19,9 @@
 // With --endpoint <id> it prints the settings entry for that endpoint.
 import { APPLY, arg, secret, workerImage, say, header, redact, printEntry, print3dEntry, KIND, IMAGE_3D } from './lib.mjs';
 import { runpod, upsertTemplate, findEndpoint, lbEndpoint, readCatalog, gpuFor } from './runpod-v2.mjs';
+
+// --kind unity-render: the render farm's endpoint (runpod-unity.mjs, docs/unity-render.md).
+if (KIND === 'unity-render') { await import('./runpod-unity.mjs'); process.exit(0); }
 
 // --kind 3d: the 3D worker (server/gpu3d): Blender, the rig, motion and mocap venvs; weights on a network volume.
 const is3d = KIND === '3d';

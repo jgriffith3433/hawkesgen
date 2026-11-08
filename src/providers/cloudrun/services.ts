@@ -85,6 +85,7 @@ export function cloudRoute(job: { family: string | null; params: Record<string, 
   const fleet = (why: string): Route => ({ service: null, why });
   if (tool.provider !== 'comfy') return fleet('not a GPU tool');
   if (tool.server === 'ssh') return fleet('the tool works on the server over SSH');
+  if (tool.image === 'unity-render') return fleet('unity.render needs an endpoint running the unity-render image (settings.gpu.providers families ["unity-render"])');
   if (tool.image === '3d') return fleet('the tool needs the 3D worker image (Cloud Run runs ComfyUI services): a 3D endpoint in settings.gpu.order, or the fleet');
   const family = job.family ?? '';
   const forced = job.labels?.gpuBackend;
