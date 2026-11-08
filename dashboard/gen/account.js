@@ -27,7 +27,7 @@ export async function loadAi() {
 // or subscription still works, and comes first.
 export const hasAi = () => Boolean(state.ai?.house?.ready || state.ai?.anthropic?.set || state.ai?.claudeSubscription?.set);
 
-function showMe() {
+export function showMe() {
   const u = state.user;
   $('#signInBtn').hidden = Boolean(u);
   $('#accountBtn').hidden = !u;

@@ -9,6 +9,7 @@
 // film pipeline when its servers are up.
 
 import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, plainError, ApiError, mediaInfo } from './lib.js';
+import { trouble } from './trouble.js';
 import { runJob, waitJob, quote, credits } from './media.js';
 import { registerEditor, openScene, newScene, setRender, sceneList, kindInfo } from './scenes.js';
 import { popMenu, closeMenus } from './timeline.js';
@@ -1506,7 +1507,7 @@ async function openBlender() {
   await flushSave();
   if (!hasTool('blender.render')) return toast('This Gen has no 3D renderer.');
   let qd;
-  try { qd = await api(`/v1/director/shots/${D.shot.id}/blender?quote=1`, { method: 'POST' }); } catch (err) { return toast(plainError(err.message)); }
+  try { qd = await api(`/v1/director/shots/${D.shot.id}/blender?quote=1`, { method: 'POST' }); } catch (err) { return trouble(err); }
   const status = h('div', { class: 'muted small dir-status' });
   const go = h('button', { class: 'primary' }, icon('layers'), 'Film in 3D');
   sheetIn('Film it in 3D', [

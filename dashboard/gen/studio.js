@@ -6,6 +6,7 @@
 // Results go to Media and open in the viewer; pictures, clips and sounds can go straight onto the timeline.
 
 import { $, $$, h, api, toast, fileUrl, bus, icon, plainError, ApiError } from './lib.js';
+import { trouble, troubleNote } from './trouble.js';
 import { P, trackOf, isMagnetic } from './project.js';
 import { currentSource, showSource } from './player.js';
 import { runJob, quote, credits, showPane, assetKindLabel } from './media.js';
@@ -111,6 +112,7 @@ async function loadCatalog() {
     S.loaded = true;
   } catch (err) {
     S.loaded = err.status === 401 ? 'signedOut' : 'error';
+    S.loadError = err;
   }
   try { if (state.user && !S.voices.length) S.voices = (await api('/v1/editor/voices')).voices ?? []; } catch { /* */ }
   drawGroups();
@@ -149,7 +151,7 @@ function drawList() {
     list.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Images, video, 3D models, rigs, voices, sound and music: every tool, here.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadCatalog, 'login') }, 'Sign in')));
     return;
   }
-  if (S.loaded === 'error') { list.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Couldn\'t load the tools.'), h('button', { class: 'ghost small', onclick: loadCatalog }, 'Try again'))); return; }
+  if (S.loaded === 'error') { list.replaceChildren(troubleNote(S.loadError, loadCatalog)); return; }
   if (!S.loaded) { list.replaceChildren(h('div', { class: 'working' }, 'Loading tools')); return; }
   const match = (label, t) => !S.q || `${label} ${t?.id ?? ''} ${t?.description ?? ''}`.toLowerCase().includes(S.q);
   const sections = [];
@@ -472,7 +474,7 @@ export function libraryPicker(kind, onPick) {
       onPick({ id: j.id ?? j.asset?.id, kind: j.kind ?? kind, title: f.name });
       bus.emit('jobDone');
       pop.remove();
-    } catch (err) { toast(plainError(err.message)); pop.remove(); }
+    } catch (err) { trouble(err); pop.remove(); }
   });
   const q = new URLSearchParams({ limit: '80', project: state.user.project });
   if (kind && kind !== 'file') q.set('kind', kind);

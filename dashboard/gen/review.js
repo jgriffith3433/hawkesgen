@@ -4,6 +4,7 @@
 // usual (Space, the timeline); review mode is a panel over it and a layer for marking a box on the frame.
 
 import { h, api, toast, icon, plainError, friendly, fileUrl, fmt } from './lib.js';
+import { trouble } from './trouble.js';
 import { P, take } from './project.js';
 import { refreshCredits } from './account.js';
 
@@ -139,6 +140,6 @@ async function act(what) {
     if (what === 'dismiss') { R.fix = null; R.t = null; }
     // Keep and Undo change the cut on Gen: the open cut takes the new version.
     if ((what === 'keep' || what === 'undo') && P.id === R.scene) take(await api(`/v1/editor/projects/${R.scene}`));
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
   draw();
 }
