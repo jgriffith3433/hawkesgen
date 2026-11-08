@@ -332,6 +332,9 @@ function healthBody(deep: boolean) {
       python: fs.existsSync(path.join(paths.post, '..', '.venv')),
     },
     elevenlabsBilling: eleven.billingState(),
+    // Payments (billing.ts): whether this lane takes them, in which Stripe mode, and whether its webhook can be checked.
+    // Never a key: only what is set.
+    stripe: (() => { const st = getStripeStatus(); return { configured: st.configured, mode: st.mode, webhook: st.hasWebhookSecret }; })(),
     // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
     orgCredits: orgCreditsOn(),
     // New accounts and starter grants refused by the caps today and in total (src/signupcap.ts).
@@ -1064,6 +1067,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       const checkout = await createStripeCheckoutSession(user, body, origin || 'https://hawkesgen.ai');
       return send(res, 200, checkout);
+    }
+    // Where one of this account's checkouts stands (billing.ts checkoutStatus): the app asks once when Stripe sends the
+    // person back, and when they open a receipt. A paid one is granted here if the webhook hasn't arrived yet.
+    if (route.startsWith('/v1/billing/checkout/') && method === 'GET') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in first', { status: 403 });
+      return send(res, 200, await billing.checkoutStatus(user, decodeURIComponent(route.slice('/v1/billing/checkout/'.length))));
+    }
+    // Points this lane's Stripe webhook at Gen and keeps its signing secret (owner; /admin Settings > Payments).
+    if (route === '/v1/billing/webhook/setup' && method === 'POST') {
+      requireRole(client, 'owner');
+      const body = await readJson(req);
+      const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '');
+      return send(res, 200, await billing.setupStripeWebhook(origin || (host ? `https://${host}` : ''), { replace: body?.replace === true }));
     }
     if (route === '/v1/billing/ledger' && method === 'GET') {
       const user = getUserForClient(client);
