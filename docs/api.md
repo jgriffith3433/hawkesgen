@@ -319,6 +319,7 @@ sound; clips with `start` on the timeline and `in`/`out` of their source, `speed
 | `POST /v1/director/shots/:id/blender` | Films the shot with Gen's Blender film pipeline (one asset.make); `?quote=1` prices it. 400 while anyone is a stand-in |
 | `POST /v1/director/prompts` | The look and action prompts "Film it" sends (image.control, video.control) for a shot |
 | `GET/PUT /v1/admin/ai`, `PUT/DELETE /v1/admin/ai/key` | Owner: the house AI (src/houseai.ts): source, markup, minCredits, the stored Anthropic key (last 4 only) |
+| `POST /v1/admin/backup` | Owner: back up hawkesgen.db and analytics.db (SQLite online backup) to `HAWKESGEN_BACKUP_BUCKET`; answers each backup's manifest (docs/gen-cloudrun.md, "Backups") |
 | `GET /v1/admin/accounts?q=`, `GET /v1/admin/accounts/:id`, `POST .../gift \| credits \| disable \| enable` | Owner: Gen app accounts (src/accounts.ts) |
 | `GET /v1/knowledge/tools/:id` | A tool's card (src/knowledge.ts): craft notes, models, every graph node and setting (which param drives it, which `nodes` may change) |
 | `GET /v1/knowledge/map` | One line per tool, the map the AI plans with |
