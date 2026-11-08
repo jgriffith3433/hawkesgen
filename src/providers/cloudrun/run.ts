@@ -29,10 +29,10 @@ import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { healthOf } from '../gpu/health.ts';
 
-/** A heartbeat younger than this means the run is still going on some instance. */
 /** A worker's error that is a provider's rate limit ("HTTP Error 429: Too Many Requests"). Exported for tests. */
 export const RATE_LIMITED = /HTTP Error 429|Too Many Requests/i;
 
+/** A heartbeat younger than this means the run is still going on some instance. */
 const FRESH_MS = 60_000;
 /** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
 const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
