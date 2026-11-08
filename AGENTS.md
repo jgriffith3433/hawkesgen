@@ -492,7 +492,15 @@ portal and Studio use Gen in the back end with their own keys.
 - **Paying** (`src/subscriptions.ts`, `src/billing.ts`, `test/subscriptions.test.ts`):
   - **Plans:** monthly plans grant credits every paid month. Defaults (provisional): Creator $12 = 1,500 credits,
     Pro $39 = 5,500, seeded when the table is empty; the owner changes them at `POST /v1/subscriptions/plans`.
-  - **Credit packs:** one-off, as before.
+  - **Credit packs** (`billing.ts`, `test/billing-checkout.test.ts`): one-off. `POST /v1/billing/checkout` makes a Checkout
+    session in payment mode (tagged `product: gen` on the session and its payment, the receipt emailed to the account,
+    one Stripe customer per account) that returns to the app it came from (only Gen's own addresses, `returnOrigin`).
+    Back in the app (`account.js backFromCheckout`) one `GET /v1/billing/checkout/<id>` says paid, processing, declined
+    (Stripe's own words), cancelled or expired, gives the balance and Stripe's receipt, and grants a paid pack if the
+    webhook hasn't yet: both go through `fulfilPackSession`, keyed by the session in the ledger, so credits come once. A
+    pack's credits are Gen's number, not the metadata's. No polling: the balance is asked again when the sheet opens and
+    when the page comes back into view (at most every 30 s). The sheet lists the last purchases with their receipts and
+    says "Test mode" with the test card when Stripe's keys are test keys. Playtest scenario `checkout` (no Stripe call).
   - **Stripe:** a Checkout session in subscription mode (`POST /v1/subscriptions/checkout`). Webhooks
     (`/v1/billing/webhook`) record it, grant credits once per paid invoice (`invoice:<id>` in the ledger), follow
     cancel and status, and mark a failed payment `past_due` (still the current plan).
@@ -503,9 +511,13 @@ portal and Studio use Gen in the back end with their own keys.
     subscription) and acts only on its own (`billing.ts isGenEvent`: the tag, else a subscription it knows, else a Gen
     account). Others' events get a 200 and nothing else, so Stripe never retries or disables the endpoint over them.
   - **Set-up:** Stripe needs its keys on each lane (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, or
-    `POST /v1/billing/config`) and a webhook endpoint at `https://<gen>/v1/billing/webhook` for
-    `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` and
-    `customer.subscription.deleted`.
+    `POST /v1/billing/config`: /admin Settings > Payments, keys never shown again) and a webhook endpoint at
+    `https://<gen>/v1/billing/webhook` for `GEN_WEBHOOK_EVENTS` (the checkout's completed, async succeeded and failed,
+    expired; `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` and `.deleted`). **Set up the
+    webhook** (`POST /v1/billing/webhook/setup`, owner) makes or updates the endpoint for exactly this address and keeps
+    its signing secret; it never touches another URL's endpoint, and replaces one for this address only when asked.
+    `/v1/health` says `stripe: { configured, mode, webhook }` (never a key). Beta uses test keys; going live is the live
+    keys on live Gen and Set up the webhook there.
 - **Admins sign in once:** a Gen account whose email is on `settings.dashboard.googleEmails` (J) and that signed in with
   Google is Gen's owner too (`users.ts isGenAdmin`). The app shows it an Admin link, `/admin` works with the same
   sign-in, and its own work stays in its own project (the app always names it). A password account with that email
@@ -657,6 +669,12 @@ returns a verdict, scores and findings.
   look fixed or still present; `mode` full / verify / regression (the last two report only regressions and blockers);
   `bar` (the product's quality bar) is judged as `meetsBar`. `settleReview` enforces the caps and mode on the answer
   (tested in `test/playtest.test.ts`). Studio's side: `hawkesstudio/docs/daily.md` ("Reviews converge").
+- **Motion** (`playtest.review` v5, `src/tools/playtest-motion.ts`): besides the stills, the judge sees `motion`
+  (default 6) contact sheets, each 1.2 s of the run's video at 15 fps tiled 6x3, placed on the feel flags (bugs first),
+  problems and scenes, the rest spread over the run; they're filed as `playtest: 'motion'` assets so findings cite them.
+  ffmpeg's `freezedetect` on the recording finds hitches with nothing from the game (a freeze of 150 ms to 1 s in the
+  middle of motion; not on software rendering). `review.motion` has the sheets, the hitches and `worstHitchMs`; Studio
+  holds the hard limits (`hawkesstudio/docs/quality.md`). No video or no ffmpeg: stills only, said in `motion.note`.
 - **Multiplayer:** `peers: 2..4` opens that many contexts in one browser, each at the URL with a shared random `room` and
   `peer=<i>` (peer 0 plays `scenario`, the others `scenarioPeers` or the same), and needs the contract. The videos are
   stacked here with ffmpeg (two side by side, three or four in a half-size 2x2 grid; `stackArgs`); problems, events and

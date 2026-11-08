@@ -904,6 +904,7 @@ render.settings = async () => {
       <label><span>ElevenLabs $ per 1,000 characters (for usage reports)</span><input type="number" step="any" id="sre" value="${s.rates.elevenlabsPer1kChars}"></label>
     </div><div class="row" style="margin-top:10px"><button class="primary" id="ssave">Save</button></div></div>
     <div class="card" id="gpuProviders"><h3>GPU providers</h3><p class="muted small">Loading…</p></div>
+    ${me.role === 'owner' ? '<div class="card" id="payments"><h3>Payments (Stripe)</h3><p class="muted small">Loading…</p></div>' : ''}
     ${me.role === 'owner' ? '<div class="card"><h3>🔑 Claude accounts</h3><p class="muted small">Gen’s Claude sign-ins and the AI every account uses are in the <a href="#ai">AI</a> tab.</p></div>' : ''}
     ${me.role === 'owner' ? `<div class="card"><h3>Google sign-in</h3><p class="muted small">"Continue with Google" on this dashboard lets these Google accounts in as the owner. The client is a Google OAuth web client whose Authorized JavaScript origins list this address (${esc(location.origin)}).</p>
       <div class="form"><label><span>Google client id</span><input id="dgc" value="${esc(s.dashboard?.googleClientId ?? '')}" placeholder="1234…apps.googleusercontent.com"></label>
@@ -920,7 +921,46 @@ render.settings = async () => {
   $('#sout').onclick = () => post('/dashboard/signout').then(() => location.reload()).catch(fail);
   $('#dgsave')?.addEventListener('click', () => post('/settings', { dashboard: { googleClientId: $('#dgc').value.trim() || null, googleEmails: $('#dge').value.split(',').map((x) => x.trim()).filter(Boolean) } }).then(() => { toast('Saved'); render.settings(); }).catch(fail));
   gpuProviders(s).catch((e) => { $('#gpuProviders').innerHTML = `<h3>GPU providers</h3><p class="muted small">${esc(e.message)}</p>`; });
+  if (me.role === 'owner') payments().catch((e) => { $('#payments').innerHTML = `<h3>Payments (Stripe)</h3><p class="muted small">${esc(e.message)}</p>`; });
 };
+
+// Payments (billing.ts): this lane's Stripe keys and webhook. Keys go in once and are never shown again (only whether each is
+// set, and the mode they're in); "Set up the webhook" points this address's Stripe endpoint at Gen and keeps its secret.
+async function payments() {
+  const st = await api('/billing/config');
+  const mode = st.mode === 'live' ? '<b style="color:var(--bad, #c33)">live: real cards are charged</b>' : st.mode === 'test' ? '<b>test: no money moves</b>' : '<span class="muted">not set</span>';
+  const yes = (v) => (v ? '✓ set' : '<span class="muted">not set</span>');
+  $('#payments').innerHTML = `<h3>Payments (Stripe)</h3>
+    <p class="muted small">People buy credit packs and monthly plans through Stripe Checkout; Stripe's webhook adds the credits, once per payment. Beta uses Stripe's test keys (sk_test_…, card 4242 4242 4242 4242); live uses the live ones.</p>
+    <table><tbody><tr><td>Mode</td><td>${mode}</td></tr><tr><td>Secret key</td><td>${yes(st.hasSecretKey)}</td></tr><tr><td>Publishable key</td><td>${yes(st.hasPublishableKey)}</td></tr><tr><td>Webhook signing secret</td><td>${yes(st.hasWebhookSecret)}</td></tr></tbody></table>
+    <div class="form" style="margin-top:10px">
+      <label><span>Secret key (sk_test_… or sk_live_…; a restricted rk_ key works too)</span><input id="pysk" type="password" autocomplete="off" placeholder="${st.hasSecretKey ? 'set: paste to replace' : 'sk_test_…'}"></label>
+      <label><span>Publishable key (optional)</span><input id="pypk" autocomplete="off" placeholder="${st.hasPublishableKey ? 'set: paste to replace' : 'pk_test_…'}"></label>
+      <label><span>Webhook signing secret (only if the endpoint already exists in Stripe; else use Set up the webhook)</span><input id="pywh" type="password" autocomplete="off" placeholder="${st.hasWebhookSecret ? 'set: paste to replace' : 'whsec_…'}"></label>
+    </div>
+    <div class="row" style="margin-top:10px"><button class="primary" id="pysave">Save keys</button><button id="pyhook" ${st.hasSecretKey ? '' : 'disabled'}>Set up the webhook for ${esc(location.origin)}</button><span id="pymsg" class="small muted"></span></div>`;
+  $('#pysave').onclick = () => {
+    const body = {};
+    for (const [id, k] of [['pysk', 'secretKey'], ['pypk', 'publishableKey'], ['pywh', 'webhookSecret']]) { const v = $(`#${id}`).value.trim(); if (v) body[k] = v; }
+    if (!Object.keys(body).length) return toast('Paste a key first');
+    if (body.secretKey?.includes('_live_') && !confirm('This is a LIVE key: real cards will be charged on this Gen. Save it?')) return;
+    post('/billing/config', body).then(() => { toast('Saved'); payments(); }).catch(fail);
+  };
+  $('#pyhook').onclick = async () => {
+    $('#pymsg').textContent = 'Asking Stripe…';
+    const run = (replace) => post('/billing/webhook/setup', { replace });
+    try {
+      let r;
+      try { r = await run(false); } catch (e) {
+        if (!/replace the endpoint/.test(e.message)) throw e;
+        if (!confirm(`${e.message}\n\nReplace it? Stripe makes a new endpoint for this address with a new secret; nothing else changes.`)) { $('#pymsg').textContent = ''; return; }
+        r = await run(true);
+      }
+      toast(`Webhook ${r.action}: ${r.url}`);
+      payments();
+    } catch (e) { $('#pymsg').textContent = ''; fail(e); }
+  };
+}
 
 // Where GPU jobs run (docs/gpu-providers.md, GET /v1/gpu/providers): the providers in the order jobs try them, whether each
 // is set up, cooling down after refusing us (and why), its last error and price. The order and on/off save to settings.gpu.

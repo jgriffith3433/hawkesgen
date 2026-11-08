@@ -389,7 +389,7 @@ test('Stripe checkout (503 when unconfigured) and webhook signature verification
     body: { packId: 'creator_25' },
   });
   assert.equal(noStripe.status, 503);
-  assert.match(noStripe.body.error, /Stripe is not configured/);
+  assert.match(noStripe.body.error, /isn't open on this Gen yet/);
 
   // 2. Webhook signature verification & credit grant
   const webhookSecret = 'whsec_test_secret_key_12345';
