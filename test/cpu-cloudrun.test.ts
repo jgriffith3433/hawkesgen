@@ -256,9 +256,10 @@ test('the tool\'s own refusal reads as it would here; an unreachable or older se
 
 test('cancelling closes the request and the service stops the tool', async (t) => {
   if (!ffmpeg) return t.skip('no ffmpeg');
+  if (!pillow) return t.skip('no .venv with Pillow'); // video.fit runs post/prep.py, which imports Pillow
   const store = memStore();
   const { deps } = fakeService(store);
-  const video = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cpu-v-')), 'long.mp4');
+  const video =path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'cpu-v-')), 'long.mp4');
   spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=640x360:rate=24', '-t', '60', '-pix_fmt', 'yuv420p', video]);
   const abort = new AbortController();
   const g = genCtx('video.fit', { width: 640, height: 640, maxFrames: 481, fps: 24 }, { video }, abort.signal);
