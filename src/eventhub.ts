@@ -15,6 +15,7 @@ const TOPICS: Record<string, ((e: any) => string) | null> = {
   library: (e) => String(e.entity).split('/')[0],
   production: (e) => String(e.project),
   scene: (e) => String(e.project),
+  ai: (e) => String(e.project),
   machines: null,
   bench: null,
 };
