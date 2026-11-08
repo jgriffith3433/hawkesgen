@@ -607,6 +607,12 @@ export function sameTurn<T extends { priority: number; turn: number }>(sorted: T
 
 /** How many restarts a running job is picked up again after before it stops with a reason (start()). */
 export const MAX_RESUMES = 5;
+/**
+ * Restarts that Hawkes Gen announced (a deploy or a stop: the job carries `labels.drained`) don't use up MAX_RESUMES, which is
+ * for crashes; they have their own, much higher limit. 2026-11-07: seven 10-minute playtests were stopped "interrupted 5 times"
+ * by the day's deploys (five merges in two hours), not by crashes.
+ */
+export const MAX_DRAIN_RESUMES = 25;
 
 class Queue {
   /** Server id -> job id running on it. */
@@ -641,10 +647,59 @@ class Queue {
     return { used: [...this.tabs.values()].reduce((a, n) => a + n, 0), limit: this.gpuSeen.ready ? this.gpuSeen.limit : 1 };
   }
 
+  /** Set while Hawkes Gen is stopping: nothing new starts, the jobs running finish (drain). */
+  draining = false;
+
+  /**
+   * Stop taking new jobs (they stay queued for the next start) and wait for the running ones to finish, at most `maxMs`.
+   * Event-driven: it looks again when a job's status changes (no polling). Jobs still running at the cap are marked as cut
+   * off by a planned stop, so the next start picks them up without counting a crash. -> how many were left running.
+   */
+  async drain(maxMs: number): Promise<number> {
+    this.draining = true;
+    const left = () => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'").get() as { n: number }).n;
+    if (left() > 0 && maxMs > 0) {
+      await new Promise<void>((resolve) => {
+        let t: NodeJS.Timeout;
+        const done = () => { clearTimeout(t); events.off('job', check); resolve(); };
+        const check = () => { if (left() === 0) done(); };
+        t = setTimeout(done, maxMs);
+        events.on('job', check);
+      });
+    }
+    const n = left();
+    if (n) {
+      for (const j of listJobs({ status: 'running', limit: 500 })) {
+        j.labels = { ...j.labels, drained: Date.now() };
+        j.log.push('Hawkes Gen is restarting: this job will be picked up again');
+        save(j, ['labels', 'log']);
+      }
+      flushLogs();
+    }
+    return n;
+  }
+
   start() {
     // Jobs that were running when Hawkes Gen stopped go back in the line, at most MAX_RESUMES times: a job that keeps
     // being cut off (or keeps breaking the service) stops with a reason instead of starting over forever.
     for (const j of listJobs({ status: 'running', limit: 500 })) {
+      const planned = Boolean(j.labels?.drained);
+      if (planned) {
+        const n = Number(j.labels?.drainResumes ?? 0);
+        if (n >= MAX_DRAIN_RESUMES) {
+          failJob(j.id, `This job was cut off by ${n} planned restarts of Hawkes Gen, so it was stopped instead of starting over again. Its credits were returned. Please run it again.`);
+          continue;
+        }
+        const { drained: _d, ...rest } = j.labels ?? {};
+        j.labels = { ...rest, drainResumes: n + 1 };
+        j.status = 'queued';
+        j.detail = `picked up again after a planned restart (${j.outputs.length} done)`;
+        j.log.push(j.detail);
+        const { gpuWaitSince: _g, ...labels } = j.labels;
+        j.labels = labels;
+        save(j, ['status', 'detail', 'log', 'labels']);
+        continue;
+      }
       if (j.resumed >= MAX_RESUMES) {
         j.log.push(`picked up again after ${j.resumed} restarts already: stopped instead`);
         save(j, ['log']);
@@ -705,6 +760,7 @@ class Queue {
   }
 
   async fill() {
+    if (this.draining) return;
     const waiting = this.queued();
     if (!waiting.length) return;
     const settings = loadSettings();
