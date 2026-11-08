@@ -30,6 +30,7 @@ function connectHost(chromium: any, host: PlaytestHost) {
 import { awsConfig } from '../providers/comfy/fleet.ts';
 import { startLiveShots, endLiveShots } from './liveShots.ts';
 import { beginLive } from './livePlay.ts';
+import { FeelLog, PUSH_BINDING, cutFeelClips, pickPolishFrames, polishScan, feelBrief } from './playtest-feel.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
@@ -102,6 +103,8 @@ export const playtestRunTool: Tool = {
     globals: { type: 'json', description: 'Values the page sees before any of its scripts run, as window[name] = value: { "HAWKES_NET_ENDPOINT": "https://hawkesnet.hawkesgen.ai" } (Hawkes Studio puts beta playtests on beta Hawkes Net). Names are capital letters, digits and _, values strings; nothing else.', advanced: true, example: { HAWKES_NET_ENDPOINT: 'https://hawkesnet.hawkesgen.ai' } },
     cookies: { type: 'json', description: 'Cookies set before the page loads: [{ "name", "value", "domain" }] (at most 8; Secure, HttpOnly, path /). Hawkes Studio sends a short-lived beta-site pass so playtests of beta sites get past the sign-in.', advanced: true, example: [{ name: 'hawkes_pass_beta', value: 'v1.beta…', domain: '.hawkesgen.ai' }] },
     peers: { type: 'integer', default: 1, min: 1, max: 4, description: 'Multiplayer: how many players (browser tabs in the same browser) play together. Each opens the URL with a shared random room=<id> and peer=<0..n-1>; peer 0 plays the scenario, the others scenarioPeers (or the same one). Their videos play side by side in the job\'s video; problems and events say which peer. Needs the playtest contract.' },
+    polish: { type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', description: 'The feel layer\'s cheap vision pass (Haiku scores a few frames against the 3D polish rubric: ugly buildings, z-fighting, floating objects, stretched textures, clipping). auto: when the game has the feel sensor (it pushed flags); on: always; off: never. docs/playtest.md#feel in Hawkes Studio.', advanced: true },
+    polishFrames: { type: 'integer', default: 10, min: 2, max: 24, description: 'How many frames the polish pass scores', advanced: true },
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
   },
   admit({ params, client, project, customer }) {
@@ -271,6 +274,9 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
     const failed: { url: string; status: number | string }[] = [];
     const shots = startLiveShots<Shot>(ctx.job.id);
     const timeline: any[] = [];
+    // The feel layer: flags the game's sensor pushes as they happen (playtest-feel.ts).
+    const feel = new FeelLog();
+    let feelShot: ((reason: string, scene?: string) => Promise<void>) | null = null;
     let t0 = Date.now();
     const T = () => Math.round((Date.now() - t0) / 100) / 10;
     let report: any = null;
@@ -350,6 +356,11 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
         const jar = pageCookies(p.cookies);
         if (jar.length) await within(context.addCookies(jar), 15_000, 'preparing the tab');
+        // The game pushes feel flags here the moment they happen (no polling); each worth it gets a screenshot.
+        await within(context.exposeBinding(PUSH_BINDING, (_src: any, msg: any) => {
+          const f = feel.push(msg, T());
+          if (f && feelShot) void feelShot(`feel:${f.kind}`, f.scene ?? liveSt?.scene);
+        }), 15_000, 'preparing the tab').catch((e: any) => ctx.log(`feel binding: ${e.message}`));
         page =await within(context.newPage(), 30_000, 'opening a browser tab');
       };
       const wantScreencast = p.recorder === 'screencast' || (p.recorder === 'auto' && Boolean(host));
@@ -397,6 +408,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
           // The page may be navigating.
         }
       };
+      feelShot = shot;
       /** page.evaluate with a limit: a page that stops answering is stuck. */
       const ev = <R>(f: any, arg?: any, ms = 15_000): Promise<R> => within(page.evaluate(f, arg), ms, 'the page');
 
@@ -526,6 +538,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
             report = await ev<any>(() => (window as any).hawkesPlaytest?.report()).catch(() => null);
             if (report?.outcome) outcome = report.outcome;
             for (const pr of report?.problems ?? []) problems.push({ severity: pr.severity, message: pr.message, source: 'game' });
+            feel.merge(report?.feel);
           } else {
             outcome = await genericSmoke(page, ctx, shot, p, () => killed);
           }
@@ -601,7 +614,10 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         video: null as string | null,
         visual: null as any,
         s3: null as any,
+        feel: feel.flags,
+        polish: null as any,
       };
+      feelShot = null;
       // The browser is done with: let the next playtest have it while this one saves.
       await within(browser.close(), 15_000, 'closing the browser').catch(() => {});
       host?.close();
@@ -656,6 +672,28 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       for (const [i, s] of shots.entries()) {
         await ctx.emit({ data: fs.readFileSync(s.file), ext: '.jpg', mime: 'image/jpeg', title: `${s.t}s ${s.reason}${s.scene ? ` — ${s.scene}` : ''}`, meta: { playtest: 'shot', t: s.t, reason: s.reason, scene: s.scene ?? null } });
         result.shots[i].asset = lastAsset();
+      }
+
+      // The feel layer: a screenshot and a short clip for the worst flags, then the cheap vision pass.
+      if (feel.flags.length) {
+        for (const f of feel.flags) {
+          const i = shots.findIndex((s) => s.reason === `feel:${f.kind}` && f.rt != null && Math.abs(s.t - f.rt) <= 1.5);
+          f.shot = i >= 0 ? result.shots[i].asset : null;
+        }
+        if (mp4) {
+          ctx.step('cutting clips around the feel flags');
+          const n = await cutFeelClips(ctx, mp4, feel.flags, lastAsset).catch((e: any) => { ctx.log(`feel clips: ${e.message}`); return 0; });
+          if (n) ctx.log(`feel: ${feel.flags.length} flags, ${n} clips`);
+        }
+      }
+      const polishOn = p.polish === 'on' || (p.polish !== 'off' && feel.flags.length > 0 && contract);
+      if (polishOn && shots.length) {
+        ctx.step('scoring frames against the polish rubric');
+        const picked = pickPolishFrames(shots.map((s, i) => ({ ...s, asset: result.shots[i].asset })), p.polishFrames ?? 10);
+        result.polish = await within(polishScan(ctx, picked), 3 * 60_000, 'the polish pass').catch((e: any) => {
+          ctx.log(`polish pass: ${e.message}`);
+          return { error: String(e.message).slice(0, 300), hits: [] };
+        });
       }
 
       // Visual regression: the same events in the previous run.
@@ -1740,6 +1778,10 @@ Rules:
 - Don't comment on the runner's own frame-rate warning unless the screenshots also show stutter or the game reports low fps.
 - If softwareRendering is true, the browser had no GPU: ignore frame rates and slowness entirely (they say nothing about players).
 - Each fix says what to change, as concretely as you can.
+- 3D games: look hard at what makes a game feel cheap: camera snaps or jumps, the camera inside or behind walls, characters
+  or props clipping through floors and walls, z-fighting, floating or sunk objects, stretched or missing textures, ugly
+  placeholder buildings, frame hitches. When FEEL AND POLISH lists flags, say where (scene and position) so the fix can be
+  checked at the same spot.
 - If VISUAL CHANGES are listed, the same moment looked different in the previous run. Say whether each big change is an
   improvement, a regression, or just a different moment (camera, animation, random content); report regressions.`;
 
@@ -1838,7 +1880,7 @@ export const playtestReviewTool: Tool = {
     const assets = listAssets({ job: p.job, limit: 500 }).items.filter((a: any) => a.meta?.playtest === 'shot').sort((a: any, b: any) => (a.meta.t ?? 0) - (b.meta.t ?? 0));
     if (!assets.length) throw new GenError(`${p.job} has no screenshots`);
     // Frames: every event shot (problems, scenes, the end) first, then even spacing.
-    const important = assets.filter((a: any) => ['problem', 'scene', 'end', 'ready', 'loaded', 'page'].includes(a.meta.reason));
+    const important = assets.filter((a: any) => ['problem', 'scene', 'end', 'ready', 'loaded', 'page'].includes(a.meta.reason) || String(a.meta.reason ?? '').startsWith('feel:'));
     const picked = new Set<any>(important.slice(0, Math.ceil(p.frames * 0.6)));
     const rest = assets.filter((a: any) => !picked.has(a));
     const want = p.frames - picked.size;
@@ -1873,6 +1915,7 @@ export const playtestReviewTool: Tool = {
       `PLAYTEST REPORT\n${JSON.stringify(brief, null, 1).slice(0, 30000)}`,
       `SCREENSHOTS (in order; refer to them by index)\n${legend}`,
       p.previous ? `PREVIOUS REVIEW\n${JSON.stringify(p.previous).slice(0, 8000)}` : '',
+      feelBrief(result),
       big.length ? `VISUAL CHANGES SINCE THE LAST RUN (perceptual difference of the same moment: 0 = same, 1 = different)\n${big.slice(0, 12).map((x: any) => `- ${x.key} at t=${x.t}s: ${Math.round(x.score * 100)}% different, ${Math.round((x.changed ?? 0) * 100)}% of the screen changed`).join('\n')}` : '',
       phone ? PHONE_RULES : '',
       'Review this playtest.',
@@ -1887,7 +1930,7 @@ export const playtestReviewTool: Tool = {
     if (!phone) delete review.phone;
     review.visual = big.length ? { big: big.length, top: big.slice(0, 6).map((x: any) => ({ key: x.key, score: x.score, diff: x.diff })) } : null;
     review.frames = frames.map((a: any) => ({ asset: a.id, t: a.meta.t, reason: a.meta.reason, scene: a.meta.scene }));
-    review.playtest = { job: p.job, url: result.url, scenario: result.scenario, outcome: result.outcome, seconds: result.seconds, fps: result.fps, problems: result.problems?.length ?? 0, device: result.device ?? 'desktop' };
+    review.playtest = { job: p.job, url: result.url, scenario: result.scenario, outcome: result.outcome, seconds: result.seconds, fps: result.fps, problems: result.problems?.length ?? 0, device: result.device ?? 'desktop', feel: Array.isArray(result.feel) ? result.feel.length : 0, polish: result.polish?.score ?? null };
     review.model = r.model;
     await ctx.emit({ data: Buffer.from(JSON.stringify(review, null, 2)), ext: '.json', mime: 'application/json', title: 'Playtest review' });
     ctx.result(review);
