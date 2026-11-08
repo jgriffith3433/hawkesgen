@@ -328,13 +328,27 @@ export async function quote(tool, params) {
 export const credits = (q) => (q ? `${q.credits} credit${q.credits === 1 ? '' : 's'}` : '');
 
 // ------------------------------------------------------------------ uploads
+/** One file up with progress. Resolves { status, j } for any answer; status 0 (offline) rejects like fetch does. */
+function sendFile(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', url);
+    x.withCredentials = true;
+    x.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    x.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onerror = () => reject(new ApiError('Offline', 0));
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch { /* not JSON */ } resolve({ status: x.status, j }); };
+    x.send(file);
+  });
+}
 const OK_VIDEO = /^video\/(mp4|webm)$/;
 export async function uploadFiles(files, { toTimeline = false, then = null } = {}) {
   if (!files.length) return;
   needSignIn(async () => {
     if (!toTimeline && !then) showPane('media');
     for (const file of files) {
-      if (file.size > 1.5 * 1024 * 1024 * 1024) { toast(`${file.name} is over 1.5 GB.`); continue; }
+      if (file.size > 1024 * 1024 * 1024) { toast(`${file.name} is over 1 GB.`); continue; }
       const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') || /\.(mov|mkv|avi|m4v|webm|mp4)$/i.test(file.name) ? 'video' : file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name) ? 'audio' : null;
       if (!kind) { toast(`${file.name}: images, videos and sounds only.`); continue; }
       const key = `up_${newId()}`;
@@ -342,11 +356,12 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
       M.inflight.set(key, mine);
       drawMedia();
       try {
-        const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(file.name)}`, {
-          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Filename': file.name }, body: file,
+        // XHR, not fetch: it reports how much has gone up. A refusal (429 too many at once, 413 too big) is worded by the server.
+        const { status, j } = await sendFile(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(file.name)}`, file, (frac) => {
+          mine.step = frac < 1 ? `Uploading ${Math.round(frac * 100)}%` : 'Saving';
+          drawMedia();
         });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new ApiError(j.error ?? `HTTP ${r.status}`, r.status);
+        if (status < 200 || status >= 300) throw new ApiError(j.error ?? `HTTP ${status}`, status, j);
         let asset = { id: j.id ?? j.asset?.id, kind: j.kind ?? kind, title: file.name };
         // Gen converts what browsers or the tools can't use (mov, mkv, HEVC, webp...) and says which job does it.
         const norm = j.normalize?.job ?? j.normalizeJob ?? null;
@@ -365,7 +380,8 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
         else if (P.active) toast(`${file.name} is in Media.`, { action: 'Add to the timeline', onAction: () => placeAsset(asset) });
       } catch (err) {
         M.inflight.delete(key);
-        toast(`${file.name}: ${explain(err).text}`);
+        // The server's own words for too many uploads or a file that is too big; everything else is explained as usual.
+        toast(err.status === 429 || err.status === 413 ? `${file.name}: ${err.message}` : `${file.name}: ${explain(err).text}`);
       }
       drawMedia();
     }

@@ -17,7 +17,7 @@
 // All calls go to RunPod's API v2 (runpod-v2.mjs): REST v1 is retired on 2026-11-15 and GraphQL early 2027.
 // With --endpoint <id> it prints the settings entry for that endpoint.
 import { APPLY, arg, secret, workerImage, say, header, redact, printEntry, print3dEntry, KIND, IMAGE_3D } from './lib.mjs';
-import { runpod, upsertTemplate, findEndpoint, lbEndpoint } from './runpod-v2.mjs';
+import { runpod, upsertTemplate, findEndpoint, lbEndpoint, readCatalog, gpuFor } from './runpod-v2.mjs';
 
 // --kind 3d: the 3D worker (server/gpu3d): Blender, the rig, motion and mocap venvs; weights on a network volume.
 const is3d = KIND === '3d';
@@ -81,12 +81,21 @@ if (APPLY && is3d) {
   const [t, madeT] = await upsertTemplate(api, t3);
   say(`${madeT ? 'made' : 'updated'} template ${t.id}`);
   const volume = arg('volume');
+  // Whole 48 GB cards only. The pools also hold RTX PRO 6000 Blackwell MIG slices (the first 3D worker landed on one):
+  // a slice is not a whole card, and HY-Motion's PyTorch 2.5.1 (cu124) has no Blackwell kernels. Every other type in
+  // the pools is excluded, read from RunPod's catalog so a type added since is excluded too.
+  const catalog = await readCatalog(api);
+  if (!catalog) { console.error('Could not read RunPod\'s GPU catalog: without it a new MIG slice would not be excluded. Nothing changed.'); process.exit(1); }
+  const gpu3d = gpuFor(['NVIDIA L40S', 'NVIDIA L40', 'NVIDIA RTX 6000 Ada Generation', 'NVIDIA RTX A6000', 'NVIDIA A40'], { pools: ['ADA_48_PRO', 'AMPERE_48'], catalog });
+  say(`excluded in those pools: ${gpu3d.excludedTypes.join(', ') || 'none'}`);
   const body = {
-    ...lbEndpoint({ name, templateId: t.id, gpu: { pools: ['ADA_48_PRO', 'AMPERE_48'], count: 1 }, max, idle: 900, perWorker: 1, timeoutMs: 3_600_000 }),
+    ...lbEndpoint({ name, templateId: t.id, gpu: gpu3d, max, idle: 900, perWorker: 1, timeoutMs: 3_600_000 }),
     ...(volume ? { networkVolumes: [volume] } : {}),
   };
   const old = await findEndpoint(api, name);
-  const e = old ? await api.req('PATCH', `/serverless/${old.id}`, body) : await api.req('POST', '/serverless', body);
+  // An update leaves the template out (RunPod refuses a PATCH that names one again: 422).
+  const { templateId: _t, ...update } = body;
+  const e = old ? await api.req('PATCH', `/serverless/${old.id}`, update) : await api.req('POST', '/serverless', body);
   say(`${old ? 'updated' : 'made'} endpoint ${e.id} (${e.type}), pools ${(e.gpu?.pools ?? []).join(', ')}`);
   print3dEntry({ id: 'runpod-3d', provider: 'runpod', url: `https://${e.id}.api.runpod.ai`, gpu: 'L40S', pricePerHour: PRICES['NVIDIA L40S'], maxConcurrent: max, graphLimitSeconds: 1800, enabled: true });
   process.exit(0);
