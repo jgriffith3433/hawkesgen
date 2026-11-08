@@ -48,6 +48,7 @@ import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { genOAuth } from './genoauth.ts';
+import { limit as limitRequest } from './ratelimit.ts';
 import { handleUpload, downloadTarget, linkTarget, shareLink, signedFileUrl, verifyFileSig } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
@@ -288,6 +289,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   const method = req.method ?? 'GET';
   noteRoute(method, route);
+
+  // The request limiter (src/ratelimit.ts): a token bucket per caller and class of route, before any routing.
+  // /v1/health and the Stripe webhook are never limited.
+  const wait = limitRequest(req, method, route);
+  if (wait !== null) {
+    res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(wait), 'Cache-Control': 'no-store' });
+    return void res.end(JSON.stringify({ error: `That's a lot at once: wait ${wait} second${wait === 1 ? '' : 's'}, then try again.`, retryAfter: wait }));
+  }
 
   // Signing in to the MCP from an editor (src/genoauth.ts, src/mcp-oauth.ts): discovery, registration, the consent page
   // and tokens. Before the CORS below: these carry their own.

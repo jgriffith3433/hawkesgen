@@ -28,7 +28,7 @@ const OPT = {
   users: Math.max(1, Number(arg('users', 50))),
   rate: Number(arg('rate', 0.2)),         // jobs per second per user
   duration: Number(arg('duration', 20)), // seconds of load
-  storms: String(arg('storms', 'signup,uploads,restart')).split(',').map((s) => s.trim()).filter(Boolean),
+  storms: String(arg('storms', 'signup,uploads,restart,limits')).split(',').map((s) => s.trim()).filter(Boolean),
   url: arg('url', null),                 // an already running local copy (loopback only); else one is started
   keep: process.argv.includes('--keep'),
   p95: Number(arg('p95-ms', 2000)),
@@ -87,7 +87,7 @@ async function call(user, method, route, body, raw) {
   const t = performance.now();
   let status = 0, json = null;
   try {
-    const headers = { ...(user?.cookie ? { cookie: user.cookie } : {}), ...(body ? { 'content-type': 'application/json' } : {}), ...(raw ? { 'x-filename': 'load.bin' } : {}) };
+    const headers = { ...(user ? { 'x-forwarded-for': `10.${(user.i >> 16) & 255}.${(user.i >> 8) & 255}.${user.i & 255}` } : {}), ...(user?.cookie ? { cookie: user.cookie } : {}), ...(body ? { 'content-type': 'application/json' } : {}), ...(raw ? { 'x-filename': 'load.bin' } : {}) };
     const r = await fetch(BASE + route, { method, headers, body: raw ?? (body ? JSON.stringify(body) : undefined) });
     status = r.status;
     const setCookie = r.headers.get('set-cookie');
@@ -194,6 +194,28 @@ async function stormUploads() {
   const ok = results.filter((s) => s === 200).length;
   storms.push({ name: '20 parallel uploads', ok: ok === pick.length && pick.length === Math.min(20, users.length), detail: `${ok}/${pick.length} x 2 MiB in ${Math.round(performance.now() - t)} ms` });
 }
+// Above the limit: one address hammers a strict route (sign-in) and must be told 429 + Retry-After; /v1/health, hit as
+// hard, must never be. Not counted in the route table (these 429s are the point), so "429s under 1%" still judges normal use.
+async function stormLimits() {
+  const ip = { 'x-forwarded-for': '203.0.113.200', 'content-type': 'application/json' };
+  let limited = 0, early = 0, retryOk = true, plain = true;
+  for (let i = 0; i < 60; i++) {
+    try {
+      const r = await fetch(`${BASE}/v1/users/test-session`, { method: 'POST', headers: ip, body: '{}' });
+      if (r.status === 429) {
+        limited++;
+        const ra = Number(r.headers.get('retry-after'));
+        if (!(ra >= 1)) retryOk = false;
+        const j = await r.json().catch(() => null);
+        if (typeof j?.error !== 'string') plain = false;
+      } else { if (limited === 0) early++; await r.arrayBuffer(); }
+    } catch {}
+  }
+  let healthLimited = 0;
+  for (let i = 0; i < 400; i++) { try { const r = await fetch(`${BASE}/v1/health`, { headers: { 'x-forwarded-for': '203.0.113.201' } }); if (r.status === 429) healthLimited++; await r.arrayBuffer(); } catch {} }
+  storms.push({ name: 'rate limit: 60 sign-ins from one address, 400 health checks', ok: limited > 0 && early > 0 && retryOk && plain && healthLimited === 0,
+    detail: `${early} let through, then ${limited} x 429 (Retry-After ${retryOk ? 'set' : 'MISSING'}, plain JSON ${plain}); health limited ${healthLimited}` });
+}
 async function stormRestart() {
   const before = health.last?.process?.pid;
   const t = performance.now();
@@ -255,6 +277,7 @@ async function main() {
     }
   };
   const stormPlan = [];
+  if (OPT.storms.includes('limits')) stormPlan.push([0.2, stormLimits]);
   if (OPT.storms.includes('uploads')) stormPlan.push([0.3, stormUploads]);
   if (OPT.storms.includes('restart')) stormPlan.push([0.6, stormRestart]);
   const stormRun = stormPlan.map(async ([at, fn]) => { await sleep(OPT.duration * 1000 * at); await fn(); });
