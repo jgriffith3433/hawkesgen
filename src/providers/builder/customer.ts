@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 // Hawkes Gen"): a customer's Studio (a Gen key with role "user") builds ITS OWN Unity project from GitHub on Gen's Cloud
 // Run build job and gets the output back as a library asset (a .tar.gz of the build folder).
 //
-//   params: { github: { repo, commit, token, ref? }, path?, method?, target: "web", out: "artifact" }
+//   params: { github: { repo, commit, token, ref?, refresh?: { url, build, key } }, path?, method?, target: "web", out: "artifact" }
 //
 // The token is a short-lived GitHub installation token that Studio passes per job. It is moved into the in-memory token
 // vault at submit (src/providers/playtester/intake.ts holdToken: the job's params keep only its tok_ reference; the vault
@@ -23,7 +23,7 @@ import crypto from 'node:crypto';
 // version Gen has no image for fails at once (kind 'config'), naming the project's version and the supported ones.
 
 import { GenError } from '../../util.ts';
-import { holdToken, lookupToken, type TokenLookup } from '../playtester/intake.ts';
+import { holdToken, lookupToken, replaceToken, dropToken, publicUrl, checkPublicUrl, type TokenLookup } from '../playtester/intake.ts';
 import { cacheName } from './cache.ts';
 import { gapi, type CloudRunTarget } from './gcp.ts';
 import { resolveMachine, storedMachine, type MachineSizes } from './sizes.ts';
@@ -42,6 +42,8 @@ const TOKEN_REF_RE = /^tok_[0-9a-f]{24}$/;
 const PATH_RE = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[A-Za-z0-9 _.\/-]{1,200}$/;
 const METHOD_RE = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$/;
 const REF_RE = /^[A-Za-z0-9._/-]{1,120}$/;
+const REFRESH_BUILD_RE = /^[A-Za-z0-9_.-]{1,100}$/;
+const REFRESH_KEY_RE = /^[0-9a-f]{64}$/;
 
 /** The build method the container adds when none is given (server/unity-cloudrun/HawkesBuild.cs). */
 export const DEFAULT_METHOD = 'HawkesGenCloud.HawkesBuild.Build';
@@ -56,6 +58,8 @@ export type CustomerBuild = {
   /** -executeMethod; null: Gen's own HawkesBuild.Build (every enabled scene to WebGL). */
   method: string | null;
   tokenRef: string;
+  /** Where Gen asks for a fresh token just before the fetch (Studio's gen-token); the key is held in the vault, never here. */
+  refresh: { url: string; build: string; keyRef: string } | null;
   /** A compile-only check (check.ts): Unity imports and compiles, nothing is built or kept. */
   check: boolean;
   /** The machine size asked for (sizes.ts): a size name, { cpu, memoryGiB }, or null for settings' customerSize. */
@@ -100,8 +104,8 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   let g = p.github;
   if (typeof g === 'string') { try { g = JSON.parse(g); } catch { throw bad('github must be an object: { repo, commit, token, ref? }'); } }
   if (!g || typeof g !== 'object' || Array.isArray(g)) throw bad('github must be an object: { repo, commit, token, ref? }');
-  const extra = Object.keys(g).filter((k) => !['repo', 'commit', 'token', 'ref'].includes(k));
-  if (extra.length) throw bad(`customer builds take github { repo, commit, token, ref? } (not ${extra.join(', ')}): the output comes back as an asset, nothing is pushed`);
+  const extra = Object.keys(g).filter((k) => !['repo', 'commit', 'token', 'ref', 'refresh'].includes(k));
+  if (extra.length) throw bad(`customer builds take github { repo, commit, token, ref?, refresh? } (not ${extra.join(', ')}): the output comes back as an asset, nothing is pushed`);
   for (const k of ['site', 'projectDir', 'siteDir', 'cache', 'backend', 'args']) {
     if (p[k] !== undefined && p[k] !== null && p[k] !== '' && !(k === 'backend' && (p[k] === 'auto' || p[k] === 'cloudrun'))) throw bad(`${k} isn't for customer builds (github with a token, out "artifact")`);
   }
@@ -114,6 +118,22 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   if (!TOKEN_RE.test(token)) throw bad(`github.token must be a GitHub token (a short-lived installation token, ghs_…); got ${token.length} characters starting "${/^[a-z_]{1,4}/.exec(token)?.[0] ?? ''}"`);
   const ref = g.ref === undefined || g.ref === null || g.ref === '' ? null : String(g.ref).trim();
   if (ref !== null && !REF_RE.test(ref)) throw bad(`github.ref "${ref.slice(0, 120)}" has characters a ref can't`);
+  // refresh: where Gen asks for a fresh token right before the fetch. The key opens one build's one repo; it is held like
+  // the token and never stored with the job.
+  let refresh: { url: string; build: string; key: string } | null = null;
+  if (g.refresh !== undefined && g.refresh !== null) {
+    const r = g.refresh;
+    if (typeof r !== 'object' || Array.isArray(r)) throw bad('github.refresh must be { url, build, key }');
+    const url = String(r.url ?? '').trim();
+    const build = String(r.build ?? '').trim();
+    const key = String(r.key ?? '').trim();
+    let u: URL;
+    try { u = checkPublicUrl(url); } catch (e: any) { throw bad(`github.refresh.url ${e.message}`); }
+    if (u.protocol !== 'https:') throw bad('github.refresh.url must be https');
+    if (!REFRESH_BUILD_RE.test(build)) throw bad('github.refresh.build must be the build id (letters, digits, - _ .)');
+    if (!REFRESH_KEY_RE.test(key)) throw bad('github.refresh.key must be the 64-character key Studio made for this build');
+    refresh = { url: u.toString(), build, key };
+  }
   const path = p.path === undefined || p.path === null || p.path === '' ? null : normalPath(String(p.path));
   const method = p.method ? String(p.method).trim() : null;
   if (method !== null && !METHOD_RE.test(method)) throw bad(`method must be a static method's full name, Namespace.Class.Method (got "${method.slice(0, 120)}")`);
@@ -128,6 +148,7 @@ export function admitCustomer(params: Record<string, any>, hold: (token: string)
   if (Object.keys(env ?? {}).length > 32) throw bad('env takes at most 32 variables');
   const stored: Record<string, unknown> = { repo, commit, tokenRef: hold(token) };
   if (ref) stored.ref = ref;
+  if (refresh) stored.refresh = { url: refresh.url, build: refresh.build, keyRef: hold(refresh.key) };
   p.github = stored;
   p.target = 'web';
   if (check) { p.check = true; p.out = 'none'; } else { delete p.check; p.out = 'artifact'; }
@@ -160,6 +181,7 @@ export function customerBuildOf(params: Record<string, any>): CustomerBuild {
   if (!TOKEN_REF_RE.test(String(g.tokenRef ?? ''))) throw bad('this customer build has no token (submit it again with github.token)');
   return {
     repo, commit, ref: g.ref ? String(g.ref) : null, tokenRef: String(g.tokenRef), check: params.check === true,
+    refresh: g.refresh && typeof g.refresh === 'object' && g.refresh.url && TOKEN_REF_RE.test(String(g.refresh.keyRef ?? '')) ? { url: String(g.refresh.url), build: String(g.refresh.build ?? ''), keyRef: String(g.refresh.keyRef) } : null,
     path: params.path ? normalPath(String(params.path)) : null, method: params.method ? String(params.method) : null,
     machine: params.machine === undefined || params.machine === null || params.machine === '' ? null : params.machine,
   };
@@ -203,6 +225,64 @@ export function customerToken(b: CustomerBuild, lookup: (ref: string) => TokenLo
       ? `The GitHub token for this build expired${age} before the build could start. Nothing was built: resubmit it with a fresh token.`
       : 'Hawkes Gen no longer has the GitHub token for this build (it was dropped, or Gen restarted and could not restore it). Nothing was built: resubmit it with a fresh token.',
     { status: 400, kind: TOKEN_KIND });
+}
+
+/** Forgets the refresh key and the token a customer build held (memory and store). */
+export function dropCustomerSecrets(b: Pick<CustomerBuild, 'tokenRef' | 'refresh'>) {
+  dropToken(b.tokenRef);
+  if (b.refresh) dropToken(b.refresh.keyRef);
+}
+
+type Post = (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal; redirect: 'error' }) => Promise<Response>;
+
+/**
+ * Asks Studio for a fresh GitHub token for this build (github.refresh): POST { job, build, key } to the url, get
+ * { token, repo, commit, expiresAt }. The answer must be for this build's own repo and commit. The new token replaces the
+ * held one (same reference), so a later step reads it from the vault. Any failure is kind 'token': nothing was built.
+ * Neither the key nor a token is ever logged or put in a message.
+ */
+export async function refreshCustomerToken(b: CustomerBuild, jobId: string, o: { post?: Post; resolve?: typeof publicUrl; log?: (m: string) => void; now?: number } = {}): Promise<string> {
+  const log = o.log ?? console.log;
+  const r = b.refresh;
+  const fail = (why: string): never => { throw new GenError(`Hawkes Gen could not get a fresh GitHub token for this build from Studio (${why}). Nothing was built.`, { status: 400, kind: TOKEN_KIND }); };
+  if (!r) return fail('this build has no way to ask');
+  const key = lookupToken(r.keyRef).token;
+  if (!key) return fail('the key for it was dropped, or Gen restarted and could not restore it');
+  let res: Response;
+  try {
+    await (o.resolve ?? publicUrl)(r.url);
+    res = await (o.post ?? ((url, init) => fetch(url, init)))(r.url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': 'hawkesgen-unity-build' },
+      body: JSON.stringify({ job: jobId, build: r.build, key }), signal: AbortSignal.timeout(20_000), redirect: 'error',
+    });
+  } catch (e: any) {
+    return fail(`it did not answer: ${String(e?.message ?? e).replace(key, '…').slice(0, 120)}`);
+  }
+  if (!res.ok) return fail(`it answered ${res.status}`);
+  const body = (await res.json().catch(() => null)) as { token?: unknown; repo?: unknown; commit?: unknown; expiresAt?: unknown } | null;
+  const token = typeof body?.token === 'string' ? body.token.trim() : '';
+  if (!TOKEN_RE.test(token)) return fail('its answer had no usable token');
+  if (body?.repo !== undefined && String(body.repo).toLowerCase() !== b.repo.toLowerCase()) return fail('its token is for another repo');
+  if (body?.commit !== undefined && String(body.commit).toLowerCase() !== b.commit) return fail('its token is for another commit');
+  const exp = body?.expiresAt !== undefined ? Date.parse(String(body.expiresAt)) : NaN;
+  if (Number.isFinite(exp) && exp < (o.now ?? Date.now()) + 2 * 60_000) return fail('its token is about to expire');
+  replaceToken(b.tokenRef, token);
+  log(`customer build token: a fresh one from Studio${Number.isFinite(exp) ? `, good for ${Math.round((exp - (o.now ?? Date.now())) / 60_000)} min` : ''}`);
+  return token;
+}
+
+/**
+ * The token to start a build with. With github.refresh, a held token that is too old, missing or expired is replaced by
+ * a fresh one from Studio (queue time no longer matters); `force` asks again whatever the held one says (GitHub gave a
+ * 401). Without refresh this is customerToken. Only a failed refresh fails the build with kind 'token'.
+ */
+export async function freshCustomerToken(b: CustomerBuild, jobId: string, o: { force?: boolean; lookup?: Parameters<typeof customerToken>[1]; log?: (m: string) => void; post?: Post; resolve?: typeof publicUrl } = {}): Promise<string> {
+  const log = o.log ?? console.log;
+  if (!b.refresh) return customerToken(b, o.lookup, log);
+  if (!o.force) {
+    try { return customerToken(b, o.lookup, log); } catch (e: any) { if (e?.kind !== TOKEN_KIND) throw e; }
+  } else log('customer build token: GitHub refused it (401); asking Studio for a fresh one');
+  return refreshCustomerToken(b, jobId, { log, post: o.post, resolve: o.resolve });
 }
 
 // ------------------------------------------------------------------ images by Unity version
