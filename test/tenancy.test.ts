@@ -273,3 +273,51 @@ test('live streams: a customer hears only their own project\'s events, and a 4th
   assert.ok(!extra[2].ended);
   for (const o of [mine, theirs, ...extra]) o.ac.abort();
 });
+
+test('a big upload (straight to the bucket) can\'t be claimed or used by another customer who knows its hash', async () => {
+  const crypto = await import('node:crypto');
+  const big = await import('../src/bigupload.ts');
+  const objects = new Map<string, Buffer>();
+  big.setBigUploadDeps({
+    bucket: () => 'tenancy-bkt',
+    store: {
+      stat: async (uri: string) => (objects.has(uri) ? { name: uri, size: objects.get(uri)!.length } : null),
+      media: async (uri: string) => (objects.has(uri) ? new Response(new Uint8Array(objects.get(uri)!)) : null),
+      del: async (uri: string) => { objects.delete(uri); },
+      copy: async (a: string, b: string) => { objects.set(b, objects.get(a)!); },
+      startResumable: async () => 'https://resumable.test/x',
+    } as any,
+    signer: async () => ({ email: 'gen@test', sign: async () => Buffer.from('sig') }),
+  });
+  try {
+    const secret = Buffer.from('customer A\'s private pack');
+    const h = crypto.createHash('sha256').update(secret).digest('hex');
+    const a = await json(await call(portal, '/v1/blobs/upload', { project: 'usr_aaaa', body: { sha256: h, bytes: secret.length, filename: 'a.tar' } }));
+    assert.equal(a.status, 200, JSON.stringify(a.body));
+    objects.set(`gs://tenancy-bkt/uploads/${a.body.upload}`, secret);
+    const aDone = await json(await call(portal, '/v1/blobs/upload/done', { project: 'usr_aaaa', body: { sha256: h } }));
+    assert.equal(aDone.body.blob, `blob:${h}`);
+    // B knows the hash: Gen doesn't say it has the file, it asks for the bytes.
+    const b = await json(await call(own, '/v1/blobs/upload', { body: { sha256: h, bytes: secret.length, filename: 'b.tar' } }));
+    assert.equal(b.status, 200);
+    assert.notEqual(b.body.exists, true);
+    assert.ok(b.body.upload);
+    // B can't finish without sending the bytes, nor by sending others, nor finish A's upload.
+    const bEarly = await json(await call(own, '/v1/blobs/upload/done', { body: { sha256: h } }));
+    assert.equal(bEarly.status, 409);
+    objects.set(`gs://tenancy-bkt/uploads/${b.body.upload}`, Buffer.from('not the bytes at all!!!!!'.slice(0, secret.length)));
+    const bFake = await json(await call(own, '/v1/blobs/upload/done', { body: { sha256: h } }));
+    assert.equal(bFake.status, 400);
+    const bOther = await json(await call(own, '/v1/blobs/upload/done', { body: { upload: a.body.upload } }));
+    assert.equal(bOther.status, 404);
+    // So B still can't use it as an input; A's object in the bucket is untouched.
+    const job = await json(await call(own, '/v1/jobs', { body: { tool: 'media.probe', inputs: { file: `blob:${h}` } } }));
+    assert.equal(job.status, 404, JSON.stringify(job.body));
+    assert.deepEqual(objects.get(`gs://tenancy-bkt/sha256/${h}`), secret);
+    // Portal customer B (another project on the same key) can't either.
+    const pb = await json(await call(portal, '/v1/jobs', { project: 'usr_bbbb', body: { tool: 'media.probe', inputs: { file: `blob:${h}` } } }));
+    assert.equal(pb.status, 404);
+  } finally {
+    big.setBigUploadDeps(null);
+  }
+});

@@ -221,7 +221,8 @@ async function fetchableOf(ctx: RunContext, build: BuildRef, customer: boolean):
   let sha: string;
   if (build.kind === 'blob') {
     sha = build.sha;
-    file = blobPath(sha);
+    const { ensureBlob } = await import('../storage.ts');
+    file = (await ensureBlob(sha)) ?? blobPath(sha);
   } else {
     const a = getAsset(build.id);
     // Checked against the caller at submit; a customer's job may still only use its own project's assets.

@@ -24,7 +24,7 @@ import type { ModelRef } from '../../workflows/convert.ts';
 import type { CloudService } from './services.ts';
 import { gcs, gcpTokens, type Gcs } from '../gcp/gcs.ts';
 import { env } from '../../config.ts';
-import { GenError } from '../../util.ts';
+import { GenError, sha256File } from '../../util.ts';
 import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { healthOf } from '../gpu/health.ts';
@@ -41,7 +41,7 @@ const WARM_MS = 20 * 60_000;
 
 export type CloudFile = ComfyFile & { uri: string; bytes?: number };
 export type RunDeps = {
-  store: Pick<Gcs, 'stat' | 'read' | 'readJson' | 'write' | 'writeJson'>;
+  store: Pick<Gcs, 'stat' | 'read' | 'readJson' | 'write' | 'writeJson'> & Partial<Pick<Gcs, 'writeFile'>>;
   fetch: typeof fetch;
   idToken: (audience: string) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
@@ -289,7 +289,21 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
   return {
     service: svc,
     server: { id: `cloudrun:${svc.name}`, region: 'gcp', price: svc.pricePerSecond * 3600 },
-    upload: (file: string) => uploadBuffer(fs.readFileSync(file), file),
+    // A big file (a render farm's 1 GB pack) is hashed and sent as a stream, never held in memory whole.
+    async upload(file: string) {
+      const size = fs.statSync(file).size;
+      if (size <= 32 * 1024 * 1024 || !deps.store.writeFile) return uploadBuffer(fs.readFileSync(file), file);
+      const sha = await sha256File(file);
+      const ext = path.extname(file).toLowerCase();
+      const uri = `${base}/inputs/${sha}${ext}`;
+      if (!known.has(uri)) {
+        if (!(await deps.store.stat(uri))) await deps.store.writeFile(uri, file);
+        known.add(uri);
+      }
+      const local = `hawkesgen/${sha.slice(0, 16)}${ext}`;
+      names.set(local, uri);
+      return local;
+    },
     uploadBuffer,
     runGraph,
     async download(file: ComfyFile) {

@@ -21,6 +21,7 @@ import { awsConfig } from './providers/comfy/fleet.ts';
 import { loadSettings } from './config.ts';
 import { mimeOf } from './util.ts';
 import { gcs, gsUri, type Gcs } from './providers/gcp/gcs.ts';
+import { blobPath, blobRemote, blobShaOf } from './library.ts';
 
 const REGION = 'us-east-1';
 export const bucket = (): string | null => {
@@ -328,10 +329,20 @@ export async function ensureInputs(inputs: Record<string, string | string[]>) {
   for (const v of Object.values(inputs ?? {})) {
     for (const p of Array.isArray(v) ? v : [v]) {
       if (typeof p !== 'string' || fs.existsSync(p)) continue;
+      // A blob that went straight to the bucket (POST /v1/blobs/upload) comes back by its hash.
+      const sha = blobShaOf(p);
+      if (sha && blobRemote(sha)) { await ensureLocal({ sha256: sha, path: p }); continue; }
       const a = db.prepare('SELECT sha256, path FROM assets WHERE path = ?').get(p) as { sha256: string; path: string } | undefined;
       if (a) await ensureLocal(a);
     }
   }
+}
+
+/** blob:<hash>'s local file, fetched from the bucket when it is only there. -> null when it can't be had. */
+export async function ensureBlob(hash: string): Promise<string | null> {
+  const p = blobPath(hash);
+  if (!p) return null;
+  return (await ensureLocal({ sha256: hash, path: p })) ? p : null;
 }
 
 /** Brings back every missing library file from S3 (a new disk). -> counts. */

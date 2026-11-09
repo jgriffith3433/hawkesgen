@@ -728,7 +728,7 @@ The analytics SDK is never copied: every page loads it from Gen (`/sdk/analytics
 and site builds can't read this private repo. `clients/js/sdk.json` lists where each product keeps them, and
 `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one (`status` lists the ones behind). Sync and
 commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`, `ANALYTICS_VERSION`) when behavior
-changes. Every client sends `X-Hawkes-Client` (js/7, py/6, unity/0.2.1); `GET /v1/health` lists callers behind.
+changes. Every client sends `X-Hawkes-Client` (js/9, py/6, unity/0.2.1); `GET /v1/health` lists callers behind.
 
 ## SSH to GPU servers
 

@@ -28,6 +28,7 @@ import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownB
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
+import { startUpload, finishUpload } from './bigupload.ts';
 import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, pruneLods, lodStatus } from './lod.ts';
 import { usageSummary } from './usage.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
@@ -1546,8 +1547,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const file = typeof b.file === 'string' ? b.file : null;
         if (!assetId && file?.startsWith('asset:')) assetId = file.slice(6);
         if (!assetId && file?.startsWith('blob:')) {
-          const p = blobPath(file.slice(5));
-          if (!p || !canUseBlob(client, file.slice(5))) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
+          const p = canUseBlob(client, file.slice(5)) ? await storage.ensureBlob(file.slice(5)) : null;
+          if (!p) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
           const e = lib.getEntity(client, entityId);
           const ext = path.extname(p).toLowerCase();
           assetId = putAsset({
@@ -1708,6 +1709,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const b = await readJson(req);
       // (Its own numbers, then the status under `status`: both have assets, levels and bytes.)
       return send(res, 200, { ...(await pruneLods({ project: typeof b.project === 'string' ? b.project : undefined, dryRun: b.dryRun === true, limit: Number(b.limit) || undefined })), status: lodStatus() });
+    }
+    // Big files go straight to the bucket (src/bigupload.ts): the request limit here is 32 MiB on Cloud Run.
+    if (route === '/v1/blobs/upload' && method === 'POST') {
+      return send(res, 200, await startUpload(client, await readJson(req), uploadLimits().bigMaxBytes(client.role)));
+    }
+    if (route === '/v1/blobs/upload/done' && method === 'POST') {
+      const [status, body] = await finishUpload(client, await readJson(req));
+      return send(res, status, body);
     }
     if (route === '/v1/blobs' && method === 'POST') {
       const release = takeUpload(client.id);
