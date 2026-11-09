@@ -152,8 +152,13 @@ print(json.dumps(doc))
   return Buffer.from(py).toString('base64');
 }
 
-/** The shell that installs both venvs. Idempotent: a READY file with these commits skips the work. */
-export function installScript(sudo = 'sudo ') {
+/**
+ * The shell that installs both venvs. Idempotent: a READY file with these commits skips the work. `weights: false` is
+ * the 3D worker image (server/gpu3d/Dockerfile): code, venvs, the generated template and FBX2glTF, no model weights
+ * (a worker fetches them into its weights folder on first use: weightsScript).
+ */
+export function installScript(sudo = 'sudo ', o: { weights?: boolean } = {}) {
+  const weights = o.weights !== false;
   const apt = `${sudo}apt-get -o DPkg::Lock::Timeout=600`;
   const b64 = TEMPLATE_PY.toString('base64');
   return [
@@ -166,7 +171,7 @@ export function installScript(sudo = 'sudo ') {
     '  exit 0',
     'fi',
     `AVAIL=$(df -B1 --output=avail / | tail -1)`,
-    `if [ "$AVAIL" -lt ${MIN_FREE_BYTES} ]; then echo "rig install needs 30 GB free, have $AVAIL bytes" >&2; exit 1; fi`,
+    `${weights ? "" : "false && "}if [ "$AVAIL" -lt ${MIN_FREE_BYTES} ]; then echo "rig install needs 30 GB free, have $AVAIL bytes" >&2; exit 1; fi`,
     // Ubuntu 24.04 has no python3.11: add the deadsnakes PPA when the plain install fails, and show the apt log if it still does.
     `PKGS='python3.11 python3.11-venv python3.11-dev git curl ca-certificates'`,
     `trap 'rc=$?; if [ $rc -ne 0 ]; then echo "rig install failed (exit $rc) at: $BASH_COMMAND" >&2; tail -n 5 /tmp/rig-apt.log >&2 2>/dev/null || true; fi' EXIT`,
@@ -197,8 +202,10 @@ export function installScript(sudo = 'sudo ') {
     `${MIA_PYTHON} ${RIG_ROOT}/make_template.py ${MIA_ROOT}/data/Mixamo/bones.fbx`,
     `curl -fsSL --retry 3 -o ${MIA_ROOT}/util/FBX2glTF https://github.com/facebookincubator/FBX2glTF/releases/download/v0.9.7/FBX2glTF-linux-x64`,
     `chmod +x ${MIA_ROOT}/util/FBX2glTF`,
-    `${MIA_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('jasongzy/Make-It-Animatable', allow_patterns=['output/best/v2/*'], local_dir='${MIA_ROOT}')"`,
-    `${MIA_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('tencent/Hunyuan3D-2.1', allow_patterns=['hunyuan3d-vae-v2-1/*'])"`,
+    ...(weights ? [
+      `${MIA_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('jasongzy/Make-It-Animatable', allow_patterns=['output/best/v2/*'], local_dir='${MIA_ROOT}')"`,
+      `${MIA_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('tencent/Hunyuan3D-2.1', allow_patterns=['hunyuan3d-vae-v2-1/*'])"`,
+    ] : []),
     `if [ ! -d ${SKIN_ROOT}/.git ]; then git init ${SKIN_ROOT}; fi`,
     `git -C ${SKIN_ROOT} remote remove origin 2>/dev/null || true`,
     `git -C ${SKIN_ROOT} remote add origin https://github.com/VAST-AI-Research/SkinTokens.git`,
@@ -211,9 +218,40 @@ export function installScript(sudo = 'sudo ') {
     verifyImports(SKIN_PYTHON, 'skin', SKIN_IMPORTS),
     // flash-attn often fails to build. TokenRig uses PyTorch attention when it is absent.
     `${SKIN_PYTHON} -m pip install flash-attn --no-build-isolation || echo "flash-attn skipped"`,
-    `cd ${SKIN_ROOT} && ${SKIN_PYTHON} download.py --model`,
-    `${MIA_PYTHON} -c "import base64; exec(base64.b64decode('${measureB64()}').decode())"`,
+    ...(weights ? [
+      `cd ${SKIN_ROOT} && ${SKIN_PYTHON} download.py --model`,
+      `${MIA_PYTHON} -c "import base64; exec(base64.b64decode('${measureB64()}').decode())"`,
+    ] : []),
     `echo "$MARK" > ${RIG_ROOT}/READY`,
     `echo "rig ready ${READY_MARK}"`,
+  ].join('\n');
+}
+
+/** Links `link` (a path the code reads) to `target` (in the weights folder), replacing whatever was there. */
+export const linkTo = (target: string, link: string) => `mkdir -p "${target}"; if [ ! -L "${link}" ]; then rm -rf "${link}"; fi; ln -sfn "${target}" "${link}"`;
+
+/**
+ * On a 3D worker (src/providers/workspace.ts weightsPrelude): the rigging weights, fetched once into $HAWKES_WEIGHTS
+ * (a provider volume when mounted) under a lock, then linked where Make-It-Animatable and SkinTokens look for them.
+ * About 5.3 GB: Make-It-Animatable v2, Hunyuan3D 2.1's shape VAE (into the Hugging Face cache) and SkinTokens.
+ */
+export function weightsScript() {
+  const w = '$HAWKES_WEIGHTS/rig';
+  const mark = `${w}/READY-${MIA_COMMIT.slice(0, 12)}-${SKIN_COMMIT.slice(0, 12)}`;
+  return [
+    `mkdir -p "${w}"`,
+    `(`,
+    `  flock 9`,
+    `  if [ ! -f "${mark}" ]; then`,
+    `    echo "HB step downloading the rigging models (once per weights volume, about 5 GB)"`,
+    `    HF_HOME="$HAWKES_HF_HOME" ${MIA_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('jasongzy/Make-It-Animatable', allow_patterns=['output/best/v2/*'], local_dir='${w}/mia')"`,
+    `    HF_HOME="$HAWKES_HF_HOME" ${MIA_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('tencent/Hunyuan3D-2.1', allow_patterns=['hunyuan3d-vae-v2-1/*'])"`,
+    `    mkdir -p "${w}/skin" && (cd "${w}/skin" && HF_HOME="$HAWKES_HF_HOME" ${SKIN_PYTHON} ${SKIN_ROOT}/download.py --model)`,
+    `    touch "${mark}"`,
+    `  fi`,
+    `) 9>"${w}/.lock"`,
+    linkTo(`${w}/mia/output`, `${MIA_ROOT}/output`),
+    linkTo(`${w}/skin/experiments`, `${SKIN_ROOT}/experiments`),
+    linkTo(`${w}/skin/models`, `${SKIN_ROOT}/models`),
   ].join('\n');
 }

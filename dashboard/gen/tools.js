@@ -4,6 +4,7 @@
 // browser: editor.js renderInBrowser).
 
 import { $, $$, h, api, toast, fmt, bus, icon, mediaInfo, uploadCanvas, plainError, sendFeedback } from './lib.js';
+import { trouble } from './trouble.js';
 import { P, byId, selectedClips, clipLength, clipEnd, onTrack, setClip, remember, changed, docLength, splitAt, deleteSelected, duplicateSelected, mainTrack, trackOf, audible, isVisual } from './project.js';
 import { currentSource, showSource, closeSource, startPainter, stopPainter, pause } from './player.js';
 import { runJob, quote, credits, waitJob, placeAsset, showPane, assetKindLabel } from './media.js';
@@ -13,6 +14,7 @@ import { toolsTaking } from './studio.js';
 
 let available = new Set();
 export async function loadAvailable() {
+  if (!state.user) { drawToolbar(); return; } // signed out: /v1/editor/tools would answer 401
   try { available = new Set((await api('/v1/editor/tools')).tools.map((t) => t.tool)); } catch { available = new Set(['image.generate', 'image.edit', 'image.cutout', 'image.upscale', 'video.i2v', 'audio.music', 'audio.voice', 'audio.sfx', 'video.compose']); }
   drawToolbar();
 }
@@ -175,7 +177,7 @@ function sheet(title, body, { run, runLabel = 'Run', quoteOf, wide = false, onCl
   refresh();
   runBtn.addEventListener('click', async () => {
     runBtn.disabled = true;
-    try { if ((await run()) !== false) closeSheet(); } catch (err) { toast(plainError(err.message)); } finally { runBtn.disabled = false; }
+    try { if ((await run()) !== false) closeSheet(); } catch (err) { trouble(err); } finally { runBtn.disabled = false; }
   });
   el.querySelector('textarea, input')?.focus();
   return el;

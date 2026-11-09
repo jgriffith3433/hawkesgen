@@ -2,7 +2,9 @@
 // at it), uploads by button or drop (converted on Gen when a format needs it), and work in progress. Create (every tool) is studio.js.
 // Also the one way every tool runs (runJob).
 
-import { $, $$, h, api, toast, fileUrl, keyedRedraw, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
+import { needsGlb, prepareModels, MODEL_FILE } from './model3d.js';
+import { trouble, troubleNote, explain } from './trouble.js';
+import { $, $$, h, api, toast, fileUrl, thumbUrl, keyedRedraw, fmt, bus, icon, mediaInfo, plainError, ApiError, friendly, jobStatusText } from './lib.js';
 import { P, addClip, newId, changed, remember, clipEnd, isMagnetic, defaultTrack, isVisual, trackOf, mainTrack, startFor, PROGRESS, stopClip } from './project.js';
 import { showSource, seek } from './player.js';
 import { state, needSignIn, openAccount, refreshCredits } from './account.js';
@@ -91,7 +93,12 @@ export async function loadMedia() {
     const r = await api(`/v1/assets?${q}`);
     if (seq !== loadSeq) return;
     M.items = (r.items ?? []).filter((a) => ['image', 'video', 'audio', 'mesh', 'file'].includes(a.kind));
-  } catch { if (seq !== loadSeq) return; /* a failed reload keeps what's shown */ }
+    M.loadError = null;
+  } catch (err) {
+    if (seq !== loadSeq) return;
+    // A failed reload keeps what's shown; with nothing shown, the grid says why and offers the next step.
+    M.loadError = err;
+  }
   drawMedia();
 }
 
@@ -117,6 +124,9 @@ function drawMedia() {
       update: (el) => setBusy(el, PROGRESS.get(c.job) ?? 'Making', c.label ?? 'Being made') });
   }
   for (const a of M.items) rows.push({ key: a.id, sig: tileSig(a), make: () => tileFor(a), update: (el) => decorate(el, a) });
+  // A failed load says why above the tiles (or instead of them), with the next step.
+  grid.parentElement.querySelector('#mediaTrouble')?.remove();
+  if (M.loadError) { const n = troubleNote(M.loadError, loadMedia); n.id = 'mediaTrouble'; if (rows.length) grid.before(n); else { grid.replaceChildren(n); return; } }
   if (!rows.length) {
     grid.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, M.q || M.kind ? 'Nothing matches.' : 'Nothing here yet.'),
       M.q || M.kind ? '' : h('div', { class: 'row' }, h('button', { class: 'ghost small', onclick: () => $('#uploadInput').click() }, icon('upload'), 'Upload'), h('button', { class: 'primary small', onclick: () => showPane('generate') }, icon('sparkle'), 'Make something'))));
@@ -146,27 +156,40 @@ function decorate(el, a) {
   else el.querySelector('.badge.used')?.remove();
 }
 
+/**
+ * A clip tile's link, given to the element only when it scrolls near the screen: a library of forty clips otherwise opens
+ * forty connections for their first frames while the editor is still starting (the phone, 4x slower, felt it most).
+ */
+const SEEN = typeof IntersectionObserver === 'function' ? new IntersectionObserver((list) => {
+  for (const e of list) if (e.isIntersecting) { e.target.src = e.target.dataset.src; SEEN.unobserve(e.target); }
+}, { rootMargin: '200px' }) : null;
+function lazySrc(src) {
+  if (!SEEN) return { src };
+  return { 'data-src': src };
+}
 const durationOf = (a) => a.meta?.duration ?? null;
 function tileFor(a) {
   // The tile stays while Media is read again: what it does uses the newest copy of the file's row.
   const now = () => M.items.find((x) => x.id === a.id) ?? a;
   const prompt = a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? a.title ?? '';
-  const media = a.kind === 'image' ? h('img', { src: fileUrl(a.id, a.sha256), alt: '', loading: 'lazy', draggable: 'false' })
-    : a.kind === 'video' ? h('video', { src: `${fileUrl(a.id, a.sha256)}#t=0.1`, muted: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => { e.target.pause(); } })
+  const media = a.kind === 'image' ? h('img', { src: thumbUrl(a.id, a.sha256), alt: '', loading: 'lazy', decoding: 'async', draggable: 'false' })
+    : a.kind === 'video' ? h('video', { ...lazySrc(`${fileUrl(a.id, a.sha256)}#t=0.1`), muted: true, playsinline: true, preload: 'metadata', onmouseenter: (e) => e.target.play().catch(() => {}), onmouseleave: (e) => { e.target.pause(); } })
     : a.kind === 'audio' ? h('div', { class: 'tile-audio' }, icon(a.tool === 'audio.music' ? 'music' : a.tool?.startsWith('audio.voice') ? 'mic' : 'volume', 'ico big'))
     : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
+  if (a.kind === 'video') SEEN?.observe(media);
   const d = durationOf(a);
   const el = h('div', { class: `tile kind-${a.kind}`, 'data-asset': a.id, draggable: 'true', tabindex: '0', title: `${prompt ? `${prompt}
 ` : ''}Double-click to look at it; drag it onto a track` },
     media,
+    h('button', { class: 'tile-info', title: 'Details', 'aria-label': 'Details', onclick: (e) => { e.stopPropagation(); openDrawer(now()); } }, icon('info')),
     d ? h('span', { class: 'badge' }, fmt(d, 0)) : '',
     h('div', { class: 'tile-cap' }, a.title || prompt || a.kind),
     onTimeline(a.kind) ? h('button', { class: 'tile-add', title: 'Add to the timeline at the playhead', onclick: (e) => { e.stopPropagation(); placeAsset(assetLite(now())); } }, icon('plus')) : h('span', { class: 'badge kind' }, assetKindLabel(a.kind)));
   // One click picks a tile (Ctrl or Cmd adds to the picks; the "+" adds it to the timeline); a double-click looks at it in
   // the center (J, 2026-10-30). Picks are kept by id, so a refresh keeps them, and the AI is told about them.
   el.addEventListener('click', (e) => pickTile(now(), el, e.ctrlKey || e.metaKey));
-  el.addEventListener('dblclick', () => openAsset(now()));
-  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openAsset(now()); if (e.key === 'Escape') clearPicked(); });
+  el.addEventListener('dblclick', () => openDrawer(now()));
+  el.addEventListener('keydown', (e) => { if (e.key === 'Enter') openDrawer(now()); if (e.key === 'Escape') clearPicked(); });
   el.addEventListener('dragstart', (e) => {
     e.dataTransfer.setData('application/x-hg-asset', JSON.stringify(assetLite(now())));
     e.dataTransfer.effectAllowed = 'copy';
@@ -177,6 +200,41 @@ function tileFor(a) {
 }
 const onTimeline = (kind) => ['image', 'video', 'audio'].includes(kind);
 const assetLite = (a) => ({ id: a.id, kind: a.kind, title: a.title ?? a.recipe?.params?.prompt ?? '', prompt: a.recipe?.params?.prompt ?? '', duration: durationOf(a), width: a.meta?.width ?? a.recipe?.params?.width ?? null, height: a.meta?.height ?? a.recipe?.params?.height ?? null, tool: a.tool });
+
+/**
+ * The detail drawer: a bigger look at one library file with the words that made it, what made it and when, and
+ * Use in timeline (Esc or the backdrop closes it).
+ */
+export function openDrawer(a) {
+  closeDrawer();
+  const prompt = a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? '';
+  const url = fileUrl(a.id, a.sha256);
+  const big = a.kind === 'image' ? h('img', { src: url, alt: a.title || prompt || 'Image' })
+    : a.kind === 'video' ? h('video', { src: url, controls: true, playsinline: true, preload: 'metadata' })
+    : a.kind === 'audio' ? h('audio', { src: url, controls: true, preload: 'metadata' })
+    : h('div', { class: 'tile-audio tile-mesh' }, icon(a.kind === 'mesh' ? 'cube' : 'folder', 'ico big'));
+  const row = (k, v) => (v ? h('div', { class: 'dr-row' }, h('span', { class: 'muted' }, k), h('span', {}, String(v))) : '');
+  const d = durationOf(a);
+  const made = a.created ?? a.createdAt ?? a.created_at;
+  const drawer = h('aside', { class: 'media-drawer', role: 'dialog', 'aria-label': 'Asset details', 'data-asset': a.id },
+    h('div', { class: 'dr-head' }, h('strong', {}, a.title || assetKindLabel(a.kind)), h('button', { class: 'icon-btn', title: 'Close', 'aria-label': 'Close', onclick: closeDrawer }, icon('close'))),
+    h('div', { class: 'dr-media' }, big),
+    h('div', { class: 'dr-label muted small' }, 'Prompt'),
+    h('div', { class: 'dr-prompt' }, prompt || 'No prompt: it was uploaded or made without words.'),
+    row('Type', assetKindLabel(a.kind)), row('Made with', a.tool), row('Length', d ? fmt(d, 0) : ''),
+    row('Size', a.meta?.width && a.meta?.height ? `${a.meta.width} × ${a.meta.height}` : ''), row('Made', made ? new Date(made).toLocaleString() : ''),
+    h('div', { class: 'row dr-actions' },
+      onTimeline(a.kind) ? h('button', { class: 'primary small', id: 'drawerUse', onclick: async () => { const c = await placeAsset(assetLite(a)); if (c) { closeDrawer(); toast('Added to the timeline.'); } } }, icon('plus'), 'Use in timeline') : h('button', { class: 'primary small', id: 'drawerUse', disabled: true, title: 'A 3D model can\'t go on a timeline. Put it on a stage in the Director.' }, icon('plus'), 'Use in timeline'),
+      h('button', { class: 'ghost small', onclick: () => { closeDrawer(); openAsset(a); } }, 'Show in center'),
+      h('a', { class: 'ghost small btn', href: url, download: a.title || a.id }, 'Download')));
+  const back = h('div', { class: 'media-drawer-back', onclick: closeDrawer });
+  const wrap = h('div', { class: 'media-drawer-wrap', id: 'mediaDrawer' }, back, drawer);
+  wrap.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeDrawer(); } });
+  document.body.append(wrap);
+  drawer.tabIndex = -1;
+  drawer.focus();
+}
+export function closeDrawer() { document.getElementById('mediaDrawer')?.remove(); }
 
 export async function openAsset(a) {
   const lite = a.id && a.kind ? { ...assetLite(a), tool: a.tool, recipe: a.recipe ?? null } : a;
@@ -223,6 +281,7 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart, 
     try {
       const r = await api('/v1/jobs', { body: { project: state.user.project, tool, params, inputs, labels: { title: label ?? tool, ...(P.id ? { editor: P.id } : {}), ...(frontScene ? { scene: frontScene } : {}), ...labels } } });
       const job = r.jobs[0];
+      refreshCredits(); // the pill follows the charge
       onStart?.(job.id);
       if (place?.replace) {
         const c = P.doc.clips.find((x) => x.id === place.replace);
@@ -262,7 +321,7 @@ export function runJob({ tool, params = {}, inputs = {}, label, place, onStart, 
     } catch (err) {
       M.inflight.forEach((v, k) => { if (v.label === (label ?? tool)) M.inflight.delete(k); });
       drawMedia();
-      for (const c of P.doc.clips.filter((x) => x.pending && !x.asset && x.label === (label ?? tool))) { c.failed = plainError(err.message); delete c.pending; }
+      for (const c of P.doc.clips.filter((x) => x.pending && !x.asset && x.label === (label ?? tool))) { c.failed = explain(err).text; delete c.pending; }
       changed();
       showError(err);
       reject(err);
@@ -282,25 +341,52 @@ export async function quote(tool, params) {
 export const credits = (q) => (q ? `${q.credits} credit${q.credits === 1 ? '' : 's'}` : '');
 
 // ------------------------------------------------------------------ uploads
+/** One file up with progress. Resolves { status, j } for any answer; status 0 (offline) rejects like fetch does. */
+function sendFile(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', url);
+    x.withCredentials = true;
+    x.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    x.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+    x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onerror = () => reject(new ApiError('Offline', 0));
+    x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch { /* not JSON */ } resolve({ status: x.status, j }); };
+    x.send(file);
+  });
+}
 const OK_VIDEO = /^video\/(mp4|webm)$/;
 export async function uploadFiles(files, { toTimeline = false, then = null } = {}) {
   if (!files.length) return;
   needSignIn(async () => {
     if (!toTimeline && !then) showPane('media');
+    // FBX and OBJ become GLB here first (model3d.js): everything in Gen reads GLB. Pictures dropped with one are its textures.
+    if (files.some(needsGlb)) {
+      const key = `cv_${newId()}`;
+      const mine = { label: 'Converting 3D', step: 'Converting to GLB' };
+      M.inflight.set(key, mine);
+      drawMedia();
+      try {
+        const r = await prepareModels(files, (s) => { mine.step = s; drawMedia(); });
+        files = r.files;
+        r.notes.forEach((n) => toast(n));
+      } finally { M.inflight.delete(key); drawMedia(); }
+    }
     for (const file of files) {
-      if (file.size > 1.5 * 1024 * 1024 * 1024) { toast(`${file.name} is over 1.5 GB.`); continue; }
-      const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') || /\.(mov|mkv|avi|m4v|webm|mp4)$/i.test(file.name) ? 'video' : file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name) ? 'audio' : null;
-      if (!kind) { toast(`${file.name}: images, videos and sounds only.`); continue; }
+      if (file.size > 1024 * 1024 * 1024) { toast(`${file.name} is over 1 GB.`); continue; }
+      const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') || /\.(mov|mkv|avi|m4v|webm|mp4)$/i.test(file.name) ? 'video' : file.type.startsWith('audio/') || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name) ? 'audio' : MODEL_FILE.test(file.name) ? 'mesh' : null;
+      if (!kind) { toast(`${file.name}: images, videos, sounds and 3D models (GLB, FBX, OBJ) only.`); continue; }
       const key = `up_${newId()}`;
       const mine = { label: file.name, step: 'Uploading' };
       M.inflight.set(key, mine);
       drawMedia();
       try {
-        const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(file.name)}`, {
-          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Filename': file.name }, body: file,
+        // XHR, not fetch: it reports how much has gone up. A refusal (429 too many at once, 413 too big) is worded by the server.
+        const { status, j } = await sendFile(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(file.name)}`, file, (frac) => {
+          mine.step = frac < 1 ? `Uploading ${Math.round(frac * 100)}%` : 'Saving';
+          drawMedia();
         });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new ApiError(j.error ?? `HTTP ${r.status}`, r.status);
+        if (status < 200 || status >= 300) throw new ApiError(j.error ?? `HTTP ${status}`, status, j);
         let asset = { id: j.id ?? j.asset?.id, kind: j.kind ?? kind, title: file.name };
         // Gen converts what browsers or the tools can't use (mov, mkv, HEVC, webp...) and says which job does it.
         const norm = j.normalize?.job ?? j.normalizeJob ?? null;
@@ -316,11 +402,12 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
         M.inflight.delete(key);
         if (then) await then(asset);
         else if (toTimeline) await placeAsset(asset);
+        else if (asset.kind === 'mesh') toast(`${asset.title} is in Media: drop it on a stage, or use it as a character's model.`);
         else if (P.active) toast(`${file.name} is in Media.`, { action: 'Add to the timeline', onAction: () => placeAsset(asset) });
       } catch (err) {
         M.inflight.delete(key);
-        const f = friendly(err);
-        toast(`${file.name}: ${f.text}`);
+        // The server's own words for too many uploads or a file that is too big; everything else is explained as usual.
+        toast(err.status === 429 || err.status === 413 ? `${file.name}: ${err.message}` : `${file.name}: ${explain(err).text}`);
       }
       drawMedia();
     }
@@ -329,12 +416,7 @@ export async function uploadFiles(files, { toTimeline = false, then = null } = {
 }
 
 /** Shows an error with the thing that fixes it (Add credits, Try again). */
-export function showError(err, retry) {
-  const f = friendly(err);
-  if (f.fix === 'credits') return toast(f.text, { action: 'Add credits', onAction: () => openAccount(), ms: 8000 });
-  if (f.fix === 'retry' && retry) return toast(f.text, { action: 'Try again', onAction: retry, ms: 8000 });
-  toast(f.text, { ms: 6500 });
-}
+export function showError(err, retry) { trouble(err, retry); }
 
 /** A share link anyone can open for a week (the file plays in their browser): copied, or the phone's share sheet. */
 export async function shareAsset(id, name) {

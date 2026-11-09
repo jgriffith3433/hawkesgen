@@ -20,6 +20,7 @@ import { initScenes, startWorkspace, activeKind, activeEditor, newScene } from '
 import { initEditor } from './editor.js';
 import { initLanding, show as showLanding } from './landing.js';
 import { initTour, startTour } from './tour.js';
+import { initGuide, startGuide } from './guide.js';
 import { openPalette } from './palette.js';
 import './character.js';
 import './world.js';
@@ -30,11 +31,13 @@ import { dropTarget } from './dragdrop.js';
 import { initAccount, loadMe, state } from './account.js';
 import './report.js';
 import './playtest.js';
+import { initTrouble } from './trouble.js';
 
 // Icons in the markup: <span class="ico-wrap" data-icon="name">.
 for (const el of $$('.ico-wrap[data-icon]')) el.innerHTML = ICON[el.dataset.icon] ?? '';
 
 initAccount();
+initTrouble();
 initPlayer();
 initTimeline();
 initMedia();
@@ -46,6 +49,7 @@ initEditor();
 initAi();
 initLanding();
 initTour();
+initGuide();
 
 const onTimelineScene = () => ['video', 'image', 'audio'].includes(activeKind());
 
@@ -71,7 +75,7 @@ bus.on('inspect', () => {
 const SHORTCUTS = [
   ['Space', 'Play or pause'], ['S', 'Split at the playhead'], ['Delete', 'Delete what\'s selected'], ['Ctrl+C / X / V', 'Copy, cut, paste clips'],
   ['Ctrl+Z / Ctrl+Shift+Z', 'Undo, redo'], ['Ctrl+D', 'Duplicate'], ['Ctrl+S', 'Save now'], ['Ctrl+O', 'Open a scene'], ['T', 'Words at the playhead'],
-  ['I / O', 'Mark a stretch for the AI'], ['← →', 'Step a frame (Shift: a second)'], ['Ctrl+wheel, + / −', 'Zoom the timeline'], ['W / E / R', 'Move, turn, size (3D stage)'], ['Esc', 'Let go of the selection'],
+  ['I / O', 'Mark a stretch for the AI'], ['← →', 'Step a frame (Shift: a second)'], ['Ctrl+wheel, + / −', 'Zoom the timeline'], ['W / E / R', 'Move, turn, size (3D stage)'], ['Esc', 'Let go of the selection'], ['Click empty track', 'Clear the selection'], ['Snap button', 'Clips catch the playhead and each other'], ['?', 'Show or hide this list'],
 ];
 function shortcuts() {
   $('#shortcutsPop')?.remove();
@@ -86,13 +90,18 @@ $('#helpBtn').addEventListener('click', (e) => {
   const r = e.currentTarget.getBoundingClientRect();
   popMenu(r.right - 240, r.bottom + 6, [
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); startTour(); } }, h('span', { class: 'row' }, icon('sparkle'), 'Take the quick tour')),
+    h('button', { class: 'menu-item', onclick: () => { closeMenus(); startGuide({ force: true }); } }, h('span', { class: 'row' }, icon('film'), 'Guided first project')),
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); shortcuts(); } }, h('span', { class: 'row' }, icon('keyboard'), 'Keyboard shortcuts')),
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); showLanding({ browsing: true }); } }, h('span', { class: 'row' }, icon('help'), 'What Hawkes Gen does')),
     h('div', { class: 'menu-sep' }),
     h('div', { class: 'menu-links' }, h('a', { href: '/legal#terms', target: '_blank' }, 'Terms'), h('a', { href: '/legal#privacy', target: '_blank' }, 'Privacy'), h('a', { href: 'mailto:support@hawkesgen.ai' }, 'Contact')),
   ]);
 });
-addEventListener('keydown', (e) => { if (e.key === '?' && !e.target.closest?.('input, textarea, select, [contenteditable]')) { e.preventDefault(); shortcuts(); } });
+addEventListener('keydown', (e) => {
+  if (e.key !== '?' || e.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  e.preventDefault();
+  if ($('#shortcutsPop')) $('#shortcutsPop').remove(); else shortcuts();
+});
 
 // ------------------------------------------------------------------ search everything, and what's being made
 $('#paletteBtn').addEventListener('click', () => openPalette());
@@ -315,7 +324,16 @@ $$('#mobileTabs button').forEach((b) => b.addEventListener('click', () => {
   setTimeout(fit, 60);
 }));
 $('#app').dataset.m = 'edit';
-bus.on('sceneActive', () => { const k = $('#mobileTabs button[data-m="kind"]'); if (k) k.lastChild.textContent = activeEditor()?.panel === 'Inspector' ? 'Inspect' : activeEditor()?.panel ?? 'Inspect'; });
+// The Inspect tab is the scene's own panel (Inspector, Shot...). A scene with none (a character, place, prop, story or
+// world) hides the tab, as the desktop hides its pane tab, and a phone showing it goes back to Edit.
+bus.on('sceneActive', () => {
+  const k = $('#mobileTabs button[data-m="kind"]');
+  if (!k) return;
+  const panel = activeEditor()?.panel;
+  k.hidden = !panel;
+  k.lastChild.textContent = panel === 'Inspector' ? 'Inspect' : panel ?? 'Inspect';
+  if (!panel && $('#app').dataset.m === 'kind') $('#mobileTabs button[data-m="edit"]').click();
+});
 // A finger dragging a tile: the sheet steps aside a little so the timeline is easy to reach.
 bus.on('touchDrag', (on) => $('#app').classList.toggle('touch-dragging', on));
 
@@ -330,6 +348,7 @@ async function start() {
 }
 if (state.user) { try { await start(); } catch (err) { toast(err.message); startSignedOut(); } } else startSignedOut();
 bus.emit('ready', state.user);
+document.getElementById('bootCover')?.remove();
 bus.on('signedIn', () => start().catch((err) => toast(err.message)));
 startSync();
 setTimeout(fit, 50);

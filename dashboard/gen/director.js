@@ -9,6 +9,7 @@
 // film pipeline when its servers are up.
 
 import { $, $$, h, api, toast, fileUrl, fmt, bus, icon, plainError, ApiError, mediaInfo } from './lib.js';
+import { trouble } from './trouble.js';
 import { runJob, waitJob, quote, credits } from './media.js';
 import { registerEditor, openScene, newScene, setRender, sceneList, kindInfo } from './scenes.js';
 import { popMenu, closeMenus } from './timeline.js';
@@ -738,7 +739,10 @@ async function makeStage(wrap) {
   });
   const loader = new GLTFLoader();
   const gltfCache = new Map();
-  const loadGltf = (id) => { if (!gltfCache.has(id)) gltfCache.set(id, new Promise((ok) => loader.load(fileUrl(id), ok, undefined, () => ok(null)))); return gltfCache.get(id); };
+  // A model that isn't a GLB (an FBX uploaded before the app converted them, model3d.js) is read with FBXLoader instead
+  // of falling back to a box.
+  const fbxFallback = (id) => import('./model3d.js').then((m) => m.readModel(fileUrl(id))).then((r) => ({ scene: r.scene, animations: r.animations })).catch(() => null);
+  const loadGltf = (id) => { if (!gltfCache.has(id)) gltfCache.set(id, new Promise((ok) => loader.load(fileUrl(id), ok, undefined, () => fbxFallback(id).then(ok)))); return gltfCache.get(id); };
   const clipsKnown = new Map();
   const texCache = new Map();
   let actors = [], propsObj = [], markers = [], build = 0, groundObj = null;
@@ -1506,7 +1510,7 @@ async function openBlender() {
   await flushSave();
   if (!hasTool('blender.render')) return toast('This Gen has no 3D renderer.');
   let qd;
-  try { qd = await api(`/v1/director/shots/${D.shot.id}/blender?quote=1`, { method: 'POST' }); } catch (err) { return toast(plainError(err.message)); }
+  try { qd = await api(`/v1/director/shots/${D.shot.id}/blender?quote=1`, { method: 'POST' }); } catch (err) { return trouble(err); }
   const status = h('div', { class: 'muted small dir-status' });
   const go = h('button', { class: 'primary' }, icon('layers'), 'Film in 3D');
   sheetIn('Film it in 3D', [

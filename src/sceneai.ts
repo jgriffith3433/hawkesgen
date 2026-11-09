@@ -7,13 +7,21 @@
 // proposal for one tap (applyScene with confirm).
 
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 import { toolMap, toolCraft } from './knowledge.ts';
 import { aiCanUse, relevantTools, CRAFT_DOC } from './editor.ts';
 import { kindOf, type Scene } from './scenes.ts';
 import { fileElements } from './scenekinds.ts';
 import { getTool } from './tools/index.ts';
 import { GenError } from './util.ts';
+import { allClips } from './motions.ts';
+
+/** The CC0 stock clips by pack, for the character AI (ids are motion:<pack>/<name>). */
+const stockClips = () => {
+  const by = new Map<string, string[]>();
+  for (const c of allClips()) if (c.name !== 'A_TPose') by.set(c.pack, [...(by.get(c.pack) ?? []), c.name]);
+  return [...by].map(([pack, names]) => `${pack}: ${names.join(', ')}`).join('\n');
+};
 
 const DOCS: Record<string, string> = {
   character: `A character scene (JSON): {"title": their name, "description": how they look (face, build, hair, clothes, colors, era): every tool paints them from these words, "height": meters, "color": "#rrggbb" (their stand-in on a stage), "voice": a voice id from the voices list or null,
@@ -23,6 +31,7 @@ const DOCS: Record<string, string> = {
  "lock": {"sheet": "a_..." their character sheet, "description": their FIXED description, "at": null (a draft) | a time (locked)} (their identity pack: every shot they're in pastes the fixed description unchanged and uses the sheet as its reference, so they look the same everywhere),
  "lora": read only (Gen learns their look when the person asks: keep it as it is)}
 Making a character: a "front" picture (image.generate: full body, front view, A-pose, plain light background, their description), a "portrait" (a head-and-shoulders picture of the same person), then for 3D one asset.make chain (front → image.remove-background → image.viewsheet on "$prev:cutout" → mesh.views3d on "$prev:sheet", and mesh.rig to make them move) whose result is the model {"gen": n}. Pick a voice that fits. Take what's there into account: a model needs a front picture first.
+Animating them (their moves are the model's clips; "clips" lists what it has): the model must be rigged first (mesh.rig {"kind": "auto", "height": their height} on "el:model" or the model's asset; an unrigged model has no clips). A new move is one asset.make chain on inputs {"files": ["<the model's a_... id>", ...]} that ends by merging the clip into their model, so every clip they had stays: the last step is {"tool": "blender.character", "params": {"ops": [{"op": "import", "file": 0}, {"op": "retarget", "file": 1, "name": "<ClipName>", "inPlace": false}, {"op": "export", "format": "glb", "title": "mesh"}]}, "inputs": {"files": ["$input:0", "<the clip>"]}} and the model becomes {"gen": n}. Where the clip comes from, cheapest first: 1) a stock clip when one fits (walks, runs, idles, jumps, punches, kicks, hits, deaths: the CC0 library, ids like "motion:ual1/Walk_Loop"; pass it as the clip directly, no other step); 2) words: a step {"tool": "motion.from-text", "params": {"prompt": one present-tense sentence naming the limbs and how the move ends, "seconds": 0.8-2 for attacks, 2-4 for idles, "loop": true for idles and cycles, "inPlace": true for attacks, hits and idles, "takes": 2}, "inputs": {"character": "$input:0"}} and the clip "$prev:glb"; 3) a video they gave (one person, whole body in frame, still camera): a step {"tool": "motion.from-video", "params": {"name": "<ClipName>", "camera": "still" or "auto"}, "inputs": {"video": "$input:1", "character": "$input:0"}} with the video as files[1], and the clip "$prev:glb". Several moves: one chain that merges each in turn (the next merge imports "$prev"). Name clips in PascalCase (Punch, IdleBreathe). Add the new names to "clips".
 Their look (the identity pack; do it whenever you make a new character, or when they ask to make, redo or lock their look): 1) the front picture: full body, front view, relaxed A-pose, EMPTY HANDS (props drift between angles), plain light grey background, even studio light; 2) their sheet: image.edit on the front picture ({"images": ["el:<front id>"]} when it exists, else in the same asset.make chain as the front: steps [{"tool": "image.generate", ..., "save": "front"}, {"tool": "image.edit", "inputs": {"images": ["$prev"]}, "params": {"prompt": "Turn this into a character model sheet of exactly this person on one plain light grey background: the same full-body front view, a full-body three-quarter view, and four head-and-shoulders close-ups with different expressions (neutral, smiling, angry, surprised); the same face, hair, outfit and colors in every view; empty hands; no text", "width": 2048, "height": 1152}, "save": "sheet"}] with both pictures {"gen": n} and "from": "front" / "sheet"); 3) the fixed description in lock.description: 50 to 80 words of only what stays the same in every shot (apparent age, build, skin, face, hair, the outfit piece by piece with colors and materials, worn accessories), one plain paragraph, no story, mood, pose or camera words. Leave lock.at null: the person approves it with "Lock their look", unless they tell you to lock it (then set "at": true, only with a sheet and the description). Once locked, keep lock as it is unless they ask to change their look (then set at back to null).`,
 };
 
@@ -30,7 +39,10 @@ function system(kind: string) {
   return `You are the AI in Hawkes Gen's ${kind} editor. The person works on one ${kind} scene and talks to you; you change it by answering with the whole scene, and you make what it needs with Gen's tools. Be decisive; do what they ask in as few jobs as it takes; generating costs them credits (1 credit = 1 cent), so don't remake what's there. Keep everything they didn't ask to change, and keep ids.
 
 ${DOCS[kind]}
-
+${kind === 'character' ? `
+Stock clips (use only these names, as "motion:<pack>/<name>"; _Loop ones loop, _RM ones travel):
+${stockClips()}
+` : ''}
 Every tool on this Gen ("+N node settings": its ComfyUI graph has N more settings for params.nodes):
 ${toolMap(aiCanUse)}
 
@@ -84,7 +96,7 @@ export function scenePrompt(a: SceneTurnInput) {
 
 export async function sceneTurn(a: SceneTurnInput) {
   if (!DOCS[a.scene.kind]) throw new GenError(`No AI for ${a.scene.kind} scenes here`, { status: 400 });
-  const r = await callScope.run({ customer: true, org: orgOfProject(a.scene.project), house: isGenAccountProject(a.scene.project) }, () => ask(scenePrompt(a)));
+  const r = await callScope.run({ customer: true, org: orgOfProject(a.scene.project), house: isHouseProject(a.scene.project), who: a.scene.project }, () => ask(scenePrompt(a)));
   return { answer: parseScene(r.text, a.scene.doc), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }
 

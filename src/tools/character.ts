@@ -16,7 +16,8 @@ import { GenError } from '../util.ts';
 import { paths } from '../config.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 import { extractJson } from '../providers/claudecode.ts';
-import { ensureBlender, blenderWorkspace, BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+import { BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+import { jobWorkspace, prepare3d } from '../providers/workspace.ts';
 
 const ROBOT_KINDS = ['spider', 'quadarm', 'biped', 'chain'] as const;
 const CLIP_TYPES = ['walk', 'run', 'idle', 'attack', 'hit', 'death', 'jump'] as const;
@@ -243,7 +244,7 @@ export function characterScript(bin = { blender: BLENDER, python3: 'python3', ff
     'cp out/character.json res/',
     'if ls out/files/* >/dev/null 2>&1; then cp out/files/* res/; fi',
     'if [ -d out/previews ]; then for s in out/previews/*.json; do',
-    '  n=$(basename "$s" .json); read FPS FRAMES < "out/previews/$n.args"',
+    '  n=$(basename "$s" .json); read FPS FRAMES < <(tr -d "\\r" < "out/previews/$n.args")',
     '  echo "HB step rendering preview $n"',
     `  "${bin.blender}" -b --factory-startup --python-exit-code 1 -P hawkes_blender.py -- "$s"`,
     `  START=$("${bin.python3}" -c "import json,sys; print(json.load(open(sys.argv[1]))['start'])" "out/previews/$n/info.json")`,
@@ -262,7 +263,7 @@ export const blenderCharacterTool: Tool = {
   version: 6,
   title: '3D character ops in Blender (repair, retopo, bake, multi-view texture, LODs, props, retarget, robots, FBX/GLB)',
   description:
-    'Runs a chain of named Blender ops on one 3D character, on a GPU server: import (GLB/FBX/OBJ), report (mesh quality: shards, holes, ' +
+    'Runs a chain of named Blender ops on one 3D character, on a GPU worker (the 3D image) or fleet server: import (GLB/FBX/OBJ), report (mesh quality: shards, holes, ' +
     'thin triangles, asymmetry, a 0-100 score), fix (remove floating shards, merge doubles, fill holes, fix normals), symmetrize (mirror the ' +
     'denser half so a generated figure is left/right the same), retopo (clean quad surface via Quadriflow, voxel fallback; the original is ' +
     'kept as the bake source), clean (merge, fix normals, decimate to a triangle budget, default 25k), bake (smart UVs, base color + normal ' +
@@ -278,7 +279,7 @@ export const blenderCharacterTool: Tool = {
     'docs/3d-characters.md has every op.',
   provider: 'comfy',
   family: 'blender',
-  server: 'ssh',
+  image: '3d',
   output: 'mesh',
   inputs: {
     files: { kind: 'file', multiple: true, max: 32, required: true, description: 'The character, clips (FBX, GLB, BVH), props and a high-poly, by index (ops[].file = 0 is the first). A library clip is motion:<pack>/<name> (motion:ual1/Walk_Loop).' },
@@ -320,10 +321,10 @@ export const blenderCharacterTool: Tool = {
     const outDir = ctx.tmp('character');
     let ops = plan.ops.map((o) => ({ ...o }));
 
-    await ensureBlender(c.server.id, ctx.step);
-    const ws = await blenderWorkspace(c.server.id, ctx.job.id);
+    await prepare3d(c, ['blender'], ctx.step);
+    const ws = await jobWorkspace(c, ctx.job.id);
     try {
-      ctx.step(`sending ${files.length} file${files.length === 1 ? '' : 's'} to the GPU server`);
+      ctx.step(`sending ${files.length} file${files.length === 1 ? '' : 's'} to ${ws.where}`);
       const put: Record<string, string> = {};
       const remote = files.map((f, i) => {
         const name = `in/${i}${path.extname(f).toLowerCase()}`;
@@ -375,8 +376,8 @@ export const blenderCharacterTool: Tool = {
           const { label: _l, ...rest } = o;
           return { ...rest, kind: tmpl, parts: labelled.parts, angles: o.angles === true };
         });
-        // Clear the remote out/ so the full run starts clean.
-        await ws.run('rm -rf out res && mkdir -p out res', { signal: ctx.signal, timeoutMs: 60_000 });
+        // Clear the remote out/ so the full run starts clean (a worker starts every run from a fresh folder anyway).
+        if (ws.persistent) await ws.run('rm -rf out res && mkdir -p out res', { signal: ctx.signal, timeoutMs: 60_000 });
       }
 
       const spec = { out: `${ws.dir}/out`, files: remote, fps: ctx.params.fps ?? 30, device: ctx.params.device ?? 'auto', ops };

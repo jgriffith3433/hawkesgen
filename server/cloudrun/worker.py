@@ -37,6 +37,17 @@ no bucket to read before a request brings a token); MODELS_MOUNT on a provider's
 
   GET  /ping      RunPod's load balancer health check: 200 when ready, 204 while starting
   WORKER_TOKEN    when set, POST /run needs the same value in X-Hawkes-Worker-Token (Gen's GPU_WORKER_TOKEN)
+
+Besides graphs, two requests run code of Gen's own instead of a graph (same files, answer and manifest):
+  {"hawkes_audio": spec}  an open voice model's run.py in its venv (Gen's src/tools/audio-open.ts)
+  {"hawkes_job": spec}    a 3D tool's bash script in /var/tmp/hawkes-blender/<job> (Gen's src/providers/workspace.ts):
+                          Blender, the rig, motion and mocap venvs. spec = {dir, script, files: {name: input name},
+                          texts: {name: text}, collect: [folders]}; the answer is every file under the collected folders
+                          (filename = its path in the job folder) and _hb.txt (the script's "HB ..." lines).
+HAWKES_COMFY=0 is the 3D worker image (server/gpu3d/Dockerfile): no ComfyUI, ready at once, hawkes_job requests only.
+HAWKES_WEIGHTS is where 3D jobs keep model weights between runs: a provider's network volume when one is mounted
+(/runpod-volume, MODELS_MOUNT), else the container disk. A request's extra.hf_token (Gen's HF_TOKEN, never kept with
+the job) reaches the script as HF_TOKEN for gated weights.
 """
 
 import hmac
@@ -72,9 +83,13 @@ COMFY_FLAGS = os.environ.get("COMFY_FLAGS", "--disable-pinned-memory").split()
 # post/audio/run.py and asr.py beside them. Their weights come from Hugging Face on first use into the cache below
 # (on the provider's volume when one is mounted, so a cold worker skips the download).
 AUDIO_ROOT = os.environ.get("AUDIO_ROOT", "/opt/hawkes-audio")
+NO_COMFY = os.environ.get("HAWKES_COMFY", "1") == "0"
+JOB_ROOT = "/var/tmp/hawkes-blender"
 HEARTBEAT_S = 15
 CANCEL_CHECK_S = 5
 CHUNK = 64 * 1024 * 1024
+DIRECT_UPLOAD_BYTES = 8 * 1024 * 1024  # bigger files go straight to Cloud Storage (signed URL), not through Gen's broker
+PROXY_WRITE_MAX = 30 * 1024 * 1024  # Cloud Run refuses request bodies over 32 MiB
 BOOT = time.time()
 
 state = {"ready": False, "detail": "starting", "readyAt": None, "cold": True, "error": None}
@@ -256,13 +271,50 @@ class BrokerStore:
             raise
 
     def write(self, uri, data, content_type="application/octet-stream"):
+        # Cloud Run refuses request bodies over 32 MiB (HTTP 413), so anything sizeable goes straight to Cloud Storage
+        # with a signed URL from the broker; small files (heartbeats, manifests) stay on the broker's own write.
+        if len(data) > DIRECT_UPLOAD_BYTES:
+            where = self._signed_put(uri)
+            if where:
+                return self._put_signed(where, uri, data, content_type)
+            if len(data) > PROXY_WRITE_MAX:
+                raise RuntimeError(f"{uri} is {len(data) // (1024 * 1024)} MB: over Cloud Run's 32 MB request limit and Gen gave no signed upload link (it can't sign)")
         for attempt in range(4):
             try:
                 with self._req("write", uri, "PUT", data, {"Content-Type": content_type, "Content-Length": str(len(data))}, 600) as r:
                     return json.load(r)
             except (urllib.error.URLError, TimeoutError) as e:
-                if isinstance(e, urllib.error.HTTPError) and e.code < 500:
+                if isinstance(e, urllib.error.HTTPError):
+                    log(f"upload {uri} ({len(data)} bytes) through the broker: HTTP {e.code} {e.reason}")
+                    if e.code < 500:
+                        raise
+                if attempt == 3:
                     raise
+                log(f"upload {uri}: {e}; again")
+                time.sleep(2 * (attempt + 1))
+
+    def _signed_put(self, uri):
+        try:
+            with self._req("put", uri) as r:
+                return json.load(r).get("url")
+        except urllib.error.HTTPError as e:
+            log(f"signed upload link for {uri}: HTTP {e.code} {e.reason}")
+            if e.code < 500:
+                raise
+            return None
+
+    def _put_signed(self, url, uri, data, content_type):
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, data=data, method="PUT", headers={"Content-Type": content_type, "Content-Length": str(len(data))})
+                with urllib.request.urlopen(req, timeout=900) as r:
+                    r.read()
+                return {"ok": True, "direct": True}
+            except (urllib.error.URLError, TimeoutError) as e:
+                if isinstance(e, urllib.error.HTTPError):
+                    log(f"upload {uri} ({len(data)} bytes) to Cloud Storage: HTTP {e.code} {e.reason}")
+                    if e.code < 500:
+                        raise
                 if attempt == 3:
                     raise
                 log(f"upload {uri}: {e}; again")
@@ -387,6 +439,18 @@ def tidy_scratch(max_age=600):
                     pass
 
 
+def models_size(entries, store=GcsStore, bucket=None):
+    """Bytes the bucket says these models take (0 for any it can't say: the margin covers small ones)."""
+    total = 0
+    for e in entries:
+        try:
+            meta = store.stat(f"gs://{bucket or BUCKET}/models/{e}")
+            total += int((meta or {}).get("size") or 0)
+        except Exception:  # noqa: BLE001 - a size we can't read only makes the room smaller
+            pass
+    return total
+
+
 def make_room(keep=(), need=None, on_step=None):
     """Frees disk for what comes next: old scratch first, then downloaded models (never symlinks, never `keep`), the least
     recently used first, until `need` bytes are free. Returns the bytes it freed."""
@@ -419,8 +483,17 @@ def make_room(keep=(), need=None, on_step=None):
                 on_step(f"made room: removed {os.path.basename(p)} ({size // 1_000_000} MB)")
         except OSError:
             pass
+    if free_bytes() < need:
+        # Removed models ComfyUI still holds open keep their space until it lets go of them.
+        try:
+            comfy("/free", {"unload_models": True, "free_memory": True})
+            time.sleep(2)
+        except Exception:  # noqa: BLE001 - ComfyUI not up yet: nothing of it is held open
+            pass
     if freed:
         log(f"made room: {freed / 1e9:.1f} GB of models removed, {free_bytes() / 1e9:.1f} GB free")
+    if free_bytes() < need and on_step:
+        on_step(f"only {free_bytes() / 1e9:.1f} GB free of the {need / 1e9:.1f} GB this job needs")
     return freed
 
 
@@ -435,7 +508,9 @@ def place_models(entries, on_step=None, preload=False, store=GcsStore, bucket=No
     if not todo:
         return
     if MODEL_LOAD != "mount" and not (not preload and mounted()):
-        make_room(keep=[model_dest(e) for e in entries], on_step=on_step)
+        # Room for everything this job downloads plus the margin (2026-11-07: a fixed 12 GB let a 30 GB video family
+        # start downloading onto 12 GB, and the job died with "No space left on device" in SaveVideo).
+        make_room(keep=[model_dest(e) for e in entries], need=MIN_FREE + models_size(todo, store, bucket), on_step=on_step)
     t = time.time()
     total = [0]
 
@@ -482,6 +557,47 @@ def start_comfy():
 
 def comfy_alive():
     return comfy_proc is not None and comfy_proc.poll() is None
+
+
+def comfy_ok():
+    """Health: ComfyUI is up, or this image has none (the 3D worker)."""
+    return NO_COMFY or comfy_alive()
+
+
+def weights_dir():
+    """Where 3D jobs keep weights: HAWKES_WEIGHTS, else a provider volume (RunPod mounts network volumes at
+    /runpod-volume), else the models mount, else the container disk."""
+    if os.environ.get("HAWKES_WEIGHTS"):
+        return os.environ["HAWKES_WEIGHTS"]
+    for base in ("/runpod-volume", MODELS_MOUNT):
+        if base and os.path.isdir(base) and os.access(base, os.W_OK):
+            return os.path.join(base, "hawkes-weights")
+    return "/opt/hawkes-weights"
+
+
+def free_comfy():
+    """Lets go of what ComfyUI's last graph left on the GPU (nothing to do in the 3D image)."""
+    if NO_COMFY or not comfy_alive():
+        return
+    try:
+        comfy("/free", {"unload_models": True, "free_memory": True})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def failure_tail(lines):
+    """The useful end of a failed script's log: its last plain lines, and the last Python traceback whole."""
+    plain = [ln for ln in lines if ln and not ln.startswith(("Fra:", "HB frame", "  "))][-20:]
+    tb, inside = [], False
+    for ln in lines:
+        if ln.startswith("Traceback"):
+            tb, inside = [ln], True
+        elif inside:
+            tb.append(ln)
+    text = " / ".join(plain)
+    if tb:
+        text += "\n--- last Python traceback ---\n" + "\n".join(tb[-30:])
+    return text[-3500:]
 
 
 def get_object_info(refresh=False):
@@ -723,6 +839,8 @@ class Run:
             final = {"t": "error", "message": str(e)}
             if isinstance(e.__cause__, Missing):
                 final["missingModels"] = e.__cause__.models
+        if final.get("t") == "error" and getattr(self, "sizes", None):
+            final["outputs"] = self.sizes
         final["seconds"] = round(time.time() - t0, 1)
         final["cold"] = cold
         if getattr(self, "vram", None):
@@ -755,10 +873,7 @@ class Run:
             with open(os.path.join(work, "spec.json"), "w") as fh:
                 json.dump({**spec, "items": items}, fh)
             # The GPU is ComfyUI's too: let go of what its last graph left loaded.
-            try:
-                comfy("/free", {"unload_models": True, "free_memory": True})
-            except Exception:  # noqa: BLE001
-                pass
+            free_comfy()
             mounted_hf = os.path.join(MODELS_MOUNT, "hf")
             env = {**os.environ, "HF_HOME": mounted_hf if os.path.isdir(mounted_hf) else os.path.join(AUDIO_ROOT, "hf"), "HF_HUB_ENABLE_HF_TRANSFER": "0", "PYTHONUNBUFFERED": "1"}
             self.step(f"{'making sounds' if spec.get('task') == 'sfx' else 'speaking'} with {model}")
@@ -798,8 +913,84 @@ class Run:
                 except OSError:
                     pass
 
-    def _proc(self, cmd, cwd, env):
-        """Runs a command, passing its "HB step ..." lines on as steps, with the run's cancel and time limit."""
+    def _job(self, spec, written):
+        """A 3D tool's script (Gen's src/providers/workspace.ts): the files and texts into the job folder, bash run.sh
+        there, then every file under the collected folders back, plus _hb.txt (the script's HB lines)."""
+        d = str(spec.get("dir", ""))
+        if not re.fullmatch(re.escape(JOB_ROOT) + r"/[\w-]+", d):
+            raise ValueError(f"bad job folder {d!r}")
+        script = spec.get("script")
+        if not isinstance(script, str) or not script.strip():
+            raise ValueError("hawkes_job needs a script")
+
+        def inside(name):
+            if not isinstance(name, str) or not re.fullmatch(r"[\w./-]+", name) or ".." in name or name.startswith("/"):
+                raise ValueError(f"bad file name {name!r}")
+            p = os.path.normpath(os.path.join(d, name))
+            if not p.startswith(d + os.sep):
+                raise ValueError(f"bad file name {name!r}")
+            return p
+
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(os.path.join(d, "in"), exist_ok=True)
+        try:
+            inbox = os.path.join(COMFY_DIR, "input")
+            for name, up in (spec.get("files") or {}).items():
+                src = os.path.normpath(os.path.join(inbox, str(up)))
+                if not src.startswith(inbox + os.sep) or not os.path.isfile(src):
+                    raise ValueError(f"input {up!r} for {name} did not arrive")
+                dest = inside(name)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copyfile(src, dest)
+            for name, text in (spec.get("texts") or {}).items():
+                dest = inside(name)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "w", encoding="utf-8") as fh:
+                    fh.write(str(text))
+            with open(os.path.join(d, "run.sh"), "w", encoding="utf-8") as fh:
+                fh.write(script)
+            free_comfy()
+            weights = weights_dir()
+            os.makedirs(weights, exist_ok=True)
+            env = {**os.environ, "HAWKES_WEIGHTS": weights, "PYTHONUNBUFFERED": "1", "HOME": os.environ.get("HOME") or "/root"}
+            token = (self.req.get("extra") or {}).get("hf_token")
+            if token:
+                env["HF_TOKEN"] = env["HUGGING_FACE_HUB_TOKEN"] = str(token)
+            self.step("running the job's script")
+            lines = self._proc(["bash", "run.sh"], d, env, label="the 3D job")
+            out = []
+            n = 0
+            for folder in spec.get("collect") or ["res"]:
+                root = inside(folder)
+                if not os.path.isdir(root):
+                    continue
+                for base, _dirs, names in os.walk(root):
+                    for name in sorted(names):
+                        full = os.path.join(base, name)
+                        rel = os.path.relpath(full, d).replace(os.sep, "/")
+                        with open(full, "rb") as fh:
+                            data = fh.read()
+                        uri = f"{self.out}{n:03d}-{re.sub(r'[^A-Za-z0-9_.-]', '_', rel)}"
+                        n += 1
+                        self.step(f"saving {rel} ({len(data) // 1024} KB)")
+                        self.store.write(uri, data)
+                        out.append({"filename": rel, "subfolder": "", "type": "output", "node": "job", "uri": uri, "bytes": len(data)})
+            hb = "\n".join(ln for ln in lines if ln.startswith("HB ")).encode()
+            uri = f"{self.out}{n:03d}-_hb.txt"
+            self.store.write(uri, hb, "text/plain")
+            out.append({"filename": "_hb.txt", "subfolder": "", "type": "output", "node": "job", "uri": uri, "bytes": len(hb)})
+            return {"t": "done", "files": out}
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+            for p in written:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    def _proc(self, cmd, cwd, env, label="the audio model"):
+        """Runs a command, passing its "HB step ..." lines on as steps (and "HB frame i n" as progress), with the run's
+        cancel and time limit. Returns the log's lines."""
         logf = os.path.join(cwd, "run.log")
         started = time.time()
         with open(logf, "w") as lf:
@@ -812,11 +1003,13 @@ class Run:
             for line in lines[seen:]:
                 if line.startswith("HB step "):
                     self.step(line[8:])
+                elif line.startswith("HB frame "):
+                    self.progress("frame " + line[9:].replace(" ", " of ", 1))
             seen = len(lines)
             if code is not None:
                 if code != 0:
-                    raise RuntimeError(f"the audio model failed (exit {code}): " + " / ".join(lines[-12:])[-1500:])
-                return
+                    raise RuntimeError(f"{label} failed (exit {code}): " + failure_tail(lines))
+                return lines
             if self.cancelled():
                 p.kill()
                 raise Cancelled()
@@ -850,6 +1043,10 @@ class Run:
                 written.append(dest)
         if isinstance(req["graph"], dict) and "hawkes_audio" in req["graph"]:
             return self._audio(req["graph"]["hawkes_audio"], written)
+        if isinstance(req["graph"], dict) and "hawkes_job" in req["graph"]:
+            return self._job(req["graph"]["hawkes_job"], written)
+        if NO_COMFY:
+            raise RuntimeError("this is the 3D worker image (no ComfyUI): it runs hawkes_job requests, not graphs")
         more = graph_models(req["graph"])
         if more:
             self.step(f"linking {len(more)} model(s) from the bucket")
@@ -866,13 +1063,20 @@ class Run:
                 restart_comfy()
                 files = run_graph(graph, req.get("extra"), self)
             out = []
+            self.sizes = []
+            for i, f in enumerate(files):
+                src = os.path.join(COMFY_DIR, "output", f["subfolder"], f["filename"])
+                self.sizes.append({"filename": f["filename"], "bytes": os.path.getsize(src)})
             for i, f in enumerate(files):
                 src = os.path.join(COMFY_DIR, "output", f["subfolder"], f["filename"])
                 with open(src, "rb") as fh:
                     data = fh.read()
                 uri = f"{self.out}{i:02d}-{f['filename']}"
                 self.step(f"saving {f['filename']} ({len(data) // 1024} KB)")
-                self.store.write(uri, data)
+                try:
+                    self.store.write(uri, data)
+                except Exception as e:  # noqa: BLE001 - say which file and how big, then fail as before
+                    raise RuntimeError(f"saving {f['filename']} ({len(data) // 1024} KB) failed: {e}") from e
                 out.append({**f, "uri": uri, "bytes": len(data)})
             return {"t": "done", "files": out}
         finally:
@@ -913,6 +1117,12 @@ def begin_run(req):
         try:
             r.execute()
         finally:
+            # Nothing of a run stays on the disk, done or failed (a failed graph's partial outputs used to stay until
+            # the disk was nearly full). Safe here: this instance runs one run at a time and this one holds the lock.
+            try:
+                tidy_scratch(max_age=0)
+            except Exception as e:  # noqa: BLE001
+                log(f"tidy: {e}")
             gpu_lock.release()
             with active_lock:
                 if active.get(r.key) is r:
@@ -944,9 +1154,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             return self._json(200, {"ok": True})
         if self.path == "/ping":
-            return self._json(200 if state["ready"] and comfy_alive() else 204, {"ready": state["ready"]})
+            return self._json(200 if state["ready"] and comfy_ok() else 204, {"ready": state["ready"]})
         if self.path == "/ready":
-            ok = state["ready"] and comfy_alive()
+            ok = state["ready"] and comfy_ok()
             return self._json(200 if ok else 503, {"ready": ok, "detail": state["detail"], "error": state["error"], "service": SERVICE,
                                                    "uptime": round(time.time() - BOOT, 1), "models": MODEL_LOAD})
         return self._json(404, {"error": "not found"})
@@ -969,6 +1179,11 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError(f"{k} is required")
             if not req["out"].startswith("gs://"):
                 raise ValueError("out must be a gs:// prefix")
+            # A hawkes_job is a bash script: only a caller holding the worker token may send one (Cloud Run's own IAM
+            # counts, where the service has its Google identity and no broker).
+            if isinstance(req["graph"], dict) and "hawkes_job" in req["graph"] and not WORKER_TOKEN and STORAGE == "broker" \
+                    and os.environ.get("HAWKES_ALLOW_UNTOKENED_JOBS") != "1":
+                raise ValueError("this worker has no WORKER_TOKEN, so it refuses hawkes_job scripts (set GPU_WORKER_TOKEN in Gen and WORKER_TOKEN here)")
             store_for(req)
         except Exception as e:  # noqa: BLE001
             return self._json(400, {"error": str(e)})
@@ -1011,9 +1226,10 @@ def boot():
                 raise RuntimeError("HAWKES_BUCKET is not set")
             state["detail"] = f"loading {len(PRELOAD)} models ({MODEL_LOAD})"
             place_models(PRELOAD, preload=True)
-        state["detail"] = "starting ComfyUI"
-        start_comfy()
-        get_object_info()
+        if not NO_COMFY:
+            state["detail"] = "starting ComfyUI"
+            start_comfy()
+            get_object_info()
         state["ready"] = True
         state["readyAt"] = time.time()
         state["detail"] = "ready"
@@ -1026,6 +1242,7 @@ def boot():
 
 def main():
     os.makedirs(os.path.join(COMFY_DIR, "input", "hawkesgen"), exist_ok=True)
+    os.makedirs(os.path.join(COMFY_DIR, "output"), exist_ok=True)
     threading.Thread(target=boot, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     srv.daemon_threads = True

@@ -1,6 +1,9 @@
 // The HTTP API (JSON, under /v1) and the dashboard (static files at /).
 // docs/api.md lists every route with examples.
 
+import { clientIp } from './analytics/collect.ts';
+import { signupStats } from './signupcap.ts';
+import { addStream } from './eventhub.ts';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -19,11 +22,13 @@ import { validateParams } from './tools/validate.ts';
 import { estimate } from './estimate.ts';
 import { shotList, shotSource } from './tools/liveShots.ts';
 import { liveSnapshot, liveFrame, isLive } from './tools/livePlay.ts';
-import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, type JobSpec, type Job } from './jobs.ts';
-import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, findByRecipe, recipeKey } from './library.ts';
+import { submit, submitJob, getJob, listJobs, cancel, rerunJob, boostLabel, clearFinished, jobTimings, events, summary, queue, queuePosition, typicalRunSeconds, type JobSpec, type Job } from './jobs.ts';
+import { takeUpload, streamBody, uploadLimits, type Streamed } from './uploads.ts';
+import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownBlob, canUseBlob, putAsset, putAssetUpload, putBlobUpload, findByRecipe, recipeKey } from './library.ts';
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
+import { startUpload, finishUpload } from './bigupload.ts';
 import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, pruneLods, lodStatus } from './lod.ts';
 import { usageSummary } from './usage.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
@@ -48,10 +53,12 @@ import { configured as xaiConfigured } from './providers/xai.ts';
 import { GenError, sha256File, mimeOf, extOf } from './util.ts';
 import { db } from './db.ts';
 import { genOAuth } from './genoauth.ts';
+import { limit as limitRequest } from './ratelimit.ts';
 import { handleUpload, downloadTarget, linkTarget, shareLink, signedFileUrl, verifyFileSig } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
 import { noteRoute, lagReport } from './lag.ts';
+import { mockHealth } from './mockproviders.ts';
 import { handleAnalytics } from './analytics/routes.ts';
 import { handleBench } from './bench/routes.ts';
 import { handleMake } from './make/routes.ts';
@@ -124,6 +131,16 @@ async function readBody(req: IncomingMessage, limit = 64 * 1024 * 1024): Promise
   }
   return Buffer.concat(chunks);
 }
+
+/** A second name for an uploaded temp file (a hard link, else a copy) so it can become both the blob and the asset's file. */
+async function linkOrCopy(up: Streamed, _ext: string): Promise<string> {
+  const other = `${up.file}.blob`;
+  try { fs.linkSync(up.file, other); } catch { await fs.promises.copyFile(up.file, other); }
+  return other;
+}
+
+/** The app sends X-Filename percent-encoded (headers are ASCII); plain names pass through. */
+const decodeName = (n: string) => { try { return decodeURIComponent(n); } catch { return n; } };
 
 async function readJson(req: IncomingMessage) {
   const buf = await readBody(req);
@@ -227,6 +244,9 @@ export function isCustomer(c: Client) {
 }
 const OPS_ROUTES = /^\/v1\/(admin|fleet|machines|builder|cpu|playtester|playtests\/live|playtest\/capacity|storage|settings|claude|gpu|comfy|templates|workflows|clients|providers\/anthropic|lods\/prune|bench|quality)(\/|$)/;
 
+const plainStreamEvent = (_name: string, d: any) => d;
+const publicStreamEvent = (name: string, d: any) => (name === 'job' ? publicJob(d, true) : d);
+
 function jobVisible(c: Client, j: { project: string }) {
   return canProject(c, j.project);
 }
@@ -281,12 +301,73 @@ function analyticsSdk() {
   return sdkCache;
 }
 
+const HEALTH_TTL_MS = 5000;
+let healthCache: { at: number; body: any } | null = null;
+/** /v1/health's body, at most 5 s old. The loop and process numbers in it are as old as the cache. */
+export function cachedHealth() {
+  const now = Date.now();
+  if (!healthCache || now - healthCache.at >= HEALTH_TTL_MS) healthCache = { at: now, body: healthBody(false) };
+  return healthCache.body;
+}
+/** For tests: forget the cached answer. */
+export function resetHealthCache() { healthCache = null; }
+
+function healthBody(deep: boolean) {
+  const t0 = performance.now();
+  const queue = Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n]));
+  const t1 = performance.now();
+  // The line tools/gen-cloudrun/alerts.mjs turns into the queue-depth metric: written when the cache refreshes, only while jobs wait.
+  if (!deep && (queue as any).queued > 0) console.log(`[queue-depth] queued=${(queue as any).queued} running=${(queue as any).running ?? 0}`);
+  const building = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND tool IN ('unity.build', 'unity.test')").get() as any).n;
+  const t2 = performance.now();
+  return {
+    // commit: what this deploy runs (CI sets it), for Hawkes Studio's beta and go-live checks (its versionPath).
+    ok: true, name: 'hawkesgen', version: VERSION, commit: process.env.HAWKESGEN_COMMIT || null, lane: process.env.HAWKESGEN_LANE || 'live',
+    providers: {
+      aws: (() => { try { fleet.awsConfig(); return true; } catch { return false; } })(),
+      elevenlabs: eleven.configured() && !eleven.billingState().blocked,
+      anthropic: claude.configured(),
+      claude: claude.backend(),
+      xai: xaiConfigured(),
+      brain: loadSettings().brain,
+      python: fs.existsSync(path.join(paths.post, '..', '.venv')),
+    },
+    elevenlabsBilling: eleven.billingState(),
+    // Payments (billing.ts): whether this lane takes them, in which Stripe mode, and whether its webhook can be checked.
+    // Never a key: only what is set.
+    stripe: (() => { const st = getStripeStatus(); return { configured: st.configured, mode: st.mode, webhook: st.hasWebhookSecret }; })(),
+    // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
+    orgCredits: orgCreditsOn(),
+    // New accounts and starter grants refused by the caps today and in total (src/signupcap.ts).
+    signups: signupStats(),
+    queue,
+    // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
+    // (the deploy script waits for these only; everything else resumes after a restart).
+    building,
+    client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
+    // Event-loop lag: the worst delay seen and the recent blocks over 500 ms, with the requests around them.
+    loop: lagReport(),
+    // HAWKESGEN_MOCK_PROVIDERS (src/mockproviders.ts): whether providers are stand-ins, and any real spend since boot.
+    mock: mockHealth(),
+    process: { pid: process.pid, startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(), rssMb: Math.round(process.memoryUsage().rss / 1048576), heapMb: Math.round(process.memoryUsage().heapUsed / 1048576) },
+    ...(deep ? { deep: { fresh: true, at: new Date().toISOString(), queryMs: { queue: +(t1 - t0).toFixed(2), building: +(t2 - t1).toFixed(2) } } } : {}),
+  };
+}
+
 export async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = url.pathname;
   const q = (k: string) => url.searchParams.get(k) ?? undefined;
   const method = req.method ?? 'GET';
   noteRoute(method, route);
+
+  // The request limiter (src/ratelimit.ts): a token bucket per caller and class of route, before any routing.
+  // /v1/health and the Stripe webhook are never limited.
+  const wait = limitRequest(req, method, route);
+  if (wait !== null) {
+    res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(wait), 'Cache-Control': 'no-store' });
+    return void res.end(JSON.stringify({ error: `That's a lot at once: wait ${wait} second${wait === 1 ? '' : 's'}, then try again.`, retryAfter: wait }));
+  }
 
   // Signing in to the MCP from an editor (src/genoauth.ts, src/mcp-oauth.ts): discovery, registration, the consent page
   // and tokens. Before the CORS below: these carry their own.
@@ -434,29 +515,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return;
     }
     if (route === '/v1/health') {
-      return send(res, 200, {
-        // commit: what this deploy runs (CI sets it), for Hawkes Studio's beta and go-live checks (its versionPath).
-        ok: true, name: 'hawkesgen', version: VERSION, commit: process.env.HAWKESGEN_COMMIT || null, lane: process.env.HAWKESGEN_LANE || 'live',
-        providers: {
-          aws: (() => { try { fleet.awsConfig(); return true; } catch { return false; } })(),
-          elevenlabs: eleven.configured() && !eleven.billingState().blocked,
-          anthropic: claude.configured(),
-          claude: claude.backend(),
-          xai: xaiConfigured(),
-          brain: loadSettings().brain,
-          python: fs.existsSync(path.join(paths.post, '..', '.venv')),
-        },
-        elevenlabsBilling: eleven.billingState(),
-        // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
-        orgCredits: orgCreditsOn(),
-        queue: Object.fromEntries((db.prepare("SELECT status, COUNT(*) AS n FROM jobs WHERE status IN ('queued','running') GROUP BY status").all() as any[]).map((r) => [r.status, r.n])),
-        // Unity builds and tests on the build server: the one kind of job a restart of Gen would leave half done
-        // (the deploy script waits for these only; everything else resumes after a restart).
-        building: (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running' AND tool IN ('unity.build', 'unity.test')").get() as any).n,
-        client: { current: SDK_CURRENT, min: SDK_MIN, behind: [...clientsSeen.values()].filter((c) => c.behind) },
-        // Event-loop lag: the worst delay seen and the recent blocks over 500 ms, with the requests around them.
-        loop: lagReport(),
-      });
+      // Answered from a 5 s cache (J, 2026-11-08): the body runs three db queries and Cloud Run, Studio's checks and the
+      // keep-alive all ask. `?deep=1` is for ops: always fresh, with how long each query took, but only for an owner or
+      // admin key (anyone else gets the cached answer, so it can't be used to skip the cache). Not an HTTP cache: no headers.
+      let deep = false;
+      if (q('deep') === '1') { try { const c = authenticateRequest(req); deep = !!c && c.role !== 'user'; } catch { /* not signed in: cached answer */ } }
+      return send(res, 200, deep ? healthBody(true) : cachedHealth());
     }
 
     // --------------------------------------------------- public SaaS routes
@@ -513,27 +577,38 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // Hawkes Studio's playtests signed in (src/testsignin.ts): beta only, a token signed with the project's secret.
     if (route === '/v1/users/test-session' && method === 'POST') {
       const ts = await import('./testsignin.ts');
-      const project = ts.checkTestToken(await readJson(req));
-      const result = googleSignin(ts.testAccountOf(project));
+      const project = await ts.checkTestTokenAny(await readJson(req));
+      const result = googleSignin(ts.testAccountOf(project), clientIp(req), { loadTest: ts.isLoadProject(project) });
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
+    }
+    if (route === '/v1/users/test-session/delete' && method === 'POST') {
+      // The load harness (tools/load/remote.mjs) removes its own `load-*` accounts with a token signed the same way.
+      const ts = await import('./testsignin.ts');
+      const project = ts.checkTestToken(await readJson(req));
+      if (!ts.isLoadProject(project)) throw new GenError('Only load-test accounts (load-*) can be removed this way', { status: 403 });
+      const acc = await import('./accounts.ts');
+      const who = ts.testAccountOf(project);
+      const row = db.prepare('SELECT user_id FROM user_google WHERE sub = ?').get(who.sub) as { user_id: string } | undefined;
+      if (!row) return send(res, 200, { deleted: null });
+      return send(res, 200, await acc.deleteAccount(row.user_id, who.email, `test sign-in (${project})`));
     }
     if (route === '/v1/users/test-session/github' && method === 'POST') {
       // A GitHub Actions run of an allowed repo, as its test account, on beta only (src/githubsignin.ts).
       const gh = await import('./githubsignin.ts');
       const project = await gh.checkGitHubToken((await readJson(req))?.token);
       const ts = await import('./testsignin.ts');
-      const result = googleSignin(ts.testAccountOf(project));
+      const result = googleSignin(ts.testAccountOf(project), clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created });
+      return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
     }
     if (route === '/v1/users/google' && method === 'POST') {
       const { credential } = await readJson(req);
       let who;
       try { who = await checkGoogleToken(String(credential ?? '')); } catch (e: any) { return send(res, 401, { error: e.message }); }
-      const result = googleSignin(who);
+      const result = googleSignin(who, clientIp(req));
       setSessionCookie(res, req, result.sessionToken);
-      return send(res, 200, { user: result.user, created: result.created });
+      return send(res, 200, { user: result.user, created: result.created, notice: result.notice });
     }
     if ((route === '/v1/users/signup' || route === '/v1/users/login') && method === 'POST' && !passwordsAllowed()) {
       return send(res, 410, { error: 'Sign in with Google.', code: 'google_only' });
@@ -587,6 +662,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     await primePlatform(req);
     const client = authenticateRequest(req);
+    // The app asks "who am I?" on every visit: a signed-out visitor (no key sent) is told "nobody" rather than a 401, so a
+    // first visit logs no error in the browser's console. A key that's sent and refused is still a 401 (2026-11-08).
+    if (!client && route === '/v1/users/me' && method === 'GET' && !req.headers.authorization) return send(res, 200, { user: null });
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
     // The editors connected to this account's MCP (src/genoauth.ts): listed, and disconnected one at a time.
     if (route === '/v1/users/me/connections' && method === 'GET') {
@@ -646,6 +724,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       requireRole(client, 'owner');
       const by = client.name ?? 'owner';
       if (route === '/v1/admin/ai' && method === 'GET') return send(res, 200, house.houseStatus());
+      // A consistent online backup of the databases to the backup bucket (src/backup.ts; Cloud Scheduler calls it daily).
+      if (route === '/v1/admin/backup' && method === 'POST') {
+        const { runBackup } = await import('./backup.ts');
+        try { return send(res, 200, { backups: await runBackup({ dbFile: paths.db, analyticsFile: paths.analytics }) }); }
+        catch (e) { throw new GenError(`Backup failed: ${(e as Error).message}`, { status: 503 }); }
+      }
       if (route === '/v1/admin/ai' && (method === 'PUT' || method === 'POST')) {
         const b = await readJson(req);
         return send(res, 200, house.saveHouseSettings({ source: b.source, markup: b.markup, minCredits: b.minCredits }));
@@ -880,7 +964,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const { isDown } = await import('./providers/gpu/health.ts');
         const noAws = (() => { try { fleet.awsConfig(); return false; } catch { return true; } })();
         const list = client.role === 'user' ? TOOLS.filter((t) => !isInternalOnlyTool(t.id)) : TOOLS;
-        return send(res, 200, { tools: await ed.catalog(describeTool, list, noAws || Boolean(isDown('fleet'))) });
+        return send(res, 200, { tools: await ed.catalog(describeTool, list, noAws || Boolean(isDown('fleet')), loadSettings()) });
       }
       if (route === '/v1/editor/projects' && method === 'GET') return send(res, 200, { items: ed.listProjects(projectOf(q('project'))) });
       if (route === '/v1/editor/projects' && method === 'POST') {
@@ -953,6 +1037,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       }
       throw new GenError('No such editor route', { status: 404 });
     }
+    // Canned AI answers for the test account (src/aimock.ts): HAWKESGEN_AI_MOCK=1 and a test sign-in session only.
+    if (route === '/v1/test/ai-mock') {
+      const am = await import('./aimock.ts');
+      const user = getUserForClient(client);
+      if (!am.aiMockOn() || !user || !am.isTestUser(user.id)) return send(res, 404, { error: 'No such route' });
+      if (method === 'GET') return send(res, 200, am.mockStatus(user.id));
+      if (method === 'DELETE') return send(res, 200, am.clearAnswers(user.id));
+      if (method === 'POST') { const b = await readJson(req); return send(res, 200, am.queueAnswers(user.id, Array.isArray(b?.answers) ? b.answers : [b])); }
+    }
     if (route === '/v1/users/api-key' && method === 'POST') {
       const user = getUserForClient(client);
       if (!user) throw new GenError('User account required', { status: 403 });
@@ -975,6 +1068,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       const checkout = await createStripeCheckoutSession(user, body, origin || 'https://hawkesgen.ai');
       return send(res, 200, checkout);
+    }
+    // Where one of this account's checkouts stands (billing.ts checkoutStatus): the app asks once when Stripe sends the
+    // person back, and when they open a receipt. A paid one is granted here if the webhook hasn't arrived yet.
+    if (route.startsWith('/v1/billing/checkout/') && method === 'GET') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in first', { status: 403 });
+      return send(res, 200, await billing.checkoutStatus(user, decodeURIComponent(route.slice('/v1/billing/checkout/'.length))));
+    }
+    // Points this lane's Stripe webhook at Gen and keeps its signing secret (owner; /admin Settings > Payments).
+    if (route === '/v1/billing/webhook/setup' && method === 'POST') {
+      requireRole(client, 'owner');
+      const body = await readJson(req);
+      const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '');
+      return send(res, 200, await billing.setupStripeWebhook(origin || (host ? `https://${host}` : ''), { replace: body?.replace === true }));
     }
     if (route === '/v1/billing/ledger' && method === 'GET') {
       const user = getUserForClient(client);
@@ -1240,7 +1347,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       if (!body.message) throw new GenError('message is required');
       const response = await assistant.processMessage(
-        user.id,
+        { client, project: user.project, payerId: user.id },
         body.gameContext || {},
         body.history || [],
         body.message
@@ -1260,7 +1367,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (client.role !== 'user') throw new GenError('Assistant is for user accounts only', { status: 403 });
       const body = await readJson(req);
       if (!body.intent) throw new GenError('intent is required');
-      const code = await assistant.getCodeSuggestions({
+      const user = getUserForClient(client);
+      const code = await assistant.getCodeSuggestions({ client, project: user?.project ?? client.projects.find((p) => p !== '*') ?? '', payerId: user?.id ?? null }, {
         intent: body.intent,
         currentCode: body.currentCode
       });
@@ -1366,7 +1474,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     if (m) {
       const j = getJob(m[1]);
       if (!j || !jobVisible(client, j)) throw new GenError('No such job', { status: 404 });
-      if (!m[2] && method === 'GET') return send(res, 200, publicJob({ ...j, queue: queuePosition(j) }, isCustomer(client)));
+      if (!m[2] && method === 'GET') return send(res, 200, publicJob({ ...j, queue: queuePosition(j), ...(j.status === 'queued' || j.status === 'running' ? { estimateSeconds: typicalRunSeconds(j.tool) } : {}) }, isCustomer(client)));
       if (m[2] === 'cancel' && method === 'POST') return send(res, 200, cancel(j.id));
       if (m[2] === 'rerun' && method === 'POST') {
         const b = await readJson(req);
@@ -1402,36 +1510,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       // X-Accel-Buffering keep proxies from holding events back; the 20 s ping below keeps idle connections open.
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       res.write('retry: 5000\n: hello\n\n');
-      const onJob = (j: any) => jobVisible(client, j) && res.write(`event: job\ndata: ${JSON.stringify(publicJob(j, isCustomer(client)))}\n\n`);
-      // Library changes (src/entities.ts): an entity edited, a take filed, picked or discarded.
-      const onLibrary = (e: any) => canProject(client, String(e.entity).split('/')[0]) && res.write(`event: library\ndata: ${JSON.stringify(e)}\n\n`);
-      events.on('job', onJob);
-      events.on('library', onLibrary);
-      // Productions (src/showrunner/production.ts): progress, and "done" when one finishes.
-      const onProduction = (e: any) => canProject(client, String(e.project)) && res.write(`event: production
-data: ${JSON.stringify(e)}
-
-`);
-      events.on('production', onProduction);
-      // A scene saved (src/scenes.ts): an open editor, character sheet or world picks up edits made elsewhere (the AI, MCP,
-      // another tab) and fills in finished jobs without asking on a timer. Only ids and versions; the page reads the scene.
-      const onScene = (e: any) => canProject(client, String(e.project)) && res.write(`event: scene\ndata: ${JSON.stringify(e)}\n\n`);
-      events.on('scene', onScene);
-      // The studio's machinery (admins only): a machines reading was taken, or a bench run moved on. The page reads what it shows.
-      const ops = !isCustomer(client);
-      const onMachines = (e: any) => res.write(`event: machines\ndata: ${JSON.stringify(e)}\n\n`);
-      const onBench = (e: any) => res.write(`event: bench\ndata: ${JSON.stringify(e)}\n\n`);
-      if (ops) { events.on('machines', onMachines); events.on('bench', onBench); }
+      // One hub for every stream (src/eventhub.ts): events serialised once, sent only to their owner's streams, at most
+      // 3 streams per user (the oldest is told `bye` and closed; the page opens one again).
+      const forgetStream = addStream(client, res, { ops: !isCustomer(client), transform: isCustomer(client) ? publicStreamEvent : plainStreamEvent });
       const ping = setInterval(() => res.write(': ping\n\n'), 20000);
-      req.on('close', () => {
-        events.off('job', onJob);
-        events.off('library', onLibrary);
-        events.off('production', onProduction);
-        events.off('scene', onScene);
-        events.off('machines', onMachines);
-        events.off('bench', onBench);
-        clearInterval(ping);
-      });
+      req.on('close', () => { forgetStream(); clearInterval(ping); });
       return;
     }
 
@@ -1464,8 +1547,8 @@ data: ${JSON.stringify(e)}
         const file = typeof b.file === 'string' ? b.file : null;
         if (!assetId && file?.startsWith('asset:')) assetId = file.slice(6);
         if (!assetId && file?.startsWith('blob:')) {
-          const p = blobPath(file.slice(5));
-          if (!p || !canUseBlob(client, file.slice(5))) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
+          const p = canUseBlob(client, file.slice(5)) ? await storage.ensureBlob(file.slice(5)) : null;
+          if (!p) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
           const e = lib.getEntity(client, entityId);
           const ext = path.extname(p).toLowerCase();
           assetId = putAsset({
@@ -1494,8 +1577,9 @@ data: ${JSON.stringify(e)}
       const targetProject = fixedProject(client) ?? (q('project') || 'sandbox');
       if (!canProject(client, targetProject)) throw new GenError('No access to that project', { status: 403 });
       const ctype = String(req.headers['content-type'] ?? '').toLowerCase();
-      let buf: Buffer;
-      let filename = String(req.headers['x-filename'] ?? q('filename') ?? '').trim();
+      let buf: Buffer | null = null;
+      let streamed: Streamed | null = null;
+      let filename = decodeName(String(req.headers['x-filename'] ?? q('filename') ?? '')).trim();
       let title = q('title') ?? '';
       if (ctype.includes('application/json')) {
         const b = await readJson(req);
@@ -1506,23 +1590,29 @@ data: ${JSON.stringify(e)}
         const base64Part = rawData.includes(',') ? rawData.slice(rawData.indexOf(',') + 1) : rawData;
         buf = Buffer.from(base64Part, 'base64');
       } else {
-        buf = await readBody(req, 2 * 1024 * 1024 * 1024);
+        // Raw bytes stream to a temp file (src/uploads.ts): a slot per caller and in total, a size cap by role.
+        const release = takeUpload(client.id);
+        try { streamed = await streamBody(req, uploadLimits().maxBytes(client.role)); } finally { release(); }
         if (!title) title = filename;
       }
-      if (!buf.length) throw new GenError('Send the file as the request body');
+      if (!buf?.length && !streamed?.bytes) { if (streamed) fs.rmSync(streamed.file, { force: true }); throw new GenError('Send the file as the request body'); }
       const rawExt = path.extname(filename).toLowerCase().replace(/[^.a-z0-9]/g, '');
       const ext = rawExt || (ctype && !ctype.includes('json') && !ctype.includes('octet-stream') ? extOf(ctype.split(';')[0].trim()) : '.png');
-      const sha = putBlob(buf, ext);
+      const sha = streamed ? streamed.sha256 : putBlob(buf!, ext);
+      if (streamed) {
+        // The library file and the blob are one stream: the blob is a hard link to the library copy, else a copy.
+        putBlobUpload(await linkOrCopy(streamed, ext), sha, ext);
+      }
       ownBlob(sha, client);
-      const asset = putAsset({
-        data: buf,
+      const common = {
         ext,
         client: client.id,
         project: targetProject,
         tool: 'file.import',
         recipe: { tool: 'file.import', version: 1, params: { title: title || null }, inputs: { file: sha } },
         title: (title || filename || 'Uploaded file').slice(0, 200),
-      });
+      };
+      const asset = streamed ? putAssetUpload({ ...common, file: streamed.file, sha256: streamed.sha256, bytes: streamed.bytes }) : putAsset({ ...common, data: buf! });
       // An uploaded image or model gets its levels of detail like a made one (src/lod.ts).
       queueLods([asset.id]);
       // A video, image or sound that the editor's tools or a browser can't use as it is (WebM, HEVC, variable frame rate,
@@ -1569,6 +1659,10 @@ data: ${JSON.stringify(e)}
         if (lod) cache['X-Lod-Level'] = String(lod.level);
         if (String(req.headers['if-none-match'] ?? '') === etag) { res.writeHead(304, cache); return void res.end(); }
         const name = `${a.project}-${a.tool}-${a.id}${lod ? `.lod${lod.level}` : ''}${path.extname(file.path)}`;
+        // A large file leaves through the CDN when storage.cdn is set and its project may use it: this instance never
+        // streams it (a redirect, no caching rule of ours). Ranges and small files are served here as before.
+        const cdn = !q('download') && !req.headers.range && fs.existsSync(file.path) && fs.statSync(file.path).size > CHUNK_OVER ? storage.cdnUrl(file.sha256) : undefined;
+        if (cdn) { res.writeHead(302, { Location: cdn, 'Cache-Control': 'no-store' }); return void res.end(); }
         return serveFile(req, res, file.path, file.mime, { ...cache, ...(q('download') ? { 'Content-Disposition': `attachment; filename="${name}"` } : {}) });
       }
       // Share (the app): a link anyone can open for a week, that shows the file in their browser.
@@ -1616,13 +1710,23 @@ data: ${JSON.stringify(e)}
       // (Its own numbers, then the status under `status`: both have assets, levels and bytes.)
       return send(res, 200, { ...(await pruneLods({ project: typeof b.project === 'string' ? b.project : undefined, dryRun: b.dryRun === true, limit: Number(b.limit) || undefined })), status: lodStatus() });
     }
+    // Big files go straight to the bucket (src/bigupload.ts): the request limit here is 32 MiB on Cloud Run.
+    if (route === '/v1/blobs/upload' && method === 'POST') {
+      return send(res, 200, await startUpload(client, await readJson(req), uploadLimits().bigMaxBytes(client.role)));
+    }
+    if (route === '/v1/blobs/upload/done' && method === 'POST') {
+      const [status, body] = await finishUpload(client, await readJson(req));
+      return send(res, status, body);
+    }
     if (route === '/v1/blobs' && method === 'POST') {
-      const data = await readBody(req, 2 * 1024 * 1024 * 1024);
-      if (!data.length) throw new GenError('Send the file as the request body');
-      const ext = path.extname(String(req.headers['x-filename'] ?? '')).toLowerCase().replace(/[^.a-z0-9]/g, '');
-      const sha = putBlob(data, ext);
+      const release = takeUpload(client.id);
+      let up: Streamed;
+      try { up = await streamBody(req, uploadLimits().maxBytes(client.role)); } finally { release(); }
+      if (!up.bytes) { fs.rmSync(up.file, { force: true }); throw new GenError('Send the file as the request body'); }
+      const ext = path.extname(decodeName(String(req.headers['x-filename'] ?? ''))).toLowerCase().replace(/[^.a-z0-9]/g, '');
+      const sha = putBlobUpload(up.file, up.sha256, ext);
       ownBlob(sha, client);
-      return send(res, 200, { blob: `blob:${sha}`, bytes: data.length });
+      return send(res, 200, { blob: `blob:${sha}`, bytes: up.bytes });
     }
     // The library's files in S3 (src/storage.ts): what's backed up, back up the rest, bring missing files back.
     if (route === '/v1/storage' && method === 'GET') return send(res, 200, storage.status());

@@ -4,4 +4,5 @@
 import { EventEmitter } from 'node:events';
 
 export const events = new EventEmitter();
-events.setMaxListeners(200);
+// Streams share one listener per event name (src/eventhub.ts); the default limit of 10 listeners is plenty and would warn on a leak.
+events.setMaxListeners(50);

@@ -2,9 +2,13 @@
 
 import * as claude from './providers/anthropic.ts';
 import { submit, getJob, type JobSpec } from './jobs.ts';
-import { quoteJobCredits, reserveJobCredits } from './billing.ts';
+import { quoteJobCredits, reserveJobCredits, chargeCredits } from './billing.ts';
 import { GenError } from './util.ts';
 import type { Client } from './auth.ts';
+import { isGenAccountProject, isHouseProject, orgOfProject, orgSecretInfo } from './orgsecrets.ts';
+import * as house from './houseai.ts';
+import { getUserById } from './users.ts';
+import { recordUsage } from './usage.ts';
 
 const SYSTEM_PROMPT = `You are an AI assistant helping users build web games with Hawkes Play, a script layer over Babylon.js.
 
@@ -111,15 +115,44 @@ export type AssistantResponse = {
   code?: string;
 };
 
+/** Who a legacy assistant call is for: the signed-in client, its project, and the Gen account that pays (if any). */
+export type Caller = { client: Client; project: string; payerId: string | null };
+
+type AskRequest = Parameters<typeof claude.ask>[0];
+
+/**
+ * One Claude call for a customer, on the same route as the other assistants (the AI editor: src/editor.ts). The account's
+ * own key or subscription first; else, for a Gen app account, the house AI (src/houseai.ts), which it pays for in credits
+ * (402 before the call when it can't, the charge after). The call always runs inside a customer's callScope, so the
+ * studio's own Claude is never used: a call with no access of its own is refused (402), not run on ours.
+ */
+export async function customerAsk(who: Caller, req: AskRequest, what: string): Promise<{ text: string }> {
+  const org = orgOfProject(who.project);
+  const ownAi = Boolean(org && (orgSecretInfo(org, 'anthropic').set || orgSecretInfo(org, 'claude-subscription').set));
+  const payer = who.payerId && isGenAccountProject(who.project) && !ownAi ? who.payerId : null;
+  if (payer) house.checkCanPay(getUserById(payer)?.credits ?? 0);
+  const r = await claude.callScope.run({ customer: true, org, house: isHouseProject(who.project), who: who.project }, () => claude.ask(req));
+  const onHouse = !['byok', 'subscription'].includes(r.billing);
+  if (payer && onHouse) chargeCredits(payer, house.turnCredits(r.cost ?? 0), 'ai_turn', `Assistant: ${what}`.slice(0, 120));
+  recordUsage({ client: who.client.name, project: who.project, ...claude.usageOf(r, `${onHouse ? 'house AI (Gen)' : 'own Claude'}: assistant ${what}`.slice(0, 200)) });
+  return { text: r.text };
+}
+
+/** The legacy assistant's account gate: a Gen app account must be the one paying (its own user row), else refused. */
+function requireCaller(who: Caller) {
+  if (isGenAccountProject(who.project) && !who.payerId) throw new GenError('Sign in to your Gen account to use the assistant', { status: 403 });
+}
+
 /**
  * Process a user message and return an AI response
  */
 export async function processMessage(
-  userId: string,
+  who: Caller,
   gameContext: { gameName?: string; currentFile?: string; currentCode?: string },
   history: AssistantMessage[],
   newMessage: string
 ): Promise<AssistantResponse> {
+  requireCaller(who);
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
 
   // Add context about the current game
@@ -144,11 +177,11 @@ export async function processMessage(
     // Convert messages to a single prompt string
     const prompt = messages.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`).join('\n\n');
 
-    const response = await claude.ask({
+    const response = await customerAsk(who, {
       system: SYSTEM_PROMPT,
       prompt,
       maxTokens: 500
-    });
+    }, 'chat');
 
     const responseText = response.text;
 
@@ -164,6 +197,8 @@ export async function processMessage(
       code
     };
   } catch (error: any) {
+    // A refusal from the route itself (402 no credits, 503 house AI down, 402 no access) keeps its status.
+    if (error instanceof GenError) throw error;
     throw new GenError(`AI assistant error: ${error.message}`, { status: 500 });
   }
 }
@@ -268,20 +303,22 @@ function extractCode(response: string): string | undefined {
  * Get code suggestions for a specific context
  */
 export async function getCodeSuggestions(
+  who: Caller,
   context: {
     intent: string; // e.g., "add player movement", "create platformer controls"
     currentCode?: string;
   }
 ): Promise<string> {
+  requireCaller(who);
   const promptText = context.currentCode
     ? `Given this game code:\n\`\`\`javascript\n${context.currentCode}\n\`\`\`\n\nHelp me ${context.intent}. Provide only the code to add, with comments.`
     : `Show me how to ${context.intent} in Hawkes Play. Provide a complete code example.`;
 
-  const response = await claude.ask({
+  const response = await customerAsk(who, {
     system: SYSTEM_PROMPT,
     prompt: promptText,
     maxTokens: 400
-  });
+  }, 'code');
 
   const code = extractCode(response.text);
   return code || response.text;

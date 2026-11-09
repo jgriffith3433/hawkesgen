@@ -3,7 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { gcs, gcpTokens } from '../gcp/gcs.ts';
 import { readToken, allowed } from './broker.ts';
-import { signer as defaultSigner, signedGetUrl, type Signer } from './sign.ts';
+import { signer as defaultSigner, signedGetUrl, signedUrl, type Signer } from './sign.ts';
 
 export type BrokerDeps = {
   stat: (uri: string) => Promise<{ size: number } | null>;
@@ -85,7 +85,7 @@ export async function handleBroker(req: IncomingMessage, res: ServerResponse, ur
   const op = url.searchParams.get('op') ?? '';
   const uri = url.searchParams.get('uri') ?? '';
   const method = req.method ?? 'GET';
-  if ((op === 'write') !== (method === 'PUT') || !allowed(run, op, uri)) return json(403, { error: `not allowed: ${op} ${uri}` });
+  if ((op === 'write') !== (method === 'PUT') || (op === 'put' && method !== 'GET') || !allowed(run, op, uri)) return json(403, { error: `not allowed: ${op} ${uri}` });
   try {
     if (op === 'stat') {
       const s = (await deps.stat(uri)) ?? (await deps.source(uri));
@@ -104,6 +104,13 @@ export async function handleBroker(req: IncomingMessage, res: ServerResponse, ur
       const who = await deps.signer().catch(() => null);
       if (!who) return json(200, { proxy: true, size: Number(s.size) });
       return json(200, { url: await signedGetUrl(uri, who, 900), size: Number(s.size) });
+    }
+    if (op === 'put') {
+      // A signed upload link for one object of this run's folder: large outputs go straight to Cloud Storage and never
+      // pass through Cloud Run's 32 MiB request limit. Without a signer the worker falls back to op=write.
+      const who = await deps.signer().catch(() => null);
+      if (!who) return json(200, { proxy: true });
+      return json(200, { url: await signedUrl('PUT', uri, who, 1800) });
     }
     if (op === 'read') {
       const r = await deps.open(uri, req.headers.range ? String(req.headers.range) : undefined);

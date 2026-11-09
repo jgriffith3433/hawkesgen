@@ -122,19 +122,44 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   It is handed to the one Cloud Run execution as the env override `HAWKES_GITHUB_TOKEN`, used there only as the git
   `http.extraheader` of the fetch, and dropped from the vault when the job ends. Gen restarted before the build started:
   the job fails saying to submit again. Gen's own GitHub secret is never used: the container drops `GITHUB_TOKEN` and
-  `R2_BUILDS_TOKEN` in this mode. GitHub ends an installation token an hour after it is made, so a new execution is
-  started only with one held under 45 minutes (`customer.ts TOKEN_MAX_AGE_SECONDS`); an older one fails at once, kind
-  `token` ("expired ... resubmit it with a fresh token"). A running build needs it only for the fetch at its start, so a
-  long Unity build never outlives it.
-- **One job, one build** (sick-of-it-unity j_bb4c57cd1cf3, 2026-11-03: built five times, reported as a fetch error with
-  the earlier build's last Unity line). Every execution of a job writes the same names under `unity-builds/<job>/`, so:
-  the note (`cloud-job.json`) and `artifact.tgz` stay until the job has kept the output (`releaseCloudBuild`, called by
-  `runCustomerBuild` after the emit), and a Gen that goes down before then follows the same finished execution again on
-  its restart. With no note, an earlier success whose artifact is still there is finished from (`earlierRun`, result
-  `recovered`), never built again; anything else an earlier execution left is deleted before a new one starts. Gen reads
-  a Unity log only when the execution's result names it (`result.log`). The artifact goes into the library by moving its
-  file (`Output.file`, `putAsset fromFile`): Gen's disk on Cloud Run is memory, and a 1 GB build held as a Buffer beside
-  its temp file and its library copy took the 4 GiB instance down.
+  `R2_BUILDS_TOKEN` in this mode.
+- **A token older than 45 minutes starts no new build** (`customer.ts TOKEN_MAX_AGE_SECONDS`). GitHub's installation tokens
+  last an hour and the container fetches its source after the queue, the machine and the image, so an older one would
+  die at the fetch with Cloud Run time spent. The job fails at once, kind `token`, "resubmit it with a fresh token".
+  The vault still keeps tokens 12 hours so a restarted Gen can read them; the age check is what decides. A build that
+  ran out of memory is made again on a bigger machine only if its token is still under 45 minutes old.
+- **A fresh token from Studio, so queue time never matters** (`github.refresh = { url, build, key }`, next to repo, commit,
+  token and ref). `url` must be a public https address (checked at submit and again, resolved, before each call), `build` the
+  build's id and `key` the 64-hex key Studio made for that one build; the key is held in the token vault like the token
+  (the job keeps only its `tok_` reference). When the build starts (`customer.ts freshCustomerToken`), if the held token is
+  older than 45 minutes, missing or expired, or GitHub answers 401 to the project read, Gen POSTs `{ job, build, key }` to
+  `url` and uses the `{ token, repo, commit, expiresAt }` it returns (it must be for this build's repo and commit and not
+  about to expire); the new token replaces the held one, so an out-of-memory second try reads it too. Only a failed refresh
+  fails the build, kind `token`. No polling: one call per start. Without `refresh` the 45-minute rule above is unchanged.
+- **One build per job, across restarts** (2026-11-04, Sick of It v13, `j_bb4c57cd1cf3`: Unity built the game, Gen died
+  keeping the ~1 GB output, and each restart built it again, five times; the fifth failed at the fetch and replaced the
+  result). Now:
+  - The moment the execution ends, Gen notes it in the bucket (`unity-builds/<job>/done.json`: the execution, its
+    run time, Cloud Run's message), before the output is downloaded. A Gen that starts the job again finds the note
+    and takes that execution's `result.json` and `artifact.tgz` ("the cloud build already finished ... not building
+    again"), success or failure, instead of starting another execution.
+  - `artifact.tgz` and `done.json` stay in the bucket until the build output is a library asset
+    (`releaseFinishedBuild`); a job that resumes with the asset already in its outputs finishes from it without
+    touching the bucket. An out-of-memory build made again on a bigger machine clears the note first
+    (`forgetFinishedBuild`).
+  - **Streamed, not read.** The archive is downloaded to a file (`gcsDownload` streams) and kept with
+    `ctx.emitFile` -> `library.ts putAssetFile`, which copies and hashes it in chunks. `fs.readFileSync` of the ~1 GB
+    archive was what ran the 4 GiB instance out of memory.
+  - **No note, but an earlier success still in the bucket** (its notes lost, or a Gen from before `done.json`): its
+    `result.json` says ok and `artifact.tgz` is still there, so Gen finishes from it (`cloudrun.ts earlierRun`, the
+    result says `recovered`) and never builds over it.
+  - **Each execution's log is its own.** Before a new execution starts, Gen deletes what an earlier execution of the
+    job left (`unity.log`, `result.json`, `artifact.tgz` and the rest), so one that stops before Unity runs (the fetch)
+    can't be shown with an earlier execution's last Unity line, and its "git said:" text is git's. Gen also reads a
+    Unity log only when the execution's own `result.json` names it (`result.log`): one that failed at the license or
+    the fetch uploaded none.
+  - If the result says the build stopped before the cache step (`license`, `source`), the log says
+    `Library cache: not reached (the build stopped at "source")` instead of "none restored".
 - **Before anything starts**, Gen asks GitHub (with that token) for the project folder (the tree, when `path` is not
   given) and its `ProjectVersion.txt`. A version without an image fails at once, kind `config`, naming the project's
   version and the supported ones. **The supported versions are `gcp.images`** (`{ "<version>": "<Cloud Run job>" }`; a
@@ -237,6 +262,46 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   every other job of that key (AGENTS.md, "Customers' Studios pay from their Studio balance"; `src/orgcredits.ts`).
 - Always Cloud Run (`backend` is set to `cloudrun`; the queue's `builder-cloud` lane), never the build server or a VM.
 
+### Compile-only check
+
+`check: true` (customer mode only; Studio sends it next to `github { repo, commit, token, ref }`, `path` and `machine`)
+asks one question of a commit: does the project compile? `src/providers/builder/check.ts` (the log parser and the
+credits), `src/tools/build.ts runCustomerBuild`, `server/unity-cloudrun/entrypoint.sh` (`unity_args`).
+
+```jsonc
+{ "tool": "unity.build", "project": "<the key's Gen project>", "params": {
+  "github": { "repo": "owner/name", "commit": "<sha>", "token": "<installation token>", "ref": "refs/heads/agent/x" },
+  "path": "Game", "machine": "m",   // both optional; a check's default machine is settings.unityBuild.gcp.checkSize (m)
+  "check": true                     // a boolean: anything else is refused. `out` is absent or "none"; "artifact" and `method` are refused
+} }
+```
+
+- **The same container as a build:** the project's own Unity version (probed from GitHub, its image, its customer job
+  and size twin), the customer's Library cache `unity-cache/cust--...` **restored** (`cache.restore`), and Gen's licence
+  (the customer job's own Unity account; nothing from the customer: no licence, no workflow).
+- **What runs:** `unity-editor -batchmode -nographics -quit -projectPath <p> -logFile -`. No `-buildTarget`, no
+  `-executeMethod` (so `HawkesBuild.cs` isn't added either), no `-runTests`: Unity imports, compiles every script and
+  exits, non-zero on compiler errors (`test/unity-customer.test.ts` runs the script's `unity_args` for both modes).
+- **Nothing is kept and the cache is never written:** `spec.cache.save` is `null` (the container says "a compile-only check
+  restores the Library cache and never saves it"), the signed URLs have no `artifact.tgz` and no cache key to PUT (only
+  `unity.log` and `result.json`), no output is packed or uploaded, no `.tar.gz` asset is made (the Unity log is still kept
+  as one), a check never starts clean because of earlier builds' failures, and its outcome is not recorded in the
+  cache's state, so a check can't poison the build cache.
+- **The result:** `{ ok, check: true, seconds, cost, unity, errors: [{ file, line, col, code, message }], logTail?,
+  machine, cloud, credits: { used, refunded }, artifact: null }`. `cloud.stages` has the stage seconds (cache restore
+  included) and `cloud.ranSeconds` the machine time. `errors` are the `Assets/.../X.cs(12,34): error CS1503: ...` lines
+  of Unity's log, unique and at most 100. `ok: false` with kind `compile` (the job fails with it) when there are any:
+  the message is the count and the first error. Other failures keep their kinds (`license`, `source`, `token`, `config`,
+  `timeout`...), and the container may also say `compile` itself.
+- **Priced by time, not the flat build price:** `UNITY_CHECK_CREDITS` (default 15, 1 credit = $0.01) is reserved at
+  submit (a Gen account's reservation, or a studio's charge); when it ends the machine time is worth `cost` (Cloud Run
+  at the machine's vCPU and GiB per second) times the margin, at least 1 credit, and the rest is refunded
+  (`billing.ts refundJobCreditsDown`, `orgcredits.ts refundOrgCharge` with an amount). A check that ends on compiler errors
+  keeps that settled charge (`keepsCharge`); one that ends on Gen's own failure is refunded in full. `seconds` and `cost`
+  (USD) are in the result and the job's log (`compiled: no errors, 96 s on m (...), about $0.010, 1 credits`), so Studio
+  shows time and cost per run. A check that runs past its reservation isn't charged the difference yet: the build's
+  time limit bounds it.
+
 ## Settings
 
 `settings.unityBuild` (POST `/v1/settings`, owner):
@@ -249,7 +314,7 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
 | `cleanAfterFailures` | 2 | Cache-looking failures in a row before the next build runs clean |
 | `concurrency` | 2 | Cloud Run builds at once (their own queue lane, `builder-cloud`; VM builds `builder-vm` and the Windows box one at a time) |
 | `vmAt` | 0.85 | A Cloud Run build peaking over this share of its memory moves its project to `vm` (0: never) |
-| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off), `regions` (`["us-central1"]`: more regions with the same jobs, below), `liveRegion` (us-east4: where live Gen and Studio run, tried last; `""` turns that off) |
+| `gcp` | | `project`, `region` (us-east4), `job` (hawkes-unity-build), `bucket`, `unity` (6000.3.7f1), `cpu` 8, `memoryGiB` 32, `images` (customer mode's versions: `{ "<version>": "<job>" }`; empty = `unity` on `job`), `checkSize` (m: a compile-only check's default machine), `customerJob` (hawkes-unity-build-customer: the isolated job customer builds run on; other versions' `<job>-customer`; `""` turns customer builds off), `regions` (`["us-central1"]`: more regions with the same jobs, below), `liveRegion` (us-east4: where live Gen and Studio run, tried last; `""` turns that off) |
 | `vm` | | `zone` (us-east4-a), `machineType` (n2-standard-8), `pricePerHour` (0.10, for usage) |
 
 **When a region is full** (J, 2026-10-31: a build waited for Google's "unknown quota capacity" in us-east4 with our quota

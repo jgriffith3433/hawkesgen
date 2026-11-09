@@ -136,15 +136,95 @@ export function makeTools(c: MakeContext): McpTool[] {
     },
     {
       name: 'rig_character',
-      description: 'Add a humanoid skeleton and skinning to a 3D model (GLB) so it can be animated.',
-      inputSchema: obj({ model: fileIn('The 3D model (GLB)'), ...common }, ['model']),
-      run: async (a) => run(a, 'mesh.rig', { kind: 'auto' }, { mesh: a.model }),
+      description: 'Add a skeleton and skinning to a 3D model (GLB, FBX or OBJ) so it can be animated. Humanoids get a Mixamo-named skeleton (fingers too): any Mixamo or library clip plays on it, and Unity maps it as Humanoid with no setup. Returns the rigged GLB, an FBX and a walk video.',
+      inputSchema: obj({ model: fileIn('The 3D model (GLB from make_3d_model, or FBX/OBJ), standing upright'), humanoid: bool('It is a humanoid (default: decided from its shape; others get a skeleton that fits their body)'), height: num('Scale it to this many meters tall (optional)'), ...common }, ['model']),
+      run: async (a) => run(a, 'mesh.rig', { kind: a.humanoid ? 'humanoid' : 'auto', ...(a.height ? { height: Number(a.height) } : {}) }, { mesh: a.model }),
     },
     {
       name: 'animate_character',
-      description: 'A skeletal animation from words ("a confident walk", "jump and land") on a rigged 3D character: a GLB with the clip.',
-      inputSchema: obj({ model: fileIn('The rigged 3D model (GLB; rig_character makes one)'), motion: str('The motion'), seconds: num('Length (default 3)'), loop: bool('A seamless loop'), ...common }, ['model', 'motion']),
-      run: async (a) => run(a, 'motion.from-text', { prompt: a.motion, ...(a.seconds ? { seconds: a.seconds } : {}), ...(a.loop ? { loop: true } : {}) }, { character: a.model }),
+      description: 'A new skeletal animation from words on a rigged humanoid: "a person throws a straight right punch and returns to guard". Write the move as one present-tense sentence naming the limbs and how it ends. Returns the clip as GLB and FBX on the character, a BVH, a preview video, and a motion check (foot slide, pops, jitter) per take. takes > 1 makes variations; the result names the best by the check. A stock clip (stock_animations) is cheaper when one fits.',
+      inputSchema: obj({
+        model: fileIn('The rigged 3D model (GLB or FBX; rig_character makes one)'), motion: str('The move, as a sentence'), seconds: num('Length, 0.4-12 (default 2; attacks 0.8-2)'),
+        loop: bool('A seamless loop (idles, cycles)'), in_place: bool('Remove the travel (attacks, hits, idles)'), takes: num('Variations to make, 1-8 (default 1)'), ...common,
+      }, ['model', 'motion']),
+      run: async (a) => run(a, 'motion.from-text', {
+        prompt: a.motion, ...(a.seconds ? { seconds: Number(a.seconds) } : {}), ...(a.loop ? { loop: true } : {}), ...(a.in_place ? { inPlace: true } : {}),
+        ...(a.takes ? { takes: Math.min(8, Math.max(1, Math.round(Number(a.takes)))) } : {}),
+      }, { character: a.model }),
+    },
+    {
+      name: 'animate_from_video',
+      description: 'Motion capture from an ordinary video: the person\'s movement becomes a skeletal animation on your rigged character (or a BVH alone). Best with the whole body in frame, one person, a still camera, up to 60 s. Give video, or leave it out and describe the move: the character is first filmed doing it (a still of the model animated by a video model), then the motion is read back. Returns GLB, FBX, BVH, a preview and a motion check.',
+      inputSchema: obj({
+        model: fileIn('The rigged 3D model (GLB or FBX; rig_character makes one)'), video: fileIn('The video of someone moving (mp4/mov/webm; optional)'),
+        motion: str('Without a video: the move as it happens ("she spins on one foot and lands a roundhouse kick")'), start: num('Seconds into the video where the move starts'), seconds: num('How much of the video to read (default: all, up to 60)'),
+        still_camera: bool('The camera does not move (more accurate)'), loop: bool('A seamless loop'), in_place: bool('Remove the travel'), name: str('The clip\'s name (default mocap)'), ...common,
+      }, ['model']),
+      run: async (a) => {
+        const params = {
+          name: a.name ?? 'mocap', camera: a.still_camera ? 'still' : 'auto', ...(a.start ? { start: Number(a.start) } : {}), ...(a.seconds ? { seconds: Number(a.seconds) } : {}),
+          ...(a.loop ? { loop: true } : {}), ...(a.in_place ? { inPlace: true } : {}),
+        };
+        if (a.video) return run(a, 'motion.from-video', params, { video: a.video, character: a.model });
+        if (!a.motion) throw new Error('Give video, or describe the move (motion) to film the character doing it');
+        return chain(a, [
+          { tool: 'blender.render', params: { shot: { characters: [{ file: 0, height: 1.8, facing: 0 }], camera: { move: 'static', angle: 0, distance: 3.4, height: 1.0, lens: 40 }, lights: 'studio' }, passes: [], stills: [0], engine: 'eevee', width: 640, height: 960, snap: false, frames: 1 }, inputs: { files: [a.model] } },
+          { tool: 'video.i2v', params: { prompt: `${a.motion}. The whole body stays in frame, the camera does not move, plain studio background.`, width: 640, height: 960, frames: wanFrames(Number(a.seconds) || 3) }, inputs: { start: '$prev' } },
+          { tool: 'motion.from-video', params: { ...params, camera: 'still' }, inputs: { video: '$prev', character: a.model } },
+        ]);
+      },
+    },
+    {
+      name: 'stock_animations',
+      description: 'The free (CC0) stock animation library: Quaternius\'s humanoid clips (walks, runs, idles, melee, hits, deaths, jumps...). Search by word; each has an id like motion:ual1/Walk_Loop to pass to add_animations. Free to use, cheaper than generating.',
+      inputSchema: obj({ search: str('A word to look for (walk, punch, death...; empty lists all)'), limit: num('How many (default 40)') }),
+      run: async (a) => {
+        const q = new URLSearchParams({ tool: 'motion.library', limit: String(Math.min(200, Number(a.limit) || 40)), ...(a.search ? { q: String(a.search) } : {}) });
+        const r = await c.gen.request(`/assets?${q}`);
+        return { clips: (r.items ?? []).map((x: any) => ({ id: x.id, name: x.title, tags: x.tags, seconds: x.duration ?? x.meta?.duration, loop: x.loop ?? x.meta?.loop })), total: r.total };
+      },
+    },
+    {
+      name: 'add_animations',
+      description: 'Put clips on a rigged character: stock clips (motion:ual1/Walk_Loop from stock_animations), Mixamo FBX downloads, BVH mocap, or clips from another character. Each is retargeted (any Mixamo, Unreal, Rigify, SMPL or SOMA skeleton), optionally looped or kept in place, and exported. Returns one GLB per clip (and an FBX with all of them, Mixamo names, ready for Unity Humanoid), plus preview videos when asked.',
+      inputSchema: obj({
+        model: fileIn('The rigged 3D model (GLB or FBX)'), clips: { type: 'array', items: { type: 'string' }, description: 'Clip ids or files: motion:ual1/Walk_Loop, asset:<id> of an FBX/GLB/BVH, blob:<sha>' },
+        names: { type: 'array', items: { type: 'string' }, description: 'A name per clip (default: the clip\'s own)' }, in_place: bool('Remove the travel from every clip'), loop: bool('Make every clip loop'),
+        preview: bool('Also a video of each clip (default false)'), ...common,
+      }, ['model', 'clips']),
+      run: async (a) => {
+        const clips: string[] = (a.clips ?? []).slice(0, 16);
+        if (!clips.length) throw new Error('Give at least one clip');
+        const names: string[] = clips.map((cl, i) => String(a.names?.[i] ?? cl.replace(/^motion:[^/]+\//, '').replace(/^(asset|blob):/, '').replace(/[^\w-]/g, '').slice(0, 40) ?? `Clip${i + 1}`) || `Clip${i + 1}`);
+        const ops: Record<string, unknown>[] = [{ op: 'import', file: 0, clips: false }];
+        names.forEach((name, i) => {
+          ops.push({ op: 'retarget', file: i + 1, name });
+          if (a.in_place) ops.push({ op: 'inplace', clip: name, mode: 'travel' });
+          if (a.loop) ops.push({ op: 'loop', clip: name, blend: 6 });
+          ops.push({ op: 'export', format: 'glb', name, clips: [name] });
+        });
+        ops.push({ op: 'export', format: 'fbx', name: 'character' });
+        if (a.preview) ops.push({ op: 'preview', turntable: false, clips: names, size: 512, samples: 16, maxFrames: 360 });
+        return run(a, 'blender.character', { ops }, { files: [a.model, ...clips] });
+      },
+    },
+    {
+      name: 'export_character',
+      description: 'Package a rigged character with its clips for a game engine: unity (FBX, Mixamo bone names so Unity maps it as Humanoid, each clip a take, 1 unit = 1 m) or web (GLB, one animation per clip, Draco and WebP for a small file, for Babylon.js 9 AnimatorAvatar or three.js). Pass the clips (GLBs from animate_character / add_animations, or any clip file).',
+      inputSchema: obj({ model: fileIn('The rigged 3D model'), clips: { type: 'array', items: { type: 'string' }, description: 'Clip files to include (asset:<id>, motion:ual1/...)' }, engine: str('unity or web (default both)'), ...common }, ['model']),
+      run: async (a) => {
+        const engine = String(a.engine ?? 'both').toLowerCase();
+        const ops: Record<string, unknown>[] = [{ op: 'import', file: 0 }, { op: 'retarget', file: '*' }];
+        if (engine !== 'web') ops.push({ op: 'export', format: 'fbx', name: 'character' });
+        if (engine !== 'unity') ops.push({ op: 'export', format: 'glb', name: 'character', compress: 'draco', textures: 'webp' }, { op: 'export', format: 'glb', name: 'character-full', title: 'glb-uncompressed' });
+        return run(a, 'blender.character', { ops }, { files: [a.model, ...(a.clips ?? []).slice(0, 24)] });
+      },
+    },
+    {
+      name: 'check_animation',
+      description: 'Measure a humanoid clip (a BVH from animate_character or animate_from_video, or any BVH): foot slide, feet through the floor, joint pops, jitter, loop seam, travel. Free. Returns ok, the problems and what to try.',
+      inputSchema: obj({ clip: fileIn('The clip as a BVH'), loop: bool('It should loop'), in_place: bool('It should stay in place'), ...common }, ['clip']),
+      run: async (a) => run(a, 'motion.check', { ...(a.loop ? { loop: true } : {}), ...(a.in_place ? { inPlace: true } : {}) }, { clip: a.clip }),
     },
     {
       name: 'animate_image',

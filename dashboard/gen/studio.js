@@ -5,7 +5,9 @@
 // under "More". Inputs come from the library (a picker, a dragged tile, what's open in the viewer) or an upload.
 // Results go to Media and open in the viewer; pictures, clips and sounds can go straight onto the timeline.
 
+import { needsGlb, toGlb, glbNote } from './model3d.js';
 import { $, $$, h, api, toast, fileUrl, bus, icon, plainError, ApiError } from './lib.js';
+import { trouble, troubleNote } from './trouble.js';
 import { P, trackOf, isMagnetic } from './project.js';
 import { currentSource, showSource } from './player.js';
 import { runJob, quote, credits, showPane, assetKindLabel } from './media.js';
@@ -39,7 +41,9 @@ const GROUPS = [
     ['blender.render', '3D shot render', 'Render a 3D shot, with its depth, pose and edge videos for filming.'], ['blender.character', '3D character pipeline', 'Clean up, retarget, bake and export a 3D character.'], ['image.geometry', 'Depth and normals', 'Depth and normals from one picture.'], ['splat.build', 'Gaussian splat', 'A Gaussian splat scene from a picture.'],
   ] },
   { id: 'motion', label: 'Animation', icon: 'person', tools: [
-    ['motion.from-text', 'Text to 3D skeletal motion', 'A humanoid animation from words, on your rigged character.'], ['sprite.sheet', 'Sprite sheet from a clip', 'A clip or frames as a game sprite sheet.'], ['image.pose-detect', 'Detect a pose', 'Find the body pose in a picture.'],
+    ['motion.from-text', 'Text to 3D skeletal motion', 'A humanoid animation from words, on your rigged character.'], ['motion.from-video', 'Video to 3D motion (mocap)', 'Lift a person\'s movement out of a video onto your rigged character.'],
+    ['motion.check', 'Check an animation', 'Foot slide, feet through the floor, pops and jitter in a clip (BVH). Free.'],
+    ['sprite.sheet', 'Sprite sheet from a clip', 'A clip or frames as a game sprite sheet.'], ['image.pose-detect', 'Detect a pose', 'Find the body pose in a picture.'],
   ] },
   { id: 'audio', label: 'Voice, sound & music', icon: 'music', tools: [
     ['audio.music', 'Music', 'A song or score from a description, with or without lyrics.'], ['audio.voice', 'Character voice', 'Speak a line in a character voice.'], ['audio.voice-design', 'Design a voice', 'Describe a voice and hear candidates.'], ['audio.sfx', 'Sound effect', 'A sound effect from words.'],
@@ -101,12 +105,15 @@ export function initStudio() {
 }
 
 async function loadCatalog() {
+  // No session, no catalog (it answers 401): the list shows its sign-in note without asking.
+  if (!state.user) { S.loaded = 'signedOut'; drawGroups(); drawList(); return; }
   try {
     const { tools } = await api('/v1/editor/catalog');
     S.tools = new Map(tools.map((t) => [t.id, t]));
     S.loaded = true;
   } catch (err) {
     S.loaded = err.status === 401 ? 'signedOut' : 'error';
+    S.loadError = err;
   }
   try { if (state.user && !S.voices.length) S.voices = (await api('/v1/editor/voices')).voices ?? []; } catch { /* */ }
   drawGroups();
@@ -145,7 +152,7 @@ function drawList() {
     list.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Images, video, 3D models, rigs, voices, sound and music: every tool, here.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadCatalog, 'login') }, 'Sign in')));
     return;
   }
-  if (S.loaded === 'error') { list.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Couldn\'t load the tools.'), h('button', { class: 'ghost small', onclick: loadCatalog }, 'Try again'))); return; }
+  if (S.loaded === 'error') { list.replaceChildren(troubleNote(S.loadError, loadCatalog)); return; }
   if (!S.loaded) { list.replaceChildren(h('div', { class: 'working' }, 'Loading tools')); return; }
   const match = (label, t) => !S.q || `${label} ${t?.id ?? ''} ${t?.description ?? ''}`.toLowerCase().includes(S.q);
   const sections = [];
@@ -207,7 +214,7 @@ function chainForm(c) {
     h('ol', { class: 'chain-steps muted small' }, ...c.steps('…').map((s) => h('li', {}, CURATED.get(s.tool)?.label ?? S.tools.get(s.tool)?.title ?? s.tool))),
     h('div', { class: 'gen-foot' }, q, run));
   const spec = () => ({ tool: 'asset.make', params: { steps: c.steps(p.value.trim() || 'x') } });
-  priced(form, q, () => (p.value.trim() ? spec() : null));
+  priced(form, q, spec);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     if (!p.value.trim()) return toast('Say what to make.');
@@ -298,12 +305,29 @@ function toolForm(t, prefill, prefillNodes) {
   return form;
 }
 
-/** Prices the form as it changes. */
+/**
+ * Prices the form as it changes: a price is on screen the moment the form opens ("Pricing…", then the credits, or
+ * "Free"), and again after each change to an option (the latest answer wins). If the quote can't be had it says the
+ * price is shown before anything is charged, never a blank.
+ */
 function priced(form, q, specOf) {
-  let timer = 0;
-  const refresh = async () => { const s = specOf(); q.textContent = s ? credits(await quote(s.tool, s.params)) : ''; };
-  form.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 350); });
-  form.addEventListener('change', () => { clearTimeout(timer); timer = setTimeout(refresh, 350); });
+  let timer = 0, seq = 0;
+  q.classList.add('quote');
+  q.setAttribute('aria-live', 'polite');
+  const show = (text, price = null) => { q.textContent = text; q.dataset.credits = price == null ? '' : String(price); };
+  const refresh = async () => {
+    const s = specOf();
+    if (!s) return show('Price shown once the form is filled in');
+    const mine = ++seq;
+    if (!q.dataset.credits) show('Pricing…');
+    const r = await quote(s.tool, s.params);
+    if (mine !== seq) return;
+    if (!r) return show('Price shown before it runs');
+    show(r.credits === 0 ? 'Free' : credits(r), r.credits);
+  };
+  const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 350); };
+  form.addEventListener('input', later);
+  form.addEventListener('change', later);
   refresh();
 }
 
@@ -436,22 +460,31 @@ const thumbOf = (a) => (a.kind === 'image' ? h('img', { src: fileUrl(a.id), alt:
 /** A pop-over of the library's files of one kind, plus Upload. */
 export function libraryPicker(kind, onPick) {
   const grid = h('div', { class: 'pick-grid' }, h('p', { class: 'muted small' }, 'Loading…'));
-  const up = h('input', { type: 'file', hidden: true, accept: kind === 'image' ? 'image/*' : kind === 'video' ? 'video/*' : kind === 'audio' ? 'audio/*' : '' });
+  const up = h('input', { type: 'file', hidden: true, accept: kind === 'image' ? 'image/*' : kind === 'video' ? 'video/*' : kind === 'audio' ? 'audio/*' : kind === 'mesh' ? '.glb,.gltf,.fbx,.obj,image/*' : '', multiple: kind === 'mesh' });
   const pop = h('div', { class: 'picker' }, h('div', { class: 'sheet-head' }, h('b', {}, `Pick ${KIND_LABEL[kind]?.toLowerCase() ?? 'a file'}`), h('button', { type: 'button', class: 'icon-btn', onclick: () => pop.remove() }, icon('close'))), grid,
     h('div', { class: 'row' }, h('button', { type: 'button', class: 'ghost small', onclick: () => up.click() }, icon('upload'), 'Upload'), up));
   document.body.append(pop);
   up.addEventListener('change', async () => {
-    const f = up.files?.[0];
+    let f = up.files?.[0];
     if (!f) return;
     grid.replaceChildren(h('div', { class: 'working' }, 'Uploading'));
     try {
+      // FBX and OBJ go up as GLB (model3d.js), with any pictures picked alongside as their textures.
+      if (needsGlb(f)) {
+        grid.replaceChildren(h('div', { class: 'working' }, 'Converting to GLB'));
+        const r = await toGlb(f, [...up.files].filter((x) => x.type.startsWith('image/')));
+        f = r.file;
+        const note = glbNote(r);
+        if (note) toast(note);
+        grid.replaceChildren(h('div', { class: 'working' }, 'Uploading'));
+      }
       const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(f.name)}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': f.type || 'application/octet-stream', 'X-Filename': f.name }, body: f });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new ApiError(j.error ?? `HTTP ${r.status}`, r.status);
       onPick({ id: j.id ?? j.asset?.id, kind: j.kind ?? kind, title: f.name });
       bus.emit('jobDone');
       pop.remove();
-    } catch (err) { toast(plainError(err.message)); pop.remove(); }
+    } catch (err) { trouble(err); pop.remove(); }
   });
   const q = new URLSearchParams({ limit: '80', project: state.user.project });
   if (kind && kind !== 'file') q.set('kind', kind);

@@ -45,6 +45,8 @@ export type CloudService = {
   headers?: () => Record<string, string>;
   /** How long a run waits for a free instance before the job goes to the next provider. */
   waitForInstanceMs?: number;
+  /** How long past that a provider's cold worker may take to answer at all (its first pull of the image). */
+  coldStartMs?: number;
 };
 
 export const SERVICES_FILE = () => path.join(paths.server, 'cloudrun', 'services.json');
@@ -79,10 +81,12 @@ export function serviceForFamily(map: ServiceMap, family: string, overrides: Rec
 /** Where this job's GPU work runs: a Cloud Run service, or the fleet and why. */
 export type Route = { service: CloudService; why?: undefined } | { service: null; why: string };
 
-export function cloudRoute(job: { family: string | null; params: Record<string, any>; labels?: Record<string, unknown> }, tool: Pick<Tool, 'provider' | 'server' | 'gpuSeconds'>, settings: Pick<Settings, 'gpu'>, map: ServiceMap): Route {
+export function cloudRoute(job: { family: string | null; params: Record<string, any>; labels?: Record<string, unknown> }, tool: Pick<Tool, 'provider' | 'server' | 'gpuSeconds'> & { image?: Tool['image'] }, settings: Pick<Settings, 'gpu'>, map: ServiceMap): Route {
   const fleet = (why: string): Route => ({ service: null, why });
   if (tool.provider !== 'comfy') return fleet('not a GPU tool');
   if (tool.server === 'ssh') return fleet('the tool works on the server over SSH');
+  if (tool.image === 'unity-render') return fleet('unity.render needs an endpoint running the unity-render image (settings.gpu.providers families ["unity-render"])');
+  if (tool.image === '3d') return fleet('the tool needs the 3D worker image (Cloud Run runs ComfyUI services): a 3D endpoint in settings.gpu.order, or the fleet');
   const family = job.family ?? '';
   const forced = job.labels?.gpuBackend;
   if (forced === 'fleet') return fleet('this job asked for the fleet');

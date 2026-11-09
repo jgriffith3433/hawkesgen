@@ -12,15 +12,19 @@ import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import { env, loadSettings } from '../config.ts';
 import * as maxPlan from './claudecode.ts';
+import { events } from '../bus.ts';
+import { createGate, type WaitInfo } from '../aigate.ts';
 import { houseRoute, houseCanFallBack } from '../houseai.ts';
 import * as cursor from './cursor.ts';
 import * as copilot from './copilot.ts';
 import * as bedrock from './bedrock.ts';
 import { outputBudget, TOO_LONG } from './budget.ts';
+import { mockProvidersOn } from '../mockproviders.ts';
 export { outputBudget, TOO_LONG, STREAMED_FLOOR } from './budget.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { orgSecret } from '../orgsecrets.ts';
-import { GenError, mimeOf } from '../util.ts';
+import { GenError, mimeOf, sleep } from '../util.ts';
+import { takeAnswer } from '../aimock.ts';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
 export const MODELS = ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-opus-5'];
@@ -64,7 +68,14 @@ export const backend = () => loadSettings().claude.backend;
 /** Who a job's Claude calls are for (src/jobs.ts sets it around every tool run): a customer's run on its org's own key or
  *  subscription only (ask() below), never Gen's key, J's Max plan, Cursor or Copilot. `house`: a Gen app account, whose
  *  calls without its own access run on the house AI the owner set in /admin (src/houseai.ts). */
-export const callScope = new AsyncLocalStorage<{ customer: boolean; org?: string | null; house?: boolean }>();
+/** `who`: set for an AI turn a person is waiting on (its project): it gets the per-account cap and a bounded wait with its place in line (src/aigate.ts), told on the live stream as an `ai` event. */
+export const callScope = new AsyncLocalStorage<{ customer: boolean; org?: string | null; house?: boolean; who?: string }>();
+const mockGate = createGate(() => 1);
+/** The gate options of the call in front of us (none for Gen's own jobs). */
+export function turnGate(): { who?: string; onWait?: (e: WaitInfo) => void } {
+  const who = callScope.getStore()?.who;
+  return who ? { who, onWait: (e) => events.emit('ai', { project: who, ...e }) } : {};
+}
 /** Whether the running job is a customer's (whatever the Claude setting). */
 export const customerJob = () => callScope.getStore()?.customer === true;
 
@@ -101,13 +112,30 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
   // (orgsecrets.ts), else it's refused with what to do.
   const scope = callScope.getStore();
   const org = scope?.org ?? null;
+  // HAWKESGEN_AI_MOCK=1: a test sign-in account's queued canned answer, here below every route (src/aimock.ts).
+  const canned = takeAnswer(org, p);
+  if (canned) {
+    // A test account's canned turn goes through a one-slot gate of its own, so the line, the per-account cap and the
+    // bounded wait can be played with no Claude (holdMs makes an answer slow). Real calls use claudecode.ts's gate.
+    const cl = loadSettings().claude;
+    const release = await mockGate.acquire({ signal, maxPerUser: cl.maxPerUser, maxWaitMs: cl.maxWaitSeconds * 1000, ...turnGate() });
+    try { if (canned.holdMs) await sleep(canned.holdMs); } finally { release(); }
+    p.onText?.(canned.text);
+    return { text: canned.text, model: canned.model, usage: { input_tokens: 0, output_tokens: 0 }, cost: canned.cost, billing: 'api' };
+  }
+  // HAWKESGEN_MOCK_PROVIDERS=1 (beta and local copies only): Claude answers at once, free (src/mockproviders.ts).
+  if (mockProvidersOn()) {
+    const text = p.schema ? '{}' : 'mock answer';
+    p.onText?.(text);
+    return { text, model: 'mock', usage: { input_tokens: 0, output_tokens: 0 }, cost: 0, billing: 'max-plan' };
+  }
   const ownKey = org ? orgSecret(org, 'anthropic') : null;
   if (ownKey) {
     const r = await askApi(p, signal, ownKey);
     return { ...(p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r), billing: 'byok' as const };
   }
   const ownSub = org ? orgSecret(org, 'claude-subscription') : null;
-  if (ownSub) return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal, { token: ownSub });
+  if (ownSub) return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal, { token: ownSub, ...turnGate() });
   if (scope?.customer && scope.house) {
     // A Gen app account: the house AI (J, 2026-10-29: "users don't have to deal with this and it just works").
     const route = houseRoute();
@@ -120,7 +148,7 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
         if (e?.kind !== 'auth' || !houseCanFallBack()) throw e;
       }
     }
-    if (route.via === 'api' || route.via === 'claude') return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal);
+    if (route.via === 'api' || route.via === 'claude') return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal, turnGate());
     throw new GenError(route.why, { status: 503 });
   }
   if (scope?.customer) {
@@ -144,7 +172,7 @@ export async function ask(p: AskParams, signal?: AbortSignal): Promise<{ text: s
     const r = await askApi(p, signal);
     return p.schema ? { ...r, text: maxPlan.extractJson(r.text) } : r;
   }
-  return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal);
+  return maxPlan.ask({ ...p, model: p.model ?? DEFAULT_MODEL, effort: p.effort ?? 'high' }, signal, turnGate());
 }
 
 /** The API key path: billed per token. */

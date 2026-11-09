@@ -1,0 +1,53 @@
+# The 3D worker image (docs/3d-animation.md, "The image"). Push a tag gpu3d-image-<anything> (or run it by hand).
+#
+# Five PyTorch venvs and Blender don't fit a GitHub runner's disk (four builds ran out of space), so the image is built
+# on Google Cloud Build with a 300 GB disk (tools/gpu-providers/image-3d-cloudbuild.mjs), signed in as Gen's deployer
+# through Workload Identity Federation (no stored key), into Gen's private Artifact Registry. Then crane copies it,
+# layer by layer with no local disk, into the public GHCR package ghcr.io/jgriffith3433/hawkes-gen-gpu as
+# 3d-<context hash> and 3d-latest (a new package would start private, and RunPod's API has no registry credentials).
+# GitHub's own token writes GHCR. Nothing runs the image until an endpoint points at it.
+name: 3D worker image
+on:
+  push:
+    tags: ['gpu3d-image-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  PROJECT: hawkes-staging
+  PROJECT_NUMBER: '388576319982'
+  REGION: us-east4
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ env.PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-gen
+          service_account: gen-deployer@${{ env.PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build on Cloud Build
+        id: build
+        run: node tools/gpu-providers/image-3d-cloudbuild.mjs --project "$PROJECT" --region "$REGION" --apply --out "$GITHUB_OUTPUT"
+      - uses: imjasonh/setup-crane@v0.4
+      - name: Copy to GHCR
+        env:
+          SRC: ${{ steps.build.outputs.IMAGE }}:${{ steps.build.outputs.TAG }}
+          TAG: ${{ steps.build.outputs.TAG }}
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+          dst=ghcr.io/jgriffith3433/hawkes-gen-gpu
+          crane copy "$SRC" "$dst:$TAG"
+          crane tag "$dst:$TAG" 3d-latest
+          echo "Pushed $dst:$TAG (and 3d-latest) from $SRC" >> "$GITHUB_STEP_SUMMARY"

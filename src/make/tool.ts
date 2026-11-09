@@ -25,10 +25,12 @@ import { makeSettings } from './settings.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
 import { SELF_TOKEN, SELF_URL } from '../auth.ts';
+import { loadSettings } from '../config.ts';
+import { toolReady } from '../providers/gpu/route.ts';
 
 export const MAKE_INTENTS: MakeIntent[] = [
   'image', 'character-sheet', 'first-frame', 'texture', 'skybox', 'prop-3d', 'character-3d',
-  'shot-action', 'shot-dialogue', 'shot-two-people', 'shot-continue', 'shot-recast', 'voice', 'sfx', 'music',
+  'shot-action', 'shot-dialogue', 'shot-two-people', 'shot-continue', 'shot-recast', 'voice', 'sfx', 'music', 'animation',
 ];
 
 // ------------------------------------------------------------------------------------------------ test seams
@@ -122,9 +124,12 @@ async function viewsOf(t: Take, ctx: RunContext, k: string): Promise<string[]> {
   return [];
 }
 
-function realDeps(ctx: RunContext, quoteChild: (tool: string, params: Record<string, any>) => number): MakeDeps {
+function realDeps(ctx: RunContext, quoteChild: (tool: string, params: Record<string, any>) => number): MakeDeps & { siblings: Map<string, any[]> } {
+  /** A motion take's other outputs (the clip's GLB, FBX, BVH), by the asset that was judged (its preview video). */
+  const siblings = new Map<string, any[]>();
   const gen: Gen = clientFor ? clientFor(ctx) : new HawkesGen({ url: SELF_URL(), key: SELF_TOKEN, project: ctx.job.project });
   return {
+    siblings,
     async render(s) {
       let job: any;
       try {
@@ -138,9 +143,15 @@ function realDeps(ctx: RunContext, quoteChild: (tool: string, params: Record<str
       if (done.status === 'cancelled' && ctx.signal.aborted) throw new GenError('cancelled');
       // A child that failed (its servers, its model, a timeout) hands the same request to the next tool.
       if (done.status !== 'done') throw new ProviderFailure(`${done.tool} ${done.status}: ${done.error ?? done.detail ?? ''}`);
-      const o = (done.outputs ?? []).find((x: any) => x.kind === 'mesh') ?? done.outputs?.[0];
+      // A humanoid clip (motion.from-text / from-video) is judged moving: its preview video is the take; the clip's
+      // GLB, FBX and BVH ride along and come back with the result.
+      const motion = /^motion\.from-/.test(String(done.tool));
+      const o = motion
+        ? (done.outputs ?? []).find((x: any) => x.kind === 'video' || /preview/.test(String(x.title))) ?? done.outputs?.[0]
+        : (done.outputs ?? []).find((x: any) => x.kind === 'mesh') ?? done.outputs?.[0];
       const a = o ? getAsset(o.asset) : null;
       if (!a) throw new ProviderFailure(`${done.tool} made nothing`);
+      if (motion) siblings.set(a.id, (done.outputs ?? []).filter((x: any) => x.asset !== a.id));
       return { asset: a.id, file: a.path, job: done.id, reused: Boolean(job.reused) };
     },
     assess: (a) => assess(a),
@@ -239,6 +250,7 @@ export const makeCheckedTool: Tool = {
     const project = ctx.job.project;
     const req = requestOf(ctx.params);
     const fleetDown = (() => { try { awsConfig(); return Boolean(isDown('fleet')); } catch { return true; } })();
+    const gpuSettings = (() => { try { return loadSettings(); } catch { return null; } })();
     const worldId = worldOf({ world: req.world }) ?? req.world ?? null;
     const world = worldId ? worldContext(project, worldId) : null;
     if (worldId && !world) ctx.log(`world ${worldId}: none to apply (yet)`);
@@ -250,7 +262,7 @@ export const makeCheckedTool: Tool = {
       toolInfo: (id) => infoOf(getTool(id)),
       routeCtx: {
         has: (id) => Boolean(getTool(id)),
-        ready: (id) => !(getTool(id)?.server === 'ssh' && fleetDown),
+        ready: (id) => toolReady(getTool(id), { fleetDown, settings: gpuSettings }),
         inputsOf: (id) => getTool(id)?.inputs ?? null,
       },
     });
@@ -263,6 +275,11 @@ export const makeCheckedTool: Tool = {
     const a = outcome.asset ? getAsset(outcome.asset) : null;
     if (a && fs.existsSync(a.path)) {
       await ctx.emit({ data: fs.readFileSync(a.path), mime: a.mime, seed: a.seed, title: 'result', meta: { from: a.id, pass: Boolean(outcome.report?.pass), tries: outcome.tries, tool: outcome.tool, ...(outcome.needsYou ? { needsYou: outcome.needsYou } : {}) } });
+      // A humanoid clip: the result is its preview video; the clip itself (GLB, FBX, BVH) comes back beside it.
+      for (const o of (deps as any).siblings?.get(a.id) ?? []) {
+        const b = getAsset(o.asset);
+        if (b && fs.existsSync(b.path)) await ctx.emit({ data: fs.readFileSync(b.path), mime: b.mime, seed: b.seed, title: String(o.title ?? b.title ?? 'clip'), meta: { from: b.id, tool: outcome.tool } });
+      }
     }
     ctx.result({ ...outcome, intent: req.intent, quality: plan.quality, budget: plan.budget });
   },

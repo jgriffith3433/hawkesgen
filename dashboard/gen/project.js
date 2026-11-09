@@ -3,7 +3,9 @@
 // back), undo and redo, saving to Gen (with a version, so edits from the AI or MCP elsewhere aren't lost), waiting clips
 // filled in when their jobs end, and changes made elsewhere picked up.
 
-import { api, bus, toast, plainError, jobStatusText, sendFeedback } from './lib.js';
+import { state } from './account.js';
+import { api, bus, toast, plainError, friendly, jobStatusText, sendFeedback } from './lib.js';
+import { trouble } from './trouble.js';
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -367,6 +369,7 @@ export async function save() {
     const r = await api(`/v1/editor/projects/${P.id}`, { method: 'PUT', body: { doc: P.doc, version: P.version } });
     P.version = r.version;
     P.dirty = snap() !== sent;
+    P.saveFailed = false;
     bus.emit('save', P.dirty ? 'dirty' : 'saved');
     announce();
   } catch (err) {
@@ -377,6 +380,8 @@ export async function save() {
       toast('This scene was changed in another tab or by the AI, so you have the newest version now. Undo brings back what you just did.');
     } else {
       bus.emit('save', 'error');
+      // Once per failure, not on every retry: the sentence and the next step (the work stays in this browser meanwhile).
+      if (!P.saveFailed) { P.saveFailed = true; if (err.status !== 401) trouble(err, save); }
     }
   } finally {
     P.saving = false;
@@ -429,6 +434,21 @@ export async function stopClip(id) {
   undoable(`Stopped making "${c.label ?? 'it'}".`);
 }
 
+/** Tries a failed clip again: the same job again (a new one, same recipe); the clip waits for it like any other. */
+export async function retryClip(id) {
+  const c = byId(id);
+  if (!c?.job || !c.failed) return;
+  try {
+    const r = await api(`/v1/jobs/${c.job}/rerun`, { method: 'POST', body: {} });
+    const job = r.jobs?.[0] ?? r;
+    remember();
+    Object.assign(c, { job: job.id, pending: true });
+    delete c.failed;
+    changed();
+    watchJobs();
+  } catch (err) { trouble(err); }
+}
+
 // Waiting clips: follow their jobs and fill them in. Edits made elsewhere: picked up while the page is visible.
 const watching = new Map();
 export function watchJobs() {
@@ -469,7 +489,16 @@ async function catchUp() {
   } catch { /* offline: the next event or reconnect reads it */ }
 }
 
+let syncing = false;
 export function startSync() {
+  // The stream is for accounts: signed out it would answer 401 on every anonymous load. It starts at sign-in instead.
+  if (!state.user) { if (!syncing) { syncing = true; bus.on('signedIn', (u) => { if (u) openSync(); }); } return; }
+  openSync();
+}
+let opened = false;
+function openSync() {
+  if (opened) return;
+  opened = true;
   // Edits made elsewhere arrive as `scene` events on the page's one stream (GET /v1/events): nothing asks on a timer.
   // One read when the stream comes back from a drop or the page is shown again, for what was missed.
   import('./jobwatch.js').then(({ jobWatch }) => jobWatch()).then((w) => w.on('scene', (e) => {

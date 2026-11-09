@@ -12,14 +12,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { APPLY, ROOT, arg, secret, workerImage, say, header, redact, printEntry } from './lib.mjs';
+import { APPLY, ROOT, arg, secret, workerImage, say, header, redact, printEntry, print3dEntry, KIND, IMAGE_3D } from './lib.mjs';
 
-const app = arg('app', 'hawkes-gen-gpu');
+// --kind 3d: the 3D worker (server/gpu3d) with a Modal Volume for its weights (docs/3d-animation.md).
+const is3d = KIND === '3d';
+const app = arg('app', is3d ? 'hawkes-gen-3d' : 'hawkes-gen-gpu');
 const gpu = arg('gpu', 'L40S');
 const max = Number(arg('max', '2'));
 const registrySecret = arg('registry-secret');
 const url = arg('url');
-const image = workerImage();
+const image = is3d && !arg('image') ? IMAGE_3D : workerImage();
 const workerToken = secret('GPU_WORKER_TOKEN');
 
 // modal.com/pricing on 2026-10-28, per second: L40S $0.000542, physical core $0.0000131, GiB $0.00000222.
@@ -39,7 +41,7 @@ image = modal.Image.from_registry(${JSON.stringify(image)}${registrySecret ? `, 
     "PORT": "8080", "STORAGE": "broker", "MODEL_LOAD": "none", "HAWKES_SERVICE": ${JSON.stringify(app)},
     # A Modal container sees the host's memory (343 GB), not its own limit, so the entrypoint's rule would let ComfyUI
     # pin ~300 GB and starve the container (the runner stopped heartbeating at startup, 2026-10-30): never pin here.
-    "COMFY_FLAGS": "--disable-pinned-memory",
+    "COMFY_FLAGS": "--disable-pinned-memory",${is3d ? '\n    # The 3D jobs keep their weights on the Volume below (about 50 GB once everything has run).\n    "HAWKES_WEIGHTS": "/weights/hawkes-weights",' : ''}
 }).entrypoint([])  # Modal runs an image's ENTRYPOINT with its runner as arguments; ours execs the worker instead, so the
                    # runner never started ("Runner heartbeat timeout"). The function below starts the worker itself.
 app = modal.App(${JSON.stringify(app)})
@@ -53,7 +55,7 @@ app = modal.App(${JSON.stringify(app)})
     timeout=3600,
     # A request ends at Modal's 150 s HTTP limit while the run goes on: keep the container while Gen follows the heartbeat.
     scaledown_window=1200,
-    max_containers=${max},
+    max_containers=${max},${is3d ? '\n    volumes={"/weights": modal.Volume.from_name("hawkes-gen-3d-weights", create_if_missing=True)},' : ''}
     secrets=[${workerToken ? 'modal.Secret.from_name("hawkes-gen-worker")' : ''}],
 )
 @modal.concurrent(max_inputs=1)
@@ -85,7 +87,9 @@ if (APPLY) {
 } else {
   say('\n(dry run: --apply creates the secret and runs modal deploy)');
 }
-if (url) {
+if (url && is3d) {
+  print3dEntry({ id: 'modal-3d', provider: 'modal', url: url.replace(/\/+$/, ''), gpu, pricePerHour: perHour, maxConcurrent: max, graphLimitSeconds: 3300, enabled: true });
+} else if (url) {
   printEntry({ id: 'modal', provider: 'modal', url: url.replace(/\/+$/, ''), families: ['*'], gpu, pricePerHour: perHour, maxConcurrent: max, graphLimitSeconds: 3300, enabled: true });
 }
 say('\nGen also needs MODAL_PROXY_KEY and MODAL_PROXY_SECRET in its environment (tools/gen-cloudrun/deploy.mjs mounts them) and HAWKESGEN_PUBLIC_URL.');

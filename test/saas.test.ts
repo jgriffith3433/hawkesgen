@@ -113,7 +113,8 @@ test('signup, login, session cookie auth, logout, and API key rotation', async (
   process.env.HAWKESGEN_PUBLIC_SAAS = '1';
   try {
     const anonRes = await reqJson('/v1/users/me');
-    assert.equal(anonRes.status, 401);
+    assert.equal(anonRes.status, 200, 'a signed-out visit is told "nobody", not a 401');
+    assert.equal(anonRes.body?.user ?? null, null);
 
     const oldKeyRes = await reqJson('/v1/users/me', { headers: { Authorization: `Bearer ${oldKey}` } });
     assert.equal(oldKeyRes.status, 401);
@@ -133,7 +134,7 @@ test('signup, login, session cookie auth, logout, and API key rotation', async (
   process.env.HAWKESGEN_PUBLIC_SAAS = '1';
   try {
     const afterLogout = await reqJson('/v1/users/me', { headers: { Cookie: cookieA } });
-    assert.equal(afterLogout.status, 401);
+    assert.equal(afterLogout.body?.user ?? null, null, 'the old cookie no longer signs anyone in');
   } finally {
     delete process.env.HAWKESGEN_PUBLIC_SAAS;
   }
@@ -388,7 +389,7 @@ test('Stripe checkout (503 when unconfigured) and webhook signature verification
     body: { packId: 'creator_25' },
   });
   assert.equal(noStripe.status, 503);
-  assert.match(noStripe.body.error, /Stripe is not configured/);
+  assert.match(noStripe.body.error, /isn't open on this Gen yet/);
 
   // 2. Webhook signature verification & credit grant
   const webhookSecret = 'whsec_test_secret_key_12345';

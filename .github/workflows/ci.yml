@@ -10,6 +10,10 @@ name: Deploy
 on:
   push:
     branches: [main, beta]
+    # A push that changes only docs or markdown deploys nothing: a redeploy drops every open /v1/events stream
+    # (the beta load test stopped for exactly this, #163). Any other file in the push deploys as before;
+    # "Run workflow" (workflow_dispatch) always deploys.
+    paths-ignore: ['docs/**', '**/*.md']
   workflow_dispatch:
 concurrency:
   group: deploy-gen-${{ github.ref_name }}
@@ -61,7 +65,7 @@ jobs:
           [ -n "$prev" ] || { echo "No $SERVICE service yet: J runs tools/gen-cloudrun/deploy.ps1 for this lane first"; exit 1; }
           echo "prev=$prev" >> "$GITHUB_ENV"
           tag=$(node -e "console.log(require('./.data/cloudrun/gen-image.json').tag)")
-          gcloud run services update "$SERVICE" --image "$tag" --update-env-vars "HAWKESGEN_COMMIT=$GITHUB_SHA,PLAYTEST_MODAL_URL=$PLAYTEST_MODAL_URL" --region "$RUN_REGION" --project "$PROJECT" --format=none
+          gcloud run services update "$SERVICE" --image "$tag" --concurrency 400 --update-env-vars "HAWKESGEN_COMMIT=$GITHUB_SHA,PLAYTEST_MODAL_URL=$PLAYTEST_MODAL_URL" --region "$RUN_REGION" --project "$PROJECT" --format=none
       - name: Health check (back to the previous revision if it fails)
         run: |
           for i in $(seq 1 18); do

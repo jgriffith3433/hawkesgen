@@ -21,10 +21,10 @@ import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
-import { putAsset, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
 import { recordUsage } from './usage.ts';
 import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
@@ -396,11 +396,47 @@ function chargedOrg(client: Client, project: string): string | null {
   return billedOrg(client, project, Boolean(getUserForClient(client)));
 }
 
+/**
+ * What a customer's day of jobs has cost so far (UTC day, dollars: GPU, voice, Claude on a key; the usage table), read at
+ * most every 10 seconds. `forget` is for tests.
+ */
+let spendCache: { at: number; day: string; usd: number } | null = null;
+export function spentToday(now = Date.now(), forget = false): number {
+  const day = new Date(now).toISOString().slice(0, 10);
+  if (!forget && spendCache && spendCache.day === day && now - spendCache.at < 10_000) return spendCache.usd;
+  const since = Date.parse(`${day}T00:00:00Z`);
+  const usd = (db.prepare('SELECT SUM(cost) AS c FROM usage WHERE at >= ?').get(since) as { c: number | null }).c ?? 0;
+  spendCache = { at: now, day, usd };
+  return usd;
+}
+
+/**
+ * Whether Gen will take one more job from this caller at all, checked first thing in createJob and before an org's
+ * Studio balance is charged, so a refusal reserves and charges nothing:
+ *  - a customer project may have `queue.maxQueuedPerProject` jobs waiting (429, plain words): running jobs are capped by
+ *    the lanes, this caps the line behind them;
+ *  - past `queue.dailyCeilingUsd` of spend in a UTC day, customers' new jobs get "busy, try again later" (503).
+ * Studio's own projects, admin and owner keys, and the steps of a pipeline (`labels.parent`: their parent already
+ * got in) are exempt, so the studio keeps working.
+ */
+export function admitJob(client: Client, project: string, labels?: Record<string, unknown>) {
+  if (labels?.parent || exemptCheck()({ project, client: client.id })) return;
+  const q = loadSettings().queue;
+  if (q.dailyCeilingUsd > 0 && spentToday() >= q.dailyCeilingUsd) {
+    throw new GenError('Hawkes Gen is busy right now. Nothing was charged: please try again later.', { status: 503, kind: 'busy' });
+  }
+  const waitingNow = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND status = 'queued'").get(project) as { n: number }).n;
+  if (waitingNow >= q.maxQueuedPerProject) {
+    throw new GenError(`Too many jobs are waiting (${waitingNow}). Let some finish or cancel a few, then try again. Nothing was charged.`, { status: 429, kind: 'busy' });
+  }
+}
+
 /** createJob after charging the org's Studio balance (402 kind 'credits' when short, refused when unreachable). */
 async function createJobCharged(client: Client, tool: Tool, s: JobInit): Promise<Job> {
   const org = chargedOrg(client, s.project);
   if (!org) return createJob(client, tool, s);
   checkSubmit(client, tool.id);
+  admitJob(client, s.project, s.labels);
   const id = newId('j', 6);
   const quote = quoteJobCredits({ project: s.project, tool: tool.id, params: s.params });
   const charge = await chargeOrg(org, id, quote.credits, tool.id);
@@ -417,6 +453,7 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
   if (!charged && chargedOrg(client, s.project)) {
     throw new GenError("This studio's credits can't be charged on this path; submit the job through POST /v1/jobs (or the MCP).", { status: 403, kind: 'credits' });
   }
+  admitJob(client, s.project, s.labels);
   const { project, params, inputs } = s;
   // No priority asked for: a boost on one of its labels sets it (boostLabel). Customers' keys (role user) can lower
   // their own jobs but never raise them or ride an admin's boost: priority is the scheduler's business.
@@ -437,12 +474,18 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
   }
   // Paid from a customer Studio's balance (src/orgcredits.ts): the cell sees it and doesn't charge again.
   if (charged?.charge.credits) job.labels = { ...job.labels, orgCredits: charged.charge.credits };
-  db.prepare(`INSERT INTO jobs (id, key, client, project, tool, params, inputs, labels, priority, status, detail, log, outputs, result, error, server, family, gpu_seconds, cost, graphs, resumed, created)
+  try {
+    db.prepare(`INSERT INTO jobs (id, key, client, project, tool, params, inputs, labels, priority, status, detail, log, outputs, result, error, server, family, gpu_seconds, cost, graphs, resumed, created)
               VALUES (:id, :key, :client, :project, :tool, :params, :inputs, :labels, :priority, :status, :detail, :log, :outputs, :result, :error, :server, :family, :gpu_seconds, :cost, :graphs, :resumed, :created)`).run({
     id: job.id, key: job.key, client: job.client, project: job.project, tool: job.tool, params: J(params), inputs: J(inputs), labels: J(job.labels),
     priority: job.priority, status: job.status, detail: job.detail, log: '[]', outputs: '[]', result: null, error: null, server: null, family: job.family,
     gpu_seconds: 0, cost: 0, graphs: '[]', resumed: 0, created: job.created,
   });
+  } catch (e) {
+    // The reservation was made before the row: a job that was never made gives it back (a customer Studio's charge is returned by createJobCharged).
+    refundJobCredits(job.id, 'The job was not made');
+    throw e;
+  }
   events.emit('job', summary(job));
   queue.pump();
   return job;
@@ -456,7 +499,7 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
 export function keepsCharge(job: { tool: string; started?: number | null }, e: { kind?: string } | null, cancelled: boolean, now = Date.now()) {
   if (job.tool !== 'unity.build') return false;
   if (cancelled) return Boolean(job.started) && now - Number(job.started) > 2 * 60_000;
-  return ['build', 'output', 'timeout'].includes(String(e?.kind ?? ''));
+  return ['build', 'output', 'timeout', 'compile'].includes(String(e?.kind ?? ''));
 }
 
 /** A failed or cancelled job's credits back: a Gen account's reservation, and a customer Studio's charge. */
@@ -607,6 +650,12 @@ export function sameTurn<T extends { priority: number; turn: number }>(sorted: T
 
 /** How many restarts a running job is picked up again after before it stops with a reason (start()). */
 export const MAX_RESUMES = 5;
+/**
+ * Restarts that Hawkes Gen announced (a deploy or a stop: the job carries `labels.drained`) don't use up MAX_RESUMES, which is
+ * for crashes; they have their own, much higher limit. 2026-11-07: seven 10-minute playtests were stopped "interrupted 5 times"
+ * by the day's deploys (five merges in two hours), not by crashes.
+ */
+export const MAX_DRAIN_RESUMES = 25;
 
 class Queue {
   /** Server id -> job id running on it. */
@@ -641,10 +690,59 @@ class Queue {
     return { used: [...this.tabs.values()].reduce((a, n) => a + n, 0), limit: this.gpuSeen.ready ? this.gpuSeen.limit : 1 };
   }
 
+  /** Set while Hawkes Gen is stopping: nothing new starts, the jobs running finish (drain). */
+  draining = false;
+
+  /**
+   * Stop taking new jobs (they stay queued for the next start) and wait for the running ones to finish, at most `maxMs`.
+   * Event-driven: it looks again when a job's status changes (no polling). Jobs still running at the cap are marked as cut
+   * off by a planned stop, so the next start picks them up without counting a crash. -> how many were left running.
+   */
+  async drain(maxMs: number): Promise<number> {
+    this.draining = true;
+    const left = () => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'").get() as { n: number }).n;
+    if (left() > 0 && maxMs > 0) {
+      await new Promise<void>((resolve) => {
+        let t: NodeJS.Timeout;
+        const done = () => { clearTimeout(t); events.off('job', check); resolve(); };
+        const check = () => { if (left() === 0) done(); };
+        t = setTimeout(done, maxMs);
+        events.on('job', check);
+      });
+    }
+    const n = left();
+    if (n) {
+      for (const j of listJobs({ status: 'running', limit: 500 })) {
+        j.labels = { ...j.labels, drained: Date.now() };
+        j.log.push('Hawkes Gen is restarting: this job will be picked up again');
+        save(j, ['labels', 'log']);
+      }
+      flushLogs();
+    }
+    return n;
+  }
+
   start() {
     // Jobs that were running when Hawkes Gen stopped go back in the line, at most MAX_RESUMES times: a job that keeps
     // being cut off (or keeps breaking the service) stops with a reason instead of starting over forever.
     for (const j of listJobs({ status: 'running', limit: 500 })) {
+      const planned = Boolean(j.labels?.drained);
+      if (planned) {
+        const n = Number(j.labels?.drainResumes ?? 0);
+        if (n >= MAX_DRAIN_RESUMES) {
+          failJob(j.id, `This job was cut off by ${n} planned restarts of Hawkes Gen, so it was stopped instead of starting over again. Its credits were returned. Please run it again.`);
+          continue;
+        }
+        const { drained: _d, ...rest } = j.labels ?? {};
+        j.labels = { ...rest, drainResumes: n + 1 };
+        j.status = 'queued';
+        j.detail = `picked up again after a planned restart (${j.outputs.length} done)`;
+        j.log.push(j.detail);
+        const { gpuWaitSince: _g, ...labels } = j.labels;
+        j.labels = labels;
+        save(j, ['status', 'detail', 'log', 'labels']);
+        continue;
+      }
       if (j.resumed >= MAX_RESUMES) {
         j.log.push(`picked up again after ${j.resumed} restarts already: stopped instead`);
         save(j, ['log']);
@@ -705,6 +803,7 @@ class Queue {
   }
 
   async fill() {
+    if (this.draining) return;
     const waiting = this.queued();
     if (!waiting.length) return;
     const settings = loadSettings();
@@ -1133,6 +1232,14 @@ class Queue {
     const inputHashes: Record<string, string | string[]> = {};
     const baseRecipe: Omit<Recipe, 'seed'> = { tool: tool.id, version: tool.version, params: job.params, inputs: inputHashes, models: tool.models?.(job.params) };
 
+    const assetOf = (out: Omit<Output, 'data'>) => ({
+      mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
+      seed: out.seed ?? null, recipe: { ...baseRecipe, params: { ...job.params, seed: out.seed ?? job.params.seed } }, labels: job.labels, title: out.title, meta: out.meta,
+    });
+    const keep = (asset: ReturnType<typeof putAsset>) => {
+      job.outputs.push({ asset: asset.id, seed: asset.seed, mime: asset.mime, kind: asset.kind, title: asset.title });
+      save(job, ['outputs']);
+    };
     const ctx: RunContext = {
       job: { id: job.id, client: job.client, project: job.project, tool: job.tool, labels: job.labels },
       params: job.params,
@@ -1146,14 +1253,8 @@ class Queue {
         save(job, ['log']);
       },
       tmp: (name) => path.join(tmpDir, name),
-      emit: async (out: Output) => {
-        const asset = putAsset({
-          data: out.data, fromFile: out.file, mime: out.mime, ext: out.ext, job: job.id, client: job.client, project: job.project, tool: tool.id,
-          seed: out.seed ?? null, recipe: { ...baseRecipe, params: { ...job.params, seed: out.seed ?? job.params.seed } }, labels: job.labels, title: out.title, meta: out.meta,
-        });
-        job.outputs.push({ asset: asset.id, seed: asset.seed, mime: asset.mime, kind: asset.kind, title: asset.title });
-        save(job, ['outputs']);
-      },
+      emit: async (out: Output) => keep(putAsset({ ...assetOf(out), data: out.data })),
+      emitFile: async (out) => keep(await putAssetFile({ ...assetOf(out), file: out.file })),
       result: (value) => {
         job.result = value;
         save(job, ['result']);
@@ -1218,7 +1319,7 @@ class Queue {
       if (!remote) {
         if (cpu) Object.assign(job, { server: null });
         // A customer's job never spends J's Max plan (providers/anthropic.ts callScope).
-        await callScope.run({ customer: !exemptCheck()(job), org: orgOfProject(job.project), house: isGenAccountProject(job.project) }, () => tool.run(ctx));
+        await callScope.run({ customer: !exemptCheck()(job), org: orgOfProject(job.project), house: isHouseProject(job.project) }, () => tool.run(ctx));
       }
       if (cloud) markUp(cloud.lane ?? cloud.name);
       Object.assign(job, { status: 'done', finished: Date.now(), detail: `done: ${job.outputs.length} output${job.outputs.length === 1 ? '' : 's'}${job.result ? ' and a result' : ''}` });
@@ -1418,6 +1519,9 @@ function recentRunSeconds(tool: string): number {
   runSeconds.set(tool, { at: Date.now(), seconds });
   return seconds;
 }
+
+/** How long a run of this tool usually takes (seconds, the mean of its last 20 finished jobs; 60 when none): the app's "about 40 s". */
+export function typicalRunSeconds(tool: string): number { return Math.round(recentRunSeconds(tool)); }
 
 export const queue = new Queue();
 

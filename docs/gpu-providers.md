@@ -38,6 +38,13 @@ The queue side is the GPU lane in `src/jobs.ts`. The run protocol is unchanged a
 "fleet": { ..., "egressIp": "", "openComfyPort": false }
 ```
 
+**A family's own list is followed by every other enabled endpoint that names that family** (before `fleet`; `orderFor`
+in `route.ts`), so a second endpoint for a family is its fallback as soon as it is added: the 3D families (`rig`,
+`motion`, `mocap`, `blender`) go `runpod-3d`, then `modal-3d`, without editing `familyOrder`. Endpoints with `["*"]` are
+not appended: a family with its own list may keep off them on purpose. (2026-11-08: the 3D list was `["runpod-3d",
+"fleet"]`, so when RunPod ran out of credit 3D jobs had nowhere to go although Modal was up.) The Modal 3D worker is
+deployed by `ops-modal-deploy.yml` with `kind: 3d` (`modal.mjs --kind 3d`, app `hawkes-gen-3d`).
+
 **No `order` and no `familyOrder` is the old rule, exactly.** A family goes to its Cloud Run service when
 `backend`/`families` say `cloudrun` and the service is deployed. Everything else goes to the fleet. A Cloud Run failure
 fails the job as before. An existing settings file has neither key, so it behaves as it did.
@@ -54,8 +61,9 @@ With an order, each job's providers are taken in that order. A provider is **ski
 - `settings.gpu.cloudrun.bucket` or `HAWKESGEN_PUBLIC_URL` is missing (the broker needs both)
 - for `fleet` only: the fleet can't be reached from here (below)
 
-Tools that work over SSH (`server: 'ssh'`: Blender, rigging, motion) and jobs labelled `gpuBackend: "fleet"` always go to
-the fleet.
+Tools that work over SSH only (`server: 'ssh'`: LoRA training, the transcriber) and jobs labelled `gpuBackend: "fleet"` always go to
+the fleet. The 3D tools (`image: '3d'`: Blender, rigging, motion, mocap) go to the fleet or to an endpoint running the 3D worker image
+that names their family (never one with `["*"]`, the ComfyUI image): docs/3d-animation.md, and `runpod.mjs` / `modal.mjs --kind 3d`.
 
 The job takes the first provider that has room. Room is the endpoint's `maxConcurrent` jobs at once, or Cloud Run's
 `maxInstances`. When every provider has room taken, the job waits for the first one.

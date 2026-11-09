@@ -8,6 +8,7 @@
 // From "+" in the bar, the empty center, the palette, and once for a new account after the tour.
 
 import { $, h, api, toast, fileUrl, bus, icon, plainError, keepingFocus } from './lib.js';
+import { trouble } from './trouble.js';
 import { state, needSignIn, refreshCredits } from './account.js';
 import { uploadFiles } from './media.js';
 import { libraryPicker } from './studio.js';
@@ -16,6 +17,7 @@ import { popMenu, closeMenus } from './timeline.js';
 import { sceneDoc } from './scenedoc.js';
 import { dragging } from './dragdrop.js';
 import { fineTune, textField, memberCard, makePack } from './worldbits.js';
+import { guidePending } from './guide.js';
 
 const D = sceneDoc({ onChange: () => { draw(); refreshBar(); } });
 const Wd = { home: null, loading: false };
@@ -86,7 +88,7 @@ async function joinWorld(id, title) {
     await D.save();
     toast(`"${title}" is in this world now.`);
     loadHome();
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 async function addMember(kind) {
   await D.save();
@@ -109,7 +111,7 @@ function cardMenu(m, btn) {
   const r = btn.getBoundingClientRect();
   popMenu(r.left - 160, r.bottom + 6, [
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); openScene(m.id); } }, 'Open'),
-    ['character', 'place'].includes(m.kind) ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); newShot(m).catch((e) => toast(plainError(e.message))); } }, 'Use in a new shot') : '',
+    ['character', 'place'].includes(m.kind) ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); newShot(m).catch((e) => trouble(e)); } }, 'Use in a new shot') : '',
     ['character', 'place', 'prop'].includes(m.kind) ? h('button', { class: 'menu-item', onclick: () => { closeMenus(); makePack(m.id, { then: loadHome }); } }, 'Make its pictures') : '',
     h('div', { class: 'menu-sep' }),
     h('button', { class: 'menu-item', onclick: () => { closeMenus(); D.change((d) => { d.members = d.members.filter((x) => x !== m.id); }); api(`/v1/scenes/${m.id}`).then((s) => api(`/v1/scenes/${m.id}`, { method: 'PUT', body: { doc: { ...s.doc, world: null } } })).then(loadHome).catch(() => {}); } }, 'Take it out of this world'),
@@ -125,7 +127,7 @@ function draw() {
   const H = Wd.home ?? { characters: [], places: [], props: [], stories: [] };
   const set = (fn) => D.change(fn);
   const section = (kind, title, items, hint) => h('section', { class: 'wld-sec' },
-    h('div', { class: 'wld-sec-head' }, h('h3', {}, title, h('span', { class: 'muted small' }, ` ${items.length || ''}`)), h('button', { class: 'ghost small', onclick: () => addMember(kind).catch((e) => toast(plainError(e.message))) }, icon('plus'), 'Add')),
+    h('div', { class: 'wld-sec-head' }, h('h3', {}, title, h('span', { class: 'muted small' }, ` ${items.length || ''}`)), h('button', { class: 'ghost small', onclick: () => addMember(kind).catch((e) => trouble(e)) }, icon('plus'), 'Add')),
     items.length ? h('div', { class: 'wld-cards' }, ...items.map((m) => memberCard(m, { menu: cardMenu }))) : h('p', { class: 'muted small wld-hint' }, hint));
   const board = d.board.length ? h('div', { class: 'wld-board' }, ...d.board.map((b) => h('div', { class: `wld-board-pic${b.pending ? ' wait' : ''}` },
     b.asset ? h('img', { src: fileUrl(b.asset), alt: '' }) : h('div', { class: 'working small' }, b.pending ? 'Making…' : 'Didn\'t work'),
@@ -173,7 +175,7 @@ async function checkCanon() {
     const r = await api(`/v1/worlds/${D.scene.id}/canon`, { body: { text } });
     if (r.aiCredits) refreshCredits();
     toast(r.ok ? 'It keeps every rule.' : r.breaks.map((b) => `"${b.quote}" breaks "${b.rule}": ${b.fix}`).join('\n'), { ms: 12000 });
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 
 // ------------------------------------------------------------------ start a world
@@ -217,7 +219,7 @@ export function startWorld(idea = '') {
       S.proposal = r.proposal;
       S.keep = { characters: r.proposal.characters.map(() => true), places: r.proposal.places.map(() => true), props: r.proposal.props.map(() => true), story: Boolean(r.proposal.story) };
       drawProposal();
-    } catch (err) { toast(plainError(err.message)); drawIdea(); } finally { S.busy = false; }
+    } catch (err) { trouble(err); drawIdea(); } finally { S.busy = false; }
   };
   function drawIdea() {
     drawBoard();
@@ -270,13 +272,14 @@ export function startWorld(idea = '') {
           await makePack(`/v1/worlds/${r.world.id}/packs`, { then: () => api(`/v1/scenes/${r.world.id}`).then((s) => { if (D.scene?.id === s.id) D.take(s, { keepHistory: true }); loadHome(); }) });
         }
       }
-    } catch (err) { toast(plainError(err.message)); } finally { S.busy = false; }
+    } catch (err) { trouble(err); } finally { S.busy = false; }
   }
   drawIdea();
 }
 
 /** A new account, after the tour: a world is the first thing offered (once, and only when they have none). */
 bus.on('tourDone', () => {
+  if (guidePending()) return; // a brand-new account's first project comes first (guide.js)
   try { if (localStorage.getItem(`hg.worldOffer.${state.user?.id ?? 'local'}`)) return; localStorage.setItem(`hg.worldOffer.${state.user?.id ?? 'local'}`, '1'); } catch { /* */ }
   if (!state.user || sceneList().some((s) => s.kind === 'world')) return;
   setTimeout(() => startWorld(), 300);

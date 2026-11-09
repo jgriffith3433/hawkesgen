@@ -17,7 +17,9 @@ import { isInternalOnlyTool } from './billing.ts';
 
 const TOOL_IDS = () => TOOLS.map((t) => t.id);
 import { ask, callScope } from './providers/anthropic.ts';
-import { orgOfProject, isGenAccountProject } from './orgsecrets.ts';
+import { orgOfProject, isHouseProject } from './orgsecrets.ts';
+import { toolReady } from './providers/gpu/route.ts';
+import type { Settings } from './config.ts';
 
 
 // The timeline document and its edits live in src/timeline.ts (one model under video, image and audio scenes).
@@ -93,7 +95,10 @@ export const EDITOR_TOOLS: { tool: string; use: string }[] = [
   { tool: 'image.viewsheet', use: 'a 4-view sheet (front, back, left, right) of a character for 3D. inputs image (front view, clean background); params form (what it is). Library only' },
   { tool: 'mesh.views3d', use: 'a textured 3D model (GLB) from a 4-view sheet. inputs image (the sheet from image.viewsheet). Library only' },
   { tool: 'mesh.textured', use: 'a textured 3D model (GLB) from one image of a prop; params allowSingleView true. inputs image. Library only' },
-  { tool: 'video.talk', use: 'a portrait talks along to an audio line. inputs image, audio; params prompt' },
+  { tool: 'mesh.rig', use: 'a skeleton for a 3D model so it can move (humanoids get Mixamo bones). inputs mesh (GLB); params kind "auto", height (meters). Library only' },
+  { tool: 'motion.from-text', use: 'a humanoid animation from one sentence on a rigged model (GLB, FBX, BVH and a preview video). inputs character (rigged GLB); params prompt (name the limbs and how it ends), seconds, loop, inPlace, takes 2. Library only' },
+  { tool: 'motion.from-video', use: 'motion capture: a person\'s move in a clip onto a rigged model. inputs video (one person, whole body in frame, still camera), character (rigged GLB); params camera "still"|"auto". Library only' },
+  { tool: 'video.talk', use:'a portrait talks along to an audio line. inputs image, audio; params prompt' },
   { tool: 'video.animate', use: 'a character image moves like a driving video. inputs reference (image), motion (video); params prompt' },
 ];
 
@@ -124,10 +129,11 @@ const NOT_IN_CATALOG = /^(comfy\.graph|unity\.|playtest\.|asset\.lod|media\.|fil
 
 /**
  * Every tool the app's Create pane offers: Gen's own description of it (params, inputs, outputs), and whether it can
- * run now. Tools that work over SSH need the GPU fleet (AWS, suspended since 2026-10-28) and say so with ready: false.
+ * run now. Tools that work over SSH need the GPU fleet (AWS, suspended since 2026-10-28); the 3D tools (rigging,
+ * animation, Blender) need the fleet or a GPU endpoint with the 3D worker image; either says so with ready: false.
  */
-export async function catalog(describe: (t: any) => any, all: any[], fleetDown: boolean) {
-  return all.filter((t) => !NOT_IN_CATALOG.test(t.id)).map((t) => ({ ...describe(t), ready: !(t.server === 'ssh' && fleetDown) }));
+export async function catalog(describe: (t: any) => any, all: any[], fleetDown: boolean, settings: Pick<Settings, 'gpu'> | null = null) {
+  return all.filter((t) => !NOT_IN_CATALOG.test(t.id)).map((t) => ({ ...describe(t), ready: toolReady(t, { fleetDown, settings }) }));
 }
 
 // ------------------------------------------------------------------ voices
@@ -243,6 +249,6 @@ export function assistantPrompt(a: TurnInput) {
  */
 export async function assistantTurn(a: TurnInput): Promise<{ say: string; ops: Op[]; model: string; house: boolean; cost: number }> {
   const org = orgOfProject(a.project);
-  const r = await callScope.run({ customer: true, org, house: isGenAccountProject(a.project) }, () => ask(assistantPrompt(a)));
+  const r = await callScope.run({ customer: true, org, house: isHouseProject(a.project), who: a.project }, () => ask(assistantPrompt(a)));
   return { ...parseAnswer(r.text), model: r.model, house: !['byok', 'subscription'].includes(r.billing), cost: r.cost ?? 0 };
 }

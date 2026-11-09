@@ -3,7 +3,8 @@
 // Humanoids (kind humanoid, or kind auto when the shape is a biped with its arms out) go through Make-It-Animatable
 // v2, which predicts a Mixamo skeleton (mixamorig: bone names, fingers included). Anything else, and a humanoid that
 // Make-It-Animatable fails on when kind is auto, goes through SkinTokens (UniRig's successor). Each model has its own
-// venv, installed on first use (src/providers/rig/), family "rig", so the fleet image does not change.
+// venv, installed on first use on the fleet (src/providers/rig/) and baked into the 3D worker image (server/gpu3d) for
+// RunPod and Modal, family "rig"; src/providers/workspace.ts runs the script in either place.
 //
 // Blender then plants the result, copies textures back when the model dropped them, bakes a one-second walk (and any
 // Mixamo clips the caller passed), and writes a GLB and an FBX. The preview is that walk. Licenses and pins:
@@ -14,9 +15,9 @@ import path from 'node:path';
 import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { paths } from '../config.ts';
-import { ensureBlender, blenderWorkspace, BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
-import { ensureRig } from '../providers/rig/rig.ts';
-import { MIA_COMMIT, MIA_PYTHON, MIA_ROOT, RIG_LICENSES, RIG_ROOT, SKIN_COMMIT, SKIN_PYTHON, SKIN_ROOT } from '../providers/rig/install.ts';
+import { BLENDER, BLENDER_VERSION } from '../providers/blender/blender.ts';
+import { jobWorkspace, prepare3d, weightsPrelude } from '../providers/workspace.ts';
+import { MIA_COMMIT, MIA_PYTHON, MIA_ROOT, RIG_LICENSES, RIG_ROOT, SKIN_COMMIT, SKIN_PYTHON, SKIN_ROOT, weightsScript } from '../providers/rig/install.ts';
 
 export type RigClip = { file: string; name: string; action?: string | null };
 
@@ -61,7 +62,8 @@ export function rigJobScript(o: { kind: 'humanoid' | 'auto'; keepTextures: boole
   const keep = o.keepTextures ? '1' : '0';
   return [
     'set -euo pipefail',
-    `export HF_HOME=${RIG_ROOT}/hf`,
+    weightsPrelude([weightsScript()]),
+    `export HF_HOME="\${HAWKES_HF_HOME:-${RIG_ROOT}/hf}"`,
     `export MIA_ROOT=${bin.miaRoot}`,
     'mkdir -p out res',
     'sample() {',
@@ -175,11 +177,11 @@ export const meshRigTool: Tool = {
     'Rigs and skins a mesh from mesh.views3d (GLB, or FBX/OBJ). kind humanoid uses Make-It-Animatable, which builds a Mixamo skeleton ' +
     '(mixamorig: bone names). kind auto (the default) does that for an upright biped with its arms out, and uses SkinTokens for anything else ' +
     'and if Make-It-Animatable fails. keepTextures copies the source textures back onto the rig. Returns a rigged GLB, an FBX, and a video of a ' +
-    'standard walk. Optional Mixamo clips are baked on too. The models install into their own venvs on the GPU server the first time (family rig, ' +
+    'standard walk. Optional Mixamo clips are baked on too. Runs on a GPU worker with the 3D image (RunPod, Modal) or a fleet server (family rig, ' +
     'not a ComfyUI node). docs/3d-characters.md ("mesh.rig").',
   provider: 'comfy',
   family: 'rig',
-  server: 'ssh',
+  image: '3d',
   output: 'mesh',
   inputs: {
     mesh: { kind: 'file', required: true, description: 'The character: a GLB from mesh.views3d (FBX or OBJ too), standing upright.' },
@@ -219,11 +221,10 @@ export const meshRigTool: Tool = {
     const frames = turnFrames({ seconds: p.seconds ?? 4, fps });
     const outDir = ctx.tmp('rig');
 
-    await ensureBlender(c.server.id, ctx.step);
-    await ensureRig(c.server.id, ctx.step);
-    const ws = await blenderWorkspace(c.server.id, ctx.job.id);
+    await prepare3d(c, ['blender', 'rig'], ctx.step);
+    const ws = await jobWorkspace(c, ctx.job.id);
     try {
-      ctx.step('sending the mesh to the GPU server');
+      ctx.step(`sending the mesh to ${ws.where}`);
       const put: Record<string, string> = { [`in/mesh${ext}`]: mesh };
       const remote: RigClip[] = clips.map((cl, i) => {
         const name = `in/clip${i}${path.extname(cl.file).toLowerCase()}`;

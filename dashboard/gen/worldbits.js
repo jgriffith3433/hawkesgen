@@ -3,6 +3,7 @@
 // scene's pack (its pictures and sound) priced first.
 
 import { h, api, toast, fileUrl, icon, plainError } from './lib.js';
+import { trouble } from './trouble.js';
 import { refreshCredits } from './account.js';
 import { touchDrag, setDrag } from './dragdrop.js';
 import { openScene, sceneItem, loadList } from './scenes.js';
@@ -65,7 +66,7 @@ export async function makePack(sceneId, { then, what = 'its pictures' } = {}) {
     refreshCredits();
     loadList();
     await then?.();
-  } catch (err) { toast(plainError(err.message)); }
+  } catch (err) { trouble(err); }
 }
 
 /** The world a scene names, and the world's other members (for pickers: a prop's owner, a shot's cast). */

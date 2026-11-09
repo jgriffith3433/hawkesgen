@@ -4,6 +4,7 @@
 // hands back the pack. Both are plain functions any module can call: the export sheet (tools.js) and the world's home.
 
 import { h, api, toast, icon, plainError } from './lib.js';
+import { trouble } from './trouble.js';
 import { state, needSignIn } from './account.js';
 import { waitJob, quote, credits } from './media.js';
 
@@ -100,7 +101,7 @@ export function exportWorld(worldId, title = 'world', onDone) {
       });
       onDone?.(done);
     } catch (err) {
-      toast(plainError(err.message));
+      trouble(err);
     }
   }, 'login');
 }

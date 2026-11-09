@@ -14,6 +14,10 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 
 export function readEnv(root = ROOT): Record<string, string> {
   const out: Record<string, string> = {};
+  // Under `node --test` the suite runs as CI does, with no .env: a developer's real keys (ANTHROPIC_API_KEY...) made
+  // tests that expect "no AI set up here" reach Claude, pass where CI fails and spend money. HAWKESGEN_TEST_DOTENV=1
+  // reads it anyway.
+  if (process.env.NODE_TEST_CONTEXT && process.env.HAWKESGEN_TEST_DOTENV !== '1') return out;
   for (const name of ['.env', '.env.local']) {
     const file = path.join(root, name);
     if (!fs.existsSync(file)) continue;
@@ -100,7 +104,11 @@ export type Settings = {
   /** gpuWaitMinutes: how long a GPU job may wait while no GPU provider can take it at all (none set up, all busy
    *  refusing, booting) before it fails with a plain reason (src/providers/gpu/nogpu.ts). Waiting behind other jobs on a
    *  GPU that exists has no limit. */
-  queue: { perProjectGpu: number; perProjectLane: number; projects: string[]; gpuWaitMinutes: number };
+  queue: { perProjectGpu: number; perProjectLane: number; projects: string[]; gpuWaitMinutes: number;
+    /** Jobs one customer project may have waiting at once (src/jobs.ts `admitJob`): past it a new job is refused with a plain 429 and nothing is reserved. */
+    maxQueuedPerProject: number;
+    /** What every job may spend in a UTC day (usage cost, dollars), all customers together: past it new customer jobs are refused ("busy, try again later"); 0 turns it off. Studio's own projects and admin keys are exempt. */
+    dailyCeilingUsd: number };
   /** Platform tokens from the portal (src/platform.ts): `issuer` the portal this lane trusts (empty: hawkesgames.com, or
    *  beta.hawkesgames.com on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
    *  (design partners, J's own). */
@@ -109,12 +117,17 @@ export type Settings = {
    *  (https://studio.hawkesgen.ai; empty: HAWKESGEN_ORG_CREDITS_URL, else off). Its key is the secret
    *  HAWKESGEN_ORG_CREDITS_KEY (.env, Secret Manager on the cloud lanes), never a setting. */
   orgCredits: { url: string };
+  /** Starter-credit limits (src/signupcap.ts): `perIpPerDay` new accounts from one address a (UTC) day that get the starter
+   *  credits, `starterCreditsPerDay` the most starter credits Gen hands out in a day. Over either, the account still signs in, without the grant. 0 turns the grant off. */
+  signups: { perIpPerDay: number; starterCreditsPerDay: number };
   /** Jobs at once for the API providers and local tools. */
   concurrency: { elevenlabs: number; anthropic: number; gemini: number; local: number; pipeline: number; lod: number };
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
    * (billed per token), "bedrock" uses AWS Bedrock (billed per token to AWS). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
    * (inside every job: reviews, judges, captions) and how long one may take. */
-  claude: { backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number };
+  claude: { backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number;
+    /** AI turns (the editor, director and scene AIs) one account may have going or waiting at once, and how long one waits for a free slot before it gives up (src/aigate.ts). */
+    maxPerUser: number; maxWaitSeconds: number };
   /**
    * Which harness answers writing, review and JSON calls, and (via Studio) the coding agents.
    * "claude" is Claude Code (the Max plan or the API key above). "cursor" is Cursor's agent on the Cursor plan.
@@ -190,9 +203,9 @@ export type Settings = {
      * "Machine sizes"), each a Cloud Run job of its own ("<customer job>-<size>", made by Gen from the customer job; the
      * size equal to `cpu` / `memoryGiB` is the customer job itself). `customerSize`: the default, "m" (4 vCPU, 16 GiB,
      * half the cost of xl; J, 2026-11-01: "make it cheap if we don't need all that"). A build out of memory is built
-     * again once a size up.
+     * again once a size up. `checkSize`: the default machine of a compile-only check (unity.build `check: true`), "m".
      */
-    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[]; liveRegion: string; sizes: MachineSizes; customerSize: string };
+    gcp: { project: string; region: string; job: string; bucket: string; unity: string; cpu: number; memoryGiB: number; images: Record<string, string>; customerJob: string; regions: string[]; liveRegion: string; sizes: MachineSizes; customerSize: string; checkSize: string };
     /** The build VMs: one per project, named hawkes-unity-<project>, made by tools/unity-cloudrun/vm.mjs. */
     vm: { zone: string; machineType: string; pricePerHour: number };
   };
@@ -292,6 +305,11 @@ export type GpuEndpoint = {
    */
   graphLimitSeconds: number;
   enabled: boolean;
+  /**
+   * How long a worker's first start may take past the wait for a free one (it pulls the image), in seconds. Default 720.
+   * The 3D image (server/gpu3d, about 25 GB) needs more on a host that hasn't pulled it yet: 1800.
+   */
+  coldStartSeconds?: number;
 };
 
 /** What a playtest plays (playtest.run's `target`): a page, an Electron app, or a desktop build on Linux, Proton or Windows. */
@@ -340,10 +358,11 @@ export const SETTINGS_DEFAULTS: Settings = {
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
   lod: { projects: ['usr_*', 'ubeta_*'] },
-  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'], gpuWaitMinutes: 15 },
+  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'], gpuWaitMinutes: 15, maxQueuedPerProject: 20, dailyCeilingUsd: 200 },
   platform: { issuer: '', freeOrgs: [] },
   orgCredits: { url: '' },
-  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
+  signups: { perIpPerDay: 3, starterCreditsPerDay: 5000 },
+  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10, maxPerUser: 2, maxWaitSeconds: 30 },
   brain: 'claude',
   model: '',
   localOpen: true,
@@ -353,7 +372,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   audio: { verified: [], targetLufs: { default: -16, 'default:sfx': -18, 'default:music': -16, 'default:voice': -16 } },
   unityBuild: {
     backend: 'builder', timeoutMinutes: 40, cleanAfterFailures: 2, concurrency: 2, vmAt: 0.85, projects: {},
-    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'], liveRegion: 'us-east4', sizes: { ...DEFAULT_SIZES }, customerSize: DEFAULT_CUSTOMER_SIZE },
+    gcp: { project: '', region: 'us-east4', job: 'hawkes-unity-build', bucket: '', unity: '6000.3.7f1', cpu: 8, memoryGiB: 32, images: {}, customerJob: 'hawkes-unity-build-customer', regions: ['us-central1'], liveRegion: 'us-east4', sizes: { ...DEFAULT_SIZES }, customerSize: DEFAULT_CUSTOMER_SIZE, checkSize: DEFAULT_CUSTOMER_SIZE },
     vm: { zone: 'us-east4-a', machineType: 'n2-standard-8', pricePerHour: 0.1 },
   },
   playtest: { backend: 'ec2', projects: {}, cloudrun: { url: null, maxInstances: 2, tabsPerInstance: 4, encode: 'service' }, cloudrunCpu: { url: null, maxInstances: 4, tabsPerInstance: 1, encode: 'service', extra: [] },
@@ -521,6 +540,7 @@ export function cleanProviders(g: Partial<Settings['gpu']> | undefined): Pick<Se
       gpu: String(p.gpu ?? '').trim().slice(0, 40) || 'gpu',
       pricePerHour: n(p.pricePerHour, 0, 100, 0), maxConcurrent: Math.round(n(p.maxConcurrent, 1, 64, 1)),
       graphLimitSeconds: Math.round(n(p.graphLimitSeconds, 60, 86_400, p.provider === 'runpod' ? RUNPOD_GRAPH_SECONDS : 3300)), enabled: p.enabled !== false,
+      ...(p.coldStartSeconds != null && String(p.coldStartSeconds) !== '' ? { coldStartSeconds: Math.round(n(p.coldStartSeconds, 60, 7200, 720)) } : {}),
     });
   }
   const known = new Set(['fleet', 'cloudrun', ...providers.map((p) => p.id)]);
@@ -559,16 +579,24 @@ function clean(s: Settings): Settings {
       perProjectLane: n(s.queue?.perProjectLane, 1, 64, SETTINGS_DEFAULTS.queue.perProjectLane),
       projects: Array.isArray(s.queue?.projects) ? s.queue!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.queue.projects,
       gpuWaitMinutes: n(s.queue?.gpuWaitMinutes, 1, 240, SETTINGS_DEFAULTS.queue.gpuWaitMinutes),
+      maxQueuedPerProject: n(s.queue?.maxQueuedPerProject, 1, 10_000, SETTINGS_DEFAULTS.queue.maxQueuedPerProject),
+      dailyCeilingUsd: n(s.queue?.dailyCeilingUsd, 0, 1_000_000, SETTINGS_DEFAULTS.queue.dailyCeilingUsd),
     },
     platform: {
       issuer: typeof s.platform?.issuer === 'string' && /^https?:\/\/[^\s]+$/.test(s.platform.issuer) ? s.platform.issuer : '',
       freeOrgs: Array.isArray(s.platform?.freeOrgs) ? s.platform!.freeOrgs.map(String).filter((o) => /^org_[0-9a-f]{8,32}$/.test(o)).slice(0, 200) : [],
+    },
+    signups: {
+      perIpPerDay: n(s.signups?.perIpPerDay, 0, 1000, SETTINGS_DEFAULTS.signups.perIpPerDay),
+      starterCreditsPerDay: n(s.signups?.starterCreditsPerDay, 0, 10_000_000, SETTINGS_DEFAULTS.signups.starterCreditsPerDay),
     },
     orgCredits: { url: typeof s.orgCredits?.url === 'string' && /^https?:\/\/[^\s]+$/.test(s.orgCredits.url) ? s.orgCredits.url.replace(/\/+$/, '') : '' },
     claude: {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
       timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
+      maxPerUser: n(s.claude?.maxPerUser, 1, 16, SETTINGS_DEFAULTS.claude.maxPerUser),
+      maxWaitSeconds: n(s.claude?.maxWaitSeconds, 1, 600, SETTINGS_DEFAULTS.claude.maxWaitSeconds),
     },
     brain: s.brain === 'cursor' || (s.brain as string) === 'grok' ? 'cursor' : s.brain === 'copilot' ? 'copilot' : 'claude',
     model: typeof (s as { model?: string }).model === 'string' ? (s as { model?: string }).model : '',
@@ -637,6 +665,7 @@ function cleanUnityBuild(u: Partial<Settings['unityBuild']> | undefined): Settin
       liveRegion: g.liveRegion === '' ? '' : word(g.liveRegion, /^[a-z]+-[a-z]+\d+$/, d.gcp.liveRegion),
       sizes,
       customerSize: cleanCustomerSize(g.customerSize, sizes),
+      checkSize: cleanCustomerSize(g.checkSize, sizes),
     },
   };
 }

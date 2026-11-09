@@ -16,7 +16,7 @@
 //
 // Source of truth: C:\Projects\hawkesgen\clients\js\hawkesgen.mjs. Version 6 (the library: entities, slots, versions, make, revise, watch, exportSlots).
 
-export const CLIENT_VERSION = 7;
+export const CLIENT_VERSION = 9;
 
 /** ~/.hawkes/client.json (Node only): where Hawkes Gen and Studio are, for every project on this PC. */
 function userConfig() {
@@ -45,6 +45,33 @@ export class HawkesGenError extends Error {
 
 const isNode = typeof process !== 'undefined' && !!process.versions?.node;
 const TERMINAL = new Set(['done', 'failed', 'cancelled']);
+/** Over this, upload() sends a file straight to Gen's bucket instead of through Gen. */
+export const BIG_UPLOAD = 25 * 1024 * 1024;
+/** A resumable upload's piece (a multiple of 256 KiB, as Cloud Storage wants). */
+const RESUMABLE_CHUNK = 16 * 1024 * 1024;
+async function sha256OfBytes(bytes) {
+  if (isNode) return (await import('node:crypto')).createHash('sha256').update(bytes).digest('hex');
+  const d = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function sha256OfFile(file) {
+  const [{ createHash }, fs] = await Promise.all([import('node:crypto'), import('node:fs')]);
+  const h = createHash('sha256');
+  for await (const c of fs.createReadStream(file, { highWaterMark: 4 * 1024 * 1024 })) h.update(c);
+  return h.digest('hex');
+}
+/** PUTs a file as a stream with its length (Node; fetch would send it chunked). -> { status }. */
+async function putFile(url, file, size) {
+  const [https, fs] = await Promise.all([import('node:https'), import('node:fs')]);
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: 'PUT', headers: { 'Content-Length': String(size), 'Content-Type': 'application/octet-stream' } }, (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode }));
+    });
+    req.on('error', reject);
+    fs.createReadStream(file).on('error', reject).pipe(req);
+  });
+}
 /** The API path of an entity's slot (slot names can have slashes: pose/air). */
 const slotPath = (id, slot) => `/entities/${id}/slots/${String(slot).split('/').map(encodeURIComponent).join('/')}`;
 
@@ -99,7 +126,9 @@ export class HawkesGen {
     if (this.local || !isNode) return inputs;
     const out = {};
     for (const [k, v] of Object.entries(inputs)) {
-      const one = async (x) => (typeof x === 'string' && !/^(asset|blob):/.test(x) ? this.upload(x) : x);
+      // References the service resolves itself stay as they are: library assets and blobs, entity slots, the CC0 motion
+      // library (motion:ual1/Walk_Loop), elements, URLs and chain references ($prev, $step1). Only local paths upload.
+      const one = async (x) => (typeof x === 'string' && !/^(asset|blob|slot|motion|el|https?):|^\$/.test(x) ? this.upload(x) : x);
       out[k] = Array.isArray(v) ? await Promise.all(v.map(one)) : await one(v);
     }
     return out;
@@ -224,16 +253,98 @@ export class HawkesGen {
   }
 
   /** Uploads a file (a path in Node, or bytes/Blob) and returns "blob:<sha256>" to use as an input. The name only
-   * gives Gen the extension; it is sent as plain ASCII (an HTTP header can't carry "…" or accents). */
-  async upload(fileOrBytes, filename) {
-    let body = fileOrBytes;
-    if (typeof fileOrBytes === 'string') {
-      const fs = await import('node:fs');
-      body = fs.readFileSync(fileOrBytes);
-      filename ??= fileOrBytes;
+   * gives Gen the extension; it is sent as plain ASCII (an HTTP header can't carry "…" or accents). Files over
+   * BIG_UPLOAD bytes go straight to Gen's bucket (POST /v1/blobs/upload: a signed PUT or a resumable session, then
+   * /v1/blobs/upload/done), since a request through Gen on Cloud Run stops at 32 MiB; an older Gen, or one with no
+   * bucket, takes them through POST /v1/blobs as before. `onProgress(sentBytes, totalBytes)` follows a big upload. */
+  async upload(fileOrBytes, filename, { onProgress } = {}) {
+    const name = String(filename ?? (typeof fileOrBytes === 'string' ? fileOrBytes : 'upload.bin')).split(/[\\/]/).pop().replace(/[^ -~]/g, '_');
+    let size;
+    if (typeof fileOrBytes === 'string') size = (await import('node:fs')).statSync(fileOrBytes).size;
+    else if (typeof Blob !== 'undefined' && fileOrBytes instanceof Blob) size = fileOrBytes.size;
+    else size = fileOrBytes.length;
+    if (size > BIG_UPLOAD) {
+      const blob = await this.bigUpload(fileOrBytes, name, size, onProgress);
+      if (blob) return blob;
     }
-    const r = await this.request('/blobs', { method: 'POST', body: body instanceof Uint8Array ? body : body, headers: { 'X-Filename': String(filename ?? 'upload.bin').split(/[\\/]/).pop().replace(/[^ -~]/g, '_') } });
+    let body = fileOrBytes;
+    if (typeof fileOrBytes === 'string') body = (await import('node:fs')).readFileSync(fileOrBytes);
+    const r = await this.request('/blobs', { method: 'POST', body, headers: { 'X-Filename': name } });
     return r.blob;
+  }
+
+  /** upload()'s bucket path: null when this Gen can't take it that way (upload() then uses POST /v1/blobs). */
+  async bigUpload(src, name, size, onProgress = () => {}) {
+    const isPath = typeof src === 'string';
+    const fs = isPath ? await import('node:fs') : null;
+    let bytes = null;
+    if (!isPath) bytes = typeof Blob !== 'undefined' && src instanceof Blob ? new Uint8Array(await src.arrayBuffer()) : src;
+    const sha256 = isPath ? await sha256OfFile(src) : await sha256OfBytes(bytes);
+    let start;
+    try {
+      start = await this.request('/blobs/upload', { method: 'POST', body: { sha256, bytes: size, filename: name } });
+    } catch (e) {
+      if (e instanceof HawkesGenError && (e.status === 404 || e.status === 405 || e.kind === 'no_bucket')) return null;
+      throw e;
+    }
+    if (start.exists) { onProgress(size, size); return start.blob; }
+    /** The bytes [from, to) (a file is read one piece at a time, never whole). */
+    const piece = (from, to) => {
+      if (!isPath) return bytes.subarray(from, to);
+      const buf = Buffer.alloc(to - from);
+      const fd = fs.openSync(src, 'r');
+      try { fs.readSync(fd, buf, 0, buf.length, from); } finally { fs.closeSync(fd); }
+      return buf;
+    };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    if (start.method === 'PUT') {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const r = isPath ? await putFile(start.url, src, size) : await fetch(start.url, { method: 'PUT', body: bytes });
+          if (r.status >= 200 && r.status < 300) break;
+          if (r.status < 500 || attempt >= 4) throw new HawkesGenError(`Uploading ${name} to storage: HTTP ${r.status}`, { status: r.status });
+        } catch (e) {
+          if (e instanceof HawkesGenError || attempt >= 4) throw e;
+        }
+        await wait(1000 * 2 ** attempt);
+      }
+      onProgress(size, size);
+    } else {
+      // A resumable session: pieces with Content-Range; after a dropped request, ask the session where it got to.
+      let offset = 0;
+      let tries = 0;
+      const where = async () => {
+        const r = await fetch(start.url, { method: 'PUT', headers: { 'Content-Range': `bytes */${size}` } });
+        if (r.status === 200 || r.status === 201) return size;
+        if (r.status !== 308) throw new Error(`HTTP ${r.status}`);
+        const range = r.headers.get('range');
+        return range ? Number(range.split('-')[1]) + 1 : 0;
+      };
+      while (offset < size) {
+        const end = Math.min(size, offset + RESUMABLE_CHUNK);
+        try {
+          const r = await fetch(start.url, { method: 'PUT', headers: { 'Content-Range': `bytes ${offset}-${end - 1}/${size}` }, body: piece(offset, end) });
+          if (r.status === 200 || r.status === 201) offset = size;
+          else if (r.status === 308) { const range = r.headers.get('range'); offset = range ? Number(range.split('-')[1]) + 1 : 0; }
+          else if (r.status >= 500 || r.status === 429) throw new Error(`HTTP ${r.status}`);
+          else throw new HawkesGenError(`Uploading ${name} to storage: HTTP ${r.status}`, { status: r.status });
+          tries = 0;
+          onProgress(offset, size);
+        } catch (e) {
+          if (e instanceof HawkesGenError || ++tries > 6) throw e;
+          await wait(1000 * 2 ** tries);
+          offset = await where().catch(() => offset);
+        }
+      }
+    }
+    // Gen reads the file once to check it. A big one can take longer than one request may wait, so it answers 202
+    // "verifying" and is asked again: a bounded wait on this one upload, not polling for changes.
+    for (let i = 0; i < 120; i++) {
+      const r = await this.request('/blobs/upload/done', { method: 'POST', body: { sha256, upload: start.upload } });
+      if (r.blob) return r.blob;
+      await wait(3000);
+    }
+    throw new HawkesGenError(`Gen didn't finish checking ${name}`, { kind: 'upload' });
   }
 
   // ------------------------------------------------------------ the library (docs/library.md)

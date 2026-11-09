@@ -37,6 +37,16 @@ function payerOf(client: Client, project: string): string | null {
   return own ? null : user.id;
 }
 
+/** The pane's auto limit (credits a step may run without asking): the value sent, else 40; capped at AUTO_MAX, and at the
+ *  balance of the account that pays (it can't auto-run more than it holds). Forwarded to the delegated assistant too. */
+const AUTO_MAX = 5000;
+function autoLimit(asked: unknown, payer: string | null): number {
+  const n = asked == null ? 40 : Number(asked);
+  const want = Number.isFinite(n) ? Math.max(0, n) : 40;
+  const balance = payer ? Math.max(0, getUserById(payer)?.credits ?? 0) : Infinity;
+  return Math.min(want, AUTO_MAX, balance);
+}
+
 /** Asks one of Gen's own routes (an assistant) as the same caller, and keeps its answer. */
 async function delegate(req: IncomingMessage, handle: Handle, path: string, body: Record<string, unknown>): Promise<{ status: number; body: any }> {
   const data = Buffer.from(JSON.stringify(body));
@@ -87,10 +97,11 @@ export async function handleShowrunner(req: IncomingMessage, res: ServerResponse
     if (payer) checkCanPay(getUserById(payer)?.credits ?? 0);
     const production = typeof b.production === 'string' ? getProduction(b.production, project) : null;
     const { messages: _m, scene: _s, production: _p, world: _w, autoCredits: _a, browser: _b, project: _pr, ...forward } = b;
+    const autoCredits = autoLimit(b.autoCredits, payer);
     const out = await showrunnerTurn({
       client, project, payer, messages, selection: b.selection, world: typeof b.world === 'string' ? b.world : null,
       scene: scene ? { id: scene.id, kind: scene.kind, doc: b.doc && typeof b.doc === 'object' ? b.doc : scene.doc } : null,
-      autoCredits: Math.max(0, Number(b.autoCredits ?? 40)), browser: Boolean(b.browser), production, forward,
+      autoCredits, browser: Boolean(b.browser), production, forward: { ...forward, autoCredits },
       delegate: (path, body) => delegate(req, handle, path, body),
     });
     send(res, out.status, out.body);
@@ -139,7 +150,7 @@ export async function handleShowrunner(req: IncomingMessage, res: ServerResponse
     const box = b.box && typeof b.box === 'object' ? { x: Number(b.box.x) || 0, y: Number(b.box.y) || 0, w: Number(b.box.w) || 0, h: Number(b.box.h) || 0 } : null;
     const text = String(b.text ?? '').trim();
     if (!text) throw new GenError('Say what is wrong with this moment', { status: 400 });
-    send(res, 200, await reviewFix({ client, project: scene.project, payer, scene: { id: scene.id, doc: scene.doc }, t: Number(b.t) || 0, box, text, autoCredits: Math.max(0, Number(b.autoCredits ?? 40)) }));
+    send(res, 200, await reviewFix({ client, project: scene.project, payer, scene: { id: scene.id, doc: scene.doc }, t: Number(b.t) || 0, box, text, autoCredits: autoLimit(b.autoCredits, payer) }));
     return true;
   }
 

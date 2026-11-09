@@ -16,12 +16,15 @@ import { assetMakeTool } from './pipeline.ts';
 import { libraryJudgeTool } from './judge.ts';
 import { loraTrainTool, imageCharacterTool } from './lora.ts';
 import { blenderRenderTool } from './blender.ts';
+import { unityRenderTool } from './unityrender.ts';
 import { composeTool } from './compose.ts';
 import { filmGateTool, filmPlanTool } from './film.ts';
 import { videoMatteTool, videoCompositeTool, videoControlMixTool } from './film-video.ts';
 import { meshRigTool } from './rig.ts';
 import { blenderCharacterTool } from './character.ts';
 import { motionFromTextTool } from './motion.ts';
+import { motionFromVideoTool } from './mocap.ts';
+import { motionCheckTool } from './motioncheck.ts';
 import { sheetTool } from './sheet.ts';
 import { viewSheetTool } from './viewsheet.ts';
 import { decorateMeshTool, orderTools } from './threed.ts';
@@ -32,6 +35,7 @@ import { videoChangeTool, audioRevoiceTool } from './chain.ts';
 import { QUALITY_TOOLS } from './quality.ts';
 import { makeCheckedTool } from '../make/tool.ts';
 import { FINISHING_TOOLS } from './finishing.ts';
+import { mockProvidersOn, mockTool } from '../mockproviders.ts';
 
 // BiRefNet cutouts go to a GPU server when one can take them (src/tools/cutout-gpu.ts). Set here, not in local.ts: the CPU
 // service imports local.ts through src/cpu/suite.ts and keeps to pure modules (it never routes).
@@ -45,7 +49,7 @@ const BUILT_IN: Tool[] = [
   cutoutTool, cutoutGpuTool,
   frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
-  blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, sheetTool, viewSheetTool,
+  blenderRenderTool, unityRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, motionFromVideoTool, motionCheckTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
   assetLodTool,
   imageRepaintTool, imageExpandTool, videoFrameTool, videoStillTool, mediaNormalizeTool, videoChangeTool, audioRevoiceTool,
@@ -63,7 +67,9 @@ export function reloadTools() {
   loadWorkflows();
   const wf = listWorkflows().map(workflowTool);
   const ids = new Set(wf.map((t) => t.id));
-  TOOLS = orderTools([...BUILT_IN.filter((t) => !ids.has(t.id)), ...wf].map(decorateMeshTool));
+  // HAWKESGEN_MOCK_PROVIDERS=1 (beta and local copies only): GPU, ElevenLabs and Claude tools answer at once (src/mockproviders.ts).
+  const mock = mockProvidersOn();
+  TOOLS = orderTools([...BUILT_IN.filter((t) => !ids.has(t.id)), ...wf].map(decorateMeshTool).map((t) => (mock ? mockTool(t) : t)));
   byId = new Map(TOOLS.map((t) => [t.id, t]));
   return TOOLS;
 }

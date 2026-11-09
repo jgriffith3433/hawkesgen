@@ -117,7 +117,7 @@ test('licenses: Kimodo SOMA is commercial; SMPL-X and SMPL body weights are not 
 
 test('motion.from-text is a built-in tool; character3d motion/* uses it on the rig', () => {
   const tool = getTool('motion.from-text');
-  assert.ok(tool && tool.family === 'motion' && tool.version === 1 && tool.provider === 'comfy');
+  assert.ok(tool && tool.family === 'motion' && tool.version === 2 && tool.provider === 'comfy' && tool.image === '3d');
   assert.equal(tool!.params.prompt.required, true);
   assert.equal(tool!.params.takes.max, 8);
   assert.ok(tool!.inputs.character);

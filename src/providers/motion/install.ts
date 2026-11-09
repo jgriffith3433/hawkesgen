@@ -99,10 +99,14 @@ export function chooseBackend(kimodoBvh: boolean): 'kimodo' | 'hymotion' {
   return kimodoBvh ? 'kimodo' : 'hymotion';
 }
 
-/** The shell that installs both venvs. Idempotent: a READY file with these commits skips the work. */
-export function installScript(sudo = 'sudo ') {
+/**
+ * The shell that installs both venvs. Idempotent: a READY file with these commits skips the work. `weights: false` is
+ * the 3D worker image: code and venvs only; a worker fetches the weights on first use (weightsScript, hyWeightsScript).
+ */
+export function installScript(sudo = 'sudo ', o: { weights?: boolean } = {}) {
+  const weights = o.weights !== false;
   const apt = `${sudo}apt-get -o DPkg::Lock::Timeout=600`;
-  const pkgs = 'python3.11 python3.11-venv python3.11-dev git curl ca-certificates';
+  const pkgs = 'python3.11 python3.11-venv python3.11-dev git curl ca-certificates cmake build-essential'; // cmake: kimodo builds a native extension
   return [
     'set -euo pipefail',
     `MARK='${READY_MARK}'`,
@@ -111,7 +115,7 @@ export function installScript(sudo = 'sudo ') {
     '  exit 0',
     'fi',
     `AVAIL=$(df -B1 --output=avail / | tail -1 | tr -d ' ')`,
-    `if [ "$AVAIL" -lt ${MIN_FREE_BYTES} ]; then echo "motion install needs 60 GB free, have $AVAIL bytes" >&2; exit 1; fi`,
+    `${weights ? "" : "false && "}if [ "$AVAIL" -lt ${MIN_FREE_BYTES} ]; then echo "motion install needs 60 GB free, have $AVAIL bytes" >&2; exit 1; fi`,
     // Ubuntu 24.04 has no python3.11: add the deadsnakes PPA when the plain install fails, and show the apt log if it still does.
     `trap 'rc=$?; if [ $rc -ne 0 ]; then echo "motion install failed (exit $rc) at: $BASH_COMMAND" >&2; tail -n 5 /tmp/motion-apt.log >&2 2>/dev/null || true; fi' EXIT`,
     `if ! ${apt} install -y ${pkgs} >/tmp/motion-apt.log 2>&1; then`,
@@ -132,8 +136,10 @@ export function installScript(sudo = 'sudo ') {
     `${KIMODO_PYTHON} -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128`,
     // Base package only. kimodo[soma] pulls SOMA-X; the SMPL-X weights are a different download and are not requested.
     `${KIMODO_PYTHON} -m pip install "kimodo @ git+https://github.com/nv-tlabs/kimodo.git@${KIMODO_COMMIT}"`,
-    `${KIMODO_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('${'nvidia/' + KIMODO_MODEL}')" || echo "Kimodo weights download failed; the first job will try again"`,
-    `${KIMODO_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('meta-llama/Meta-Llama-3-8B-Instruct')" || echo "Llama 3 8B is gated: put a Hugging Face token with access in ${MOTION_ROOT}/hf/token and run the job again. Until then Kimodo is skipped."`,
+    ...(weights ? [
+      `${KIMODO_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('${'nvidia/' + KIMODO_MODEL}')" || echo "Kimodo weights download failed; the first job will try again"`,
+      `${KIMODO_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('meta-llama/Meta-Llama-3-8B-Instruct')" || echo "Llama 3 8B is gated: put a Hugging Face token with access in ${MOTION_ROOT}/hf/token and run the job again. Until then Kimodo is skipped."`,
+    ] : []),
     `if [ ! -d ${HY_ROOT}/.git ]; then git init ${HY_ROOT}; fi`,
     `git -C ${HY_ROOT} remote remove origin 2>/dev/null || true`,
     `git -C ${HY_ROOT} remote add origin https://github.com/Tencent-Hunyuan/HY-Motion-1.0.git`,
@@ -145,10 +151,56 @@ export function installScript(sudo = 'sudo ') {
     // fbxsdkpy needs a private index and is only used for their wooden FBX. The BVH writer does not use it.
     `grep -v -E 'fbxsdkpy|extra-index-url' ${HY_ROOT}/requirements.txt > ${MOTION_ROOT}/hymotion/requirements.txt`,
     `${HY_PYTHON} -m pip install -r ${MOTION_ROOT}/hymotion/requirements.txt`,
-    `${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('tencent/HY-Motion-1.0', allow_patterns=['HY-Motion-1.0/*'], local_dir='${MOTION_ROOT}/hymotion/ckpts/tencent')"`,
-    `${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('openai/clip-vit-large-patch14')"`,
-    `${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-8B')"`,
+    ...(weights ? [
+      `${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('tencent/HY-Motion-1.0', allow_patterns=['HY-Motion-1.0/*'], local_dir='${MOTION_ROOT}/hymotion/ckpts/tencent')"`,
+      `${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('openai/clip-vit-large-patch14')"`,
+      `${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-8B')"`,
+    ] : []),
     `echo "$MARK" > ${MOTION_ROOT}/READY`,
     `echo "motion ready ${READY_MARK}"`,
+  ].join('\n');
+}
+
+/**
+ * On a 3D worker: Kimodo's weights and its Llama 3 text encoder into the Hugging Face cache in $HAWKES_WEIGHTS, once,
+ * under a lock. Llama is gated: without a token that has access (Gen's HF_TOKEN reaches the script) it is skipped and
+ * the job falls back to HY-Motion, as on the fleet.
+ */
+export function weightsScript() {
+  const w = '$HAWKES_WEIGHTS/motion';
+  const mark = `${w}/READY-kimodo-${KIMODO_COMMIT.slice(0, 12)}`;
+  return [
+    `mkdir -p "${w}"`,
+    `(`,
+    `  flock 9`,
+    `  if [ ! -f "${mark}" ]; then`,
+    `    echo "HB step downloading Kimodo (once per weights volume)"`,
+    `    HF_HOME="$HAWKES_HF_HOME" ${KIMODO_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('nvidia/${KIMODO_MODEL}')"`,
+    `    echo "HB step downloading Kimodo's text encoder, Llama 3 8B (gated: needs Gen's HF_TOKEN with access)"`,
+    `    if HF_HOME="$HAWKES_HF_HOME" ${KIMODO_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('meta-llama/Meta-Llama-3-8B-Instruct')"; then touch "${mark}"; else echo "HB warning Llama 3 8B did not download (gated: Gen's HF_TOKEN needs access to meta-llama/Meta-Llama-3-8B-Instruct); Kimodo will be skipped"; fi`,
+    `  fi`,
+    `) 9>"${w}/.lock"`,
+  ].join('\n');
+}
+
+/** On a 3D worker: HY-Motion's weights (only when Kimodo wrote nothing), linked where hymotion_run.py reads them. */
+export function hyWeightsScript() {
+  const w = '$HAWKES_WEIGHTS/motion';
+  const mark = `${w}/READY-hy-${HY_COMMIT.slice(0, 12)}`;
+  return [
+    'if [ -n "${HAWKES_WEIGHTS:-}" ]; then',
+    `  mkdir -p "${w}"`,
+    `  (`,
+    `    flock 9`,
+    `    if [ ! -f "${mark}" ]; then`,
+    `      echo "HB step downloading HY-Motion 1.0 and its text encoders (once per weights volume, about 20 GB)"`,
+    `      HF_HOME="$HAWKES_HF_HOME" ${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('tencent/HY-Motion-1.0', allow_patterns=['HY-Motion-1.0/*'], local_dir='${w}/hy')"`,
+    `      HF_HOME="$HAWKES_HF_HOME" ${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('openai/clip-vit-large-patch14')"`,
+    `      HF_HOME="$HAWKES_HF_HOME" ${HY_PYTHON} -c "from huggingface_hub import snapshot_download; snapshot_download('Qwen/Qwen3-8B')"`,
+    `      touch "${mark}"`,
+    `    fi`,
+    `  ) 9>"${w}/.lock"`,
+    `  mkdir -p ${MOTION_ROOT}/hymotion/ckpts; if [ ! -L ${MOTION_ROOT}/hymotion/ckpts/tencent ]; then rm -rf ${MOTION_ROOT}/hymotion/ckpts/tencent; fi; ln -sfn "${w}/hy" ${MOTION_ROOT}/hymotion/ckpts/tencent`,
+    'fi',
   ].join('\n');
 }

@@ -21,6 +21,8 @@ export function createJobWatch({ fetchJob, openStream = realOpenStream, hidden =
   /** event name -> Set of { fn, onReconnect }: the stream's other events (scene, production ...) for pages that want them */
   const topics = new Map();
   let stream = null;
+  /** fn(state) for 'live' | 'reconnecting': the "Reconnecting…" chip */
+  const states = new Set();
 
   function finish(id, j) {
     const w = following.get(id);
@@ -66,7 +68,7 @@ export function createJobWatch({ fetchJob, openStream = realOpenStream, hidden =
     const want = !hidden() && (following.size > 0 || listeners.size > 0 || topicsOpen());
     if (!want) { stream?.close(); stream = null; return; }
     // Each time the stream opens (the first time too) the followed jobs are read once: an end that came before it is seen.
-    if (!stream) stream = openStream({ job: onJob, scene: onTopic('scene'), production: onTopic('production') }, { onState: (st) => { if (st === 'live') readAll(); }, onReconnect: tellReconnect });
+    if (!stream) stream = openStream({ job: onJob, scene: onTopic('scene'), production: onTopic('production'), ai: onTopic('ai') }, { onState: (st) => { if (st === 'live') readAll(); for (const fn of states) { try { fn(st); } catch { /* cosmetic */ } } }, onReconnect: tellReconnect });
   }
   let wasHidden = hidden();
   onVisible(() => {
@@ -120,6 +122,8 @@ export function createJobWatch({ fetchJob, openStream = realOpenStream, hidden =
       update();
       return () => { topics.get(name)?.delete(t); update(); };
     },
+    /** The stream's state ('live' | 'reconnecting') as it changes, for a status chip. Returns stop. */
+    onState(fn) { states.add(fn); update(); return () => states.delete(fn); },
     /** For tests and the page: how many jobs are followed, and whether the stream is open. */
     get following() { return following.size; },
     get open() { return Boolean(stream); },

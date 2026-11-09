@@ -10,8 +10,9 @@
 // so "is there a current asset for this?" holds for every take.
 
 import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
+import path from 'node:path';
 import { db, parseRow, J } from './db.ts';
 import { paths } from './config.ts';
 import { id, sha256, kindOf, mimeOf, extOf, stableStringify, GenError } from './util.ts';
@@ -43,61 +44,80 @@ export function recipeKey(r: Recipe): string {
   return sha256(stableStringify({ ...rest, params }));
 }
 
-/** A file's sha256 without holding it in memory (4 MB at a time). */
-export function sha256FileSync(file: string): string {
-  const h = crypto.createHash('sha256');
-  const fd = fs.openSync(file, 'r');
-  try {
-    const buf = Buffer.allocUnsafe(4 * 1024 * 1024);
-    for (let n; (n = fs.readSync(fd, buf, 0, buf.length, null)) > 0; ) h.update(buf.subarray(0, n));
-  } finally {
-    fs.closeSync(fd);
-  }
-  return h.digest('hex');
-}
-
-/** Moves a file into place (a rename on one disk; across disks a copy, then the original goes). */
-function moveFile(from: string, to: string) {
-  try {
-    fs.renameSync(from, to);
-  } catch {
-    fs.copyFileSync(from, to);
-    fs.rmSync(from, { force: true });
-  }
-}
-
-/**
- * Keeps an output in the library. `fromFile` (instead of `data`): the file is MOVED in and hashed in chunks, never read
- * into memory. A customer's Unity build is about 1 GB packed, and on Cloud Run the disk is memory too: holding it as a
- * Buffer beside its temp file and its library copy took Gen (4 GiB) down, and every restart built it again
- * (sick-of-it-unity j_bb4c57cd1cf3, 2026-11-03).
- */
-export function putAsset(a: {
-  data: Buffer; fromFile?: string; mime?: string; ext?: string; job?: string | null; client: string; project: string; tool: string;
+type NewAsset = {
+  mime?: string; ext?: string; job?: string | null; client: string; project: string; tool: string;
   seed?: number | null; recipe: Recipe; labels?: Record<string, unknown>; title?: string; meta?: Record<string, unknown>;
-}): Asset {
+};
+
+/** Where an asset's file goes, and its mime. */
+function assetTarget(a: NewAsset) {
   const assetId = id('a', 8);
   const mime = a.mime ?? (a.ext ? mimeOf(`x${a.ext}`) : 'application/octet-stream');
   const ext = a.ext ?? extOf(mime);
-  const month = new Date().toISOString().slice(0, 7);
-  const dir = path.join(paths.library, month);
+  const dir = path.join(paths.library, new Date().toISOString().slice(0, 7));
   fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${assetId}${ext}`);
-  if (a.fromFile) moveFile(a.fromFile, file);
-  else fs.writeFileSync(file, a.data);
-  const bytes = a.fromFile ? fs.statSync(file).size : a.data.length;
-  const hash = a.fromFile ? sha256FileSync(file) : sha256(a.data);
+  return { assetId, mime, file: path.join(dir, `${assetId}${ext}`) };
+}
+
+/** Writes the row for a file that is in the library folder, and queues its backup. */
+function insertAsset(a: NewAsset, t: { assetId: string; mime: string; file: string }, bytes: number, hash: string): Asset {
   const recipe = { ...a.recipe, seed: a.seed ?? a.recipe.seed ?? null };
   const row = {
-    id: assetId, job: a.job ?? null, client: a.client, project: a.project, tool: a.tool, kind: kindOf(mime), mime,
-    path: file, bytes, sha256: hash, seed: recipe.seed, recipe: J(recipe), recipe_key: recipeKey(recipe),
+    id: t.assetId, job: a.job ?? null, client: a.client, project: a.project, tool: a.tool, kind: kindOf(t.mime), mime: t.mime,
+    path: t.file, bytes, sha256: hash, seed: recipe.seed, recipe: J(recipe), recipe_key: recipeKey(recipe),
     labels: J(a.labels ?? {}), tags: '[]', title: a.title ?? null, starred: 0, meta: J(a.meta ?? {}), created: Date.now(),
   };
   db.prepare(`INSERT INTO assets (id, job, client, project, tool, kind, mime, path, bytes, sha256, seed, recipe, recipe_key, labels, tags, title, starred, meta, created)
               VALUES (:id, :job, :client, :project, :tool, :kind, :mime, :path, :bytes, :sha256, :seed, :recipe, :recipe_key, :labels, :tags, :title, :starred, :meta, :created)`).run(row);
   // Also to S3 (in the background), so the library survives this disk (src/storage.ts).
-  backup({ sha256: row.sha256, path: file, bytes: row.bytes, mime });
-  return getAsset(assetId)!;
+  backup({ sha256: row.sha256, path: t.file, bytes: row.bytes, mime: t.mime });
+  return getAsset(t.assetId)!;
+}
+
+export function putAsset(a: NewAsset & { data: Buffer }): Asset {
+  const t = assetTarget(a);
+  fs.writeFileSync(t.file, a.data);
+  return insertAsset(a, t, a.data.length, sha256(a.data));
+}
+
+/**
+ * Keeps a file that is already on this disk as an asset by streaming it into the library (hashing as it goes), so a
+ * build output of a gigabyte never sits in memory (a 4 GiB Cloud Run instance died reading one whole, 2026-11-04).
+ */
+export async function putAssetFile(a: NewAsset & { file: string }): Promise<Asset> {
+  const t = assetTarget(a);
+  const hash = crypto.createHash('sha256');
+  const src = fs.createReadStream(a.file);
+  src.on('data', (c) => hash.update(c));
+  try {
+    await pipeline(src, fs.createWriteStream(t.file));
+  } catch (e) {
+    fs.rmSync(t.file, { force: true });
+    throw e;
+  }
+  return insertAsset(a, t, fs.statSync(t.file).size, hash.digest('hex'));
+}
+
+/** Keeps an uploaded temp file (already hashed, see src/uploads.ts) as an asset by moving it into the library: nothing is read into memory. */
+export function putAssetUpload(a: NewAsset & { file: string; sha256: string; bytes: number }): Asset {
+  const t = assetTarget(a);
+  moveFile(a.file, t.file);
+  return insertAsset(a, t, a.bytes, a.sha256);
+}
+
+/** Keeps an uploaded temp file as a blob by its hash (the file is removed when the blob is already there). */
+export function putBlobUpload(file: string, hash: string, ext = ''): string {
+  const dest = path.join(paths.blobs, hash.slice(0, 2), `${hash}${ext}`);
+  if (fs.existsSync(dest)) fs.rmSync(file, { force: true });
+  else { fs.mkdirSync(path.dirname(dest), { recursive: true }); moveFile(file, dest); }
+  return hash;
+}
+
+function moveFile(from: string, to: string) {
+  try { fs.renameSync(from, to); } catch (e: any) {
+    if (e?.code !== 'EXDEV') throw e;
+    fs.copyFileSync(from, to); fs.rmSync(from, { force: true });
+  }
 }
 
 export function getAsset(assetId: string): Asset | null {
@@ -206,10 +226,30 @@ export function canUseBlob(client: Client, hash: string): boolean {
   return Boolean(db.prepare(`SELECT 1 FROM assets WHERE sha256 = ?${scope ? ` AND ${scope}` : ''} LIMIT 1`).get(hash));
 }
 
+// Blobs whose bytes are in the library bucket (sha256/<hash>, the same key an asset with those bytes has): big uploads
+// that went straight there (POST /v1/blobs/upload, src/bigupload.ts). Any instance may not have them on disk yet:
+// blobPath answers where the file goes, and storage.ts ensureBlob / ensureInputs fetch it before it is read.
+db.exec(`CREATE TABLE IF NOT EXISTS blob_remote (sha TEXT PRIMARY KEY, ext TEXT NOT NULL DEFAULT '', bytes INTEGER NOT NULL, created INTEGER NOT NULL)`);
+
+/** Records that blob:<hash> is in the bucket (with the extension its local copy gets). */
+export function putBlobRemote(hash: string, ext: string, bytes: number) {
+  db.prepare('INSERT OR IGNORE INTO blob_remote (sha, ext, bytes, created) VALUES (?, ?, ?, ?)').run(hash, ext, bytes, Date.now());
+}
+export function blobRemote(hash: string): { ext: string; bytes: number } | null {
+  return (db.prepare('SELECT ext, bytes FROM blob_remote WHERE sha = ?').get(hash) as { ext: string; bytes: number } | undefined) ?? null;
+}
+/** The sha a local blob file is named by, or null when the path isn't a blob's. */
+export function blobShaOf(file: string): string | null {
+  if (path.resolve(path.dirname(path.dirname(file))) !== path.resolve(paths.blobs)) return null;
+  return /^([0-9a-f]{64})/.exec(path.basename(file))?.[1] ?? null;
+}
+
+/** The blob's local file: on disk, or (for one only in the bucket) where it will be once fetched. Null when Gen has no such blob. */
 export function blobPath(hash: string): string | null {
   if (!/^[0-9a-f]{64}$/.test(hash)) return null;
   const dir = path.join(paths.blobs, hash.slice(0, 2));
-  if (!fs.existsSync(dir)) return null;
-  const f = fs.readdirSync(dir).find((n) => n.startsWith(hash));
-  return f ? path.join(dir, f) : null;
+  const f = fs.existsSync(dir) ? fs.readdirSync(dir).find((n) => n.startsWith(hash) && !n.endsWith('.part')) : undefined;
+  if (f) return path.join(dir, f);
+  const r = blobRemote(hash);
+  return r ? path.join(dir, `${hash}${r.ext}`) : null;
 }

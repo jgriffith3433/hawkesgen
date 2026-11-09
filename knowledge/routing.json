@@ -30,7 +30,10 @@
 
     "audio.voice": { "kind": "audio", "prompt": "text", "preview": null },
     "audio.sfx": { "kind": "audio", "prompt": "text", "preview": null },
-    "audio.music": { "kind": "audio", "prompt": "prompt", "preview": { "seconds": 15 }, "steps": "steps" }
+    "audio.music": { "kind": "audio", "prompt": "prompt", "preview": { "seconds": 15 }, "steps": "steps" },
+
+    "motion.from-text": { "kind": "video", "prompt": "prompt", "refs": [], "preview": { "takes": 1 } },
+    "motion.from-video": { "kind": "video", "prompt": null, "refs": [] }
   },
 
   "intents": {
@@ -68,6 +71,7 @@
 
     "voice": [{ "tools": ["audio.voice"], "why": "a spoken line" }],
     "sfx": [{ "tools": ["audio.sfx"], "why": "a sound effect" }],
-    "music": [{ "tools": ["audio.music"], "why": "a score" }]
+    "music": [{ "tools": ["audio.music"], "why": "a score" }],
+    "animation": [{ "tools": ["motion.from-video", "motion.from-text"], "why": "a humanoid clip on a rig (inputs.character): lifted from a video when one is given (inputs.video), else from the brief as a sentence; a Quaternius library clip (blender.character retarget) is cheaper when one already fits" }]
   }
 }

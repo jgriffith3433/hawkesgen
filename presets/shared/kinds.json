@@ -115,6 +115,40 @@
           "saves": { "glb": "motion/{part}", "preview": "preview/{part}" }
         }
       },
+      "mocap/*": {
+        "description": "A clip lifted out of a video onto the rig (motion.from-video, GEM-X). data.slots[\"mocap/<name>\"].source is the video (an upload, asset: or slot:): the whole body in frame, one person, ideally a still camera. With no source, the character films itself: a still of the rig, video.i2v of it doing data.slots[...].prompt (written as the motion happening), then the motion read back from that video. For moves words can't pin down (a dance, a signature attack); a Quaternius animation/* or a motion/* from text is cheaper when one fits.",
+        "make": {
+          "tool": "motion.from-video",
+          "params": { "name": "{part}", "camera": "auto", "inPlace": false, "loop": false },
+          "inputs": { "video": "{source}", "character": "slot:./rig" },
+          "saves": { "glb": "mocap/{part}", "preview": "preview/{part}" }
+        },
+        "makeWithoutSource": {
+          "steps": [
+            {
+              "tool": "blender.render",
+              "params": {
+                "shot": { "characters": [{ "file": 0, "height": 1.8, "facing": 0 }], "camera": { "move": "static", "angle": 0, "distance": 3.4, "height": 1.0, "lens": 40 }, "lights": "studio" },
+                "passes": [], "stills": [0], "engine": "eevee", "width": 640, "height": 960, "snap": false, "frames": 1
+              },
+              "inputs": { "files": ["$input:0"] }
+            },
+            {
+              "tool": "video.i2v",
+              "params": { "prompt": "{prompt}. The whole body stays in frame, the camera does not move, plain studio background.", "width": 640, "height": 960, "frames": 49 },
+              "inputs": { "start": "$prev" }
+            },
+            {
+              "tool": "motion.from-video",
+              "params": { "name": "{part}", "camera": "still", "inPlace": false, "loop": false },
+              "inputs": { "video": "$prev", "character": "$input:0" },
+              "save": "clip"
+            }
+          ],
+          "inputs": { "files": ["slot:./rig"] },
+          "saves": { "clip.glb": "mocap/{part}", "clip.preview": "preview/{part}" }
+        }
+      },
       "animation/*": {
         "description": "One clip on the rig (library motion:ual1/Walk_Loop, asset:, or slot:). Procedural robot clips come from remaking the rig with form=robot.",
         "make": {

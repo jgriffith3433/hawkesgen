@@ -14,6 +14,7 @@ import { getUserById, type UserRow } from './users.ts';
 import { id, GenError } from './util.ts';
 import { subscriptionEvent } from './subscriptions.ts';
 import { isCustomerMode } from './providers/builder/customer.ts';
+import { checkCreditsReserved } from './providers/builder/check.ts';
 import { resolveMachine, type Machine } from './providers/builder/sizes.ts';
 
 const STRIPE_CONFIG_FILE = path.join(DATA_DIR, 'stripe.json');
@@ -214,7 +215,8 @@ export function playtestCost(toolId: string, params: Record<string, any>): { usd
     return { usd: minutes * perMinute, floor: PLAYTEST_FLOOR_CREDITS[target] ?? 15, basis: `${target}: ${minutes} min at $${perMinute}/min (provisional)` };
   }
   if (toolId === 'playtest.review') {
-    const frames = Math.max(4, Math.min(40, Number(params.frames) || 16));
+    // Each motion contact sheet is one more image, about a screenshot's size.
+    const frames = Math.max(4, Math.min(40, Number(params.frames) || 16)) + Math.max(0, Math.min(12, Number(params.motion ?? 6) || 0));
     const model = String(params.model || DEFAULT_MODEL);
     const usd = costOf(model, { input_tokens: REVIEW_TOKENS.prompt + frames * REVIEW_TOKENS.perFrame, output_tokens: REVIEW_TOKENS.answer });
     return { usd, floor: 3, basis: `${frames} frames on ${model} (provisional)` };
@@ -257,10 +259,43 @@ export function unityBuildCredits(m: { cpu: number; memoryGiB: number }, full: {
 export function buildCost(toolId: string, params: Record<string, any>): { usd: number; floor: number; basis: string } | null {
   if (toolId !== 'unity.build' || !isCustomerMode(params)) return null;
   const gcp = loadSettings().unityBuild.gcp;
+  // A compile-only check reserves a small flat amount and is settled by the machine-minutes it used (settleCheckCredits).
+  if (params.check !== undefined && params.check !== null) {
+    const credits = checkCreditsReserved();
+    return { usd: credits / 100 / COMMERCIAL_MARGIN, floor: credits, basis: `Unity compile-only check, ${credits} credits reserved, settled by machine-minutes (provisional)` };
+  }
   let m: Machine;
   try { m = resolveMachine(params.machine, gcp); } catch { m = resolveMachine(undefined, gcp); }
   const credits = unityBuildCredits(m, { cpu: gcp.cpu, memoryGiB: gcp.memoryGiB });
   return { usd: credits / 100 / COMMERCIAL_MARGIN, floor: credits, basis: `Unity cloud build on ${m.name} (${m.cpu} vCPU, ${m.memoryGiB} GiB), flat ${credits} credits (provisional)` };
+}
+
+/** The credits a check's machine time is worth: its Cloud Run cost with the margin (1 credit = $0.01), at least 1. */
+export function checkCreditsUsed(costUsd: number): number {
+  return Math.max(1, Math.ceil(costUsd * COMMERCIAL_MARGIN * 100 - 1e-9));
+}
+
+/**
+ * Gives back what a check reserved beyond what its machine time was worth (a Gen account's reservation here; a Studio's
+ * charge is settled by `settleCheckCharge` in orgcredits.ts). Once. Returns the credits given back.
+ */
+export function refundJobCreditsDown(jobId: string, keep: number, reason: string): number {
+  const row = db.prepare("SELECT * FROM credit_ledger WHERE job_id = ? AND kind = 'job_reserve' LIMIT 1").get(jobId) as CreditLedgerEntry | undefined;
+  if (!row) return 0;
+  const back = Math.abs(row.delta) - Math.max(0, Math.round(keep));
+  if (back <= 0) return 0;
+  if (db.prepare("SELECT 1 FROM credit_ledger WHERE job_id = ? AND kind = 'job_refund' LIMIT 1").get(jobId)) return 0;
+  const user = getUserById(row.user_id);
+  if (!user) return 0;
+  db.exec('BEGIN');
+  try {
+    const next = user.credits + back;
+    db.prepare('UPDATE users SET credits = ? WHERE id = ?').run(next, user.id);
+    db.prepare(`INSERT INTO credit_ledger (id, user_id, delta, balance_after, kind, detail, job_id, stripe_session_id, created)
+                VALUES (?, ?, ?, ?, 'job_refund', ?, ?, NULL, ?)`).run(id('tx', 6), user.id, back, next, `${reason} (${jobId})`, jobId, Date.now());
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return back;
 }
 
 export function listCreditPacks(): CreditPack[] {
@@ -532,6 +567,11 @@ export function grantCredits(
     return { duplicate: false, entry, balance: nextBalance };
   } catch (e) {
     db.exec('ROLLBACK');
+    // The ledger's stripe_session_id is UNIQUE: a grant that raced another for the same key is that one's duplicate.
+    if (stripeSessionId && /UNIQUE/i.test(String((e as Error)?.message))) {
+      const dup = db.prepare('SELECT * FROM credit_ledger WHERE stripe_session_id = ?').get(stripeSessionId) as CreditLedgerEntry | undefined;
+      if (dup) return { duplicate: true, entry: dup, balance: getUserById(dup.user_id)?.credits ?? dup.balance_after };
+    }
     throw e;
   }
 }
@@ -574,9 +614,47 @@ export function getUserLedger(userId: string, limit = 100) {
   };
 }
 
+/** The events Gen's webhook endpoint listens to (POST /v1/billing/webhook/setup asks Stripe for exactly these). */
+export const GEN_WEBHOOK_EVENTS = [
+  'checkout.session.completed',
+  'checkout.session.async_payment_succeeded',
+  'checkout.session.async_payment_failed',
+  'checkout.session.expired',
+  'invoice.paid',
+  'invoice.payment_failed',
+  'customer.subscription.updated',
+  'customer.subscription.deleted',
+];
+
+/** One call to Stripe's API with this lane's secret key. `query` is appended as is (expand[]=...). */
+export async function stripeRequest(pathAndQuery: string, form?: URLSearchParams, method = form ? 'POST' : 'GET') {
+  const { secretKey } = loadStripeKeys();
+  if (!secretKey) throw new GenError('Payments are not set up on this Gen yet.', { status: 503 });
+  const apiBase = (env('STRIPE_API_BASE') ?? 'https://api.stripe.com').replace(/\/+$/, '');
+  const res = await fetch(`${apiBase}/v1/${pathAndQuery}`, {
+    method,
+    headers: { Authorization: `Bearer ${secretKey}`, ...(form ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
+    body: form?.toString(),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const data: any = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.warn(`[stripe] ${method} ${pathAndQuery.split('?')[0]}: HTTP ${res.status} ${data?.error?.code ?? ''} ${data?.error?.message ?? ''}`);
+    throw new GenError('Payments are unavailable right now. Nothing was charged; try again in a minute.', { status: 502 });
+  }
+  return data;
+}
+
+/** Where Stripe sends the person back to: the app they came from when it is one of Gen's own addresses, else live Gen. */
+export function returnOrigin(origin: string | undefined, fallback = 'https://hawkesgen.ai'): string {
+  const o = String(origin ?? '').replace(/\/+$/, '');
+  if (/^https:\/\/([a-z0-9-]+\.)*hawkesgen\.ai$/i.test(o) || /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(o)) return o;
+  return fallback;
+}
+
 export async function createStripeCheckoutSession(
   user: UserRow,
-  body: { packId?: unknown; successUrl?: unknown; cancelUrl?: unknown },
+  body: { packId?: unknown },
   defaultOrigin = 'https://hawkesgen.ai',
 ) {
   const packId = String(body.packId ?? '').trim();
@@ -584,54 +662,163 @@ export async function createStripeCheckoutSession(
   if (!pack) {
     throw new GenError(`Unknown credit pack "${packId}". Choose one of: ${CREDIT_PACKS.map((p) => p.id).join(', ')}`);
   }
-
-  const { secretKey } = loadStripeKeys();
-  if (!secretKey) {
-    throw new GenError('Stripe is not configured yet (STRIPE_SECRET_KEY is not set on this server).', { status: 503 });
+  if (!loadStripeKeys().secretKey) {
+    throw new GenError('Buying credits isn\'t open on this Gen yet.', { status: 503 });
   }
 
-  const successUrl = typeof body.successUrl === 'string' && /^https?:\/\//.test(body.successUrl)
-    ? body.successUrl
-    : `${defaultOrigin}/?billing=success&session_id={CHECKOUT_SESSION_ID}`;
-  const cancelUrl = typeof body.cancelUrl === 'string' && /^https?:\/\//.test(body.cancelUrl)
-    ? body.cancelUrl
-    : `${defaultOrigin}/?billing=cancelled`;
-
+  // Back to the app either way: the app reads the session (GET /v1/billing/checkout/<id>) for the balance and receipt.
+  // Only Gen's own addresses (returnOrigin), so a checkout never sends anyone elsewhere.
+  const origin = returnOrigin(defaultOrigin);
   const form = new URLSearchParams();
   form.set('mode', 'payment');
   form.set('client_reference_id', user.id);
-  form.set('customer_email', user.email);
-  form.set('success_url', successUrl);
-  form.set('cancel_url', cancelUrl);
+  // One Stripe customer per account: its card and receipts show in the billing portal ("Cards and receipts").
+  if (user.stripe_customer_id) form.set('customer', user.stripe_customer_id);
+  else { form.set('customer_email', user.email); form.set('customer_creation', 'always'); }
+  form.set('success_url', `${origin}/?billing=success&session_id={CHECKOUT_SESSION_ID}`);
+  form.set('cancel_url', `${origin}/?billing=cancelled`);
   form.set('metadata[product]', 'gen');
   form.set('metadata[user_id]', user.id);
   form.set('metadata[pack_id]', pack.id);
   form.set('metadata[credits]', String(pack.credits));
+  // The receipt: Stripe emails it to the account's address (live mode) and keeps it at the charge's receipt_url.
+  form.set('payment_intent_data[receipt_email]', user.email);
+  form.set('payment_intent_data[description]', `Hawkes Gen ${pack.name}: ${pack.credits.toLocaleString('en-US')} credits`);
+  form.set('payment_intent_data[metadata][product]', 'gen');
+  form.set('payment_intent_data[metadata][user_id]', user.id);
+  form.set('payment_intent_data[metadata][pack_id]', pack.id);
   form.set('line_items[0][quantity]', '1');
   form.set('line_items[0][price_data][currency]', 'usd');
   form.set('line_items[0][price_data][unit_amount]', String(pack.priceCents));
   form.set('line_items[0][price_data][product_data][name]', pack.label);
   form.set('line_items[0][price_data][product_data][description]', `${pack.credits.toLocaleString('en-US')} Hawkes Gen generation credits`);
 
-  const apiBase = (env('STRIPE_API_BASE') ?? 'https://api.stripe.com').replace(/\/+$/, '');
-  const res = await fetch(`${apiBase}/v1/checkout/sessions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: form.toString(),
-  });
-
-  const data: any = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new GenError(data?.error?.message ?? `Stripe checkout error (HTTP ${res.status})`, { status: 502 });
-  }
+  const data = await stripeRequest('checkout/sessions', form);
   return {
     url: data.url as string,
     sessionId: data.id as string,
     pack,
   };
+}
+
+/** Grants a paid credit pack's checkout once (the ledger is keyed by the session). From the webhook and from the app's
+ *  return (checkoutStatus), whichever comes first; null when the session isn't a paid pack. */
+export function fulfilPackSession(session: any): { duplicate: boolean; credits: number; balance: number } | null {
+  if (session?.mode && session.mode !== 'payment') return null;
+  if (session?.payment_status !== 'paid') return null;
+  const userId = String(session.metadata?.user_id ?? session.client_reference_id ?? '').trim();
+  const pack = getCreditPack(String(session.metadata?.pack_id ?? '').trim());
+  // The pack's credits are Gen's own number; the metadata's only for packs from before (or since removed).
+  const credits = pack ? pack.credits : Math.round(Number(session.metadata?.credits ?? 0));
+  const sessionId = String(session.id ?? '').trim();
+  if (!userId || !sessionId || !(credits > 0)) {
+    throw new GenError('Stripe checkout session missing metadata (user_id, credits, or id)', { status: 400 });
+  }
+  const res = grantCredits(userId, credits, {
+    kind: 'stripe_purchase',
+    detail: pack ? `Purchased ${pack.label}` : `Stripe credit purchase (+${credits} credits)`,
+    stripeSessionId: sessionId,
+    stripeCustomerId: typeof session.customer === 'string' ? session.customer : (session.customer?.id ?? null),
+  });
+  return { duplicate: res.duplicate, credits, balance: res.balance };
+}
+
+export type CheckoutStatus = {
+  status: 'paid' | 'processing' | 'declined' | 'open' | 'expired';
+  mode: 'payment' | 'subscription';
+  /** Credits this checkout adds (a pack) or adds each month (a plan). */
+  credits: number;
+  name: string;
+  amountTotal: number | null;
+  currency: string | null;
+  /** Stripe's receipt (a pack's charge) or the invoice page (a plan). */
+  receiptUrl: string | null;
+  /** Stripe's own words for a declined card ("Your card was declined."), safe to show. */
+  declined: string | null;
+  balance: number;
+};
+
+/**
+ * Where one of this account's checkouts stands, read from Stripe when the app comes back from it (or opens a receipt).
+ * A paid one is granted here if the webhook hasn't yet: same ledger key, so never twice. No polling: one read per return.
+ */
+export async function checkoutStatus(user: UserRow, sessionId: string): Promise<CheckoutStatus> {
+  if (!/^cs_(test|live)_[A-Za-z0-9]{1,255}$/.test(sessionId)) throw new GenError('No such checkout.', { status: 404 });
+  const s = await stripeRequest(`checkout/sessions/${sessionId}?expand[]=payment_intent.latest_charge&expand[]=subscription.latest_invoice`);
+  const owner = String(s.metadata?.user_id ?? s.client_reference_id ?? '');
+  if (owner !== user.id || (s.metadata?.product && s.metadata.product !== 'gen')) throw new GenError('No such checkout.', { status: 404 });
+  const mode: CheckoutStatus['mode'] = s.mode === 'subscription' ? 'subscription' : 'payment';
+  let credits = 0;
+  let name = '';
+  let receiptUrl: string | null = null;
+  let paid = false;
+  if (mode === 'payment') {
+    const pack = getCreditPack(String(s.metadata?.pack_id ?? ''));
+    credits = pack?.credits ?? Math.round(Number(s.metadata?.credits ?? 0));
+    name = pack?.name ?? 'Credits';
+    paid = s.payment_status === 'paid';
+    if (paid) fulfilPackSession(s);
+    receiptUrl = s.payment_intent?.latest_charge?.receipt_url ?? null;
+  } else {
+    const plan = getSubscriptionPlan(String(s.metadata?.plan_id ?? ''));
+    credits = plan?.creditsPerMonth ?? 0;
+    name = plan?.name ?? 'Plan';
+    const inv = s.subscription?.latest_invoice;
+    paid = s.status === 'complete' && (s.payment_status === 'paid' || inv?.status === 'paid');
+    if (s.status === 'complete' && typeof s.subscription?.id === 'string') {
+      // The same steps as the webhook's (subscriptions.ts): record the plan, then grant the paid invoice's credits once.
+      subscriptionEvent({ type: 'checkout.session.completed', data: { object: { ...s, subscription: s.subscription.id } } });
+      if (inv?.status === 'paid') subscriptionEvent({ type: 'invoice.paid', data: { object: { ...inv, subscription: inv.subscription ?? s.subscription.id } } });
+    }
+    receiptUrl = inv?.hosted_invoice_url ?? null;
+  }
+  const pi = typeof s.payment_intent === 'object' ? s.payment_intent : null;
+  const status: CheckoutStatus['status'] = paid ? 'paid'
+    : s.status === 'complete' ? 'processing'
+    : s.status === 'expired' ? 'expired'
+    : pi?.last_payment_error ? 'declined'
+    : 'open';
+  return {
+    status,
+    mode,
+    credits,
+    name,
+    amountTotal: typeof s.amount_total === 'number' ? s.amount_total : null,
+    currency: typeof s.currency === 'string' ? s.currency : null,
+    receiptUrl: typeof receiptUrl === 'string' && /^https:\/\//.test(receiptUrl) ? receiptUrl : null,
+    declined: status === 'declined' ? String(pi.last_payment_error.message ?? 'Your card was declined.').slice(0, 200) : null,
+    balance: getUserById(user.id)?.credits ?? 0,
+  };
+}
+
+/**
+ * Points this lane's Stripe webhook at Gen (owner, POST /v1/billing/webhook/setup): finds the endpoint for exactly
+ * `<origin>/v1/billing/webhook` and gives it Gen's events, or makes it and keeps its signing secret. Never touches
+ * another URL's endpoint (the portal, Studio and other games share the account). An endpoint for this URL whose secret
+ * Gen doesn't have is only replaced when asked (`replace`), since Gen can't check its events without it.
+ */
+export async function setupStripeWebhook(origin: string, opts: { replace?: boolean } = {}) {
+  const url = `${returnOrigin(origin)}/v1/billing/webhook`;
+  const list = await stripeRequest('webhook_endpoints?limit=100');
+  const mine = (list.data ?? []).filter((e: any) => e.url === url);
+  const events = new URLSearchParams();
+  GEN_WEBHOOK_EVENTS.forEach((e, i) => events.set(`enabled_events[${i}]`, e));
+  if (mine.length && loadStripeKeys().webhookSecret) {
+    await stripeRequest(`webhook_endpoints/${mine[0].id}`, events);
+    return { url, action: 'updated' as const, events: GEN_WEBHOOK_EVENTS, status: getStripeStatus() };
+  }
+  if (mine.length && !opts.replace) {
+    throw new GenError(`Stripe already has an endpoint for ${url}, but this Gen doesn't have its signing secret. Paste the secret, or replace the endpoint.`, { status: 409 });
+  }
+  for (const e of mine) await stripeRequest(`webhook_endpoints/${e.id}`, undefined, 'DELETE');
+  const form = new URLSearchParams(events);
+  form.set('url', url);
+  form.set('description', 'Hawkes Gen (set up from /admin)');
+  form.set('metadata[product]', 'gen');
+  const made = await stripeRequest('webhook_endpoints', form);
+  if (!made.secret) throw new GenError('Stripe made the endpoint but sent no signing secret.', { status: 502 });
+  saveStripeConfig({ webhookSecret: made.secret });
+  return { url, action: mine.length ? 'replaced' as const : 'created' as const, events: GEN_WEBHOOK_EVENTS, status: getStripeStatus() };
 }
 
 export function verifyStripeSignature(rawBody: Buffer | string, signatureHeader: string, webhookSecret?: string, toleranceSec = 300) {
@@ -705,32 +892,15 @@ export function handleStripeWebhook(rawBody: Buffer | string, signatureHeader: s
   const sub = subscriptionEvent(event);
   if (sub) return sub;
 
-  if (event?.type === 'checkout.session.completed') {
-    const session = event.data?.object ?? {};
-    if (session.payment_status === 'paid') {
-      const userId = String(session.metadata?.user_id ?? session.client_reference_id ?? '').trim();
-      const credits = Math.round(Number(session.metadata?.credits ?? 0));
-      const packId = String(session.metadata?.pack_id ?? '').trim();
-      const sessionId = String(session.id ?? '').trim();
-      if (!userId || !sessionId || credits <= 0) {
-        throw new GenError('Stripe checkout session missing metadata (user_id, credits, or id)', { status: 400 });
-      }
-      const pack = getCreditPack(packId);
-      const detail = pack ? `Purchased ${pack.label}` : `Stripe credit purchase (+${credits} credits)`;
-      const res = grantCredits(userId, credits, {
-        kind: 'stripe_purchase',
-        detail,
-        stripeSessionId: sessionId,
-        stripeCustomerId: typeof session.customer === 'string' ? session.customer : null,
-      });
-      return {
-        ok: true,
-        type: event.type,
-        duplicate: res.duplicate,
-        creditsAdded: res.duplicate ? 0 : credits,
-        balance: res.balance,
-      };
-    }
+  // Credit packs: paid at once (cards), or later for a delayed method (async_payment_succeeded). Either grants once.
+  if (event?.type === 'checkout.session.completed' || event?.type === 'checkout.session.async_payment_succeeded') {
+    const res = fulfilPackSession(event.data?.object ?? {});
+    if (res) return { ok: true, type: event.type, duplicate: res.duplicate, creditsAdded: res.duplicate ? 0 : res.credits, balance: res.balance };
+    return { ok: true, type: event.type, pending: true };
+  }
+  // Nothing was charged: a delayed payment that failed, or a checkout left unpaid until Stripe closed it.
+  if (event?.type === 'checkout.session.async_payment_failed' || event?.type === 'checkout.session.expired') {
+    return { ok: true, type: event.type, charged: false };
   }
 
   return { ok: true, type: event?.type ?? 'unknown', ignored: true };

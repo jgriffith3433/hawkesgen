@@ -21,6 +21,11 @@ export const h = (tag, attrs = {}, ...kids) => {
  * immutable and the browser never asks for it again (J, 2026-11-01: Media kept reloading its pictures and clips).
  */
 export const fileUrl = (id, sha) => `/v1/assets/${encodeURIComponent(id)}/file${sha ? `?v=${String(sha).slice(0, 16)}` : ''}`;
+/**
+ * A picture's small copy for a tile or a row (the library's level of detail, 256 px on a phone, 512 elsewhere; the
+ * original where it has no levels yet). A phone's tile is about 170 px wide: it never needs the full-size file.
+ */
+export const thumbUrl = (id, sha) => `${fileUrl(id, sha)}${sha ? '&' : '?'}lod=${matchMedia('(max-width: 900px)').matches ? 256 : 512}`;
 
 /**
  * Redraws a list in place instead of rebuilding it (J, 2026-11-01: "I hope in general the app doesn't refresh constantly").
@@ -46,13 +51,20 @@ export function keyedRedraw(box, rows) {
 }
 
 export class ApiError extends Error {
-  constructor(message, status, data) { super(message); this.status = status; this.data = data; }
+  constructor(message, status, data, retryAfter) { super(message); this.status = status; this.data = data; this.retryAfter = retryAfter ?? data?.retryAfter ?? null; }
 }
 export async function api(path, { method, body } = {}) {
-  const r = await fetch(path, {
-    method: method ?? (body ? 'POST' : 'GET'), credentials: 'same-origin',
-    headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
-  });
+  let r;
+  try {
+    r = await fetch(path, {
+      method: method ?? (body ? 'POST' : 'GET'), credentials: 'same-origin',
+      headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    // No answer at all: offline, or Gen is unreachable. Status 0 says so (trouble.js words it).
+    throw new ApiError('offline', 0, { offline: true });
+  }
+  const retryAfter = Number(r.headers?.get?.('Retry-After')) || null;
   const text = await r.text().catch(() => '');
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch {
@@ -60,7 +72,12 @@ export async function api(path, { method, body } = {}) {
     // Gen restarted mid-request. Its words are never shown (2026-11-02: the AI pane printed "<!DOCTYPE html>").
     throw new ApiError(unreadableAnswer(r.status), r.ok ? 502 : r.status, { error: unreadableAnswer(r.status), unreadable: true });
   }
-  if (!r.ok) throw new ApiError(data?.error ?? `HTTP ${r.status}`, r.status, data);
+  if (!r.ok) {
+    const err = new ApiError(data?.error ?? `HTTP ${r.status}`, r.status, data, retryAfter);
+    // A 401 anywhere but the session probe means the session ended mid-work: trouble.js offers to sign in again.
+    if (r.status === 401 && !/^\/v1\/users\/(?:me|google|login|signup)\b/.test(path)) bus.emit('sessionEnded', path);
+    throw err;
+  }
   return data;
 }
 /** What to say when an answer came back that isn't Gen's (an HTML error page, or JSON cut off part way). */
@@ -118,14 +135,19 @@ export function plainError(msg) {
 export function friendly(err) {
   const raw = String(err?.message ?? err ?? '');
   const status = err?.status ?? 0;
-  if (status === 402 || /not enough credits|insufficient credits|out of credits|top up/i.test(raw)) return { text: 'You\'re out of credits for that. Add some and it goes straight on.', fix: 'credits' };
-  if (/failed to fetch|networkerror|load failed|network/i.test(raw) && !status) return { text: 'Can\'t reach Gen right now. Your work is kept here; it saves as soon as you\'re back online.', fix: 'connection' };
-  if (/AI isn.t available|no AI|connect your AI/i.test(raw)) return { text: 'The AI is not available right now. Try again in a little while.', fix: 'ai' };
-  if (status === 413 || /too large|payload/i.test(raw)) return { text: 'That file is too big (1.5 GB at most).' };
-  if (status === 429 || /rate limit|too many/i.test(raw)) return { text: 'That\'s a lot at once: give it a few seconds, then try again.', fix: 'retry' };
-  if (status === 503 || /offline|unavailable|no gpu|no server|busy/i.test(raw)) return { text: 'Those servers are busy or resting right now. It waits in line on its own, or try another tool.', fix: 'retry' };
-  if (status === 401) return { text: 'You\'ve been signed out. Sign in again and carry on.' };
-  return { text: plainError(raw) };
+  if (status === 402 || /not enough credits|insufficient credits|out of credits|top up/i.test(raw)) return { kind: 'credits', text: 'You\'re out of credits for that. Credits are 1 cent each, and packs start at $10.', fix: 'credits' };
+  if (err?.data?.offline || (!status && (/failed to fetch|networkerror|load failed|network|^offline$/i.test(raw) || (typeof navigator !== 'undefined' && navigator.onLine === false)))) return { kind: 'offline', text: 'Can\'t reach Gen right now. Your work is kept here and saves as soon as you\'re back online.', fix: 'connection' };
+  if (/AI isn.t available|no AI|connect your AI/i.test(raw)) return { kind: 'ai', text: 'The AI is not available right now. Try again in a little while.', fix: 'ai' };
+  if (status === 413 || /too large|payload/i.test(raw)) return { kind: 'big', text: 'That file is too big (1.5 GB at most).' };
+  // Gen's own plain words for a full line or a busy day (src/aigate.ts, src/jobs.ts admitJob): they say what to do already.
+  if ((status === 429 || status === 503) && /^(The AI is busy right now|You already have \d+ AI requests|Too many jobs are waiting|Hawkes Gen is busy right now)/.test(raw)) return { kind: 'busy', text: plainError(raw), fix: 'retry' };
+  if (status === 429 || /rate limit|too many/i.test(raw)) {
+    const n = Math.max(1, Math.ceil(Number(err?.retryAfter) || 0));
+    return { kind: 'slow', text: err?.retryAfter ? `Too many requests, try again in ${n} s.` : 'Too many requests, try again in a few seconds.', fix: 'retry', wait: err?.retryAfter ? n : null };
+  }
+  if (status === 503 || /offline|unavailable|no gpu|no server|busy/i.test(raw)) return { kind: 'busy', text: 'Those servers are busy or resting right now. It waits in line on its own, or try another tool.', fix: 'retry' };
+  if (status === 401) return { kind: 'signedOut', text: 'You\'ve been signed out. Sign in again and your work is right where you left it.', fix: 'signin' };
+  return { kind: 'other', text: plainError(raw) };
 }
 
 /**
@@ -139,7 +161,14 @@ export function jobStatusText(j) {
     if (/no (stopped |free )?server|launching new ones is off|offline|no gpu|unavailable/i.test(why)) return 'Waiting for a free server';
     return j.queue?.ahead ?? j.ahead ? `In line (${j.queue?.ahead ?? j.ahead} ahead)` : 'In line';
   }
-  return j.detail ? plainWords(j.detail) : 'Working';
+  const doing = j.detail && j.detail !== 'running' ? plainWords(j.detail) : 'Working';
+  return j.estimateSeconds ? `${doing} · ${estimateText(j.estimateSeconds)}` : doing;
+}
+/** "about 40 s", "about 3 min": what the tool usually takes (the server's own run history), said once, never a ticking clock. */
+export function estimateText(sec) {
+  sec = Math.max(1, Math.round(sec));
+  if (sec < 90) return `about ${sec < 10 ? sec : Math.round(sec / 5) * 5} s`;
+  return `about ${Math.round(sec / 60)} min`;
 }
 
 /** 0:03.4, 1:02.0 */

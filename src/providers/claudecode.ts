@@ -9,7 +9,7 @@
 // /run/hawkes/claude.env (claudeEnvFiles below), which Gen's user can read. The API key is always removed from the CLI's environment: Claude
 // Code prefers it over the subscription, and billing it is exactly what this backend avoids.
 //
-// Calls at once are capped (settings.claude.concurrency, default 3), each has a timeout (settings.claude.timeoutMinutes),
+// Calls at once are capped (settings.claude.concurrency, default 3; an AI turn also waits a bounded time, src/aigate.ts), each has a timeout (settings.claude.timeoutMinutes),
 // and a rate limit or overload waits and tries again a few times. Tests run a fake CLI: HAWKESGEN_CLAUDE (the program)
 // and HAWKESGEN_CLAUDE_ARGS (a JSON array before the CLI's own arguments).
 
@@ -19,6 +19,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ROOT, DATA_DIR, env, loadSettings, paths } from '../config.ts';
 import { GenError, id, mimeOf, sleep } from '../util.ts';
+import { createGate, type WaitInfo } from '../aigate.ts';
 
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
@@ -31,31 +32,17 @@ export type AskOptions = {
   timeoutMs?: number; retryDelaysMs?: number[];
   /** A customer org's own Claude subscription token (orgsecrets.ts), instead of J's. */
   token?: string;
+  /** An AI turn's account (its project): capped at settings.claude.maxPerUser at once, and it waits at most settings.claude.maxWaitSeconds for a slot, telling `onWait` its place. */
+  who?: string;
+  onWait?: (e: WaitInfo) => void;
 };
 
 // ------------------------------------------------------------- calls at once
-let running = 0;
-const waiting: (() => void)[] = [];
-const cap = () => loadSettings().claude.concurrency;
-
-async function acquire(signal?: AbortSignal) {
-  while (running >= cap()) {
-    await new Promise<void>((resolve) => {
-      waiting.push(resolve);
-      signal?.addEventListener('abort', () => resolve(), { once: true });
-    });
-    if (signal?.aborted) throw new GenError('Cancelled while waiting for a Claude slot', { status: 499, kind: 'cancelled' });
-  }
-  running++;
-}
-
-function release() {
-  running--;
-  waiting.shift()?.();
-}
+// The gate (src/aigate.ts): `concurrency` slots; an AI turn (one with `who`) also has a per-account cap and a bounded wait.
+const gate = createGate(() => loadSettings().claude.concurrency);
 
 /** Calls running and waiting now (for tests and the dashboard). */
-export const load = () => ({ running, waiting: waiting.length, cap: cap() });
+export const load = () => gate.load();
 
 // -------------------------------------------------------------------- login
 /**
@@ -296,7 +283,8 @@ export async function ask(input: AskInput, signal?: AbortSignal, opts: AskOption
   const timeoutMs = opts.timeoutMs ?? loadSettings().claude.timeoutMinutes * 60_000;
   const delays = opts.retryDelaysMs ?? [20_000, 60_000, 120_000];
   for (let attempt = 0; ; attempt++) {
-    await acquire(signal);
+    const cl = loadSettings().claude;
+    const release = await gate.acquire({ signal, who: opts.who, maxPerUser: cl.maxPerUser, maxWaitMs: cl.maxWaitSeconds * 1000, onWait: opts.onWait });
     let o: Outcome;
     try {
       o = await runOnce(input, timeoutMs, signal, opts.token);
