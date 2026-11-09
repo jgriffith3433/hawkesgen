@@ -38,6 +38,13 @@ The queue side is the GPU lane in `src/jobs.ts`. The run protocol is unchanged a
 "fleet": { ..., "egressIp": "", "openComfyPort": false }
 ```
 
+**A family's own list is followed by every other enabled endpoint that names that family** (before `fleet`; `orderFor`
+in `route.ts`), so a second endpoint for a family is its fallback as soon as it is added: the 3D families (`rig`,
+`motion`, `mocap`, `blender`) go `runpod-3d`, then `modal-3d`, without editing `familyOrder`. Endpoints with `["*"]` are
+not appended: a family with its own list may keep off them on purpose. (2026-11-08: the 3D list was `["runpod-3d",
+"fleet"]`, so when RunPod ran out of credit 3D jobs had nowhere to go although Modal was up.) The Modal 3D worker is
+deployed by `ops-modal-deploy.yml` with `kind: 3d` (`modal.mjs --kind 3d`, app `hawkes-gen-3d`).
+
 **No `order` and no `familyOrder` is the old rule, exactly.** A family goes to its Cloud Run service when
 `backend`/`families` say `cloudrun` and the service is deployed. Everything else goes to the fleet. A Cloud Run failure
 fails the job as before. An existing settings file has neither key, so it behaves as it did.

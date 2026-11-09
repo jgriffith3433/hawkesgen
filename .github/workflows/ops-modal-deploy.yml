@@ -1,6 +1,6 @@
 # Deploys Gen's GPU worker to Modal (tools/gpu-providers/modal.mjs --apply; was uvx modal deploy on J's laptop).
 # Production environment (main only): it changes where GPU jobs run. Deploying costs nothing until a request starts a container.
-#   gh workflow run ops-modal-deploy.yml --repo jgriffith3433/hawkesgen --ref main -f gpu=L40S
+#   gh workflow run ops-modal-deploy.yml --repo jgriffith3433/hawkesgen --ref main -f gpu=L40S [-f kind=3d]
 name: ops-modal-deploy
 on:
   workflow_dispatch:
@@ -9,6 +9,11 @@ on:
         type: choice
         options: [L40S, L4, A10, A100-80GB, H100]
         default: L40S
+      kind:
+        description: 'gpu = the ComfyUI worker (hawkes-gen-gpu); 3d = the 3D worker (hawkes-gen-3d, its weights Volume)'
+        type: choice
+        options: [gpu, 3d]
+        default: gpu
 permissions:
   contents: read
 concurrency:
@@ -34,4 +39,9 @@ jobs:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
           GPU_WORKER_TOKEN: ${{ secrets.GPU_WORKER_TOKEN }}
-        run: node tools/gpu-providers/modal.mjs --image ghcr.io/jgriffith3433/hawkes-gen-gpu:latest --gpu "${{ inputs.gpu }}" --apply
+        run: |
+          if [ "${{ inputs.kind }}" = "3d" ]; then
+            node tools/gpu-providers/modal.mjs --kind 3d --gpu "${{ inputs.gpu }}" --apply
+          else
+            node tools/gpu-providers/modal.mjs --image ghcr.io/jgriffith3433/hawkes-gen-gpu:latest --gpu "${{ inputs.gpu }}" --apply
+          fi

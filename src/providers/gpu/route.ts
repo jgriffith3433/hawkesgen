@@ -41,9 +41,21 @@ export function fleetCredentialProblem(get: Secrets = env): string {
 /** The ids this job already failed on (it moves on from them). */
 export const triedOf = (job: Job): string[] => (Array.isArray(job.labels?.gpuTried) ? (job.labels!.gpuTried as unknown[]).map(String) : []);
 
-/** The order that applies to a family: its own, else the default; empty means the old rule. */
+/**
+ * The order that applies to a family: its own, else the default; empty means the old rule. A family's own list is
+ * followed by every other enabled endpoint that names that family (before the fleet), so a second endpoint for it is a
+ * fallback the moment it is added. 2026-11-08: the 3D families' list was ["runpod-3d", "fleet"]; when RunPod ran out of
+ * credit they had nowhere to go though Modal was up, because a family's list replaced everything. Endpoints serving
+ * every family ("*") are not appended: a family with its own list may keep off them on purpose (long video graphs).
+ */
 export function orderFor(settings: Pick<Settings, 'gpu'>, family: string | null): string[] {
-  return settings.gpu.familyOrder?.[family ?? ''] ?? settings.gpu.order ?? [];
+  const own = settings.gpu.familyOrder?.[family ?? ''];
+  if (!own) return settings.gpu.order ?? [];
+  if (!family) return own;
+  const named = (settings.gpu.providers ?? []).filter((p) => p.enabled !== false && p.families?.includes(family) && !own.includes(p.id)).map((p) => p.id);
+  if (!named.length) return own;
+  const at = own.indexOf('fleet');
+  return at < 0 ? [...own, ...named] : [...own.slice(0, at), ...named, ...own.slice(at)];
 }
 
 /** An endpoint as the run protocol's service: no preloads (every model the graph names rides along), through the broker. */

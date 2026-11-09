@@ -74,8 +74,24 @@ test('settings: endpoints are validated, ids unique, orders keep only known ids,
   assert.equal(g.providers.find((p: any) => p.id === 'rp2')!.graphLimitSeconds, 300);
   assert.deepEqual(g.order, ['cloudrun', 'mod', 'fleet']);
   assert.deepEqual(g.familyOrder.video, ['rp2']);
-  assert.equal(orderFor({ gpu: g } as any, 'video').join(), 'rp2');
+  assert.equal(orderFor({ gpu: g } as any, 'video').join(), 'rp2,mod', 'an endpoint naming the family follows its own list');
   assert.equal(orderFor({ gpu: g } as any, 'z-image').join(), 'cloudrun,mod,fleet');
+});
+
+test('a second endpoint for a family is its fallback without editing familyOrder (2026-11-08: 3D had nowhere to go)', () => {
+  const ep3 = (id: string, extra: any = {}) => ({ id, provider: 'runpod', url: `https://${id}.example`, families: ['rig', 'motion', 'mocap', 'blender'], gpu: 'L40S', pricePerHour: 1.75, maxConcurrent: 1, graphLimitSeconds: 1800, enabled: true, ...extra });
+  const gpu: any = {
+    providers: [
+      { id: 'runpod', provider: 'runpod', url: 'https://r.example', families: ['*'], enabled: true },
+      ep3('runpod-3d'), ep3('modal-3d', { provider: 'modal' }), ep3('off-3d', { enabled: false }),
+    ],
+    order: ['runpod', 'modal', 'fleet'],
+    familyOrder: { motion: ['runpod-3d', 'fleet'], rig: ['modal-3d'] },
+  };
+  assert.equal(orderFor({ gpu }, 'motion').join(), 'runpod-3d,modal-3d,fleet', 'named endpoints go before the fleet; turned-off ones are left out');
+  assert.equal(orderFor({ gpu }, 'rig').join(), 'modal-3d,runpod-3d', 'already listed ones keep their place');
+  assert.equal(orderFor({ gpu }, 'z-image').join(), 'runpod,modal,fleet', 'families without their own list are unchanged');
+  assert.equal(orderFor({ gpu }, null).join(), 'runpod,modal,fleet');
 });
 
 // ------------------------------------------------------------------ routing
