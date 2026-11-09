@@ -150,9 +150,14 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   - **Streamed, not read.** The archive is downloaded to a file (`gcsDownload` streams) and kept with
     `ctx.emitFile` -> `library.ts putAssetFile`, which copies and hashes it in chunks. `fs.readFileSync` of the ~1 GB
     archive was what ran the 4 GiB instance out of memory.
-  - **Each execution's log is its own.** Before a new execution starts, Gen deletes the job's `unity.log` and
-    `result.json` from the bucket, so one that stops before Unity runs (the fetch) can't be shown with an earlier
-    execution's last Unity line, and its "git said:" text is git's.
+  - **No note, but an earlier success still in the bucket** (its notes lost, or a Gen from before `done.json`): its
+    `result.json` says ok and `artifact.tgz` is still there, so Gen finishes from it (`cloudrun.ts earlierRun`, the
+    result says `recovered`) and never builds over it.
+  - **Each execution's log is its own.** Before a new execution starts, Gen deletes what an earlier execution of the
+    job left (`unity.log`, `result.json`, `artifact.tgz` and the rest), so one that stops before Unity runs (the fetch)
+    can't be shown with an earlier execution's last Unity line, and its "git said:" text is git's. Gen also reads a
+    Unity log only when the execution's own `result.json` names it (`result.log`): one that failed at the license or
+    the fetch uploaded none.
   - If the result says the build stopped before the cache step (`license`, `source`), the log says
     `Library cache: not reached (the build stopped at "source")` instead of "none restored".
 - **Before anything starts**, Gen asks GitHub (with that token) for the project folder (the tree, when `path` is not

@@ -246,6 +246,7 @@ export async function runCustomerBuild(ctx: RunContext) {
         machine: { name: ran.name, cpu: ran.cpu, memoryGiB: ran.memoryGiB }, machineAsked: asked.name,
         ...(retried ? { retried: { reason: 'out of memory', from: retried.from.name, to: retried.to.name, note: `ran out of memory on ${retried.from.name} (${retried.from.cpu} vCPU, ${retried.from.memoryGiB} GiB); built again on ${retried.to.name} (${retried.to.cpu} vCPU, ${retried.to.memoryGiB} GiB)` }, totalSeconds: Math.round(spent.seconds), totalCost: Math.round(spent.cost * 1000) / 1000 } : {}),
         ...(warning ? { warnings: [warning] } : {}),
+        ...(r.recovered ? { recovered: 'kept from an earlier execution of this job that had already built it' } : {}),
       });
       if (b.check) await releaseFinishedBuild(ctx.job.id);
       if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });
