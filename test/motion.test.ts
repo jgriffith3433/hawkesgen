@@ -117,7 +117,7 @@ test('licenses: Kimodo SOMA is commercial; SMPL-X and SMPL body weights are not 
 
 test('motion.from-text is a built-in tool; character3d motion/* uses it on the rig', () => {
   const tool = getTool('motion.from-text');
-  assert.ok(tool && tool.family === 'motion' && tool.version === 2 && tool.provider === 'comfy' && tool.image === '3d');
+  assert.ok(tool && tool.family === 'motion' && tool.version === 3 && tool.provider === 'comfy' && tool.image === '3d');
   assert.equal(tool!.params.prompt.required, true);
   assert.equal(tool!.params.takes.max, 8);
   assert.ok(tool!.inputs.character);
@@ -164,4 +164,52 @@ test('smplh_to_bvh selftest: a zero pose and a bent elbow write a SMPL-named BVH
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('motion tools take the character\'s bone names (names, map) and pass them to the import', async () => {
+  const { rigNames, retargetChecks, withRetargetChecks } = await import('../src/tools/motion.ts');
+  const map = { LeftUpperLeg: 'LeftUpLeg', Chest: 'Spine2' };
+  const rig = rigNames({ names: 'mixamo', map });
+  assert.deepEqual(rig, { names: 'mixamo', map });
+  assert.deepEqual(rigNames({ map: JSON.stringify(map) }).map, map);
+  assert.deepEqual(rigNames({}), {});
+  assert.throws(() => rigNames({ names: 'maya' }), /names is one of/);
+  assert.throws(() => rigNames({ map: { A: 3 } }), /map is/);
+  const ops = retargetOps(['take0'], 'soma', { loop: false, inPlace: false }, rig);
+  assert.deepEqual(ops[0], { op: 'import', file: 0, clips: false, names: 'mixamo', map });
+  assert.deepEqual(retargetOps(['take0'], 'soma', { loop: false, inPlace: false })[0], { op: 'import', file: 0, clips: false });
+  checkOps(ops, ['/r.fbx', '/take-0.bvh']);
+});
+
+test('the retargeted result is checked, not just the BVH: lost limbs and a non-humanoid FBX are problems', async () => {
+  const { retargetChecks, withRetargetChecks } = await import('../src/tools/motion.ts');
+  const bad = { ops: [
+    { op: 'retarget', clips: [{ name: 'take0', bones: 55, missing: ['LeftUpLeg', 'LeftLeg', 'LeftArm'] }] },
+    { op: 'export', format: 'fbx', clips: ['take0'], humanoid: false },
+  ] };
+  const [r] = retargetChecks(bad, ['take0']);
+  assert.equal(r!.ok, false);
+  assert.equal(r!.problems.length, 2);
+  assert.match(r!.problems[0], /LeftUpLeg, LeftLeg, LeftArm/);
+  const good = { ops: [{ op: 'retarget', clips: [{ name: 'take0', bones: 60, missing: ['Spine'] }] }, { op: 'export', format: 'fbx', clips: ['take0'], humanoid: true }] };
+  assert.equal(retargetChecks(good, ['take0'])[0]!.ok, true);
+  assert.equal(retargetChecks(null, ['take0'])[0], null);
+  // A BVH that passes its own check still fails as a whole when the retarget lost the limbs.
+  const [merged] = withRetargetChecks([{ ok: true, problems: [], metrics: {}, fix: null }], [r!]);
+  assert.equal(merged!.ok, false);
+  assert.equal(merged!.problems.length, 2);
+  const [none] = withRetargetChecks([null], [r!]);
+  assert.equal(none!.ok, false);
+});
+
+test('estimates: motion.from-text with a character is priced apart from BVH-only', async () => {
+  const { motionFromTextTool } = await import('../src/tools/motion.ts');
+  const t = motionFromTextTool;
+  assert.equal(t.estimateMode!({}, { character: '/r.glb' }), 'with-character');
+  assert.equal(t.estimateMode!({}, {}), 'bvh-only');
+  assert.equal(t.estimateMode!({}, undefined), 'with-character');
+  const withChar = t.gpuSeconds!({ takes: 2 }, { character: '/r.glb' });
+  const bvh = t.gpuSeconds!({ takes: 2 }, {});
+  assert.ok(withChar >= 325 && withChar <= 380, `${withChar}`);
+  assert.ok(bvh <= 40, `${bvh}`);
 });

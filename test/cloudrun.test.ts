@@ -245,6 +245,13 @@ test('errors: over the time limit is flagged (the queue sends it to the fleet), 
   await assert.rejects(cloudComfyRun({ id: 'j_h' }, svc() as any, hooks() as any, full.deps as any).runGraph({} as any), (e: any) => e.unavailable === true && e.diskFull === true && /ran out of disk/.test(e.message));
 });
 
+test("a provider's 429 from the worker is flagged rateLimited (the queue retries with a backoff) and bills no seconds", async () => {
+  const busy = fakeCloud(() => [{ t: 'error', message: 'HTTP Error 429: Too Many Requests', seconds: 4 }]);
+  const h = hooks();
+  await assert.rejects(cloudComfyRun({ id: 'j_429' }, svc() as any, h as any, busy.deps as any).runGraph({} as any), (e: any) => e.rateLimited === true && !e.unavailable);
+  assert.equal((h as any).seconds ?? 0, 0);
+});
+
 test('cancelling writes the cancel marker the instance watches for', async () => {
   const ac = new AbortController();
   const fake = fakeCloud(() => { ac.abort(); return []; });
