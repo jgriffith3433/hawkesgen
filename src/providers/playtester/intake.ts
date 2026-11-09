@@ -153,6 +153,13 @@ export function holdToken(token: string, now = Date.now()): string {
   return ref;
 }
 
+/** Puts a new token behind an existing reference (a refreshed one), age starting now. */
+export function replaceToken(ref: string, token: string, now = Date.now()): void {
+  const h = { token, at: now, until: now + TOKEN_TTL_MS };
+  vault.set(ref, h);
+  persistToken(ref, h);
+}
+
 /** Why a token isn't there: never held (or the store can't say), held and past its time, or dropped by its job. */
 export type TokenLookup = { token: string; ageSeconds: number; from: 'memory' | 'store' } | { token: null; why: 'expired' | 'missing'; ageSeconds?: number };
 

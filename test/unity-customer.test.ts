@@ -675,6 +675,70 @@ test('a token older than 45 minutes starts no build: Studio sends a fresh one be
   intake.dropToken(young); intake.dropToken(old);
 });
 
+// ------------------------------------------------------------------ github.refresh: a fresh token right before the fetch
+
+const KEY = 'ab'.repeat(32);
+const FRESH = 'ghs_freshInstallationTokenFromStudio0123456789';
+const withRefresh = () => ({ ...good(), github: { ...good().github, refresh: { url: 'https://studio.example.com/api/builds/gen-token', build: 'b_1a2b3c', key: KEY } } });
+
+test('github.refresh is admitted; its key goes to the vault and never stays in the params', () => {
+  const held: string[] = [];
+  const p = C.admitCustomer(withRefresh(), (t) => { held.push(t); return 'tok_' + String(held.length).repeat(24).slice(0, 24); });
+  assert.deepEqual(held, [TOKEN, KEY]);
+  assert.deepEqual(p.github.refresh, { url: 'https://studio.example.com/api/builds/gen-token', build: 'b_1a2b3c', keyRef: 'tok_' + '2'.repeat(24) });
+  assert.ok(!JSON.stringify(p).includes(KEY));
+  const b = C.customerBuildOf(p);
+  assert.equal(b.refresh?.build, 'b_1a2b3c');
+  const bad = (r: any) => assert.throws(() => C.admitCustomer({ ...good(), github: { ...good().github, refresh: r } }, () => 'tok_' + '0'.repeat(24)), (e: any) => e.kind === 'params' && !String(e.message).includes(KEY));
+  bad({ url: 'http://studio.example.com/x', build: 'b_1', key: KEY });
+  bad({ url: 'https://169.254.169.254/x', build: 'b_1', key: KEY });
+  bad({ url: 'https://localhost/x', build: 'b_1', key: KEY });
+  bad({ url: 'https://studio.example.com/x', build: 'b 1', key: KEY });
+  bad({ url: 'https://studio.example.com/x', build: 'b_1', key: 'short' });
+  assert.equal(C.customerBuildOf(C.admitCustomer(good())).refresh, null);
+});
+
+test('an old, lost or refused token is replaced by Studio\'s fresh one; only a failed refresh is a token failure', async () => {
+  const intake = await import('../src/providers/playtester/intake.ts');
+  const logs: string[] = [];
+  const calls: any[] = [];
+  const answer = (body: any, status = 200) => async (url: string, init: any) => { calls.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify(body), { status }); };
+  const resolve = (async (u: string) => new URL(u)) as any;
+  const mk = (age: number) => {
+    const tokenRef = intake.holdToken(TOKEN, Date.now() - age * 60_000);
+    return { repo: 'acme/rocket-game', commit: SHA, ref: null, path: null, method: null, tokenRef, check: false, machine: null,
+      refresh: { url: 'https://studio.example.com/api/builds/gen-token', build: 'b_1a2b3c', keyRef: intake.holdToken(KEY) } } as any;
+  };
+  const exp = new Date(Date.now() + 3600_000).toISOString();
+  const ok = { token: FRESH, repo: 'acme/rocket-game', commit: SHA, expiresAt: exp };
+  // Young token: no call.
+  let b = mk(10);
+  assert.equal(await C.freshCustomerToken(b, 'j_1', { log: (m) => logs.push(m), post: answer(ok) as any, resolve }), TOKEN);
+  assert.equal(calls.length, 0);
+  // 50 minutes old: Studio is asked with { job, build, key }, the new token replaces the held one.
+  b = mk(50);
+  assert.equal(await C.freshCustomerToken(b, 'j_2', { log: (m) => logs.push(m), post: answer(ok) as any, resolve }), FRESH);
+  assert.deepEqual(calls[0], { url: 'https://studio.example.com/api/builds/gen-token', body: { job: 'j_2', build: 'b_1a2b3c', key: KEY } });
+  assert.equal(intake.tokenFor(b.tokenRef), FRESH);
+  // Dropped (missing): refreshed too. Forced (GitHub's 401): refreshed whatever the age.
+  const gone = mk(1); intake.dropToken(gone.tokenRef);
+  assert.equal(await C.freshCustomerToken(gone, 'j_3', { log: (m) => logs.push(m), post: answer(ok) as any, resolve }), FRESH);
+  assert.equal(await C.freshCustomerToken(mk(1), 'j_4', { force: true, log: (m) => logs.push(m), post: answer(ok) as any, resolve }), FRESH);
+  // Failures are kind token and say nothing secret.
+  const fails = async (post: any, o: any = {}) => assert.rejects(() => C.freshCustomerToken(mk(50), 'j_5', { log: (m) => logs.push(m), post, resolve, ...o }), (e: any) => e.kind === 'token' && /Nothing was built/.test(e.message) && ![KEY, TOKEN, FRESH].some((x) => e.message.includes(x)));
+  await fails(answer({ error: 'no' }, 401));
+  await fails(answer({ error: 'no' }, 502));
+  await fails(answer({ token: 'nope' }));
+  await fails(answer({ ...ok, repo: 'evil/other' }));
+  await fails(answer({ ...ok, commit: 'd'.repeat(40) }));
+  await fails(answer({ ...ok, expiresAt: new Date(Date.now() + 30_000).toISOString() }));
+  await fails((async () => { throw new Error('connect ECONNREFUSED'); }) as any);
+  await fails(answer(ok), { resolve: (async () => { throw new Error('is private'); }) as any });
+  assert.ok(![KEY, TOKEN, FRESH].some((x) => logs.join('\n').includes(x)), 'the log has no secret');
+  // Without refresh: the old rule.
+  await assert.rejects(() => C.freshCustomerToken({ ...mk(50), refresh: null }, 'j_6', { log: () => {} }), (e: any) => e.kind === 'token' && /minutes old/.test(e.message));
+});
+
 test('the output is streamed into the library: same bytes and hash, no Buffer of the file', async () => {
   const lib = await import('../src/library.ts');
   const big = path.join(data, 'big.tgz');

@@ -128,6 +128,14 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   die at the fetch with Cloud Run time spent. The job fails at once, kind `token`, "resubmit it with a fresh token".
   The vault still keeps tokens 12 hours so a restarted Gen can read them; the age check is what decides. A build that
   ran out of memory is made again on a bigger machine only if its token is still under 45 minutes old.
+- **A fresh token from Studio, so queue time never matters** (`github.refresh = { url, build, key }`, next to repo, commit,
+  token and ref). `url` must be a public https address (checked at submit and again, resolved, before each call), `build` the
+  build's id and `key` the 64-hex key Studio made for that one build; the key is held in the token vault like the token
+  (the job keeps only its `tok_` reference). When the build starts (`customer.ts freshCustomerToken`), if the held token is
+  older than 45 minutes, missing or expired, or GitHub answers 401 to the project read, Gen POSTs `{ job, build, key }` to
+  `url` and uses the `{ token, repo, commit, expiresAt }` it returns (it must be for this build's repo and commit and not
+  about to expire); the new token replaces the held one, so an out-of-memory second try reads it too. Only a failed refresh
+  fails the build, kind `token`. No polling: one call per start. Without `refresh` the 45-minute rule above is unchanged.
 - **One build per job, across restarts** (2026-11-04, Sick of It v13, `j_bb4c57cd1cf3`: Unity built the game, Gen died
   keeping the ~1 GB output, and each restart built it again, five times; the fifth failed at the fetch and replaced the
   result). Now:
