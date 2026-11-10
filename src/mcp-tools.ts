@@ -210,7 +210,7 @@ export function genMcp(gen: any, { remote = false, filesUrl = '', account, fileL
         'Edits a video editor project, in order (an edit that fails is reported and the rest still apply). Ops: ' +
         'add {track, asset, in, out, start | index | after}; generate {tool, params, inputs ("clip:c_..." for a clip\'s file), place: {track, after|start} | {replace: clipId} | {library: true}, label} ' +
         '(a waiting clip shows until the job ends; costs credits); trim {id, in, out | length}; split {id, at}; move {id, index | after | start}; delete {id}; ' +
-        'deleteRange {start, end, tracks}; set {id, volume, speed, muted, transition, transitionSeconds, zoom, text}; text {text, start, end}; settings {width, height, fps, title}. ' +
+        'deleteRange {start, end, tracks}; set {id, volume, speed, muted, transition, transitionSeconds, zoom, text}; transition {id, type, seconds}; text {text, start, end}; settings {width, height, fps, title}. ' +
         'Times in seconds (in/out: of the clip\'s source; start/at: on the timeline).',
       inputSchema: obj({ id: str('Project id ep_...'), ops: { type: 'array', items: { type: 'object' }, description: 'The edits' } }, ['id', 'ops']),
       run: async (a) => {

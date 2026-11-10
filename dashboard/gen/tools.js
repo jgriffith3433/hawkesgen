@@ -408,7 +408,7 @@ export async function runExport() {
         clip: i, in: stillOf.has(c.id) ? 0 : c.in, out: stillOf.has(c.id) ? clipLength(c) * (c.speed || 1) : c.out,
         ...(c.speed && c.speed !== 1 ? { speed: c.speed } : {}), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted || !audible(main) ? { sound: false } : {}),
         ...(c.zoom && !stillOf.has(c.id) ? { zoom: c.zoom } : {}),
-        ...(i < v1.length - 1 && c.transition ? { transition: c.transition, seconds: c.transitionSeconds ?? 0.5 } : {}),
+        ...(i < v1.length - 1 && c.transition ? { transition: c.transition === 'push' ? 'slideleft' : c.transition, seconds: Math.min(2, Math.max(0.2, c.transitionSeconds ?? 0.5)) } : {}),
       })),
       audio: audio.map((c, j) => ({ audio: j, start: c.start, in: c.in, seconds: clipLength(c), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted ? { volume: 0 } : {}), ...(voice(c) ? { dialogue: true } : {}), ...(music(c) && audio.some(voice) ? { duck: true } : {}) })),
       captions: texts.map((c) => ({ text: c.text, start: c.start, end: clipEnd(c) })),

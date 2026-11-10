@@ -277,6 +277,14 @@ export function setClip(id, patch, { history = true } = {}) {
   if (history) remember();
   Object.assign(c, patch);
   for (const k of Object.keys(patch)) if (patch[k] === undefined || patch[k] === null) delete c[k];
+  // Transition length stays in the handle range (0.2–2 s); cut clears both fields.
+  if ('transition' in patch || 'transitionSeconds' in patch) {
+    if (!c.transition || c.transition === 'cut') { delete c.transition; delete c.transitionSeconds; }
+    else {
+      const sec = Number(c.transitionSeconds);
+      c.transitionSeconds = Math.min(2, Math.max(0.2, Math.round((Number.isFinite(sec) ? sec : 0.5) * 100) / 100));
+    }
+  }
   changed();
 }
 
