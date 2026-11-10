@@ -7,6 +7,8 @@ import { state } from './account.js';
 import { api, bus, toast, plainError, friendly, jobStatusText, sendFeedback } from './lib.js';
 import { trouble } from './trouble.js';
 import { createHistory, aiTurnLabel } from './history.js';
+import * as journal from './journal.js';
+import { replay } from './journal.js';
 
 export { aiTurnLabel };
 
@@ -381,21 +383,27 @@ let saveTimer = 0;
 export function scheduleSave() {
   P.dirty = true;
   bus.emit('save', 'dirty');
+  if (P.id) { P.opSeq = journal.nextSeq(); journal.append({ seq: P.opSeq, scene: P.id, base: P.version, doc: JSON.parse(snap()) }); }
   clearTimeout(saveTimer);
   saveTimer = setTimeout(save, 700);
 }
+const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
 export async function save() {
   clearTimeout(saveTimer);
   if (!P.id) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify({ id: null, doc: P.doc })); } catch { /* private window */ } P.dirty = false; bus.emit('save', 'local'); return; }
   if (P.saving) return;
+  if (offline()) { bus.emit('save', 'offline'); return; }
   P.saving = true;
   bus.emit('save', 'saving');
   const sent = snap();
+  const sentSeq = P.opSeq ?? 0;
+  let failed = false;
   try {
     const r = await api(`/v1/editor/projects/${P.id}`, { method: 'PUT', body: { doc: P.doc, version: P.version } });
     P.version = r.version;
     P.dirty = snap() !== sent;
     P.saveFailed = false;
+    journal.clear(P.id, sentSeq);
     bus.emit('save', P.dirty ? 'dirty' : 'saved');
     announce();
   } catch (err) {
@@ -405,14 +413,35 @@ export async function save() {
       take(err.data.project);
       toast('This scene was changed in another tab or by the AI, so you have the newest version now. Undo brings back what you just did.');
     } else {
+      failed = true;
+      if (err.status === 0 || offline()) { bus.emit('save', 'offline'); return; }
       bus.emit('save', 'error');
       // Once per failure, not on every retry: the sentence and the next step (the work stays in this browser meanwhile).
       if (!P.saveFailed) { P.saveFailed = true; if (err.status !== 401) trouble(err, save); }
     }
   } finally {
     P.saving = false;
-    if (P.dirty) scheduleSave();
+    // A failed save waits for the online event, Retry or the next edit: no retry loop.
+    if (P.dirty && !failed) scheduleSave();
   }
+}
+
+// Back online, or the page going away: save what is waiting now (the journal keeps it if this can't finish).
+addEventListener('online', () => { if (P.dirty && P.active) save(); });
+addEventListener('offline', () => { if (P.dirty && P.active) bus.emit('save', 'offline'); });
+addEventListener('pagehide', () => { if (P.dirty && P.active) save(); });
+
+const recovered = new Set();
+/** On load: edits in the journal made on top of this version come back, then save. */
+async function recover(project) {
+  if (recovered.has(project.id)) return;
+  recovered.add(project.id);
+  const op = replay(await journal.pending(project.id), project.id, project.version);
+  if (!op || JSON.stringify(op.doc) === JSON.stringify(project.doc)) { journal.clear(project.id); return; }
+  if (P.id !== project.id || P.version !== project.version || P.dirty) return;
+  P.doc = op.doc;
+  changed();
+  toast('Brought back the changes that weren\'t saved.');
 }
 /** Takes a scene from the server as the current one. */
 export function take(project) {
@@ -425,6 +454,7 @@ export function take(project) {
   bus.emit('project', project);
   bus.emit('save', 'saved');
   announce();
+  recover(project).catch(() => {});
 }
 
 /** Signed out: what was built here last time (kept in this browser), else a new video. */
