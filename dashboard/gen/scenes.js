@@ -63,7 +63,7 @@ export function initScenes() {
   $('#undoBtn').addEventListener('click', () => W.editor?.undo?.());
   $('#redoBtn').addEventListener('click', () => W.editor?.redo?.());
   bus.on('history', drawUndo);
-  bus.on('save', (s) => { const was = W.unsaved; W.unsaved = ['dirty', 'saving', 'error'].includes(s) ? W.active : null; if (was !== W.unsaved) drawTabs(); });
+  bus.on('save', (s) => { const was = W.unsaved; W.unsaved = ['dirty', 'saving', 'error', 'offline'].includes(s) ? W.active : null; if (was !== W.unsaved) drawTabs(); });
   bus.on('sceneTitle', ({ id, title }) => { const t = W.tabs.find((x) => x.id === id); if (t && t.title !== title) { t.title = title; keepTabs(); drawTabs(); } const l = W.list.find((x) => x.id === id); if (l) { l.title = title; drawList(); } });
   bus.on('sceneRendered', () => loadList());
   bus.on('jobDone', () => { if (W.list.length) loadList(); });
