@@ -1,6 +1,7 @@
 # Read-only: recent Cloud Run logs of one Gen service, as ops-reader (logging.viewer, run.viewer). Keyless (WIF).
 # Gen's WIF provider trusts this repo's main and beta only, so dispatch with --ref main (or beta).
 #   gh workflow run ops-logs.yml --repo jgriffith3433/hawkesgen --ref main -f service=gen -f lane=production -f minutes=30 -f severity=WARNING
+# contains narrows to lines with that text, e.g. -f severity=DEFAULT -f contains="[playtest]" (the 500-line read is otherwise mostly litestream WAL lines).
 name: ops-logs
 on:
   workflow_dispatch:
@@ -21,6 +22,10 @@ on:
         type: choice
         options: [DEFAULT, INFO, WARNING, ERROR]
         default: WARNING
+      contains:
+        description: "Only lines whose text contains this (optional: letters, digits, spaces and [ ] : . _ - / only)"
+        type: string
+        default: ''
 permissions:
   contents: read
   id-token: write
@@ -38,7 +43,9 @@ jobs:
           MINUTES: ${{ inputs.minutes }}
           SERVICE: ${{ inputs.service }}
           LANE: ${{ inputs.lane }}
+          CONTAINS: ${{ inputs.contains }}
         run: |
+          [[ -z "$CONTAINS" || "$CONTAINS" =~ ^[][A-Za-z0-9\ :._/-]{1,80}$ ]] || { echo "contains: letters, digits, spaces and [ ] : . _ - / only, at most 80"; exit 1; }
           [[ "$MINUTES" =~ ^[0-9]+$ ]] && [ "$MINUTES" -ge 5 ] && [ "$MINUTES" -le 120 ] || { echo "minutes must be 5 to 120"; exit 1; }
           if [ "$LANE" = beta ]; then region="${{ vars.REGION_BETA }}"; [ "$SERVICE" = gen ] && SERVICE=gen-beta; else region="${{ vars.REGION_LIVE }}"; fi
           echo "SVC=$SERVICE" >> "$GITHUB_ENV"; echo "RUN_REGION=$region" >> "$GITHUB_ENV"
@@ -52,9 +59,12 @@ jobs:
           MINUTES: ${{ inputs.minutes }}
           SEVERITY: ${{ inputs.severity }}
           PROJECT: ${{ vars.GCP_PROJECT }}
+          CONTAINS: ${{ inputs.contains }}
         run: |
           since=$(date -u -d "-$MINUTES min" +%Y-%m-%dT%H:%M:%SZ)
           filter="resource.type=cloud_run_revision AND resource.labels.service_name=$SVC AND resource.labels.location=$RUN_REGION AND severity>=$SEVERITY AND timestamp>=\"$since\""
+          # contains: only lines with that text (the app's own lines, like "[playtest]", without the WAL noise).
+          if [ -n "$CONTAINS" ]; then filter="$filter AND (textPayload:\"$CONTAINS\" OR jsonPayload.message:\"$CONTAINS\")"; fi
           gcloud logging read "$filter" --project "$PROJECT" --limit 500 --order asc \
             --format='value(timestamp,severity,textPayload,jsonPayload.message,httpRequest.status,httpRequest.requestUrl)' \
             | sed -E 's/(hg_|hgm_|ghs_|ghp_|github_pat_|sk-ant-|cfut_|cfat_|AKIA|rpa_)[A-Za-z0-9_-]+/\1***/g; s/(Bearer |token=|key=)[A-Za-z0-9._-]+/\1***/g' > logs.txt
