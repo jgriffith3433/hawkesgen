@@ -1,6 +1,6 @@
 {
   "id": "mesh.views3d",
-  "version": 3,
+  "version": 4,
   "title": "3D model from four views (Pixal3D multi-view)",
   "description": "A textured PBR 3D model (GLB) from the front, back, left and right views of one character or object (Pixal3D multi-view + TRELLIS.2). Give the four views (image.viewsheet outputs front, back, left, right) or one sheet of them side by side in equal cells, front|back|left|right. Gen frames them for Pixal3D (on black, the same scale in every view), hands Gen's left view (the object facing right) to Pixal3D's right input and Gen's right view to its left input (measured: wired the other way the mesh came out mirrored and turned around), and saves the four views it received. The GLB faces glTF +Z (blender.character: -Y).",
   "family": "mesh.views3d",
@@ -151,12 +151,27 @@
     },
     "texture_resolution": {
       "type": "integer",
-      "default": 4096,
-      "description": "Texture Resolution",
+      "min": 512,
+      "max": 4096,
+      "default": 2048,
+      "description": "Texture size in pixels. 2048 keeps a game prop's GLB small enough for a phone and the worker's upload; 4096 for a close-up hero model.",
       "targets": [
         [
           "288",
           "value"
+        ]
+      ]
+    },
+    "faces": {
+      "type": "integer",
+      "min": 10000,
+      "max": 1000000,
+      "default": 150000,
+      "description": "Triangles the mesh is reduced to before it is unwrapped and textured. 150,000 suits a game prop on the web; raise it for a close-up hero model.",
+      "targets": [
+        [
+          "186",
+          "target_face_count"
         ]
       ]
     }
