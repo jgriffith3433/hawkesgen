@@ -2,9 +2,8 @@
 // otherwise shows only the AWS fleet. Read from RunPod itself on request (cached a minute), never polled:
 // - the balance and what the account spends per hour right now (GraphQL myself.clientBalance / currentSpendPerHr),
 // - each serverless endpoint's workers (API v2 /health). Gen's endpoints are LOAD_BALANCER endpoints: requests go
-//   straight to a worker, so RunPod's job counters stay 0 even while a worker serves Gen. "0 jobs" never means a
-//   worker is stuck (2026-11-10: three hawkes-gen-gpu workers were read as zombies that way); currentSpendPerHr is
-//   what bills.
+//   straight to a worker, so RunPod's job counters stay 0 even while a worker serves Gen. "0 jobs" is normal — never
+//   treat it as stuck/zombie or recycle for that (2026-11-10 correction); currentSpendPerHr is what bills.
 // - what each endpoint and pod cost over the last 24 hours, by hour (REST /v1/billing), so a drained balance has a cause.
 // Reads only. No key or a RunPod error comes back as `error` instead of throwing.
 import { env } from '../../config.ts';
@@ -61,7 +60,7 @@ export async function readRunpodLive(get: Secrets = env, fetcher: typeof fetch =
     const errors: string[] = [];
     const out: RunpodLive = {
       at: now(), balance: null, spendPerHour: null, endpoints: [], last24h: null, error: null,
-      note: "LOAD_BALANCER endpoints keep RunPod's job counters at 0 while serving; spendPerHour is what bills.",
+      note: "LOAD_BALANCER endpoints keep RunPod's job counters at 0 while serving; that is not stuck — do not recycle for it. spendPerHour is what bills.",
     };
     await Promise.all([
       call(GRAPHQL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: '{ myself { clientBalance currentSpendPerHr } }' }) })
