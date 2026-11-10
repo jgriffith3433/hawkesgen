@@ -15,7 +15,8 @@ const { paths } = await import('../src/config.ts');
 const { parseUA } = await import('../src/analytics/ua.ts');
 const { Mmdb, bufferSource } = await import('../src/analytics/mmdb.ts');
 const { useGeoDb } = await import('../src/analytics/geo.ts');
-const { normalize, resetRateLimits, LIMITS } = await import('../src/analytics/collect.ts');
+const { normalize, resetRateLimits, LIMITS, originAllowed } = await import('../src/analytics/collect.ts');
+const { products, envFor } = await import('../src/analytics/registry.ts');
 const { ingest, adb, rollup, dayOf, DAY } = await import('../src/analytics/store.ts');
 const Q = await import('../src/analytics/query.ts');
 
@@ -182,6 +183,32 @@ test('envs from the origin: live, beta, preview (/c/), local', () => {
   assert.equal(env('https://sickofit.hawkesgen.ai', '/c/c_0123abcd/Game/'), 'preview');
   assert.equal(env('http://localhost:5173'), 'local');
   assert.equal(env('https://dod.hawkesgen.ai'), undefined); // another product's beta
+});
+
+test('hawkes-analytics demo: sites.hawkesgen.ai is allowed and collect accepts its product', async () => {
+  resetRateLimits();
+  const DEMO = 'https://sites.hawkesgen.ai';
+  const demo = products().get('hawkes-analytics');
+  assert.ok(demo, 'hawkes-analytics is in analytics/products.json');
+  assert.equal(envFor(demo, DEMO), 'beta');
+  assert.equal(originAllowed(DEMO), true);
+
+  const pre = await fetch(`${base}/v1/analytics/collect`, { method: 'OPTIONS', headers: { Origin: DEMO, 'Access-Control-Request-Method': 'POST' } });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get('access-control-allow-origin'), DEMO);
+
+  const body = {
+    product: 'hawkes-analytics',
+    ...ids(),
+    build: { version: 'demo' },
+    events: [{ seq: 0, t: Date.now(), name: 'page_view', page: '/' }],
+  };
+  const r = await post(body, { Origin: DEMO });
+  assert.equal(r.status, 202);
+  assert.equal(r.headers.get('access-control-allow-origin'), DEMO);
+  const json = await r.json() as { ok: boolean; accepted: number; dropped: number };
+  assert.equal(json.ok, true);
+  assert.ok(json.accepted >= 1, `accepted ${json.accepted}`);
 });
 
 test('collect over HTTP: text/plain, CORS for registered origins only, 64 KB cap, never a 5xx, rate limit', async () => {
@@ -629,7 +656,6 @@ test('bots: isbot user agents, crawler and cloud ranges (a touch makes a cloud v
 
 test('the overview says every product is alive or quiet: last event, events and bot events in 24 hours (no events = quiet)', async () => {
   resetRateLimits();
-  const { products } = await import('../src/analytics/registry.ts');
   const now = Date.now();
   // One batch through the collect door's own rules, at a given server time, from a given origin and agent.
   const put = (product: string, origin: string, at: number, events: any[], flags: any = {}, ua = CHROME) => {
