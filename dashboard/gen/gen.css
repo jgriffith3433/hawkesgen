@@ -766,7 +766,8 @@ body.landing-open { overflow: hidden; }
 .ld-cta button { padding: 12px 22px; font-size: 15px; border-radius: 12px; justify-content: center; text-align: center; }
 .ld-cta.big { justify-content: center; }
 .ld-note { color: var(--muted); font-size: 13px; margin: 12px 0 4px; }
-.ld-look { color: var(--muted); padding: 4px 0; }
+.ld-nav button, .ld-cta button { justify-content: center; text-align: center; }
+.ld-look { color: var(--muted); padding: 4px 0; margin: 0; align-self: flex-start; text-align: left; justify-content: flex-start; }
 .ld-look:hover { color: var(--text); }
 .ld-cats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; max-width: 1180px; margin: 0 auto; padding: 24px clamp(16px, 4vw, 48px) 56px; }
 .ld-cat { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 24px; transition: transform .2s, border-color .2s; }

@@ -27,7 +27,7 @@ async function api(path, opts = {}) {
 function signIn() {
   if (signIn.open) return;
   signIn.open = true;
-  const b = modal(`<h2>Sign in to Hawkes Gen</h2><div id="sigoogle" style="margin:6px 0 14px"></div>
+  const b = modal(`<h2>Sign in to Hawkes Gen</h2><div id="sigoogle" style="margin:6px 0 14px;background:transparent;color-scheme:dark"></div>
     <details id="sikeys"><summary>Sign in with a key instead</summary>
     <p>Paste an owner or admin key (<code>hg_…</code>). On your PC it's <code>genKey</code> in <code>~/.hawkes/client.json</code>. This browser keeps you signed in for 30 days.</p>
     <div class="row"><input id="sik" type="password" autocomplete="off" style="flex:1" placeholder="hg_…"><button class="primary" id="sigo">Sign in</button></div></details><p class="small muted" id="sierr"></p>`);
@@ -44,7 +44,7 @@ function signIn() {
         callback: ({ credential }) => fetch('/v1/dashboard/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential }) })
           .then(async (r) => { if (r.ok) location.reload(); else $('#sierr', b).textContent = (await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`; }),
       });
-      google.accounts.id.renderButton($('#sigoogle', b), { theme: 'filled_black', size: 'large', text: 'continue_with', shape: 'pill' });
+      google.accounts.id.renderButton($('#sigoogle', b), { theme: 'filled_black', size: 'large', text: 'continue_with', shape: 'pill', locale: 'en' });
     };
     s.onerror = () => { $('#sikeys', b).open = true; $('#sierr', b).textContent = 'Google sign-in could not load: use a key.'; };
     document.head.append(s);

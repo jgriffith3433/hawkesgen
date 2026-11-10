@@ -228,6 +228,12 @@ installPlaytest({
         const me = await window.__hgMe;
         t.metric('meStatus', me?.status ?? 0);
         if (me && me.status !== 200) t.problem('bug', `signed-out load: /v1/users/me answered ${me.status} (a console error)`);
+        // Labels centred in their buttons, and the "Look around first" link on the text's left margin.
+        const btns = [...L.querySelectorAll('.ld-hero .ld-cta button, .ld-nav .ld-signin')].filter((x) => x.offsetWidth);
+        const off = btns.map((x) => { const r = document.createRange(); r.selectNodeContents(x); const a = r.getBoundingClientRect(), c = x.getBoundingClientRect(); return Math.abs((a.left + a.right) / 2 - (c.left + c.right) / 2); });
+        t.metric('buttonLabelOffCentrePx', Math.round(Math.max(0, ...off)));
+        const look = L.querySelector('.ld-look'), sub = L.querySelector('.ld-sub');
+        if (look && sub) t.metric('lookLinkOffsetPx', Math.round(Math.abs(look.getBoundingClientRect().left - sub.getBoundingClientRect().left)));
         t.event('welcome-checked');
       }
       t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
