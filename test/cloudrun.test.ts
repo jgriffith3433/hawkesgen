@@ -486,8 +486,10 @@ print(json.dumps({"final": final, "steps": steps, "written": sorted(store.w), "e
   assert.match(out.err, /no open audio model 'voxcpm2' \(it has qwen3-tts\)/);
 });
 
-test('false cold: stale lastOk + headers timeout is capacity (not a long cold pull)', async () => {
-  const { resetHealth } = await import('../src/providers/gpu/health.ts');
+test('cold: no headers is a worker still starting until the cold-start allowance, then capacity', async () => {
+  // Beta 2026-11-10: Pixal3D's worker on a cold hawkes-gen-gpu took longer than one LB hold. It was failing over at once
+  // as "zombies"; it is a start, waited out within the allowance, and only then handed on.
+  const { resetHealth, DEFAULT_COLD_WAIT_MS } = await import('../src/providers/gpu/health.ts');
   resetHealth();
   const fake = fakeCloud(succeed);
   fake.deps.fetch = (async () => {
@@ -496,11 +498,13 @@ test('false cold: stale lastOk + headers timeout is capacity (not a long cold pu
   }) as any;
   const h = hooks();
   const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 12 * 60_000, preload: new Set() });
-  const err = await cloudComfyRun({ id: 'j_zombie' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
+  const started = fake.deps.now();
+  const err = await cloudComfyRun({ id: 'j_cold_never' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
   assert.equal(err?.unavailable, true);
   assert.equal(err?.capacity, true);
+  assert.ok(fake.deps.now() - started >= DEFAULT_COLD_WAIT_MS, `gave up after ${fake.deps.now() - started}ms`);
   assert.ok(h.steps.some((s: string) => /cold start/.test(s)), 'banner once when lastOk is stale');
-  assert.ok(!h.steps.some((s: string) => /still starting/.test(s)), 'must not keep waiting as a cold pull');
+  assert.ok(h.steps.some((s: string) => /still starting/.test(s)), 'waits as a start');
 });
 
 test('warm lastOk: headers timeout retries without a cold-start banner, then capacity', async () => {
@@ -523,19 +527,18 @@ test('warm lastOk: headers timeout retries without a cold-start banner, then cap
   resetHealth();
 });
 
-test('false cold: assign-fail with stale lastOk cools as capacity under the pre-worker cap', async () => {
-  const { resetHealth, PRE_WORKER_MS } = await import('../src/providers/gpu/health.ts');
+test('cold: assign-fail is waited out within the cold-start allowance, then capacity', async () => {
+  const { resetHealth, DEFAULT_COLD_WAIT_MS } = await import('../src/providers/gpu/health.ts');
   resetHealth();
   const fake = fakeCloud(succeed);
   fake.deps.fetch = (async () => new Response(JSON.stringify({ status: 400, title: 'Bad Request', detail: 'failed to assign worker' }), { status: 400 })) as any;
   const h = hooks();
-  // Long cold wait configured, but assign-fail must not sit through it.
   const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 12 * 60_000, preload: new Set() });
   const started = fake.deps.now();
   const err = await cloudComfyRun({ id: 'j_assign_cold' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
   assert.equal(err?.unavailable, true);
   assert.equal(err?.capacity, true);
-  assert.ok(fake.deps.now() - started <= PRE_WORKER_MS + 20_000, `waited ${fake.deps.now() - started}ms, want <= pre-worker cap`);
+  assert.ok(fake.deps.now() - started >= DEFAULT_COLD_WAIT_MS, `gave up after ${fake.deps.now() - started}ms`);
   assert.ok(h.steps.some((s: string) => /cold start/.test(s)));
 });
 
@@ -567,4 +570,22 @@ test('401/403 from a provider fails over at once (auth cool)', async () => {
   const err = await cloudComfyRun({ id: 'j_auth' }, ep as any, hooks() as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
   assert.equal(err?.unavailable, true);
   assert.equal(err?.auth, true);
+});
+
+test('cold: the LB hold, then "failed to assign worker" while the worker loads, then the run (beta, 2026-11-10)', async () => {
+  const { resetHealth } = await import('../src/providers/gpu/health.ts');
+  resetHealth();
+  let calls = 0;
+  const fake = fakeCloud(succeed);
+  const real = fake.deps.fetch;
+  fake.deps.fetch = (async (url: string, init: any) => {
+    calls++;
+    if (calls === 1) { await fake.deps.sleep(300_000); throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } }); }
+    if (calls <= 12) return new Response(JSON.stringify({ status: 400, detail: 'failed to assign worker' }), { status: 400 });
+    return real(url, init);
+  }) as any;
+  const ep = svc({ name: 'runpod-cold-assign', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 12 * 60_000, preload: new Set() });
+  const files = await cloudComfyRun({ id: 'j_cold_assign' }, ep as any, hooks() as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any);
+  assert.equal(files.length, 1);
+  assert.equal(calls, 13);
 });
