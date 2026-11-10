@@ -42,21 +42,24 @@ export function isAdminViewer(req: IncomingMessage) {
 export const ADMIN_SIGNIN = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"><script src="/gen/nozoom.js"></script>
 <title>Hawkes Gen admin</title><link rel="icon" href="/favicon.svg"><meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/gen/gen.css">
 <style>
-:root{color-scheme:dark;--bg:#0b0c0f;--card:#15171c;--text:#eceef2;--muted:#9aa0ab;--line:#262a31;--err:#ff7a7a}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px}
-main{width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px}
-h1{font-size:19px;margin:0 0 6px}p{color:var(--muted);margin:0 0 18px}#g{min-height:44px;margin-bottom:18px}
-details{border-top:1px solid var(--line);padding-top:14px}summary{cursor:pointer;color:var(--muted)}
-input{width:100%;margin:10px 0;padding:10px 12px;border-radius:9px;border:1px solid var(--line);background:#0f1115;color:var(--text);font:inherit}
-button{width:100%;padding:10px 12px;border-radius:9px;border:0;background:var(--text);color:var(--bg);font:600 15px system-ui,sans-serif;cursor:pointer}
-.err{color:var(--err);min-height:1.5em;margin-top:10px}a{color:var(--text)}
+body{min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--text);font:var(--weight-normal) var(--text-md)/var(--leading-base) var(--font-sans);padding:var(--space-4)}
+main{width:100%;max-width:380px;background:var(--panel);border:1px solid var(--line-2);border-radius:var(--radius-lg);padding:var(--space-7);box-shadow:var(--shadow)}
+h1{font-size:var(--text-lg);font-weight:var(--weight-semibold);margin:0 0 var(--space-2)}p{color:var(--muted);margin:0 0 var(--space-4)}#g{min-height:44px;margin-bottom:var(--space-4)}
+details{border-top:1px solid var(--line);padding-top:var(--space-4)}summary{cursor:pointer;color:var(--muted)}
+input{width:100%;margin:var(--space-3) 0;padding:var(--space-3);border-radius:var(--radius-md);border:1px solid var(--line);background:var(--panel-2);color:var(--text);font:inherit}
+button{width:100%;padding:var(--space-3);border-radius:var(--radius-md);border:1px solid var(--text);background:var(--text);color:var(--text-inv);font:var(--weight-semibold) var(--text-md) var(--font-sans);cursor:pointer}
+.err{color:var(--danger);min-height:1.5em;margin-top:var(--space-3)}a{color:var(--accent)}
 </style></head><body><main>
 <h1>Hawkes Gen admin</h1><p>For Hawkes Gen's admins only. Sign in with an admin's Google account.</p>
 <div id="g"></div>
-<details><summary>Use an admin key</summary><input id="k" type="password" autocomplete="off" placeholder="hg_..."><button id="kb" type="button">Sign in</button></details>
+<details><summary>Use an admin key</summary><input id="k" type="password" autocomplete="off" placeholder="hg_..."><button id="kb" class="primary" type="button">Sign in</button></details>
 <div class="err" id="e"></div>
-<p style="margin:14px 0 0;font-size:13px"><a href="/">Back to Hawkes Gen</a></p>
+<p style="margin:var(--space-4) 0 0;font-size:var(--text-sm)"><a href="/">Back to Hawkes Gen</a></p>
 </main><script>
 (function(){
   var e=document.getElementById('e');

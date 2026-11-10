@@ -206,6 +206,7 @@ installPlaytest({
     { id: 'media-upload', title: 'Media: a small picture is uploaded with the file button and shows as a tile and in its details; no job starts but the CPU conversion, if any', seconds: 60 },
     { id: 'uploads', title: 'Uploads: three big files go up together with a percentage each and the server stays up; a fourth at once is refused with a plain "uploads at once" message; options {"mb":500}', seconds: 240 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
+    { id: 'tokens', title: 'Design tokens and shared UI: landing, editor, library and admin share the same custom properties, buttons, inputs, chips, cards, typography and 16px stroke icons across toolbars, with clean layout at desktop (1440x900) and phone (390x844)', seconds: 90, tags: ['mobile'] },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
   isReady: () => Boolean(document.querySelector('#app')) && performance.now() > 1500,
@@ -1890,6 +1891,169 @@ installPlaytest({
       t.event('scrubbed-back');
       t.progress(0.9);
       t.finish(through && again ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'tokens') {
+      const jobs = watchJobs();
+      const rootCs = getComputedStyle(document.documentElement);
+      const tokenNames = [
+        '--bg', '--panel', '--panel-2', '--panel-3', '--line', '--line-2', '--text', '--muted',
+        '--accent', '--accent-2', '--accent-soft', '--danger', '--danger-soft', '--warn', '--ok',
+        '--font-sans', '--font-mono', '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl',
+        '--space-1', '--space-2', '--space-3', '--space-4', '--space-5', '--space-6',
+        '--radius-sm', '--radius-md', '--radius', '--radius-lg', '--radius-xl', '--radius-full',
+        '--shadow-sm', '--shadow', '--focus-border', '--focus-ring', '--icon-md', '--icon-stroke',
+      ];
+      const missingTokens = tokenNames.filter((k) => !rootCs.getPropertyValue(k).trim());
+      t.metric('tokensDefined', tokenNames.length - missingTokens.length);
+      t.metric('tokensMissing', missingTokens.length);
+      for (const k of missingTokens) t.problem('bug', `missing root design token ${k}`);
+
+      const expectBg = getComputedStyle(document.body).backgroundColor;
+      const expectText = getComputedStyle(document.body).color;
+      const expectFont = getComputedStyle(document.body).fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+      let problems = missingTokens.length;
+
+      // 1. Landing page: buttons, colours, type and layout.
+      t.scene('Landing');
+      showLanding();
+      const landingShown = await until(() => document.querySelector('#landing:not([hidden])'), 6000, 100);
+      t.metric('landingShown', landingShown ? 1 : 0);
+      let landingPrimaryBg = '';
+      if (landingShown) {
+        const L = document.querySelector('#landing');
+        const lCs = getComputedStyle(L);
+        const pBtn = L.querySelector('button.primary, .ld-cta .primary');
+        const gBtn = L.querySelector('button.ghost, .ld-nav .ghost');
+        const card = L.querySelector('.ld-ex');
+        landingPrimaryBg = pBtn ? getComputedStyle(pBtn).backgroundColor : '';
+        const lOverflow = L.scrollWidth > window.innerWidth + 1;
+        t.metric('landingOverflowX', lOverflow ? 1 : 0);
+        if (lOverflow) { problems++; t.problem('bug', `landing scrolls sideways (${L.scrollWidth} > ${window.innerWidth})`); }
+        if (lCs.color !== expectText) { problems++; t.problem('bug', `landing text color ${lCs.color} !== ${expectText}`); }
+        if (!pBtn || !gBtn || !card) { problems++; t.problem('bug', 'landing missing primary button, ghost button or example card'); }
+        t.event('landing-tokens-checked');
+        await sleep(600);
+      } else {
+        problems++;
+        t.problem('bug', 'landing did not open');
+      }
+      hideLanding();
+
+      // 2. Editor and toolbars: unified buttons, inputs, chips, cards and 16px stroke icons across toolbars.
+      t.scene('Editor and toolbars');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest tokens ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) {
+        jobs.stop();
+        t.note('the new scene did not open');
+        t.finish('stuck');
+        return;
+      }
+      press('t');
+      await until(() => P.doc.clips.length > 0 && document.querySelectorAll('#toolbar .tb').length > 0, 5000, 100);
+      await sleep(300);
+
+      const editorPrimary = document.querySelector('#sceneAction:not([hidden]), #emptyAsk, button.primary');
+      const editorPrimaryBg = editorPrimary ? getComputedStyle(editorPrimary).backgroundColor : '';
+      const editorInput = document.querySelector('#aiInput');
+      const editorInputRadius = editorInput ? getComputedStyle(editorInput).borderRadius : '';
+
+      // Check toolbar icons across .bar, .transport, #toolbar, .tl-bar.
+      const toolbarIcons = [...document.querySelectorAll('.bar .ico svg, .bar .ico-wrap svg, .transport .ico svg, .transport .ico-wrap svg, #toolbar .ico svg, #toolbar .ico-wrap svg, .tl-bar .ico svg, .tl-bar .ico-wrap svg')]
+        .filter((svg) => visibleEl(svg));
+      let badIcons = 0;
+      for (const svg of toolbarIcons) {
+        const r = svg.getBoundingClientRect();
+        const cs = getComputedStyle(svg);
+        const w = Math.round(r.width), h = Math.round(r.height);
+        const stroke = svg.getAttribute('stroke') === 'currentColor';
+        const sw = svg.getAttribute('stroke-width') === '1.8';
+        const noFill = (svg.getAttribute('fill') === 'none' || cs.fill === 'none') && !svg.querySelector('[fill="currentColor"]');
+        if (w !== 16 || h !== 16 || !stroke || !sw || !noFill) {
+          badIcons++;
+          t.problem('bug', `toolbar icon mismatch (${w}x${h}, stroke=${svg.getAttribute('stroke')}, sw=${svg.getAttribute('stroke-width')}): ${svg.closest('button')?.id || svg.closest('button')?.textContent?.trim() || 'icon'}`);
+        }
+      }
+      t.metric('toolbarIconsChecked', toolbarIcons.length);
+      t.metric('toolbarIconsConsistent', toolbarIcons.length > 0 && badIcons === 0 ? 1 : 0);
+      problems += badIcons;
+
+      // Verify button variants (primary, secondary, ghost, danger), input, chip and card share tokens.
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;left:-9999px;top:0;display:flex;gap:8px';
+      probe.innerHTML = '<button class="primary">P</button><button class="secondary">S</button><button class="ghost">G</button><button class="danger">D</button><input value="x"><span class="chip">C</span><div class="card">Card</div>';
+      document.body.appendChild(probe);
+      const [bP, bS, bG, bD, inEl, chipEl, cardEl] = probe.children;
+      const variantsDistinct = getComputedStyle(bP).backgroundColor !== getComputedStyle(bS).backgroundColor
+        && getComputedStyle(bG).backgroundColor === 'rgba(0, 0, 0, 0)'
+        && getComputedStyle(bD).color !== getComputedStyle(bS).color
+        && getComputedStyle(bP).borderRadius === getComputedStyle(bS).borderRadius
+        && getComputedStyle(inEl).borderRadius === getComputedStyle(bP).borderRadius
+        && getComputedStyle(chipEl).borderRadius === '999px'
+        && getComputedStyle(cardEl).borderRadius === '12px';
+      probe.remove();
+      t.metric('unifiedComponents', variantsDistinct ? 1 : 0);
+      if (!variantsDistinct) { problems++; t.problem('bug', 'button variants, input, chip or card do not match design tokens'); }
+
+      const editorOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
+      t.metric('editorOverflowX', editorOverflow ? 1 : 0);
+      if (editorOverflow) { problems++; t.problem('bug', `editor scrolls sideways (${document.documentElement.scrollWidth} > ${window.innerWidth})`); }
+      t.event('editor-tokens-checked');
+      await sleep(600);
+
+      // 3. Library (Media pane): search input, filter chips, upload button and grid.
+      t.scene('Library');
+      if (window.innerWidth <= 900) click('#mobileTabs button[data-m="media"]');
+      else click('#paneTabs button[data-pane="media"]');
+      await until(() => visibleEl(document.querySelector('#mediaSearch')) && document.querySelectorAll('#mediaFilter .chip').length >= 5, 5000, 100);
+      const libInput = document.querySelector('#mediaSearch');
+      const libChip = document.querySelector('#mediaFilter .chip.on');
+      const libInputMatches = libInput && getComputedStyle(libInput).borderRadius === editorInputRadius;
+      const libChipMatches = libChip && getComputedStyle(libChip).borderRadius === '999px';
+      const libOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
+      t.metric('libraryTokensMatch', libInputMatches && libChipMatches ? 1 : 0);
+      t.metric('libraryOverflowX', libOverflow ? 1 : 0);
+      if (!libInputMatches || !libChipMatches) { problems++; t.problem('bug', 'library search input or filter chip styles diverge from editor tokens'); }
+      if (libOverflow) { problems++; t.problem('bug', `library scrolls sideways (${document.documentElement.scrollWidth} > ${window.innerWidth})`); }
+      t.event('library-tokens-checked');
+      await sleep(600);
+
+      // 4. Admin page: load /admin in a full-viewport frame so screenshots and computed styles see it at this viewport.
+      t.scene('Admin');
+      const frame = document.createElement('iframe');
+      frame.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;border:0;z-index:260;background:var(--bg)';
+      frame.src = '/admin';
+      document.body.appendChild(frame);
+      const adminLoaded = await until(() => frame.contentDocument?.body && frame.contentDocument.readyState === 'complete', 8000, 100);
+      let adminMatches = false, adminOverflow = false;
+      if (adminLoaded) {
+        await sleep(400);
+        const aDoc = frame.contentDocument;
+        const aWin = frame.contentWindow;
+        const aBody = aDoc.body;
+        const aCs = aWin.getComputedStyle(aBody);
+        const aFont = aCs.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+        const aBtn = aDoc.querySelector('button.primary, #kb, button');
+        const aBtnBg = aBtn ? aWin.getComputedStyle(aBtn).backgroundColor : '';
+        adminMatches = aCs.backgroundColor === expectBg && aCs.color === expectText && aFont === expectFont && (!landingPrimaryBg || aBtnBg === landingPrimaryBg);
+        adminOverflow = aDoc.documentElement.scrollWidth > aWin.innerWidth + 1;
+      }
+      t.metric('adminTokensMatch', adminMatches ? 1 : 0);
+      t.metric('adminOverflowX', adminOverflow ? 1 : 0);
+      if (!adminMatches) { problems++; t.problem('bug', 'admin page background, text color, font or primary button does not match Gen tokens'); }
+      if (adminOverflow) { problems++; t.problem('bug', 'admin page scrolls sideways'); }
+      t.event('admin-tokens-checked');
+      await sleep(700);
+      frame.remove();
+
+      const sameAll = Boolean(landingPrimaryBg && editorPrimaryBg && landingPrimaryBg === editorPrimaryBg && adminMatches);
+      t.metric('samePaletteAndButtonsAcrossPages', sameAll ? 1 : 0);
+      t.metric('tokenProblems', problems);
+      const started = jobs.sent.length;
+      jobs.stop();
+      if (started) t.problem('blocker', `tokens scenario started ${started} job(s)`);
+      t.finish(problems === 0 && !started ? 'done' : 'stuck');
       return;
     }
     // smoke
