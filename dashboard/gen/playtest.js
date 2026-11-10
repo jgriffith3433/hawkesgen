@@ -1314,18 +1314,21 @@ installPlaytest({
           window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x0 + (dx * i) / steps, clientY: y0 + (dy * i) / steps }));
           await sleep(25);
         }
-        window.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x0 + dx, clientY: y0 + dy }));
+        // Window listeners (drag / tap-to-open) and the element's own pointerup both need the lift.
+        const up = new PointerEvent('pointerup', { ...opts, clientX: x0 + dx, clientY: y0 + dy });
+        window.dispatchEvent(up);
+        if (!dx && !dy) el.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x0, clientY: y0 }));
         await sleep(120);
       };
       // 1 Add a crossfade: tap the + join, pick Crossfade from the menu.
       const plus = joinBtn();
       t.metric('joinPlus', plus ? 1 : 0);
       if (!plus) { t.problem('bug', 'no + join between adjacent main-track clips'); t.finish('stuck'); return; }
-      await finger(plus);
+      await finger(plus, { steps: 1 });
       const menu = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
       t.metric('typeMenu', menu ? 1 : 0);
       if (!menu) { t.problem('bug', 'transition type menu did not open'); t.finish('stuck'); return; }
-      await finger(menu);
+      menu.click(); // menu items are buttons; the open was a touch pointer on the join
       const added = await until(() => clipOf(A)?.transition === 'crossfade' && xfEl(), 3000, 50);
       t.metric('crossfadeAdded', added ? 1 : 0);
       t.event(added ? 'crossfade-added' : 'crossfade-missing');
@@ -1343,16 +1346,16 @@ installPlaytest({
       t.metric('transitionSeconds', clipOf(A).transitionSeconds ?? 0);
       t.event(resized ? 'transition-resized' : `no-resize was=${before} now=${clipOf(A).transitionSeconds}`);
       // 3 Change type: tap the block, pick Dip to black.
-      await finger(xfEl());
+      await finger(xfEl(), { steps: 1 });
       const dip = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Dip to black/i.test(b.textContent)), 3000, 50);
-      if (dip) await finger(dip);
+      if (dip) dip.click();
       const typed = clipOf(A)?.transition === 'fadeblack';
       t.metric('typeChanged', typed ? 1 : 0);
       t.event(typed ? 'type-dip-black' : `type=${clipOf(A)?.transition}`);
       // Put a crossfade back for the preview and export checks (criterion 1 + 2).
-      await finger(xfEl());
+      await finger(xfEl(), { steps: 1 });
       const xfItem = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
-      if (xfItem) await finger(xfItem);
+      if (xfItem) xfItem.click();
       setClip(A.id, { transition: 'crossfade', transitionSeconds: 0.8 }, { history: false });
       await until(() => clipOf(A)?.transition === 'crossfade', 2000, 50);
       // 4 Preview: scrub into the join; transitionAt must report a blend (both alphas mid-range).

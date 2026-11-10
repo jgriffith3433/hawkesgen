@@ -639,11 +639,18 @@ function clipPointer(e, c) {
 function joinEl(c, next) {
   const join = clipEnd(c);
   if (!c.transition) {
-    return h('button', {
+    const btn = h('button', {
       class: 'tl-join', style: { left: `${xOf(join)}px` }, title: 'Add a transition', type: 'button',
       'data-join': c.id,
-      onclick: (e) => { e.stopPropagation(); transitionMenu({ clip: c, x: e.clientX, y: e.clientY }); },
     }, '+');
+    // pointerup (not only click): phones and the playtest bot send touch pointers.
+    btn.addEventListener('pointerup', (e) => {
+      if (e.button != null && e.button !== 0) return;
+      e.stopPropagation();
+      transitionMenu({ clip: byId(c.id) ?? c, x: e.clientX, y: e.clientY });
+    });
+    btn.addEventListener('click', (e) => e.preventDefault());
+    return btn;
   }
   const T = clampTransitionSeconds(c.transitionSeconds ?? 0.5);
   const maxT = Math.max(0.2, Math.min(2, Math.min(clipLength(c), clipLength(next)) - 0.05));
