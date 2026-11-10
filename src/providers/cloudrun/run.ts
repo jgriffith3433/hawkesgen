@@ -302,6 +302,16 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
       if ((r.status === 401 || r.status === 403) && svc.provider && svc.provider !== 'cloudrun') {
         throw unavailable(`${svc.name} (${svc.provider}) refused Gen's credentials (${r.status}): check its key in Gen's environment (docs/gpu-providers.md)`, { auth: true });
       }
+      // Modal's own gateway answers 404 "modal-http: workspace ... is disabled" when the account is switched off (billing),
+      // and "modal-http: app ... not found / stopped" when the app isn't deployed: the provider is out, not the job
+      // (beta 2026-11-10: every image.generate failed there instead of going on to RunPod).
+      if (r.status === 404 && svc.provider === 'modal') {
+        const text = await r.clone().text().catch(() => '');
+        if (/modal-http/i.test(text)) {
+          await r.body?.cancel().catch(() => undefined);
+          throw unavailable(`${svc.name} (modal) turned Gen away: ${text.trim().slice(0, 200)}`, { auth: true });
+        }
+      }
       if (r.status === 401 || r.status === 403) {
         throw new GenError(`${svc.name} refused Gen's identity (${r.status}): Gen's service account needs roles/run.invoker on it (tools/cloudrun/deploy.mjs grants it), and ADC must be able to mint ID tokens (docs/cloudrun.md, "Credentials").`);
       }
