@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { primePlatform } from './platform.ts';
-import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
+import { authenticate, isSelfCall, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { publicJob, publicText } from './publictext.ts';
 import { orgCreditsOn } from './orgcredits.ts';
 import { DASH_COOKIE, DASH_DAYS, googleClientId, googleClientIdAny, checkGoogleToken, signSession, verifyGoogle } from './dashauth.ts';
@@ -362,8 +362,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   noteRoute(method, route);
 
   // The request limiter (src/ratelimit.ts): a token bucket per caller and class of route, before any routing.
-  // /v1/health and the Stripe webhook are never limited.
-  const wait = limitRequest(req, method, route);
+  // /v1/health and the Stripe webhook are never limited, and neither is Gen calling itself: a job's own steps were
+  // limited as one caller per project, so a batch of jobs started together failed each other ("a lot at once").
+  const wait = isSelfCall(req) ? null : limitRequest(req, method, route);
   if (wait !== null) {
     res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(wait), 'Cache-Control': 'no-store' });
     return void res.end(JSON.stringify({ error: `That's a lot at once: wait ${wait} second${wait === 1 ? '' : 's'}, then try again.`, retryAfter: wait }));
