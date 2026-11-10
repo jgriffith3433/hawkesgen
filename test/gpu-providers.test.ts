@@ -380,7 +380,7 @@ test('V4 signed URLs: the canonical request is signed as the service account (ch
 
 // ------------------------------------------------------------------ the run protocol elsewhere
 
-function fakeProvider(behave: (body: any, n: number) => any[] | { status: number }) {
+function fakeProvider(behave: (body: any, n: number) => any[] | { status: number; text?: string }) {
   const objects = new Map<string, Buffer>();
   const posts: any[] = [];
   let clock = 1_000_000;
@@ -400,7 +400,7 @@ function fakeProvider(behave: (body: any, n: number) => any[] | { status: number
         const body = JSON.parse(init.body);
         posts.push({ url, body, headers: init.headers });
         const lines = behave(body, posts.length);
-        if (!Array.isArray(lines)) return new Response('no', { status: lines.status });
+        if (!Array.isArray(lines)) return new Response(lines.text ?? 'no', { status: lines.status });
         const enc = new TextEncoder();
         return new Response(new ReadableStream({ start(c) { for (const l of lines) c.enqueue(enc.encode(JSON.stringify(l) + '\n')); c.close(); } }), { status: 200 });
       }) as any,
@@ -453,6 +453,16 @@ test('a provider that refuses our key, or has no GPU in its wait, throws "unavai
   assert.ok(bh.steps.some((x) => /waiting for a free modal GPU/.test(x)), JSON.stringify(bh.steps));
   assert.equal(denied.posts[0].headers['Modal-Key'], undefined);
   assert.equal(busy.posts[0].headers['Modal-Key'], 'wk-1');
+});
+
+test('a disabled Modal workspace (404 modal-http) throws "unavailable" so the job goes on to the next provider', async () => {
+  const s = gpuSettings({ providers: [ep({ id: 'mod', provider: 'modal', url: 'https://m.modal.run' })], order: ['mod'] });
+  const md = (gpuCandidates({ family: 'z-image', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get).choices[0] as any).service;
+  const off = fakeProvider(() => ({ status: 404, text: 'modal-http: workspace ac-test is disabled\n' }));
+  await assert.rejects(cloudComfyRun({ id: 'j_off' }, md, hooks() as any, off.deps as any).runGraph({} as any), (e: any) => e.unavailable && e.auth && /workspace ac-test is disabled/.test(e.message));
+  // Any other 404 is still the job's error, not the provider's.
+  const other = fakeProvider(() => ({ status: 404, text: 'not here' }));
+  await assert.rejects(cloudComfyRun({ id: 'j_404' }, md, hooks() as any, other.deps as any).runGraph({} as any), (e: any) => !e.unavailable && /\/run: 404 not here/.test(e.message));
 });
 
 // ------------------------------------------------------------------ through the queue
