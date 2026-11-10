@@ -21,6 +21,14 @@ on:
         type: choice
         options: [DEFAULT, INFO, WARNING, ERROR]
         default: WARNING
+      skip:
+        description: Leave out request lines whose URL has this text (e.g. /v1/jobs/j_), optional
+        type: string
+        default: ''
+      newest:
+        description: The newest 500 lines instead of the oldest
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -51,11 +59,18 @@ jobs:
         env:
           MINUTES: ${{ inputs.minutes }}
           SEVERITY: ${{ inputs.severity }}
+          SKIP: ${{ inputs.skip }}
+          NEWEST: ${{ inputs.newest }}
           PROJECT: ${{ vars.GCP_PROJECT }}
         run: |
           since=$(date -u -d "-$MINUTES min" +%Y-%m-%dT%H:%M:%SZ)
           filter="resource.type=cloud_run_revision AND resource.labels.service_name=$SVC AND resource.labels.location=$RUN_REGION AND severity>=$SEVERITY AND timestamp>=\"$since\""
-          gcloud logging read "$filter" --project "$PROJECT" --limit 500 --order asc \
+          if [ -n "$SKIP" ]; then
+            [[ "$SKIP" =~ ^[A-Za-z0-9/_.?=-]+$ ]] || { echo "skip: letters, digits and / _ . ? = - only"; exit 1; }
+            filter="$filter AND NOT httpRequest.requestUrl:\"$SKIP\""
+          fi
+          order=asc; [ "$NEWEST" = true ] && order=desc
+          gcloud logging read "$filter" --project "$PROJECT" --limit 500 --order "$order" \
             --format='value(timestamp,severity,textPayload,jsonPayload.message,httpRequest.status,httpRequest.requestUrl)' \
             | sed -E 's/(hg_|hgm_|ghs_|ghp_|github_pat_|sk-ant-|cfut_|cfat_|AKIA|rpa_)[A-Za-z0-9_-]+/\1***/g; s/(Bearer |token=|key=)[A-Za-z0-9._-]+/\1***/g' > logs.txt
           n=$(wc -l < logs.txt)
