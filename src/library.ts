@@ -124,6 +124,25 @@ export function getAsset(assetId: string): Asset | null {
   return parseRow<Asset>(db.prepare('SELECT * FROM assets WHERE id = ?').get(assetId), JSON_COLS) ?? null;
 }
 
+/**
+ * The asset whose file this library path is (files are named <asset id><ext>, so this is a lookup by id), or null when
+ * the path is not a library file. Works whether or not the file is on this instance's disk.
+ */
+export function assetAt(file: string): { id: string; sha256: string; path: string } | null {
+  const m = /^(a_[0-9a-f]{6,})\./.exec(path.basename(String(file)));
+  const byId = m ? (db.prepare('SELECT id, sha256, path FROM assets WHERE id = ?').get(m[1]) as { id: string; sha256: string; path: string } | undefined) : undefined;
+  if (byId && path.resolve(byId.path) === path.resolve(file)) return byId;
+  return (db.prepare('SELECT id, sha256, path FROM assets WHERE path = ?').get(file) as { id: string; sha256: string; path: string } | undefined) ?? null;
+}
+
+/**
+ * A library file's content hash without reading it (an asset's row, a blob's name), or null for any other file. Recipe
+ * keys use this, so asking "does the library have this already?" never needs the file on this instance.
+ */
+export function libraryShaOf(file: string): string | null {
+  return blobShaOf(file) ?? assetAt(file)?.sha256 ?? null;
+}
+
 export function listAssets(q: { project?: string; kind?: string; tool?: string; client?: string; text?: string; starred?: boolean; job?: string; playtest?: boolean; limit?: number; offset?: number; projects?: string[] } = {}) {
   const where: string[] = [];
   const args: Record<string, unknown> = {};

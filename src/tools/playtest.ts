@@ -10,6 +10,7 @@ import path from 'node:path';
 import type { Tool, RunContext } from './types.ts';
 import { GenError, run as runProc, sleep } from '../util.ts';
 import { listAssets, getAsset, blobPath, canUseBlob } from '../library.ts';
+import { ensureLocal } from '../storage.ts';
 import { canProject, type Client } from '../auth.ts';
 import { loadSettings, PLAYTEST_TARGETS, type PlaytestTarget } from '../config.ts';
 import { parseBuild, storedBuild, checkTarget, checkEntry, checkArgs, publicUrl, resolveGithub, stageArchive, defaultStager, dropToken, type BuildRef, type FetchableBuild } from '../providers/playtester/intake.ts';
@@ -1852,7 +1853,7 @@ async function reviewMotion(ctx: RunContext, result: any, shots: any[], max: num
   const none = (note: string) => ({ strips: [] as { file: string; asset: string | null; start: number; end: number; t: number; reason: string; scene?: string }[], hitches: null as { t: number; ms: number }[] | null, note });
   if (!max) return none('motion off');
   const vid = result?.video ? getAsset(result.video) : null;
-  if (!vid?.path || !fs.existsSync(vid.path)) return none('no video to watch');
+  if (!vid?.path || !(await ensureLocal(vid))) return none('no video to watch');
   const seconds = Number(result.seconds) || 0;
   const windows = pickMotionWindows(motionMarks(result, shots), seconds, { max: Math.min(12, max) });
   const cut = await motionStrips(ctx, vid.path, windows);
@@ -1917,10 +1918,17 @@ export const playtestReviewTool: Tool = {
     const rest = assets.filter((a: any) => !picked.has(a));
     const want = p.frames - picked.size;
     for (let i = 0; i < want && rest.length; i++) picked.add(rest[Math.floor((i * rest.length) / Math.max(1, want))]);
-    const frames = assets.filter((a: any) => picked.has(a));
+    // The run's screenshots may have been made on another instance (or before a restart): on this disk first.
+    const frames: any[] = [];
+    for (const a of assets.filter((a: any) => picked.has(a))) if (await ensureLocal(a)) frames.push(a);
+    if (!frames.length) throw new GenError(`${p.job}'s screenshots are not on this server and could not be restored from storage`);
     // The biggest visual changes since the previous run: their previous frames go after this run's (up to 4).
     const big = (result.visual?.pairs ?? []).filter((x: any) => x.big).sort((a: any, b: any) => b.score - a.score);
-    const before = big.slice(0, 4).map((x: any) => ({ x, asset: getAsset(x.baseline) })).filter((b: any) => b.asset && fs.existsSync(b.asset.path));
+    const before: { x: any; asset: any }[] = [];
+    for (const x of big.slice(0, 4)) {
+      const asset = getAsset(x.baseline);
+      if (asset && (await ensureLocal(asset))) before.push({ x, asset });
+    }
     const legend = [
       ...frames.map((a: any, i: number) => `[${i}] t=${a.meta.t}s ${a.meta.reason}${a.meta.scene ? ` (${a.meta.scene})` : ''}`),
       ...before.map((b: any, i: number) => `[${frames.length + i}] PREVIOUS RUN at "${b.x.key}" (compare with this run's frame at t=${b.x.t}s)`),

@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import type { Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
+import { localPath } from '../storage.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 import { planSheet } from './sheet.ts';
 import { imageSize } from './threed.ts';
@@ -202,7 +203,8 @@ export const viewSheetTool: Tool = {
       const o = (cut.outputs ?? []).find((x: any) => String(x.title ?? '').toLowerCase() === 'cutout') ?? (cut.outputs ?? []).find((x: any) => x.kind === 'image' && x !== cut.outputs?.[0]);
       const a = o ? getAsset(o.asset) : null;
       if (!a?.path) throw new GenError(`the ${view} view has no cutout (image.remove-background made: ${(cut.outputs ?? []).map((x: any) => x.title).join(', ') || 'nothing'})`);
-      return a.path as string;
+      // The cutout may come from the library (made on another instance, or before a restart): on this disk first.
+      return localPath(a, `the ${view} view's cutout`);
     };
     /** Makes one view: the edit, then its cutout. Remembers the edit so a retry doesn't get it back. */
     const make = async (view: (typeof MADE)[number], attempt: number) => {
@@ -229,8 +231,9 @@ export const viewSheetTool: Tool = {
       });
       const editAsset = edit.outputs?.[0]?.asset;
       rejected.turnaround.push(editAsset);
-      const sheet = editAsset ? getAsset(editAsset)?.path : null;
-      if (!sheet) throw new GenError('the turnaround edit made no picture');
+      const made = editAsset ? getAsset(editAsset) : null;
+      if (!made) throw new GenError('the turnaround edit made no picture');
+      const sheet = await localPath(made, 'the turnaround edit');
       const panels = TURNAROUND.map((v) => ctx.tmp(`turnaround-${attempt}-${v}.png`));
       await ctx.python('prep.py', ['split', sheet, String(TURNAROUND.length), ...panels]);
       await Promise.all(views.map(async (v) => {

@@ -19,9 +19,9 @@ import path from 'node:path';
 import { db } from './db.ts';
 import { awsConfig } from './providers/comfy/fleet.ts';
 import { loadSettings } from './config.ts';
-import { mimeOf } from './util.ts';
+import { mimeOf, GenError } from './util.ts';
 import { gcs, gsUri, type Gcs } from './providers/gcp/gcs.ts';
-import { blobPath, blobRemote, blobShaOf } from './library.ts';
+import { assetAt, blobPath, blobRemote, blobShaOf, getAsset, type Asset } from './library.ts';
 
 const REGION = 'us-east-1';
 export const bucket = (): string | null => {
@@ -310,21 +310,53 @@ export async function fixMetadata({ apply = false, limit = 200, after = '' } = {
 
 // ------------------------------------------------------------------ restores
 
-/** Makes sure an asset's file is on disk, fetching it from S3 when it's missing. -> false when it can't be had. */
+// Gen runs on Cloud Run: an instance's disk (/data) is only a cache, and an asset row (restored with the database) can
+// name a file this instance never had: an earlier instance made it, a restart took the disk, or the library handed back
+// a take made long ago. So nothing reads a library file by its `path` alone: it goes through ensureLocal (or localPath /
+// localAsset below), which brings the file back from the bucket first.
+
+/** Restores in flight, by path: two readers of one missing file share one download (no two writers of one .part). */
+const restoring = new Map<string, Promise<boolean>>();
+
+/** Makes sure an asset's file is on disk, fetching it from storage when it's missing. -> false when it can't be had. */
 export async function ensureLocal(a: { sha256: string; path: string }): Promise<boolean> {
   if (fs.existsSync(a.path)) return true;
-  const s = await getStore();
-  if (!s) return false;
-  try {
-    await s.get(keyOf(a.sha256), a.path);
-    return true;
-  } catch (e: any) {
-    console.warn(`[storage] couldn't restore ${a.path}: ${e?.message ?? e}`);
-    return false;
-  }
+  const busy = restoring.get(a.path);
+  if (busy) return busy;
+  const p = (async () => {
+    const s = await getStore();
+    if (!s) return false;
+    try {
+      await s.get(keyOf(a.sha256), a.path);
+      return fs.existsSync(a.path);
+    } catch (e: any) {
+      console.warn(`[storage] couldn't restore ${a.path}: ${e?.message ?? e}`);
+      return false;
+    }
+  })().finally(() => restoring.delete(a.path));
+  restoring.set(a.path, p);
+  return p;
 }
 
-/** A job's input files that are library files missing on disk come back from S3 before it runs. */
+/**
+ * The one way to read a library asset's file: its path on this disk, restored from storage first when this instance
+ * doesn't have it. Throws a GenError in plain words when it can't be had (only ever on a disk that is gone, for a file
+ * whose upload never finished).
+ */
+export async function localPath(a: { id?: string; sha256: string; path: string }, what?: string): Promise<string> {
+  if (await ensureLocal(a)) return a.path;
+  throw new GenError(`${what ?? (a.id ? `asset ${a.id}` : 'a library file')}'s file is not on this server and could not be restored from storage; make it again`);
+}
+
+/** An asset (by id or asset:<id>) with its file on this disk; null when there is no such asset. Throws like localPath. */
+export async function localAsset(ref: string, what?: string): Promise<Asset | null> {
+  const a = getAsset(String(ref).replace(/^asset:/, ''));
+  if (!a) return null;
+  await localPath(a, what);
+  return a;
+}
+
+/** A job's input files that are library files missing on disk come back from storage before it runs. */
 export async function ensureInputs(inputs: Record<string, string | string[]>) {
   for (const v of Object.values(inputs ?? {})) {
     for (const p of Array.isArray(v) ? v : [v]) {
@@ -332,7 +364,7 @@ export async function ensureInputs(inputs: Record<string, string | string[]>) {
       // A blob that went straight to the bucket (POST /v1/blobs/upload) comes back by its hash.
       const sha = blobShaOf(p);
       if (sha && blobRemote(sha)) { await ensureLocal({ sha256: sha, path: p }); continue; }
-      const a = db.prepare('SELECT sha256, path FROM assets WHERE path = ?').get(p) as { sha256: string; path: string } | undefined;
+      const a = assetAt(p);
       if (a) await ensureLocal(a);
     }
   }

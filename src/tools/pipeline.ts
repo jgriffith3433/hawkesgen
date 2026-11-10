@@ -24,6 +24,7 @@ import crypto from 'node:crypto';
 import type { Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
+import { localPath } from '../storage.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
@@ -168,8 +169,9 @@ export const assetMakeTool: Tool = {
         // What Claude looks at per candidate: the image, three frames of a video, or four angle stills of a mesh.
         const views: string[][] = [];
         for (const [k, a] of assets.entries()) {
-          if (a.kind === 'image') views.push([a.path]);
-          else if (a.kind === 'video') views.push(await videoFrames(a.path, ctx.tmp(`cand-${k}`), ctx.signal).catch(() => []));
+          // Each candidate's file on this instance first (it may have been made, or reused, elsewhere).
+          if (a.kind === 'image') views.push([await localPath(a, `candidate ${k}`)]);
+          else if (a.kind === 'video') views.push(await videoFrames(await localPath(a, `candidate ${k}`), ctx.tmp(`cand-${k}`), ctx.signal).catch(() => []));
           else if (a.kind === 'mesh') views.push(await meshAngles(gen, a, ctx, k).catch(() => []));
           else views.push([]);
         }
@@ -216,7 +218,7 @@ ${layout}`,
         if (!a) continue;
         const sub = String(o.title ?? a.title ?? k + 1).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
         const name = made[s.i].outputs.length > 1 ? `${s.name}.${sub || k + 1}` : s.name;
-        await ctx.emit({ data: fs.readFileSync(a.path), mime: a.mime, seed: a.seed, title: name, meta: { save: name, step: s.i + 1, from: a.id } });
+        await ctx.emit({ data: fs.readFileSync(await localPath(a, `step ${s.i + 1}'s ${name}`)), mime: a.mime, seed: a.seed, title: name, meta: { save: name, step: s.i + 1, from: a.id } });
         final.push({ save: name, from: a.id });
       }
     }
@@ -253,7 +255,7 @@ async function meshAngles(gen: any, asset: { id: string }, ctx: { job: { id: str
   for (const name of ['front', 'right', 'back', 'left']) {
     const o = (done.outputs ?? []).find((x: any) => String(x.title ?? '').toLowerCase() === `angle/${name}`);
     const a = o ? getAsset(o.asset) : null;
-    if (a?.path && fs.existsSync(a.path)) paths.push(a.path);
+    if (a) paths.push(await localPath(a, `the ${name} still of mesh candidate ${k}`));
   }
   if (paths.length !== 4) throw new GenError(`mesh angles for candidate ${k}: expected 4 stills, got ${paths.length}`);
   ctx.log(`candidate ${k}: 4 angle stills from ${done.id}`);
