@@ -307,8 +307,15 @@ function drawAction() {
   if (a) { b.replaceChildren(icon(a.icon ?? 'download'), h('span', { class: 'btn-label' }, a.label)); b.title = a.label; }
 }
 function drawUndo() {
-  $('#undoBtn').disabled = !W.editor?.canUndo?.();
-  $('#redoBtn').disabled = !W.editor?.canRedo?.();
+  const u = $('#undoBtn');
+  const r = $('#redoBtn');
+  u.disabled = !W.editor?.canUndo?.();
+  r.disabled = !W.editor?.canRedo?.();
+  // Labelled steps (an AI turn, a delete toast): "Undo: AI added 3 clips (Ctrl+Z)"; otherwise the plain shortcut.
+  const ul = W.editor?.undoLabel?.();
+  const rl = W.editor?.redoLabel?.();
+  u.title = ul ? `Undo: ${ul} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
+  r.title = rl ? `Redo: ${rl} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)';
 }
 export const refreshBar = () => { drawAction(); drawUndo(); };
 

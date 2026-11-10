@@ -9,7 +9,7 @@
 
 import { $, $$, h, api, toast, bus, icon, mediaInfo, fmt, fileUrl, plainError, ApiError } from './lib.js';
 import { trouble } from './trouble.js';
-import { P, take, save, canUndo, canRedo, doUndo, doRedo, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, retryClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
+import { P, take, save, canUndo, canRedo, doUndo, doRedo, undoLabel, redoLabel, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, retryClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
 import { seek, pause, frameAt, mixdown, recordTimeline, refresh } from './player.js';
 import { fit, timelineRefusal, viewState, setView } from './timeline.js';
 import { openExport, clipTools } from './tools.js';
@@ -43,7 +43,7 @@ for (const kind of ['video', 'image', 'audio']) {
       refresh();
     },
     async unmount() { keepView(); pause(); await save(); P.active = false; $('#staleBar')?.remove(); },
-    undo: doUndo, redo: doRedo, canUndo, canRedo, save,
+    undo: doUndo, redo: doRedo, canUndo, canRedo, undoLabel, redoLabel, save,
     action: ACTION[kind],
     rename(title) { remember(); P.doc.title = title; changed(); },
     accepts: (it) => !timelineRefusal(it),

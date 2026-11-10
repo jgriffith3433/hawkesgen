@@ -193,7 +193,7 @@ installPlaytest({
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
     { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
-    { id: 'ai-undo', title: 'AI pane: Undo this removes what the AI added, and Ctrl+Z brings it back', seconds: 60 },
+    { id: 'ai-undo', title: 'AI pane: after a multi-op edit a toast offers Undo, Ctrl+Z (or Undo) puts the timeline back, Redo brings the AI change back, and the Undo button is labelled', seconds: 90 },
     { id: 'ai-proposal', title: 'AI pane: an answer over 40 credits shows a proposal card with its price, and nothing starts (Make it is never pressed)', seconds: 60 },
     { id: 'ai-nocredits', title: 'AI pane: with no credits left the answer is a plain 402 line with Add credits, and the timeline is unchanged', seconds: 60 },
     { id: 'ai-signedout', title: 'AI pane signed out: the sign-in gate shows, a typed message opens Sign in and nothing is sent', seconds: 40 },
@@ -276,37 +276,69 @@ installPlaytest({
       const titles = () => (P.doc?.clips ?? []).filter((c) => c.kind === 'text').length;
       const mockOff = () => { t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session: nothing to play'); t.event('mock-off'); t.finish('done'); };
       const HELLO = { match: 'says Hello', cost: 0.01, json: { say: 'Added a title that says Hello.', ops: [TITLE_OP('Hello')] } };
+      // Three text adds in one turn: the undo label is "AI added 3 clips" and one Ctrl+Z reverses all three.
+      const THREE = {
+        match: 'three titles',
+        cost: 0.01,
+        json: { say: 'Added three titles.', ops: [TITLE_OP('One'), TITLE_OP('Two'), TITLE_OP('Three')] },
+      };
       if (id === 'ai-edit' || id === 'ai-undo') {
-        if (!await mockAi([HELLO])) return mockOff();
-        if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
-        const before = { clips: clips(), titles: titles(), credits: credits() };
-        await typeAi('add a title that says Hello');
+        if (id === 'ai-edit') {
+          if (!await mockAi([HELLO])) return mockOff();
+          if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+          const before = { clips: clips(), titles: titles(), credits: credits() };
+          await typeAi('add a title that says Hello');
+          t.event('asked');
+          const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
+          const added = await until(() => titles() > before.titles, 5000, 100);
+          t.metric('clipsAdded', clips() - before.clips);
+          t.event(added ? 'title-added' : 'no-title');
+          const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
+          t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
+          if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
+          const paid = await until(() => credits() < before.credits, 8000, 150);
+          t.metric('creditsDelta', before.credits - credits());
+          t.event(paid ? 'credits-dropped' : 'credits-unchanged');
+          if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
+          t.finish(reply && added && paid ? 'done' : 'stuck');
+          return;
+        }
+        if (!await mockAi([THREE])) return mockOff();
+        if (!await aiScene('Playtest AI undo')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const before = { clips: clips(), titles: titles() };
+        await typeAi('add three titles please');
         t.event('asked');
-        const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
-        const added = await until(() => titles() > before.titles, 5000, 100);
+        const added = await until(() => titles() >= before.titles + 3, 20000, 100);
         t.metric('clipsAdded', clips() - before.clips);
-        t.event(added ? 'title-added' : 'no-title');
-        const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
-        t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
-        if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
-        const paid = await until(() => credits() < before.credits, 8000, 150);
-        t.metric('creditsDelta', before.credits - credits());
-        t.event(paid ? 'credits-dropped' : 'credits-unchanged');
-        if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
-        if (id === 'ai-edit') { t.finish(reply && added && paid ? 'done' : 'stuck'); return; }
-        // Undo this: a click on the reply's own button, then Ctrl+Z.
-        const undo = [...document.querySelectorAll('#aiMessages button')].find((b) => /Undo this/.test(b.textContent));
-        t.metric('undoOffered', undo ? 1 : 0);
-        if (!undo || !added) { t.finish('stuck'); return; }
-        undo.click();
-        const gone = await until(() => titles() === before.titles, 5000, 100);
-        t.metric('undoRemoved', gone ? 1 : 0);
-        t.event(gone ? 'undone' : 'undo-failed');
+        t.event(added ? 'three-added' : 'no-titles');
+        if (!added) { t.finish('stuck'); return; }
+        // Toast after the AI edit offers Undo in one tap (criteria 3).
+        const toastEl = () => { const el = document.querySelector('#toast'); return el && !el.hidden ? el : null; };
+        const toastOk = await until(() => {
+          const el = toastEl();
+          if (!el) return false;
+          const words = el.textContent ?? '';
+          const btn = [...el.querySelectorAll('button')].find((b) => /^Undo$/i.test(b.textContent.trim()));
+          return /AI added 3 clips/i.test(words) && btn ? btn : false;
+        }, 5000, 100);
+        t.metric('toastUndo', toastOk ? 1 : 0);
+        t.event(toastOk ? 'toast-undo' : 'no-toast-undo');
+        if (!toastOk) t.problem('bug', `no Undo toast after the AI edit: "${toastEl()?.textContent ?? ''}"`);
+        const tip = document.querySelector('#undoBtn')?.title ?? '';
+        t.metric('undoLabelled', /Undo:\s*AI added 3 clips/i.test(tip) ? 1 : 0);
+        t.event(/Undo:\s*AI added 3 clips/i.test(tip) ? 'undo-labelled' : 'undo-unlabelled');
+        // One Ctrl+Z puts the timeline back exactly (criteria 1); the bar's Undo is the same path.
         press('z', { ctrlKey: true });
-        const back = await until(() => titles() > before.titles, 5000, 100);
-        t.metric('undoRestored', back ? 1 : 0);
-        t.event(back ? 'ctrl-z-restored' : 'ctrl-z-failed');
-        t.finish(gone && back ? 'done' : 'stuck');
+        const gone = await until(() => titles() === before.titles && clips() === before.clips, 5000, 100);
+        t.metric('undoRemoved', gone ? 1 : 0);
+        t.event(gone ? 'ctrl-z-undone' : 'ctrl-z-failed');
+        if (!gone) { t.finish('stuck'); return; }
+        // Redo brings the AI change back (criteria 2).
+        press('z', { ctrlKey: true, shiftKey: true });
+        const back = await until(() => titles() >= before.titles + 3, 5000, 100);
+        t.metric('redoRestored', back ? 1 : 0);
+        t.event(back ? 'redo-restored' : 'redo-failed');
+        t.finish(toastOk && gone && back ? 'done' : 'stuck');
         return;
       }
       if (id === 'ai-proposal') {
