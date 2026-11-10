@@ -16,8 +16,8 @@ export const WARM_MS = 20 * 60_000;
 /** Busy-endpoint wait when lastOk is fresh: hand the job on after this. */
 export const BUSY_WAIT_MS = 3 * 60_000;
 /**
- * Cap on waiting for any worker to accept a POST (headers / assign). Below RunPod's ~5.5 minute LB hold so Gen fails
- * over instead of hanging on zombie workers labeled as a cold start.
+ * Cap on waiting for any worker to accept a POST (headers / assign). Below RunPod's ~5.5 minute LB hold so each try
+ * fails over (or the next POST goes in on a true cold) instead of sitting through one silent hold.
  */
 export const PRE_WORKER_MS = 4 * 60_000;
 /** Default cold-start wait when lastOk is stale and the endpoint has no coldStartSeconds. */

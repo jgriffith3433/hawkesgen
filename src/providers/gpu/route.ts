@@ -64,8 +64,8 @@ export function endpointService(ep: GpuEndpoint, family: string, map: ServiceMap
   const spec = svcName ? allServices(map)[svcName] : undefined;
   const lastOk = healthOf(ep.id).lastOk;
   // Short wait only when lastOk is fresh (busy workers). True cold uses coldStartSeconds / the 12-minute default —
-  // never the 3-minute busy wait as first contact with scaled-to-zero or zombie workers (run.ts still caps assign-fail
-  // / headers-timeout below RunPod's LB hold so a false cold fails over fast).
+  // never the 3-minute busy wait as first contact with a scaled-to-zero endpoint (run.ts still caps each POST's
+  // assign-fail / headers wait below RunPod's LB hold so a hang fails over before ~5.5 minutes).
   const warm = lastOk != null && now - lastOk <= WARM_MS;
   const coldMs = ep.coldStartSeconds ? ep.coldStartSeconds * 1000 : DEFAULT_COLD_WAIT_MS;
   return {
