@@ -12,6 +12,7 @@ import type { Tool, RunContext } from '../tools/types.ts';
 import { GenError } from '../util.ts';
 import { canProject, type Client } from '../auth.ts';
 import { canUseBlob, getAsset } from '../library.ts';
+import { ensureLocal, localPath } from '../storage.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 import { videoFrames } from '../tools/pipeline.ts';
 import { assess } from '../quality/index.ts';
@@ -83,6 +84,17 @@ export function refsOf(req: Omit<MakeRequest, 'project'>): string[] {
 
 const ASSET_ID = /^a_[0-9a-f]{6,}$/;
 
+/** The files of the first `max` of these image assets that can be had on this instance (restored from storage first). */
+async function localImages(ids: string[], max: number): Promise<string[]> {
+  const out: string[] = [];
+  for (const id of ids) {
+    if (out.length >= max) break;
+    const a = getAsset(id);
+    if (a?.kind === 'image' && (await ensureLocal(a))) out.push(a.path);
+  }
+  return out;
+}
+
 /** Who must be on-model: asset ids as they are, character scenes through their identity pack. */
 async function identityOf(req: Omit<MakeRequest, 'project'>, project: string): Promise<IdentityInfo> {
   const refs: string[] = [];
@@ -101,7 +113,7 @@ async function identityOf(req: Omit<MakeRequest, 'project'>, project: string): P
     } catch { /* not a character this project can see: left out */ }
   }
   const uniq = [...new Set(refs)];
-  const files = uniq.map((a) => getAsset(a)).filter((a: any) => a?.kind === 'image' && a.path && fs.existsSync(a.path)).map((a: any) => a.path as string).slice(0, 4);
+  const files = await localImages(uniq, 4);
   return { refs: uniq, files, words: words.join(' '), lora };
 }
 
@@ -152,7 +164,7 @@ function realDeps(ctx: RunContext, quoteChild: (tool: string, params: Record<str
       const a = o ? getAsset(o.asset) : null;
       if (!a) throw new ProviderFailure(`${done.tool} made nothing`);
       if (motion) siblings.set(a.id, (done.outputs ?? []).filter((x: any) => x.asset !== a.id));
-      return { asset: a.id, file: a.path, job: done.id, reused: Boolean(job.reused) };
+      return { asset: a.id, file: await localPath(a, `${done.tool}'s take`), job: done.id, reused: Boolean(job.reused) };
     },
     assess: (a) => assess(a),
     quote: quoteChild,
@@ -256,7 +268,7 @@ export const makeCheckedTool: Tool = {
     if (worldId && !world) ctx.log(`world ${worldId}: none to apply (yet)`);
     const identity = await identityOf(req, project);
     const boardIds = [...(world?.look.board ?? []), ...(req.refs?.style ?? []).map((s) => s.replace(/^asset:/, ''))];
-    const boardFiles = boardIds.map((a) => getAsset(a)).filter((a: any) => a?.kind === 'image' && a.path && fs.existsSync(a.path)).map((a: any) => a.path as string).slice(0, 6);
+    const boardFiles = await localImages(boardIds, 6);
     const plan = buildPlan(req, {
       data: routing(), settings: makeSettings(), world, identity, boardFiles,
       toolInfo: (id) => infoOf(getTool(id)),
@@ -273,12 +285,12 @@ export const makeCheckedTool: Tool = {
     const deps = { ...realDeps(ctx, quoteChild), ...(depsOverride ?? {}) } as MakeDeps;
     const outcome = await runLoop(plan, deps);
     const a = outcome.asset ? getAsset(outcome.asset) : null;
-    if (a && fs.existsSync(a.path)) {
-      await ctx.emit({ data: fs.readFileSync(a.path), mime: a.mime, seed: a.seed, title: 'result', meta: { from: a.id, pass: Boolean(outcome.report?.pass), tries: outcome.tries, tool: outcome.tool, ...(outcome.needsYou ? { needsYou: outcome.needsYou } : {}) } });
+    if (a) {
+      await ctx.emit({ data: fs.readFileSync(await localPath(a, 'the chosen take')), mime: a.mime, seed: a.seed, title: 'result', meta: { from: a.id, pass: Boolean(outcome.report?.pass), tries: outcome.tries, tool: outcome.tool, ...(outcome.needsYou ? { needsYou: outcome.needsYou } : {}) } });
       // A humanoid clip: the result is its preview video; the clip itself (GLB, FBX, BVH) comes back beside it.
       for (const o of (deps as any).siblings?.get(a.id) ?? []) {
         const b = getAsset(o.asset);
-        if (b && fs.existsSync(b.path)) await ctx.emit({ data: fs.readFileSync(b.path), mime: b.mime, seed: b.seed, title: String(o.title ?? b.title ?? 'clip'), meta: { from: b.id, tool: outcome.tool } });
+        if (b && (await ensureLocal(b))) await ctx.emit({ data: fs.readFileSync(b.path), mime: b.mime, seed: b.seed, title: String(o.title ?? b.title ?? 'clip'), meta: { from: b.id, tool: outcome.tool } });
       }
     }
     ctx.result({ ...outcome, intent: req.intent, quality: plan.quality, budget: plan.budget });

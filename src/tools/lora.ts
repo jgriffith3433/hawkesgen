@@ -10,6 +10,7 @@ import path from 'node:path';
 import type { Tool } from './types.ts';
 import { GenError } from '../util.ts';
 import { getAsset } from '../library.ts';
+import { localPath } from '../storage.ts';
 import { paths } from '../config.ts';
 import { sshRun, scpToServer, MODELS_DIR } from '../providers/comfy/fleet.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
@@ -188,7 +189,7 @@ export const imageCharacterTool: Tool = {
     const have = (await sshRun(`test -s ${MODELS_DIR}/loras/hawkes/'${file}' && echo yes || echo no`, c.server.id)).trim();
     if (have !== 'yes') {
       ctx.step(`copying the ${file} LoRA to the server`);
-      await scpToServer(a.path, `${MODELS_DIR}/loras/hawkes/${file}`, c.server.id);
+      await scpToServer(await localPath(a, `the ${file} LoRA`), `${MODELS_DIR}/loras/hawkes/${file}`, c.server.id);
     }
     const graph = JSON.parse(fs.readFileSync(path.join(WORKFLOW(), 'graph.json'), 'utf8'));
     graph.lora = { class_type: 'LoraLoaderModelOnly', inputs: { model: ['57:28', 0], lora_name: `hawkes/${file}`, strength_model: p.strength } };

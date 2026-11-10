@@ -21,7 +21,7 @@ import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
-import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, libraryShaOf, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
 import { orgOfProject, isHouseProject } from './orgsecrets.ts';
@@ -323,7 +323,10 @@ function prepareSubmit(client: Client, spec0: JobSpec): Job | Pending {
   return { tool, s: { project, params, inputs, labels: spec.labels, key: spec.key, priority: spec.priority } };
 }
 
-const sha256Sync = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+// A library file's hash comes from its row (or a blob's name), not its bytes: on Cloud Run the file may not be on this
+// instance yet (made by another instance, or before a restart), and checking the library for a take must not need it.
+// The file itself comes back from storage before the job runs (ensureInputs). Other files are hashed as they are.
+const sha256Sync = (file: string) => libraryShaOf(file) ?? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 /** The recipe key a job with these params and inputs would give its outputs (as runJob computes it). */
 export function jobRecipeKey(tool: Tool, params: Record<string, any>, inputs: Record<string, string | string[]>) {

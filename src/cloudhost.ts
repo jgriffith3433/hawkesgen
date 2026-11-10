@@ -142,9 +142,17 @@ export async function drainJobs(maxMs = drainMs()) {
   return left;
 }
 
-/** Cloud Run sends SIGTERM and allows 10 s: push the state first. Returns once it's done or after 8 s. */
+/**
+ * Cloud Run sends SIGTERM and allows 10 s: push the state first, and let library uploads still queued finish alongside (a
+ * file made here and not yet in the bucket goes with this disk, and the next instance's steps could not restore it).
+ * Returns once both are done or after 8 s.
+ */
 export async function flushOnStop() {
-  await Promise.race([pushState().catch((e) => console.warn(`[cloudhost] final push: ${e.message}`)), new Promise((r) => setTimeout(r, 8000))]);
+  const uploads = import('./storage.ts').then((s) => s.idle()).catch((e) => console.warn(`[cloudhost] library uploads: ${e.message}`));
+  await Promise.race([
+    Promise.all([pushState().catch((e) => console.warn(`[cloudhost] final push: ${e.message}`)), uploads]),
+    new Promise((r) => setTimeout(r, 8000)),
+  ]);
 }
 
 /** On a database with no owner yet, makes HAWKESGEN_OWNER_KEY the owner's key (only its hash is stored). */
