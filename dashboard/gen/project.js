@@ -6,6 +6,9 @@
 import { state } from './account.js';
 import { api, bus, toast, plainError, friendly, jobStatusText, sendFeedback } from './lib.js';
 import { trouble } from './trouble.js';
+import { createHistory, aiTurnLabel } from './history.js';
+
+export { aiTurnLabel };
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -108,21 +111,44 @@ export function layout(d = P.doc) {
 }
 
 // ------------------------------------------------------------------ undo
-const undo = [];
-const redo = [];
+const hist = createHistory({ limit: 120 });
 const snap = () => JSON.stringify(P.doc);
-/** Call before changing the document: the change becomes one undo step. */
-export function remember() {
-  undo.push(snap());
-  if (undo.length > 120) undo.shift();
-  redo.length = 0;
+/**
+ * Call before changing the document: the change becomes one undo step. `label` is what undoing reverses
+ * (shown on the Undo button and in the toast after an AI edit), e.g. "AI added 3 clips".
+ */
+export function remember(label) {
+  hist.remember(P.doc, label);
   bus.emit('history');
 }
-export const canUndo = () => undo.length > 0;
-export const canRedo = () => redo.length > 0;
-export function doUndo() { if (!undo.length) return; redo.push(snap()); P.doc = JSON.parse(undo.pop()); changed(); }
-export function doRedo() { if (!redo.length) return; undo.push(snap()); P.doc = JSON.parse(redo.pop()); changed(); }
-export function clearHistory() { undo.length = 0; redo.length = 0; bus.emit('history'); }
+export const canUndo = () => hist.canUndo();
+export const canRedo = () => hist.canRedo();
+export const undoLabel = () => hist.undoLabel();
+export const redoLabel = () => hist.redoLabel();
+export function doUndo() {
+  const r = hist.undo(P.doc);
+  if (!r) return;
+  P.doc = r.doc;
+  changed();
+}
+export function doRedo() {
+  const r = hist.redo(P.doc);
+  if (!r) return;
+  P.doc = r.doc;
+  changed();
+}
+export function clearHistory() { hist.clear(); bus.emit('history'); }
+
+/**
+ * Takes a project the AI (or /apply) just wrote: one labelled undo step, the server's version kept, and a toast with
+ * Undo so one tap puts it back (Ctrl+Z / the bar's Undo do the same).
+ */
+export function takeAiEdit(project, results) {
+  const label = aiTurnLabel(results);
+  remember(label);
+  take(project);
+  undoable(label.endsWith('.') ? label : `${label}.`);
+}
 
 /** After any change: lay magnetic tracks out, drop selections of what's gone, redraw, save soon. */
 export function changed({ save = true } = {}) {

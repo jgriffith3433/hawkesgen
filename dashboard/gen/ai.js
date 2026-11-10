@@ -12,7 +12,7 @@
 
 import { $, h, api, toast, fmt, bus, icon, plainError, friendly } from './lib.js';
 import { trouble, explain } from './trouble.js';
-import { P, selectedClips, remember, take, save, docLength, clipLength, changed } from './project.js';
+import { P, selectedClips, remember, take, takeAiEdit, save, docLength, clipLength, changed } from './project.js';
 import { state, needSignIn, hasAi, drawAiKeys, loadAi, refreshCredits } from './account.js';
 import { directorOpen, currentShot, askDirector, directorMessages, keepDirectorMessages, directorSuggestions, directorShotId } from './director.js';
 import { activeKind, activeScene, activeEditor } from './scenes.js';
@@ -333,11 +333,11 @@ async function send() {
       if (!here()) answeredElsewhere(asked);
       return;
     }
-    const changedDoc = here() && r.project.version !== P.version;
-    if (changedDoc) { remember(); take(r.project); }
     const results = (r.results ?? []).map((x, i) => ({ ...x, label: labelOf(r, i) }));
     // Whether the AI changed the scene (in front or not): then it can be undone from here.
     const changedThere = Boolean(r.project?.doc) && JSON.stringify(r.project.doc) !== before;
+    // One labelled undo step for the whole turn (Ctrl+Z / Undo / the toast), then the chat's "Undo this" as a backup.
+    if (here() && changedThere) takeAiEdit(r.project, results);
     list.push({ role: 'assistant', text: r.say || (results.length ? 'Done.' : 'Okay.'), aiRole: r.role ?? null, results, proposed: r.proposed ?? null, ...(changedThere ? { undoable: true, undo: { before, version: r.project.version } } : {}) });
     keepUndos(list);
     if (r.aiCredits || results.some((x) => x.op === 'generate' && x.ok)) refreshCredits();
@@ -486,10 +486,10 @@ async function runProposed(m) {
   try {
     await save();
     const r = await api(`/v1/editor/projects/${P.id}/apply`, { body: { ops: m.proposed.ops.map(({ credits, ...o }) => o) } });
-    remember();
-    take(r.project);
+    const results = r.results.map((x) => ({ ...x, label: r.project.doc.clips.find((c) => c.id === x.id)?.label ?? null }));
+    takeAiEdit(r.project, results);
     m.proposedDone = 'ran';
-    m.results = [...(m.results ?? []), ...r.results.map((x) => ({ ...x, label: r.project.doc.clips.find((c) => c.id === x.id)?.label ?? null }))];
+    m.results = [...(m.results ?? []), ...results];
     refreshCredits();
   } catch (err) {
     trouble(err);
