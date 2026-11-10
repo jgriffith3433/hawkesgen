@@ -31,6 +31,8 @@ import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, PRE_WORKER_MS, WARM_MS, healthOf } 
 
 /** A heartbeat younger than this means the run is still going on some instance. */
 const FRESH_MS = 60_000;
+/** How many times Gen re-asks a RunPod worker to stay with a run past one load-balancer hold (12 x 5.5 min > 1 h). */
+const MAX_ATTACHES = 12;
 /** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
 const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
 
@@ -181,6 +183,12 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     const started = deps.now();
     let posts = 0;
     let waitedSince = 0;
+    // RunPod's load balancer ends a request at about 5.5 minutes and stops a worker that has no request open once its
+    // idle timeout passes, even mid-run. So while the run's heartbeat is fresh Gen asks again with the same key: the
+    // worker attaches the new request to the run already going there (worker.py begin_run) and the worker stays up.
+    // Beta 2026-11-10: Pixal3D on a cold worker ran past the 300 s cap, went to the fleet and failed "no GPU".
+    const reattach = svc.provider === 'runpod';
+    let attaches = 0;
     for (;;) {
       if (hooks.signal.aborted) throw cancelled(key);
       // Finished before (Gen restarted after the run ended): the answer is in the bucket.
@@ -191,6 +199,16 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
       }
       // Still going on an instance (a Gen restart, or the connection dropped): wait for it rather than run it twice.
       const beat = await deps.store.readJson(`${out}heartbeat.json`).catch(() => null);
+      if (beat && deps.now() - Number(beat.at) < FRESH_MS && reattach && posts > 0 && attaches < MAX_ATTACHES) {
+        attaches++;
+        hooks.progress(`${svc.name}: ${beat.detail ?? 'running'} (still running; holding the worker)`);
+        const again = await post(key, body, true);
+        if (again) return finish(again);
+        if (deps.now() - started > (svc.graphLimitSeconds + 300) * 1000) {
+          throw Object.assign(new Error(`${svc.name}: the run passed its ${svc.graphLimitSeconds} s limit`), { overLimit: true });
+        }
+        continue;
+      }
       if (beat && deps.now() - Number(beat.at) < FRESH_MS) {
         if (!waitedSince) {
           waitedSince = deps.now();
@@ -221,7 +239,7 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
   };
 
   /** One POST /run. -> the final line, or null when the stream broke first. */
-  const post = async (key: string, body: string): Promise<any | null> => {
+  const post = async (key: string, body: string, attaching = false): Promise<any | null> => {
     const elsewhere = Boolean(svc.provider && svc.provider !== 'cloudrun');
     const lastOk = healthOf(svc.lane ?? svc.name).lastOk;
     const cold = elsewhere && (!lastOk || deps.now() - lastOk > WARM_MS);
@@ -232,7 +250,7 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
       : (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
     const until = deps.now() + waitMs;
     // Said up front: a provider's gateway may hold the request the whole time without a word.
-    if (cold) hooks.step(`${svc.name}: starting a ${where} GPU (none has run for a while; a cold start takes several minutes)`);
+    if (cold && !attaching) hooks.step(`${svc.name}: starting a ${where} GPU (none has run for a while; a cold start takes several minutes)`);
     for (let told = false; ; told = true) {
       if (hooks.signal.aborted) throw cancelled(key);
       // An empty RunPod balance starts no worker and its gateway just waits (gpu/credit.ts): hand the job on.

@@ -288,6 +288,8 @@ export type Settings = {
 /** A GPU endpoint (settings.gpu.providers): a host running the worker image (docs/gpu-providers.md). */
 /** RunPod load-balancing endpoints process a request for at most 5.5 minutes (docs.runpod.io, load balancing). */
 export const RUNPOD_GRAPH_SECONDS = 300;
+/** A 3D script's cap on RunPod: Gen re-attaches past each 5.5-minute hold, so a cold Pixal3D run can finish. */
+export const RUNPOD_3D_GRAPH_SECONDS = 1800;
 
 export type GpuEndpoint = {
   id: string;

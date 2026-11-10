@@ -36,7 +36,7 @@ import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable,
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
-import { gpuCandidates, triedOf, orderFor } from './providers/gpu/route.ts';
+import { gpuCandidates, triedOf, orderFor, fleetCredentialProblem } from './providers/gpu/route.ts';
 import { markDown, markUp, isDown, awsRefused, COOLDOWN, lastingDown } from './providers/gpu/health.ts';
 import { noGpuVerdict, waitSinceOf, type NoGpuVerdict } from './providers/gpu/nogpu.ts';
 import { fleetBlocked } from './providers/gpu/egress.ts';
@@ -1353,7 +1353,8 @@ class Queue {
         return;
       }
       // A graph that ran past Cloud Run's request limit goes back in the line once, for the fleet (no time limit there).
-      if (cloud && e.overLimit && !cancelled && job.labels.gpuBackend !== 'fleet') {
+      // Not when the fleet can't start (no AWS credentials): the job would only fail later as "no GPU" (beta 2026-11-10).
+      if (cloud && e.overLimit && !cancelled && job.labels.gpuBackend !== 'fleet' && !fleetCredentialProblem()) {
         Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: `${e.message}; running it on the fleet instead`, labels: { ...job.labels, gpuBackend: 'fleet' } });
         job.log.push(`error: ${e.message}`, job.detail);
         save(job, ['labels']);
