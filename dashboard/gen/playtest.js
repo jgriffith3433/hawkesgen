@@ -10,6 +10,8 @@
 //   account  credits pill, account sheet with packs and plans, Help menu, shortcuts overlay, Terms and Privacy
 //   export   a short plain cut from the library's clips, exported: the file loads and plays
 //            (create, account, export: option {"broken":true} sabotages what they look at, and each must then report a problem)
+//   panels   AI and Media panes at desktop sizes: the prompt box is fully visible, signed-out Sign in never overlaps the
+//            suggestion chips, and long media / chip lists scroll inside their panels instead of being cut off
 //   ai-edit, ai-undo, ai-proposal, ai-nocredits, ai-signedout, ai-outage: the AI pane (docs/ai-mock.md). The test account's canned
 //            answers (POST /v1/test/ai-mock, a named setup shortcut) stand in for Claude, so no house AI is spent; the message is typed
 //            with key events into #aiInput, and nothing here ever presses Make it on a proposal (that would be GPU money)
@@ -199,6 +201,7 @@ installPlaytest({
     { id: 'checkout', title: 'Buying credits: the packs (and the test-mode card note on beta), one tap opens checkout while the others wait, a failed start says one plain line and frees the packs, and coming back paid, processing, declined or cancelled each says so (paid: the new balance on the pill and a Receipt); on a phone each pack is one row at least 44 px tall with no sideways scroll. Stripe is never called', seconds: 60, tags: ['mobile'] },
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
+    { id: 'panels', title: 'Side panels at 1280x720-class desktop: AI prompt fully visible, Sign in and chips never overlap, Media and chip lists scroll inside their panes', seconds: 60 },
     { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
     { id: 'ai-undo', title: 'AI pane: after a multi-op edit a toast offers Undo, Ctrl+Z (or Undo) puts the timeline back, Redo brings the AI change back, and the Undo button is labelled', seconds: 90 },
     { id: 'ai-proposal', title: 'AI pane: an answer over 40 credits shows a proposal card with its price, and nothing starts (Make it is never pressed)', seconds: 60 },
@@ -333,6 +336,123 @@ installPlaytest({
       }
       if (was) { state.user = was; hideLanding(); }
       t.finish(welcome ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'panels') {
+      t.scene('Side panels');
+      hideLanding();
+      // Setup shortcut (named): clear a saved tall timeline so the default (≤216px / 30dvh) applies, leaving ~450px for the panes.
+      try {
+        localStorage.removeItem('hg.--tl');
+        localStorage.removeItem('hg.tl-small');
+      } catch { /* */ }
+      const app = document.querySelector('#app');
+      app?.classList.remove('tl-small', 'no-left', 'no-right');
+      app?.style.removeProperty('--tl');
+      app?.style.removeProperty('--tl-now');
+      await sleep(80);
+      if (!activeScene()) {
+        made = await newScene('video', { title: `Playtest panels ${new Date().toISOString().slice(0, 16)}` });
+        if (!await until(() => activeScene()?.id === made?.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      }
+      click('#paneTabs [data-pane="media"]');
+      await sleep(200);
+      const H = () => window.innerHeight;
+      const W = () => window.innerWidth;
+      t.metric('viewportW', W());
+      t.metric('viewportH', H());
+      const fullyIn = (el, within) => {
+        if (!el || el.hidden || el.closest('[hidden]')) return false;
+        const r = el.getBoundingClientRect();
+        const b = (within || document.documentElement).getBoundingClientRect?.() ?? { top: 0, left: 0, right: W(), bottom: H() };
+        const box = within ? b : { top: 0, left: 0, right: W(), bottom: H() };
+        return r.width > 1 && r.height > 1 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1;
+      };
+      const overlap = (a, b) => {
+        const r = a.getBoundingClientRect(), q = b.getBoundingClientRect();
+        return r.left < q.right - 1 && r.right > q.left + 1 && r.top < q.bottom - 1 && r.bottom > q.top + 1;
+      };
+      const right = document.querySelector('#rightPane');
+      const input = document.querySelector('#aiInput');
+      const form = document.querySelector('#aiForm');
+      const promptOk = fullyIn(input, right) && fullyIn(form, right);
+      t.metric('promptFullyVisible', promptOk ? 1 : 0);
+      t.metric('paneAbovePx', Math.round(right?.getBoundingClientRect().height ?? 0));
+      t.metric('timelinePx', Math.round(document.querySelector('#timelinePane')?.getBoundingClientRect().height ?? 0));
+      if (!promptOk) t.problem('bug', 'AI prompt box is not fully visible in the AI panel');
+      else t.event('prompt-visible');
+      // Signed-out: Sign in above chips, no overlap, both fully on screen in the pane.
+      const me = state.user;
+      state.user = null;
+      // Setup shortcut (named): mark "looked around" so ready does not cover the editor with the landing.
+      try { sessionStorage.setItem('hg.landing.looked', '1'); } catch { /* */ }
+      hideLanding();
+      bus.emit('ready');
+      await sleep(150);
+      const gate = document.querySelector('#aiGate');
+      const suggest = document.querySelector('#aiSuggest');
+      const signBtn = gate?.querySelector('button');
+      const chips = [...(suggest?.querySelectorAll('.chip') ?? [])];
+      const gateShown = gate && !gate.hidden && signBtn;
+      t.metric('gateShown', gateShown ? 1 : 0);
+      const signOk = gateShown && fullyIn(signBtn, right);
+      t.metric('signInFullyVisible', signOk ? 1 : 0);
+      if (!signOk) t.problem('bug', 'Sign in button is not fully visible in the AI panel');
+      let hit = 0;
+      for (const c of chips) if (signBtn && overlap(signBtn, c)) hit++;
+      t.metric('signInChipOverlap', hit);
+      if (hit) t.problem('bug', `Sign in overlaps ${hit} suggestion chip(s)`);
+      else t.event('sign-in-above-chips');
+      const chipCut = chips.filter((c) => {
+        const r = c.getBoundingClientRect();
+        const b = suggest.getBoundingClientRect();
+        return r.height > 1 && (r.top < b.top - 1 || r.bottom > b.bottom + 1);
+      }).length;
+      const chipScroll = suggest && suggest.scrollHeight > suggest.clientHeight + 1;
+      t.metric('chipsCutWithoutScroll', chipCut && !chipScroll ? chipCut : 0);
+      t.metric('chipListScrolls', chipScroll ? 1 : 0);
+      if (chipCut && !chipScroll) t.problem('bug', `${chipCut} suggestion chip(s) are cut off and the chip list does not scroll`);
+      else t.event('chips-wrap-or-scroll');
+      const promptOut = fullyIn(input, right);
+      t.metric('promptFullyVisibleSignedOut', promptOut ? 1 : 0);
+      if (!promptOut) t.problem('bug', 'AI prompt box is not fully visible when signed out');
+      state.user = me;
+      bus.emit('ready');
+      await sleep(100);
+      // Media: the grid scrolls inside the pane; the drop hint stays fully visible (pinned under the grid).
+      const media = document.querySelector('#pane-media');
+      const grid = document.querySelector('#mediaGrid');
+      const hint = media?.querySelector('.drop-hint');
+      const mediaScroll = grid && (getComputedStyle(grid).overflowY === 'auto' || getComputedStyle(grid).overflowY === 'scroll');
+      t.metric('mediaGridScrollY', mediaScroll ? 1 : 0);
+      // Force a tall list so scroll is observable even on an empty library.
+      const filler = [];
+      if (grid) {
+        for (let i = 0; i < 24; i++) {
+          const d = document.createElement('div');
+          d.className = 'tile';
+          d.dataset.playtestFiller = '1';
+          d.style.minHeight = '72px';
+          grid.appendChild(d);
+          filler.push(d);
+        }
+      }
+      await sleep(50);
+      const canScroll = grid && grid.scrollHeight > grid.clientHeight + 2;
+      t.metric('mediaListScrolls', canScroll ? 1 : 0);
+      if (canScroll) {
+        grid.scrollTop = grid.scrollHeight;
+        await sleep(40);
+        t.metric('mediaScrolledPx', Math.round(grid.scrollTop));
+        grid.scrollTop = 0;
+        t.event('media-scrolls');
+      } else t.problem('bug', 'Media tile list does not scroll inside its panel');
+      const hintOk = hint && fullyIn(hint, media);
+      t.metric('mediaHintFullyVisible', hintOk ? 1 : 0);
+      if (!hintOk) t.problem('bug', 'Media drop hint is cut off');
+      for (const d of filler) d.remove();
+      const ok = promptOk && signOk && !hit && promptOut && canScroll && hintOk && !(chipCut && !chipScroll);
+      t.finish(ok ? 'done' : 'stuck');
       return;
     }
     if (id.startsWith('ai-')) {
