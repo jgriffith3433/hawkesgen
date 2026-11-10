@@ -52,6 +52,22 @@ jobs:
             [ "$code" = 200 ] && jq -c '(.workers // .data // (if type == "array" then . else [] end))[]? | {id, status: (.status // .desiredStatus), gpu: (.gpuTypeId // .gpu // .machine.gpuTypeId), createdAt, lastStartedAt, lastStatusChange}' w.json | head -20
           done
           rm -f w.json
+      - name: RunPod spend by endpoint and pod (last 24 hours, reads only)
+        run: |
+          # Where the RunPod balance went: RunPod's billing history, hourly, per endpoint and per pod. Reads only; prints no key.
+          start=$(date -u -d '-24 hours' +%Y-%m-%dT%H:00:00Z); end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          names=$(curl -s --max-time 30 -H "Authorization: Bearer $RUNPOD_API_KEY" 'https://api.runpod.io/v2/serverless?limit=100' | jq -c '[.endpoints[]? | {key: .id, value: .name}] | from_entries')
+          for kind in endpoints pods networkvolumes; do
+            code=$(curl -s -o b.json -w '%{http_code}' --max-time 30 -H "Authorization: Bearer $RUNPOD_API_KEY" \
+              "https://rest.runpod.io/v1/billing/$kind?bucketSize=hour&startTime=$start&endTime=$end&grouping=$([ $kind = pods ] && echo podId || echo endpointId)")
+            echo "### billing/$kind: $code" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ "$code" = 200 ]; then
+              jq -r --argjson n "$names" '(if type == "array" then . else (.data // .records // []) end)[] | select((.amount // 0) > 0) | [.time, (.endpointId // .podId // .networkVolumeId // "?"), ($n[.endpointId // ""] // ""), (.amount|tostring), ((.timeBilledMs // 0)/1000|floor|tostring)+"s"] | @tsv' b.json | tee -a "$GITHUB_STEP_SUMMARY" | head -200
+              echo "total: $(jq '[(if type == "array" then . else (.data // .records // []) end)[] | (.amount // 0)] | add' b.json)" | tee -a "$GITHUB_STEP_SUMMARY"
+            else head -c 400 b.json; echo; fi
+          done
+          echo "pods now: $(curl -s --max-time 30 -H "Authorization: Bearer $RUNPOD_API_KEY" https://rest.runpod.io/v1/pods | jq -c '[.[]? | {id, name, desiredStatus, costPerHr}]' | head -c 800)"
+          rm -f b.json
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
