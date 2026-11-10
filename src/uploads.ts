@@ -19,6 +19,8 @@ export const uploadLimits = () => ({
   total: num('HAWKESGEN_UPLOAD_TOTAL', 6),
   /** Size cap in bytes: customers and app accounts (role user) get less than the studio's own keys. */
   maxBytes: (role: string) => (role === 'user' ? num('HAWKESGEN_UPLOAD_MAX_USER', 1 * GIB) : num('HAWKESGEN_UPLOAD_MAX', 2 * GIB)),
+  /** The cap for uploads that go straight to the bucket (POST /v1/blobs/upload, src/bigupload.ts). */
+  bigMaxBytes: (role: string) => (role === 'user' ? num('HAWKESGEN_BIG_UPLOAD_MAX_USER', 2 * GIB) : num('HAWKESGEN_BIG_UPLOAD_MAX', 5 * GIB)),
 });
 
 const active = new Map<string, number>();

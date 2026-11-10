@@ -5,6 +5,7 @@
 // under "More". Inputs come from the library (a picker, a dragged tile, what's open in the viewer) or an upload.
 // Results go to Media and open in the viewer; pictures, clips and sounds can go straight onto the timeline.
 
+import { needsGlb, toGlb, glbNote } from './model3d.js';
 import { $, $$, h, api, toast, fileUrl, bus, icon, plainError, ApiError } from './lib.js';
 import { trouble, troubleNote } from './trouble.js';
 import { P, trackOf, isMagnetic } from './project.js';
@@ -459,15 +460,24 @@ const thumbOf = (a) => (a.kind === 'image' ? h('img', { src: fileUrl(a.id), alt:
 /** A pop-over of the library's files of one kind, plus Upload. */
 export function libraryPicker(kind, onPick) {
   const grid = h('div', { class: 'pick-grid' }, h('p', { class: 'muted small' }, 'Loading…'));
-  const up = h('input', { type: 'file', hidden: true, accept: kind === 'image' ? 'image/*' : kind === 'video' ? 'video/*' : kind === 'audio' ? 'audio/*' : '' });
+  const up = h('input', { type: 'file', hidden: true, accept: kind === 'image' ? 'image/*' : kind === 'video' ? 'video/*' : kind === 'audio' ? 'audio/*' : kind === 'mesh' ? '.glb,.gltf,.fbx,.obj,image/*' : '', multiple: kind === 'mesh' });
   const pop = h('div', { class: 'picker' }, h('div', { class: 'sheet-head' }, h('b', {}, `Pick ${KIND_LABEL[kind]?.toLowerCase() ?? 'a file'}`), h('button', { type: 'button', class: 'icon-btn', onclick: () => pop.remove() }, icon('close'))), grid,
     h('div', { class: 'row' }, h('button', { type: 'button', class: 'ghost small', onclick: () => up.click() }, icon('upload'), 'Upload'), up));
   document.body.append(pop);
   up.addEventListener('change', async () => {
-    const f = up.files?.[0];
+    let f = up.files?.[0];
     if (!f) return;
     grid.replaceChildren(h('div', { class: 'working' }, 'Uploading'));
     try {
+      // FBX and OBJ go up as GLB (model3d.js), with any pictures picked alongside as their textures.
+      if (needsGlb(f)) {
+        grid.replaceChildren(h('div', { class: 'working' }, 'Converting to GLB'));
+        const r = await toGlb(f, [...up.files].filter((x) => x.type.startsWith('image/')));
+        f = r.file;
+        const note = glbNote(r);
+        if (note) toast(note);
+        grid.replaceChildren(h('div', { class: 'working' }, 'Uploading'));
+      }
       const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(f.name)}`, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': f.type || 'application/octet-stream', 'X-Filename': f.name }, body: f });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new ApiError(j.error ?? `HTTP ${r.status}`, r.status);

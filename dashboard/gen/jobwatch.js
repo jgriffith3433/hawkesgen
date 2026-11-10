@@ -68,7 +68,7 @@ export function createJobWatch({ fetchJob, openStream = realOpenStream, hidden =
     const want = !hidden() && (following.size > 0 || listeners.size > 0 || topicsOpen());
     if (!want) { stream?.close(); stream = null; return; }
     // Each time the stream opens (the first time too) the followed jobs are read once: an end that came before it is seen.
-    if (!stream) stream = openStream({ job: onJob, scene: onTopic('scene'), production: onTopic('production') }, { onState: (st) => { if (st === 'live') readAll(); for (const fn of states) { try { fn(st); } catch { /* cosmetic */ } } }, onReconnect: tellReconnect });
+    if (!stream) stream = openStream({ job: onJob, scene: onTopic('scene'), production: onTopic('production'), ai: onTopic('ai') }, { onState: (st) => { if (st === 'live') readAll(); for (const fn of states) { try { fn(st); } catch { /* cosmetic */ } } }, onReconnect: tellReconnect });
   }
   let wasHidden = hidden();
   onVisible(() => {

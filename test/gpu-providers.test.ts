@@ -18,8 +18,8 @@ delete process.env.K_SERVICE;
 
 const { loadServiceMap, cloudRoute } = await import('../src/providers/cloudrun/services.ts');
 const { cloudComfyRun, runKey, setCloudDeps } = await import('../src/providers/cloudrun/run.ts');
-const { gpuCandidates, orderFor } = await import('../src/providers/gpu/route.ts');
-const { markDown, markUp, isDown, resetHealth, awsRefused, COOLDOWN, healthOf } = await import('../src/providers/gpu/health.ts');
+const { gpuCandidates, orderFor, endpointService } = await import('../src/providers/gpu/route.ts');
+const { markDown, markUp, isDown, resetHealth, awsRefused, COOLDOWN, healthOf, BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, WARM_MS } = await import('../src/providers/gpu/health.ts');
 const { checkRunpodCredit, runpodCreditProblem, runpodCredit, setRunpodCredit } = await import('../src/providers/gpu/credit.ts');
 const { brokerToken, readToken, allowed, resetBrokerKey } = await import('../src/providers/gpu/broker.ts');
 const { handleBroker } = await import('../src/providers/gpu/brokerRoute.ts');
@@ -74,8 +74,56 @@ test('settings: endpoints are validated, ids unique, orders keep only known ids,
   assert.equal(g.providers.find((p: any) => p.id === 'rp2')!.graphLimitSeconds, 300);
   assert.deepEqual(g.order, ['cloudrun', 'mod', 'fleet']);
   assert.deepEqual(g.familyOrder.video, ['rp2']);
-  assert.equal(orderFor({ gpu: g } as any, 'video').join(), 'rp2');
+  assert.equal(orderFor({ gpu: g } as any, 'video').join(), 'rp2,mod', 'an endpoint naming the family follows its own list');
   assert.equal(orderFor({ gpu: g } as any, 'z-image').join(), 'cloudrun,mod,fleet');
+});
+
+test('a second endpoint for a family is its fallback without editing familyOrder (2026-11-08: 3D had nowhere to go)', () => {
+  const ep3 = (id: string, extra: any = {}) => ({ id, provider: 'runpod', url: `https://${id}.example`, families: ['rig', 'motion', 'mocap', 'blender'], gpu: 'L40S', pricePerHour: 1.75, maxConcurrent: 1, graphLimitSeconds: 1800, enabled: true, ...extra });
+  const gpu: any = {
+    providers: [
+      { id: 'runpod', provider: 'runpod', url: 'https://r.example', families: ['*'], enabled: true },
+      ep3('runpod-3d'), ep3('modal-3d', { provider: 'modal' }), ep3('off-3d', { enabled: false }),
+    ],
+    order: ['runpod', 'modal', 'fleet'],
+    familyOrder: { motion: ['runpod-3d', 'fleet'], rig: ['modal-3d'] },
+  };
+  assert.equal(orderFor({ gpu }, 'motion').join(), 'runpod-3d,modal-3d,fleet', 'named endpoints go before the fleet; turned-off ones are left out');
+  assert.equal(orderFor({ gpu }, 'rig').join(), 'modal-3d,runpod-3d', 'already listed ones keep their place');
+  assert.equal(orderFor({ gpu }, 'z-image').join(), 'runpod,modal,fleet', 'families without their own list are unchanged');
+  assert.equal(orderFor({ gpu }, null).join(), 'runpod,modal,fleet');
+});
+
+test('mesh.views3d stays on Comfy * endpoints; 3D familyOrder does not pin it to runpod-3d', () => {
+  resetHealth();
+  const s = gpuSettings({
+    providers: [
+      ep({ id: 'runpod', families: ['*'], graphLimitSeconds: 3300 }),
+      ep({ id: 'runpod-3d', families: ['rig', 'motion', 'mocap', 'blender'], graphLimitSeconds: 1800 }),
+    ],
+    order: ['runpod', 'runpod-3d', 'fleet'],
+    familyOrder: { motion: ['runpod-3d', 'fleet'], rig: ['runpod-3d', 'fleet'] },
+  });
+  const c = gpuCandidates({ family: 'mesh.views3d', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get);
+  const lanes = c.choices.map((x: any) => (x.kind === 'fleet' ? 'fleet' : x.service.lane));
+  assert.ok(lanes.includes('runpod'), JSON.stringify(lanes));
+  assert.ok(!lanes.includes('runpod-3d'), 'Comfy mesh.views3d must not go to the 3D image endpoint');
+});
+
+test('endpointService: waitForInstanceMs is short only when lastOk is fresh; true cold uses coldStartSeconds', () => {
+  resetHealth();
+  const cold = endpointService(ep({ id: 'runpod-a', coldStartSeconds: 900 }), 'z-image', map, 'bkt', get);
+  assert.equal(cold.waitForInstanceMs, 900_000, 'stale/null lastOk → coldStartSeconds');
+  assert.equal(cold.coldStartMs, 900_000);
+  const unset = endpointService(ep({ id: 'runpod-b' }), 'z-image', map, 'bkt', get);
+  assert.equal(unset.waitForInstanceMs, DEFAULT_COLD_WAIT_MS, 'no coldStartSeconds → 12 min cold wait');
+  assert.equal(unset.coldStartMs, undefined);
+  markUp('runpod-a');
+  const warm = endpointService(ep({ id: 'runpod-a', coldStartSeconds: 900 }), 'z-image', map, 'bkt', get);
+  assert.equal(warm.waitForInstanceMs, BUSY_WAIT_MS, 'fresh lastOk → busy wait only');
+  const stale = endpointService(ep({ id: 'runpod-a', coldStartSeconds: 900 }), 'z-image', map, 'bkt', get, Date.now() + WARM_MS + 1);
+  assert.equal(stale.waitForInstanceMs, 900_000, 'lastOk older than WARM_MS → cold wait again');
+  resetHealth();
 });
 
 // ------------------------------------------------------------------ routing
@@ -487,6 +535,76 @@ print(json.dumps({"size": size, "manifest": json.loads(st.read(out + "manifest.j
   } finally { srv.close(); }
 });
 
+test('the broker hands out a signed upload link (put) for the run\'s own folder only; no signer: proxy', async () => {
+  resetBrokerKey();
+  const signer = { email: 'gen@p.iam.gserviceaccount.com', sign: async () => Buffer.from('sig') };
+  const { srv, url } = await brokerServer(new Map(), signer);
+  const none = await brokerServer(new Map(), null);
+  try {
+    const tok = brokerToken(KEY, 'bkt');
+    const call = (base: string, op: string, uri: string, method = 'GET') => fetch(`${base}?op=${op}&uri=${encodeURIComponent(uri)}`, { method, headers: { 'X-Hawkes-Run-Token': tok } });
+    const out = `gs://bkt/cloudrun/runs/${KEY}/00-model.glb`;
+    const u = new URL(((await (await call(url, 'put', out)).json()) as any).url);
+    assert.equal(u.host, 'storage.googleapis.com');
+    assert.equal(u.pathname, `/bkt/cloudrun/runs/${KEY}/00-model.glb`);
+    assert.ok(u.searchParams.get('X-Goog-Signature'));
+    assert.equal((await call(url, 'put', 'gs://bkt/models/vae/ae.safetensors')).status, 403, 'not outside this run');
+    assert.equal((await call(url, 'put', out, 'PUT')).status, 403, 'put is a GET');
+    assert.deepEqual(await (await call(none.url, 'put', out)).json(), { proxy: true });
+  } finally { srv.close(); none.srv.close(); }
+});
+
+test('worker.py BrokerStore: an output over 32 MiB goes straight to storage with the signed link, never through the broker', async (t) => {
+  const py = ['python3', 'python', 'py'].find((p) => spawnSync(p, ['--version']).status === 0);
+  if (!py) return t.skip('no Python here');
+  resetBrokerKey();
+  const signer = { email: 'gen@p.iam.gserviceaccount.com', sign: async () => Buffer.from('sig') };
+  const objects = new Map<string, Buffer>();
+  const { srv, url } = await brokerServer(objects, signer);
+  // The broker as Cloud Run is: a request body over 32 MiB is refused.
+  const via = { writes: 0 };
+  const front = http.createServer((req, res) => {
+    if (req.method === 'PUT') {
+      via.writes++;
+      if (Number(req.headers['content-length'] ?? 0) > 32 * 1024 * 1024) { req.resume(); res.writeHead(413); return res.end('Request Entity Too Large'); }
+    }
+    void fetch(`${url}${req.url!.replace('/v1/gpu/broker', '')}`, { method: req.method, headers: { 'X-Hawkes-Run-Token': String(req.headers['x-hawkes-run-token']) }, body: req.method === 'PUT' ? (req as any) : undefined, duplex: 'half' } as any)
+      .then(async (r) => { res.writeHead(r.status, { 'Content-Type': 'application/json' }); res.end(Buffer.from(await r.arrayBuffer())); });
+  });
+  await new Promise<void>((r) => front.listen(0, '127.0.0.1', () => r()));
+  // Cloud Storage: takes the PUT the signed link names.
+  let stored = 0;
+  const storage = http.createServer((req, res) => {
+    req.on('data', (c: Buffer) => { stored += c.length; });
+    req.on('end', () => { res.writeHead(200); res.end(); });
+  });
+  await new Promise<void>((r) => storage.listen(0, '127.0.0.1', () => r()));
+  const code = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(path.join(ROOT, 'server', 'cloudrun'))})
+import worker
+st = worker.store_for({"store": {"broker": sys.argv[1], "token": sys.argv[2]}})
+real = st._put_signed
+st._put_signed = lambda link, uri, data, ct: real(sys.argv[3] + "/upload", uri, data, ct)  # the signed link, pointed at the fake bucket
+out = "gs://bkt/cloudrun/runs/${KEY}/00-model.glb"
+r = st.write(out, b"g" * (33 * 1024 * 1024), "model/gltf-binary")
+print(json.dumps(r))
+`;
+  try {
+    const r = await new Promise<{ code: number; out: string; err: string }>((resolve) => {
+      const p = spawn(py, ['-c', code, `http://127.0.0.1:${(front.address() as any).port}/v1/gpu/broker`, brokerToken(KEY, 'bkt'), `http://127.0.0.1:${(storage.address() as any).port}`], { env: { ...process.env, STORAGE: 'broker' } });
+      let out = '', err = '';
+      p.stdout.on('data', (d) => { out += d; });
+      p.stderr.on('data', (d) => { err += d; });
+      p.on('close', (c) => resolve({ code: c ?? 1, out, err }));
+    });
+    assert.equal(r.code, 0, r.err);
+    assert.equal(JSON.parse(r.out.trim().split('\n').pop()!).direct, true);
+    assert.equal(stored, 33 * 1024 * 1024, 'all of it reached storage');
+    assert.equal(via.writes, 0, 'no body passed through the broker');
+  } finally { srv.close(); front.close(); storage.close(); }
+});
+
 // ------------------------------------------------------------------ cold starts and RunPod's credit
 
 test('a cold provider says it is starting a GPU (not "waiting for a free" one) and gets the cold start\'s time for 429/503', async () => {
@@ -503,7 +621,7 @@ test('a cold provider says it is starting a GPU (not "waiting for a free" one) a
   assert.ok(!h.steps.some((x) => /waiting for a free/.test(x)), JSON.stringify(h.steps));
   // Past the cold allowance it is still handed on.
   const never = fakeProvider(() => ({ status: 503 }));
-  await assert.rejects(cloudComfyRun({ id: 'j_coldnever' }, md, hooks() as any, never.deps as any).runGraph({} as any), (e: any) => e.unavailable && /came free in 15 minutes/.test(e.message));
+  await assert.rejects(cloudComfyRun({ id: 'j_coldnever' }, md, hooks() as any, never.deps as any).runGraph({} as any), (e: any) => e.unavailable && /came free in 12 minutes/.test(e.message));
 });
 
 test('RunPod out of credit: its endpoints and playtest runners are skipped, a waiting job moves on, the card shows it', async () => {

@@ -16,6 +16,7 @@ import { assetMakeTool } from './pipeline.ts';
 import { libraryJudgeTool } from './judge.ts';
 import { loraTrainTool, imageCharacterTool } from './lora.ts';
 import { blenderRenderTool } from './blender.ts';
+import { unityRenderTool } from './unityrender.ts';
 import { composeTool } from './compose.ts';
 import { filmGateTool, filmPlanTool } from './film.ts';
 import { videoMatteTool, videoCompositeTool, videoControlMixTool } from './film-video.ts';
@@ -48,7 +49,7 @@ const BUILT_IN: Tool[] = [
   cutoutTool, cutoutGpuTool,
   frameTool, videoFitTool, tileTool, materialMapsTool, probeTool, importTool, splatBuildTool, spriteSheetTool, transformTool,
   unityBuild, unityTest, playtestRunTool, playtestReviewTool, assetMakeTool, libraryJudgeTool, loraTrainTool, imageCharacterTool,
-  blenderRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, motionFromVideoTool, motionCheckTool, sheetTool, viewSheetTool,
+  blenderRenderTool, unityRenderTool, composeTool, meshRigTool,   blenderCharacterTool, motionFromTextTool, motionFromVideoTool, motionCheckTool, sheetTool, viewSheetTool,
   filmGateTool, filmPlanTool, videoMatteTool, videoCompositeTool, videoControlMixTool,
   assetLodTool,
   imageRepaintTool, imageExpandTool, videoFrameTool, videoStillTool, mediaNormalizeTool, videoChangeTool, audioRevoiceTool,

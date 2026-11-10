@@ -131,7 +131,7 @@ export async function customerAsk(who: Caller, req: AskRequest, what: string): P
   const ownAi = Boolean(org && (orgSecretInfo(org, 'anthropic').set || orgSecretInfo(org, 'claude-subscription').set));
   const payer = who.payerId && isGenAccountProject(who.project) && !ownAi ? who.payerId : null;
   if (payer) house.checkCanPay(getUserById(payer)?.credits ?? 0);
-  const r = await claude.callScope.run({ customer: true, org, house: isHouseProject(who.project) }, () => claude.ask(req));
+  const r = await claude.callScope.run({ customer: true, org, house: isHouseProject(who.project), who: who.project }, () => claude.ask(req));
   const onHouse = !['byok', 'subscription'].includes(r.billing);
   if (payer && onHouse) chargeCredits(payer, house.turnCredits(r.cost ?? 0), 'ai_turn', `Assistant: ${what}`.slice(0, 120));
   recordUsage({ client: who.client.name, project: who.project, ...claude.usageOf(r, `${onHouse ? 'house AI (Gen)' : 'own Claude'}: assistant ${what}`.slice(0, 200)) });

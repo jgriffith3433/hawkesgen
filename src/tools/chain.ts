@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import type { RunContext, Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
+import { localPath } from '../storage.ts';
 import { probe, cfrRate, rotationOf, frameArgs, type ProbeInfo } from './media.ts';
 import { analyze, ff } from '../audio/post.ts';
 // @ts-ignore: plain JS client
@@ -97,10 +98,12 @@ export async function child(ctx: RunContext, gen: Gen, name: string, spec: Child
   return done;
 }
 
-export const firstAsset = (job: any, kind?: string) => {
+/** A child job's first output (of this kind), with its file on this instance (restored from storage when it isn't). */
+export const firstAsset = async (job: any, kind?: string) => {
   const o = (job.outputs ?? []).find((x: any) => !kind || x.kind === kind) ?? job.outputs?.[0];
   const a = o ? getAsset(o.asset) : null;
   if (!a) throw new GenError(`${job.tool} made nothing to pass on`);
+  await localPath(a, `${job.tool}'s output`);
   return a as { id: string; path: string; kind: string; mime?: string };
 };
 
@@ -149,8 +152,8 @@ export const videoChangeTool: Tool = {
     const frame = ctx.tmp('first.png');
     await run('ffmpeg', frameArgs(video, frame, 'first', null), { signal: ctx.signal });
     const gen = genClient(ctx);
-    const edited = firstAsset(await child(ctx, gen, 'frame', bind(plan.edit, { $frame: frame, ...(mask ? { $mask: mask } : {}) })), 'image');
-    const made = firstAsset(await child(ctx, gen, 'video', bind(plan.control, { $video: video, $edited: `asset:${edited.id}` })), 'video');
+    const edited = await firstAsset(await child(ctx, gen, 'frame', bind(plan.edit, { $frame: frame, ...(mask ? { $mask: mask } : {}) })), 'image');
+    const made = await firstAsset(await child(ctx, gen, 'video', bind(plan.control, { $video: video, $edited: `asset:${edited.id}` })), 'video');
     let out = made.path;
     if (p.keepSound !== false && plan.hasSound) {
       ctx.step('putting the original sound back');
@@ -207,7 +210,7 @@ export const audioRevoiceTool: Tool = {
       if (!text) throw new GenError('No words were heard in that clip; give the text instead');
     }
     const voiceParams: Record<string, unknown> = { text, provider: 'open', ...(p.voice ? { voice: p.voice } : { description: p.description }), ...(p.language ? { language: p.language } : {}), ...(p.direction ? { direction: p.direction } : {}) };
-    const spoken = firstAsset(await child(ctx, gen, 'voice', { tool: 'audio.voice', params: voiceParams, inputs: {} }), 'audio');
+    const spoken = await firstAsset(await child(ctx, gen, 'voice', { tool: 'audio.voice', params: voiceParams, inputs: {} }), 'audio');
     const after = await analyze(spoken.path, { signal: ctx.signal });
     const target = Math.max(0.1, before.seconds - before.leadingSilence - before.trailingSilence);
     const speech = Math.max(0.1, after.seconds - after.leadingSilence - after.trailingSilence);

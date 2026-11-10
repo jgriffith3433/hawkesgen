@@ -39,6 +39,7 @@ recipe that made it. Projects never touch AWS, ComfyUI or API keys.
 - `docs/blender.md` covers Blender shots to video (`blender.render`, `video.control`) and rigging generated characters (`mesh.rig`).
 - `docs/film-pipeline.md` covers the film pipeline: shots with beats and props in hands, the director gate (`film.gate`), the cinema, dialogue, VFX-layer and LoRA recipes (`film.plan`), the trailer cut and what a trailer costs. **Making a trailer, a cutscene or any shot with Blender as the motion rig: start with `film.plan`, run `film.gate` before spending GPU.**
 - `docs/3d-animation.md` covers **where the 3D tools run** (`image: '3d'`: blender.character, blender.render, mesh.rig, motion.from-text, motion.from-video): the 3D worker image (`server/gpu3d`, `ghcr.io/jgriffith3433/hawkes-gen-gpu:3d-latest`, built by a `gpu3d-image-*` tag) on RunPod/Modal endpoints that name the families `rig`, `motion`, `mocap`, `blender`, or the fleet over SSH; one `{ hawkes_job }` request per script (`src/providers/workspace.ts`, `worker.py _job`; refused without a worker token); weights once per volume (`HAWKES_WEIGHTS`); `motion.from-video` (GEM-X, self-checking SOMA BVH), `motion.check`, the `animation` intent, the MCP tools and setup (`runpod.mjs` / `modal.mjs --kind 3d`).
+- `docs/unity-render.md` covers **`unity.render`** (image `unity-render`, family `unity-render`): Unity shots rendered in a Linux editor with graphics on, on a RunPod endpoint running `server/unity-render` (built by a `farm-image-*` tag), the project tree synced by content into the volume (`sync`), `tools/gpu-providers/runpod.mjs --kind unity-render`. First user: the TK Shock render farm.
 - `docs/3d-characters.md` covers `blender.character` (clean, bake, props, retarget, clip edits, FBX/GLB), the `character3d` kind, the CC0 Quaternius motion library (`motion:<pack>/<clip>`, preset `shared/motions`), and `motion.from-text` (Kimodo SOMA / HY-Motion).
 - **Hawkes Net** (multiplayer) is its own repo since 2026-10-26: `jgriffith3433/hawkesnet` (C:\Projects\hawkesnet: the service, the relay, the SDK `@hawkesgen/net` and the Unity package; its design is its `docs/net.md`). Gen keeps only its bridge, `src/netbridge.ts`.
 - `docs/audio.md` covers the sound suite: Gen's own voice and sound models (primary) on any GPU provider (Qwen3-TTS in the worker image, Stable Audio 3 as a ComfyUI workflow), ElevenLabs (secondary), `provider` routing, the house voices, the Gen voice library, direction, post-processing, the audition (`tools/audition.mjs`) and what still needs a GPU run.
@@ -122,7 +123,7 @@ each job).
 | `src/providers/gpu/` | GPU providers (docs/gpu-providers.md): `route.ts` (`gpuCandidates`: the order, what is skipped and why; no order = `cloudRoute` exactly), `health.ts` (cooldowns, last errors, `awsRefused`), `auth.ts` (each provider's headers from env), `broker.ts` + `brokerRoute.ts` (`/v1/gpu/broker`: a run token for one run's files) and `sign.ts` (V4 signed URLs through IAM signBlob), `egress.ts` (the fleet from Cloud Run), `status.ts` (`GET /v1/gpu/providers`, the dashboard's Settings > GPU providers card). The queue's GPU lane in `jobs.ts` takes the first provider with room and requeues a job on the next when one is unavailable. Tests `test/gpu-providers.test.ts` |
 | `src/cpu/`, `src/providers/cloudrun/cpu.ts`, `server/cpu-cloudrun/` | The CPU suite on Cloud Run (docs/cpu-cloudrun.md): `suite.ts` (the tools, weights, what stays local; the service imports only pure modules, a test checks it), `worker.ts` (a tool's own `run()` against Cloud Storage, and `asset.lod`'s two commands), `server.ts` (the service's door), `cpu.ts` (`cpuRoute` by `settings.cpu`, `runCpuRemote` with resume, retry and fallback to here, `cpuExec` for `src/lod.ts`, `cpuStatus` for `GET /v1/cpu`); the queue's `local-cloud` lane and usage `gcp-cpu` in `jobs.ts`. Setup in `tools/cpu-cloudrun/` |
 | `src/quality/`, `src/bench/`, `post/quality/`, `src/tools/quality.ts`, `dashboard/bench.js` | **The quality checks and Gen Bench** (docs/bench.md): `assess()` (identity: insightface buffalo_l on the CPU, `post/quality/identity.py`; the brief as yes/no questions and their answers, the faults per kind, the look: Claude Sonnet through `ask()`; a pass and a `fix`), the tools `quality.identity` / `.checklist` / `.assess`, `HAWKESGEN_QUALITY_MOCK=1` / `withQualityMock`. The bench: 30 briefs (`src/bench/briefs.json`) through the app's real path, every output scored (`bench_runs`, `bench_results`, `bench_ratings`, `bench_cast`), mock runs offline, the market baseline, J's ratings and each score's agreement with them, the admin Bench tab, `/v1/bench/*`, `POST /v1/quality/assess`, `hawkesgen bench` |
-| `src/storage.ts` | The library's files in S3 (opt-in: `settings.storage.bucket`; `storage.provider: "gcs"` keeps them in Google Cloud Storage instead, `tools/storage-copy.mjs` copies S3 → GCS): every new file backed up by content in the background, `backfill` for older ones, and missing files restored on demand (a job's inputs, a download) or all at once (`hawkesgen storage restore`) |
+| `src/storage.ts` | The library's files in S3 (opt-in: `settings.storage.bucket`; `storage.provider: "gcs"` keeps them in Google Cloud Storage instead, `tools/storage-copy.mjs` copies S3 → GCS): every new file backed up by content in the background, `backfill` for older ones, and missing files restored on demand (a job's inputs, a download) or all at once (`hawkesgen storage restore`). On Cloud Run a disk is only a cache, so **nothing reads a library file by its `path` alone**: `localPath(asset)` / `localAsset(id)` / `ensureLocal` bring it back first (steps of `asset.make`, child jobs' outputs, `firstAsset`, viewsheet's cutouts), and recipe keys hash library inputs by their row (`library.ts libraryShaOf`), never by reading the file. Test `test/library-local.test.ts` |
 | `src/entities.ts`, `src/bus.ts` | The library's structure (docs/library.md): entities (`project/slug`), slots, versions (take, current, old, discarded), `slot:` references expanded at submit, slot recipes (request, entity data, or the project's `kinds` in presets), and filing a job's outputs into its slot. `bus.ts` is the event bus (`job`, `library`) behind `GET /v1/events` |
 | `src/library.ts`, `usage.ts`, `auth.ts`, `config.ts`, `db.ts` | Assets and recipes, costs, API keys and roles, settings and paths, SQLite (node:sqlite) |
 | `src/mcp.ts`, `mcp-tools.ts`, `mcp-make.ts`, `mcp-http.ts`, `mcp-core.ts`, `mcp-oauth.ts`, `genoauth.ts`, `links.ts` | The MCP server: stdio (`mcp.ts`, talks to the running service over HTTP) and `/mcp` over HTTPS (`mcp-http.ts`); both share the tools (`mcp-tools.ts`). **Signing in is OAuth** (J, 2026-10-30: "no pasted keys"): with no token `/mcp` answers 401 naming `/.well-known/oauth-protected-resource/mcp`; the editor registers itself, opens `/oauth/authorize` (Continue with Google, then Allow) and gets an `hgm_` token that is the Gen account everywhere a key is (`users.ts authenticateRequest`); connections are listed and revoked at `/v1/users/me/connections`. Keys and platform tokens still work. **The friendly tools** (`mcp-make.ts`, the app's Create groups for an editor: generate_image, edit_image, remove_background, upscale_image, make_texture, make_skybox, character_views, make_3d_model, rig_character, animate_character, animate_image, make_video, make_sprite_sheet, voice_line, sound_effect, make_music, list_voices, upload_file, account) work in the account's own project; outputs come back as signed download links (`/dl/`, a day) and uploads go through one-time links (`/up/`, `curl -T`, 30 minutes; `links.ts`). `mcp-core.ts` and `mcp-oauth.ts` are the same files as in hawkesstudio. Test `test/mcp-oauth.test.ts`. The gen-edge Worker keeps these paths on Gen (`genOnly`) |
@@ -395,7 +396,7 @@ portal and Studio use Gen in the back end with their own keys.
     audio jobs on gen right? We should use those"; "fast and cheap ... AND we want quality"): voices on Qwen3-TTS in the
     house voices (`GET /v1/editor/voices`, `editorVoices`, `src/audio/house.ts`: `hv_` ids, never ElevenLabs or the
     account's own character voices), sound effects on Stable Audio 3, both on RunPod or Modal like every GPU job
-    (docs/audio.md, "Where it runs"). `audio.revoice` stays out: changing a voice is ElevenLabs only. **Uploads** by button or drop anywhere (on the timeline: placed too).
+    (docs/audio.md, "Where it runs"). `audio.revoice` stays out: changing a voice is ElevenLabs only. **Uploads** by button or drop anywhere (on the timeline: placed too). **3D files** (`model3d.js`; J, 2026-11-08: an FBX on a stage "just turns into a box"): everything reads GLB, so an FBX or OBJ is converted to GLB in the browser before it goes up (FBXLoader/OBJLoader, vertices merged, GLTFExporter with the skeleton and every clip). Pictures dropped or picked with it become its textures by name, then by shared words (`head_basemap.png` gets `Person_Head.png`), and a lone picture fills the first texture asked for. Material maps (normal, gloss...) are left out of Media. The note says what was kept and what is missing. FBX files uploaded before this are read by the stage's FBXLoader fallback.
   - **Export** (a video scene) maps a plain cut onto `video.compose` (pictures first become clips with `video.still`;
     captions burned in; a track named Voice is dialogue, one named Music ducks under it), and renders a layered one in
     the browser (above).
@@ -491,7 +492,15 @@ portal and Studio use Gen in the back end with their own keys.
 - **Paying** (`src/subscriptions.ts`, `src/billing.ts`, `test/subscriptions.test.ts`):
   - **Plans:** monthly plans grant credits every paid month. Defaults (provisional): Creator $12 = 1,500 credits,
     Pro $39 = 5,500, seeded when the table is empty; the owner changes them at `POST /v1/subscriptions/plans`.
-  - **Credit packs:** one-off, as before.
+  - **Credit packs** (`billing.ts`, `test/billing-checkout.test.ts`): one-off. `POST /v1/billing/checkout` makes a Checkout
+    session in payment mode (tagged `product: gen` on the session and its payment, the receipt emailed to the account,
+    one Stripe customer per account) that returns to the app it came from (only Gen's own addresses, `returnOrigin`).
+    Back in the app (`account.js backFromCheckout`) one `GET /v1/billing/checkout/<id>` says paid, processing, declined
+    (Stripe's own words), cancelled or expired, gives the balance and Stripe's receipt, and grants a paid pack if the
+    webhook hasn't yet: both go through `fulfilPackSession`, keyed by the session in the ledger, so credits come once. A
+    pack's credits are Gen's number, not the metadata's. No polling: the balance is asked again when the sheet opens and
+    when the page comes back into view (at most every 30 s). The sheet lists the last purchases with their receipts and
+    says "Test mode" with the test card when Stripe's keys are test keys. Playtest scenario `checkout` (no Stripe call).
   - **Stripe:** a Checkout session in subscription mode (`POST /v1/subscriptions/checkout`). Webhooks
     (`/v1/billing/webhook`) record it, grant credits once per paid invoice (`invoice:<id>` in the ledger), follow
     cancel and status, and mark a failed payment `past_due` (still the current plan).
@@ -502,9 +511,13 @@ portal and Studio use Gen in the back end with their own keys.
     subscription) and acts only on its own (`billing.ts isGenEvent`: the tag, else a subscription it knows, else a Gen
     account). Others' events get a 200 and nothing else, so Stripe never retries or disables the endpoint over them.
   - **Set-up:** Stripe needs its keys on each lane (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, or
-    `POST /v1/billing/config`) and a webhook endpoint at `https://<gen>/v1/billing/webhook` for
-    `checkout.session.completed`, `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` and
-    `customer.subscription.deleted`.
+    `POST /v1/billing/config`: /admin Settings > Payments, keys never shown again) and a webhook endpoint at
+    `https://<gen>/v1/billing/webhook` for `GEN_WEBHOOK_EVENTS` (the checkout's completed, async succeeded and failed,
+    expired; `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated` and `.deleted`). **Set up the
+    webhook** (`POST /v1/billing/webhook/setup`, owner) makes or updates the endpoint for exactly this address and keeps
+    its signing secret; it never touches another URL's endpoint, and replaces one for this address only when asked.
+    `/v1/health` says `stripe: { configured, mode, webhook }` (never a key). Beta uses test keys; going live is the live
+    keys on live Gen and Set up the webhook there.
 - **Admins sign in once:** a Gen account whose email is on `settings.dashboard.googleEmails` (J) and that signed in with
   Google is Gen's owner too (`users.ts isGenAdmin`). The app shows it an Admin link, `/admin` works with the same
   sign-in, and its own work stays in its own project (the app always names it). A password account with that email
@@ -656,6 +669,12 @@ returns a verdict, scores and findings.
   look fixed or still present; `mode` full / verify / regression (the last two report only regressions and blockers);
   `bar` (the product's quality bar) is judged as `meetsBar`. `settleReview` enforces the caps and mode on the answer
   (tested in `test/playtest.test.ts`). Studio's side: `hawkesstudio/docs/daily.md` ("Reviews converge").
+- **Motion** (`playtest.review` v5, `src/tools/playtest-motion.ts`): besides the stills, the judge sees `motion`
+  (default 6) contact sheets, each 1.2 s of the run's video at 15 fps tiled 6x3, placed on the feel flags (bugs first),
+  problems and scenes, the rest spread over the run; they're filed as `playtest: 'motion'` assets so findings cite them.
+  ffmpeg's `freezedetect` on the recording finds hitches with nothing from the game (a freeze of 150 ms to 1 s in the
+  middle of motion; not on software rendering). `review.motion` has the sheets, the hitches and `worstHitchMs`; Studio
+  holds the hard limits (`hawkesstudio/docs/quality.md`). No video or no ffmpeg: stills only, said in `motion.note`.
 - **Multiplayer:** `peers: 2..4` opens that many contexts in one browser, each at the URL with a shared random `room` and
   `peer=<i>` (peer 0 plays `scenario`, the others `scenarioPeers` or the same), and needs the contract. The videos are
   stacked here with ffmpeg (two side by side, three or four in a half-size 2x2 grid; `stackArgs`); problems, events and
@@ -709,7 +728,7 @@ The analytics SDK is never copied: every page loads it from Gen (`/sdk/analytics
 and site builds can't read this private repo. `clients/js/sdk.json` lists where each product keeps them, and
 `node bin/hawkesgen-sdk.mjs sync` writes the current files into every one (`status` lists the ones behind). Sync and
 commit in each product after changing `clients/js`, and bump `CLIENT_VERSION` (or `UI_VERSION`, `ANALYTICS_VERSION`) when behavior
-changes. Every client sends `X-Hawkes-Client` (js/7, py/6, unity/0.2.1); `GET /v1/health` lists callers behind.
+changes. Every client sends `X-Hawkes-Client` (js/9, py/6, unity/0.2.1); `GET /v1/health` lists callers behind.
 
 ## SSH to GPU servers
 

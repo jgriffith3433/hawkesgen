@@ -218,12 +218,14 @@ dropped. The Origin header, not the body, sets the env:
 | Origin | env |
 |---|---|
 | One of the product's `origins` (its live domain, with and without `www.`) | `live` |
-| `https://<beta>.hawkesgen.ai` (the product's beta subdomain) | `beta` |
-| the same, with pages under `/c/<change>/` | `preview` |
+| `https://<beta>.hawkesgen.ai` (the product's `beta` subdomain) | `beta` |
+| One of the product's `betaOrigins` (a beta that is not `<beta>.hawkesgen.ai`) | `beta` |
+| the same beta subdomain, with pages under `/c/<change>/` | `preview` |
 | `http(s)://localhost:<any>` or `127.0.0.1:<any>` | `local` |
 
 Add a product or a domain by editing `analytics/products.json` (re-read on change, no restart). `levels` there sets
-the default funnel's order.
+the default funnel's order. The SDK demo on [sites.hawkesgen.ai](https://sites.hawkesgen.ai) reports as product
+`hawkes-analytics` (`betaOrigins: ["https://sites.hawkesgen.ai"]`; no live origins yet).
 
 ## Standard events
 

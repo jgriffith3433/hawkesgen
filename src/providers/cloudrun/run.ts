@@ -24,24 +24,19 @@ import type { ModelRef } from '../../workflows/convert.ts';
 import type { CloudService } from './services.ts';
 import { gcs, gcpTokens, type Gcs } from '../gcp/gcs.ts';
 import { env } from '../../config.ts';
-import { GenError } from '../../util.ts';
+import { GenError, sha256File } from '../../util.ts';
 import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
-import { healthOf } from '../gpu/health.ts';
+import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, PRE_WORKER_MS, WARM_MS, healthOf } from '../gpu/health.ts';
 
 /** A heartbeat younger than this means the run is still going on some instance. */
 const FRESH_MS = 60_000;
 /** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
 const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
-/** How long past its wait a provider's cold worker may take to answer at all (its first pull of a new image). */
-const COLD_START_MS = 12 * 60_000;
-// An endpoint that ran a job this recently still has a worker up (Modal's scaledown_window is 20 minutes); after that, a
-// wait is a worker starting from cold (pulling the image, starting ComfyUI: several minutes), not a queue.
-const WARM_MS = 20 * 60_000;
 
 export type CloudFile = ComfyFile & { uri: string; bytes?: number };
 export type RunDeps = {
-  store: Pick<Gcs, 'stat' | 'read' | 'readJson' | 'write' | 'writeJson'>;
+  store: Pick<Gcs, 'stat' | 'read' | 'readJson' | 'write' | 'writeJson'> & Partial<Pick<Gcs, 'writeFile'>>;
   fetch: typeof fetch;
   idToken: (audience: string) => Promise<string>;
   sleep: (ms: number) => Promise<void>;
@@ -147,6 +142,10 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     // What the graph held on the card at its peak (the worker samples it; older images don't send it).
     if (m.vram?.peakMB) hooks.step(`${svc.name}: GPU memory at peak ${(m.vram.peakMB / 1024).toFixed(1)} GB of ${(m.vram.totalMB / 1024).toFixed(0)} GB${m.vram.gpu ? ` (${m.vram.gpu})` : ''}, ${m.seconds} s on the worker`);
     if (m.t === 'done') return (m.files ?? []) as CloudFile[];
+    // A failed run keeps what the graph made (names and sizes) in the job's log: the files themselves are gone with the worker.
+    if (Array.isArray(m.outputs) && m.outputs.length) {
+      hooks.step(`${svc.name}: the graph made ${m.outputs.map((o: any) => `${o.filename} (${(Number(o.bytes) / 1048576).toFixed(1)} MB)`).join(', ')}`);
+    }
     if (m.cancelled) throw new Error('Cancelled');
     if (m.missingModels?.length) {
       throw new GenError(`${m.message}\n${svc.name} doesn't have ${m.missingModels.join(', ')}: copy it into the models bucket (node tools/cloudrun/models-sync.mjs --apply) and add it to the service in server/cloudrun/services.json.`);
@@ -226,7 +225,12 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     const elsewhere = Boolean(svc.provider && svc.provider !== 'cloudrun');
     const lastOk = healthOf(svc.lane ?? svc.name).lastOk;
     const cold = elsewhere && (!lastOk || deps.now() - lastOk > WARM_MS);
-    const until = deps.now() + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
+    // Decide the wait from live lastOk (not only what endpointService baked at route time): short when warm/busy,
+    // coldStartMs / 12 min when cold. Cloud Run keeps its long service wait.
+    const waitMs = elsewhere
+      ? (cold ? (svc.coldStartMs ?? DEFAULT_COLD_WAIT_MS) : BUSY_WAIT_MS)
+      : (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
+    const until = deps.now() + waitMs;
     // Said up front: a provider's gateway may hold the request the whole time without a word.
     if (cold) hooks.step(`${svc.name}: starting a ${where} GPU (none has run for a while; a cold start takes several minutes)`);
     for (let told = false; ; told = true) {
@@ -235,28 +239,44 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
       const broke = svc.provider === 'runpod' ? runpodCreditProblem() : null;
       if (broke) throw unavailable(`${svc.name}: ${broke}`, { capacity: true });
       let r: Response;
+      // Elsewhere: each POST gives up waiting for headers before RunPod's LB silently kills it (~5.5m), and the next POST
+      // goes in while the worker the first one started keeps loading. Cleared as soon as headers arrive so a long graph
+      // stream is not cancelled mid-run.
+      const preWorker = elsewhere ? new AbortController() : null;
+      const preWorkerTimer = preWorker
+        ? setTimeout(() => preWorker.abort(Object.assign(new Error('pre-worker timeout'), { code: 'PRE_WORKER_TIMEOUT' })), Math.max(1_000, Math.min(PRE_WORKER_MS, until - deps.now())))
+        : null;
       try {
-        r = await deps.fetch(`${svc.url}/run`, { method: 'POST', headers: await headers(), body, signal: hooks.signal });
+        const signal = preWorker ? AbortSignal.any([hooks.signal, preWorker.signal]) : hooks.signal;
+        r = await deps.fetch(`${svc.url}/run`, { method: 'POST', headers: await headers(), body, signal });
       } catch (e: any) {
         if (hooks.signal.aborted) throw cancelled(key);
         if (e.unavailable) throw e;
-        // A provider's gateway holds the request while a worker starts; a new image's first start on a host pulls it
-        // (minutes), past fetch's 5-minute wait for headers. That is a worker on its way, not an unreachable service.
-        const starting = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' && elsewhere && deps.now() < until + (svc.coldStartMs ?? COLD_START_MS);
-        hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
+        const headersTimeout = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT';
+        const preWorkerAbort = elsewhere && !hooks.signal.aborted && (e.code === 'PRE_WORKER_TIMEOUT' || e.cause?.code === 'PRE_WORKER_TIMEOUT' || preWorker?.signal.aborted);
+        // No headers yet: a worker is still starting (cold: pulling the image and loading the model takes longer than
+        // one LB hold; beta 2026-11-10, Pixal3D on hawkes-gen-gpu). Keep asking until the cold-start allowance (warm:
+        // the busy wait) runs out, then hand the job on. A worker RunPod never assigns bills nothing meanwhile.
+        const starting = (headersTimeout || preWorkerAbort) && elsewhere && deps.now() < until;
+        hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.name ?? e.message}; trying again`);
         await deps.sleep(10_000);
-        if (!starting && deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
+        if (deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.name ?? e.message})`, { capacity: headersTimeout || preWorkerAbort });
         continue;
+      } finally {
+        if (preWorkerTimer) clearTimeout(preWorkerTimer);
       }
       // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503, RunPod's load balancer
       // 400 "failed to assign worker" (no GPU of its types free right now). Wait our turn.
       const noWorker = r.status === 400 && svc.provider === 'runpod' && /failed to assign worker/i.test(await r.clone().text().catch(() => ''));
       if (r.status === 429 || r.status === 503 || noWorker) {
         await r.body?.cancel().catch(() => undefined);
-        // A worker starting from cold answers 429/503 until it is up: it gets the cold start's time too. RunPod's "failed
-        // to assign worker" is no GPU free, not a start.
-        const limit = until + (cold && !noWorker ? (svc.coldStartMs ?? COLD_START_MS) : 0);
-        if (deps.now() > limit) throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.round((limit - until + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS)) / 60_000)} minutes`, { capacity: true });
+        // Cold, RunPod says "failed to assign worker" to the next request while the worker the first one started is still
+        // loading: that is the start, so it gets the cold length (waitMs) like 429/503. Warm, it is no GPU free (busy wait).
+        const limit = until;
+        if (deps.now() > limit) {
+          const waited = Math.max(waitMs, limit - (until - waitMs));
+          throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.max(1, Math.round(waited / 60_000))} minutes`, { capacity: true });
+        }
         if (!told && !(cold && !noWorker)) hooks.step(`${svc.name}: waiting for a free ${where} GPU`);
         await deps.sleep(15_000);
         continue;
@@ -285,7 +305,21 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
   return {
     service: svc,
     server: { id: `cloudrun:${svc.name}`, region: 'gcp', price: svc.pricePerSecond * 3600 },
-    upload: (file: string) => uploadBuffer(fs.readFileSync(file), file),
+    // A big file (a render farm's 1 GB pack) is hashed and sent as a stream, never held in memory whole.
+    async upload(file: string) {
+      const size = fs.statSync(file).size;
+      if (size <= 32 * 1024 * 1024 || !deps.store.writeFile) return uploadBuffer(fs.readFileSync(file), file);
+      const sha = await sha256File(file);
+      const ext = path.extname(file).toLowerCase();
+      const uri = `${base}/inputs/${sha}${ext}`;
+      if (!known.has(uri)) {
+        if (!(await deps.store.stat(uri))) await deps.store.writeFile(uri, file);
+        known.add(uri);
+      }
+      const local = `hawkesgen/${sha.slice(0, 16)}${ext}`;
+      names.set(local, uri);
+      return local;
+    },
     uploadBuffer,
     runGraph,
     async download(file: ComfyFile) {

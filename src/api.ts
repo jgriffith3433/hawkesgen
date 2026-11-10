@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { primePlatform } from './platform.ts';
-import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
+import { authenticate, isSelfCall, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { publicJob, publicText } from './publictext.ts';
 import { orgCreditsOn } from './orgcredits.ts';
 import { DASH_COOKIE, DASH_DAYS, googleClientId, googleClientIdAny, checkGoogleToken, signSession, verifyGoogle } from './dashauth.ts';
@@ -28,8 +28,10 @@ import { getAsset, listAssets, updateAsset, deleteAsset, putBlob, blobPath, ownB
 import { motionRecord, motionsForQuery, searchMotions, allClips } from './motions.ts';
 import * as lib from './entities.ts';
 import * as storage from './storage.ts';
+import { startUpload, finishUpload } from './bigupload.ts';
 import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, pruneLods, lodStatus } from './lod.ts';
 import { usageSummary } from './usage.ts';
+import { readRunpodLive } from './providers/gpu/runpodLive.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
 import * as fleetImage from './providers/comfy/image.ts';
@@ -332,6 +334,9 @@ function healthBody(deep: boolean) {
       python: fs.existsSync(path.join(paths.post, '..', '.venv')),
     },
     elevenlabsBilling: eleven.billingState(),
+    // Payments (billing.ts): whether this lane takes them, in which Stripe mode, and whether its webhook can be checked.
+    // Never a key: only what is set.
+    stripe: (() => { const st = getStripeStatus(); return { configured: st.configured, mode: st.mode, webhook: st.hasWebhookSecret }; })(),
     // Customers' Studios' jobs charged to their balance here (src/orgcredits.ts): their cells then don't charge again.
     orgCredits: orgCreditsOn(),
     // New accounts and starter grants refused by the caps today and in total (src/signupcap.ts).
@@ -358,8 +363,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   noteRoute(method, route);
 
   // The request limiter (src/ratelimit.ts): a token bucket per caller and class of route, before any routing.
-  // /v1/health and the Stripe webhook are never limited.
-  const wait = limitRequest(req, method, route);
+  // /v1/health and the Stripe webhook are never limited, and neither is Gen calling itself: a job's own steps were
+  // limited as one caller per project, so a batch of jobs started together failed each other ("a lot at once").
+  const wait = isSelfCall(req) ? null : limitRequest(req, method, route);
   if (wait !== null) {
     res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(wait), 'Cache-Control': 'no-store' });
     return void res.end(JSON.stringify({ error: `That's a lot at once: wait ${wait} second${wait === 1 ? '' : 's'}, then try again.`, retryAfter: wait }));
@@ -573,7 +579,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     // Hawkes Studio's playtests signed in (src/testsignin.ts): beta only, a token signed with the project's secret.
     if (route === '/v1/users/test-session' && method === 'POST') {
       const ts = await import('./testsignin.ts');
-      const project = ts.checkTestToken(await readJson(req));
+      const project = await ts.checkTestTokenAny(await readJson(req));
       const result = googleSignin(ts.testAccountOf(project), clientIp(req), { loadTest: ts.isLoadProject(project) });
       setSessionCookie(res, req, result.sessionToken);
       return send(res, 200, { user: { id: result.user.id, email: result.user.email }, created: result.created, notice: result.notice });
@@ -658,9 +664,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     await primePlatform(req);
     const client = authenticateRequest(req);
-    // The app asks "who am I?" on every visit: a signed-out visitor (no key sent) is told "nobody" rather than a 401, so a
-    // first visit logs no error in the browser's console. A key that's sent and refused is still a 401 (2026-11-08).
-    if (!client && route === '/v1/users/me' && method === 'GET' && !req.headers.authorization) return send(res, 200, { user: null });
+    // /v1/users/me stays a real auth check for API and MCP clients (401 with no key). The web app skips that probe when
+    // there is no session hint (hg.in); see dashboard/gen/index.html and account.js loadMe.
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
     // The editors connected to this account's MCP (src/genoauth.ts): listed, and disconnected one at a time.
     if (route === '/v1/users/me/connections' && method === 'GET') {
@@ -720,6 +725,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       requireRole(client, 'owner');
       const by = client.name ?? 'owner';
       if (route === '/v1/admin/ai' && method === 'GET') return send(res, 200, house.houseStatus());
+      // A consistent online backup of the databases to the backup bucket (src/backup.ts; Cloud Scheduler calls it daily).
+      if (route === '/v1/admin/backup' && method === 'POST') {
+        const { runBackup } = await import('./backup.ts');
+        try { return send(res, 200, { backups: await runBackup({ dbFile: paths.db, analyticsFile: paths.analytics }) }); }
+        catch (e) { throw new GenError(`Backup failed: ${(e as Error).message}`, { status: 503 }); }
+      }
       if (route === '/v1/admin/ai' && (method === 'PUT' || method === 'POST')) {
         const b = await readJson(req);
         return send(res, 200, house.saveHouseSettings({ source: b.source, markup: b.markup, minCredits: b.minCredits }));
@@ -1058,6 +1069,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const body = await readJson(req);
       const checkout = await createStripeCheckoutSession(user, body, origin || 'https://hawkesgen.ai');
       return send(res, 200, checkout);
+    }
+    // Where one of this account's checkouts stands (billing.ts checkoutStatus): the app asks once when Stripe sends the
+    // person back, and when they open a receipt. A paid one is granted here if the webhook hasn't arrived yet.
+    if (route.startsWith('/v1/billing/checkout/') && method === 'GET') {
+      const user = getUserForClient(client);
+      if (!user) throw new GenError('Sign in first', { status: 403 });
+      return send(res, 200, await billing.checkoutStatus(user, decodeURIComponent(route.slice('/v1/billing/checkout/'.length))));
+    }
+    // Points this lane's Stripe webhook at Gen and keeps its signing secret (owner; /admin Settings > Payments).
+    if (route === '/v1/billing/webhook/setup' && method === 'POST') {
+      requireRole(client, 'owner');
+      const body = await readJson(req);
+      const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '');
+      return send(res, 200, await billing.setupStripeWebhook(origin || (host ? `https://${host}` : ''), { replace: body?.replace === true }));
     }
     if (route === '/v1/billing/ledger' && method === 'GET') {
       const user = getUserForClient(client);
@@ -1523,8 +1548,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         const file = typeof b.file === 'string' ? b.file : null;
         if (!assetId && file?.startsWith('asset:')) assetId = file.slice(6);
         if (!assetId && file?.startsWith('blob:')) {
-          const p = blobPath(file.slice(5));
-          if (!p || !canUseBlob(client, file.slice(5))) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
+          const p = canUseBlob(client, file.slice(5)) ? await storage.ensureBlob(file.slice(5)) : null;
+          if (!p) throw new GenError(`No blob ${file.slice(5)}`, { status: 404 });
           const e = lib.getEntity(client, entityId);
           const ext = path.extname(p).toLowerCase();
           assetId = putAsset({
@@ -1686,6 +1711,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       // (Its own numbers, then the status under `status`: both have assets, levels and bytes.)
       return send(res, 200, { ...(await pruneLods({ project: typeof b.project === 'string' ? b.project : undefined, dryRun: b.dryRun === true, limit: Number(b.limit) || undefined })), status: lodStatus() });
     }
+    // Big files go straight to the bucket (src/bigupload.ts): the request limit here is 32 MiB on Cloud Run.
+    if (route === '/v1/blobs/upload' && method === 'POST') {
+      return send(res, 200, await startUpload(client, await readJson(req), uploadLimits().bigMaxBytes(client.role)));
+    }
+    if (route === '/v1/blobs/upload/done' && method === 'POST') {
+      const [status, body] = await finishUpload(client, await readJson(req));
+      return send(res, status, body);
+    }
     if (route === '/v1/blobs' && method === 'POST') {
       const release = takeUpload(client.id);
       let up: Streamed;
@@ -1766,8 +1799,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         account = { at: Date.now(), value: await fleet.checkAccount().catch((e) => ({ error: e.message })) };
       }
       const busy = Object.fromEntries([...queue.busy.entries()]);
+      const runpod = await readRunpodLive().catch((e) => ({ error: String(e?.message ?? e) }));
       return send(res, 200, {
-        servers, error, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
+        servers, error, runpod, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
         busy, autoStart: queue.autoStartState(), families: Object.fromEntries(queue.families), types: fleet.TYPES, regions: fleet.REGIONS, defaultType: fleet.DEFAULT_TYPE, diskPerMonth: fleet.DISK_PER_MONTH,
         disks: machines.lastDisks(),
       });

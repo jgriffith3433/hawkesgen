@@ -291,7 +291,7 @@ export async function openPicker() {
     const words = q.value.trim().toLowerCase();
     const items = W.list.filter((x) => (!kind || x.kind === kind) && (!words || x.title.toLowerCase().includes(words)));
     list.replaceChildren(...(items.length ? items.map((x) => h('button', { type: 'button', class: `scene-row${W.tabs.some((t) => t.id === x.id) ? ' on' : ''}`, onclick: () => { pop.remove(); openScene(x.id); } },
-      h('div', { class: 'scene-thumb' }, x.render?.asset && x.render.kind === 'image' ? h('img', { src: fileUrl(x.render.asset), alt: '', loading: 'lazy' }) : h('span', { class: 'scene-ico' }, icon(kindInfo(x.kind).icon, 'ico'))),
+      h('div', { class: 'scene-thumb' }, x.render?.asset && x.render.kind === 'image' ? h('img', { src: thumbUrl(x.render.asset), alt: '', loading: 'lazy', decoding: 'async' }) : h('span', { class: 'scene-ico' }, icon(kindInfo(x.kind).icon, 'ico'))),
       h('div', { class: 'scene-txt' }, h('b', {}, x.title), h('span', { class: 'muted small' }, `${kindInfo(x.kind).label} · ${ago(x.updated)}${W.tabs.some((t) => t.id === x.id) ? ' · open' : ''}`)))) : [h('p', { class: 'muted small' }, words || kind ? 'Nothing matches.' : 'No scenes yet.')]));
   }
   q.addEventListener('input', draw);
@@ -307,8 +307,15 @@ function drawAction() {
   if (a) { b.replaceChildren(icon(a.icon ?? 'download'), h('span', { class: 'btn-label' }, a.label)); b.title = a.label; }
 }
 function drawUndo() {
-  $('#undoBtn').disabled = !W.editor?.canUndo?.();
-  $('#redoBtn').disabled = !W.editor?.canRedo?.();
+  const u = $('#undoBtn');
+  const r = $('#redoBtn');
+  u.disabled = !W.editor?.canUndo?.();
+  r.disabled = !W.editor?.canRedo?.();
+  // Labelled steps (an AI turn, a delete toast): "Undo: AI added 3 clips (Ctrl+Z)"; otherwise the plain shortcut.
+  const ul = W.editor?.undoLabel?.();
+  const rl = W.editor?.redoLabel?.();
+  u.title = ul ? `Undo: ${ul} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
+  r.title = rl ? `Redo: ${rl} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)';
 }
 export const refreshBar = () => { drawAction(); drawUndo(); };
 

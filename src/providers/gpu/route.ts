@@ -9,7 +9,7 @@ import type { GpuEndpoint, Settings } from '../../config.ts';
 import { env } from '../../config.ts';
 import type { Tool } from '../../tools/types.ts';
 import { cloudRoute, serviceForFamily, allServices, type CloudService, type ServiceMap } from '../cloudrun/services.ts';
-import { isDown, lastingDown } from './health.ts';
+import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, WARM_MS, healthOf, isDown, lastingDown } from './health.ts';
 import { runpodCreditProblem } from './credit.ts';
 import { endpointHeaders, missingSecrets, type Secrets } from './auth.ts';
 
@@ -41,22 +41,39 @@ export function fleetCredentialProblem(get: Secrets = env): string {
 /** The ids this job already failed on (it moves on from them). */
 export const triedOf = (job: Job): string[] => (Array.isArray(job.labels?.gpuTried) ? (job.labels!.gpuTried as unknown[]).map(String) : []);
 
-/** The order that applies to a family: its own, else the default; empty means the old rule. */
+/**
+ * The order that applies to a family: its own, else the default; empty means the old rule. A family's own list is
+ * followed by every other enabled endpoint that names that family (before the fleet), so a second endpoint for it is a
+ * fallback the moment it is added. 2026-11-08: the 3D families' list was ["runpod-3d", "fleet"]; when RunPod ran out of
+ * credit they had nowhere to go though Modal was up, because a family's list replaced everything. Endpoints serving
+ * every family ("*") are not appended: a family with its own list may keep off them on purpose (long video graphs).
+ */
 export function orderFor(settings: Pick<Settings, 'gpu'>, family: string | null): string[] {
-  return settings.gpu.familyOrder?.[family ?? ''] ?? settings.gpu.order ?? [];
+  const own = settings.gpu.familyOrder?.[family ?? ''];
+  if (!own) return settings.gpu.order ?? [];
+  if (!family) return own;
+  const named = (settings.gpu.providers ?? []).filter((p) => p.enabled !== false && p.families?.includes(family) && !own.includes(p.id)).map((p) => p.id);
+  if (!named.length) return own;
+  const at = own.indexOf('fleet');
+  return at < 0 ? [...own, ...named] : [...own.slice(0, at), ...named, ...own.slice(at)];
 }
 
 /** An endpoint as the run protocol's service: no preloads (every model the graph names rides along), through the broker. */
-export function endpointService(ep: GpuEndpoint, family: string, map: ServiceMap, bucket: string, get: Secrets = env): CloudService {
+export function endpointService(ep: GpuEndpoint, family: string, map: ServiceMap, bucket: string, get: Secrets = env, now = Date.now()): CloudService {
   const svcName = serviceForFamily(map, family);
   const spec = svcName ? allServices(map)[svcName] : undefined;
+  const lastOk = healthOf(ep.id).lastOk;
+  // Short wait only when lastOk is fresh (busy workers). True cold uses coldStartSeconds / the 12-minute default —
+  // never the 3-minute busy wait as first contact with scaled-to-zero or zombie workers (run.ts still caps assign-fail
+  // / headers-timeout below RunPod's LB hold so a false cold fails over fast).
+  const warm = lastOk != null && now - lastOk <= WARM_MS;
+  const coldMs = ep.coldStartSeconds ? ep.coldStartSeconds * 1000 : DEFAULT_COLD_WAIT_MS;
   return {
     name: ep.id, url: ep.url, gpu: ep.gpu, maxInstances: ep.maxConcurrent, pricePerSecond: ep.pricePerHour / 3600,
     graphLimitSeconds: ep.graphLimitSeconds, preload: new Set(), bucket,
     provider: ep.provider, lane: ep.id, broker: true, familyModels: spec?.models ?? [],
     headers: () => endpointHeaders(ep.provider, get),
-    // Elsewhere is waiting in line: a busy endpoint hands the job on after a short wait.
-    waitForInstanceMs: 3 * 60_000,
+    waitForInstanceMs: warm ? BUSY_WAIT_MS : coldMs,
     ...(ep.coldStartSeconds ? { coldStartMs: ep.coldStartSeconds * 1000 } : {}),
   };
 }
@@ -114,7 +131,7 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     if (!ep.enabled) { skip(`${id}: turned off`, true); continue; }
     if (!ep.families.includes('*') && !ep.families.includes(family)) { skip(`${id}: doesn't run the ${family || 'job\'s'} family`, true); continue; }
     // "*" is the ComfyUI image: a 3D tool's script needs an endpoint running the 3D image, which names its family.
-    if (tool.image === '3d' && !ep.families.includes(family)) { skip(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the 3D image that names it`, true); continue; }
+    if (tool.image && !ep.families.includes(family)) { skip(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the ${tool.image} image that names it`, true); continue; }
     if (perGraph > ep.graphLimitSeconds) { skip(`${id}: one graph may run ${Math.round(perGraph / 60)} min, past its limit`, true); continue; }
     if (!bucket) { skip(`${id}: settings.gpu.cloudrun.bucket is not set (the worker's files go there)`, true); continue; }
     if (!env('HAWKESGEN_PUBLIC_URL')) { skip(`${id}: HAWKESGEN_PUBLIC_URL is not set (the worker reaches the bucket through Gen)`, true); continue; }
@@ -134,8 +151,8 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
 export function toolReady(tool: Pick<Tool, 'server' | 'family' | 'image'> | undefined | null, o: { fleetDown: boolean; settings: Pick<Settings, 'gpu'> | null }): boolean {
   if (!tool) return false;
   if (tool.server === 'ssh') return !o.fleetDown;
-  if (tool.image !== '3d') return true;
-  if (!o.fleetDown) return true;
+  if (!tool.image) return true;
+  if (!o.fleetDown && tool.image === '3d') return true; // the fleet has Blender and the venvs, never Unity
   const family = typeof tool.family === 'string' ? tool.family : '';
   return Boolean(o.settings?.gpu.providers?.some((p) => p.enabled && p.families.includes(family)));
 }

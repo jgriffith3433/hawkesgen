@@ -3,7 +3,7 @@
 // Studio's beta playtests it's signed in as the project's test account (src/testsignin.ts).
 //   smoke    the page opens; signed in, a new video scene, text added with T, played with Space, then removed
 //   media    the Media pane lists the library and a tile can be picked (the AI's chip shows it)
-//   signedout what someone who isn't signed in sees: the welcome, and Start free
+//   signedout what someone who isn't signed in sees: the welcome, Sign in with Google, no /v1 probe without hg.in
 //   playback two or three of the library's clips cut together, played through the cuts and scrubbed back over them:
 //            how often and how long the clock waited for data, seeks while playing, frames with no picture
 //   create   one form from each Create group (images, video, 3D, animation, audio, chains): fields, price and Make button; Make is never pressed
@@ -19,10 +19,12 @@
 //   scenes   a new scene of each kind from the + menu, renamed, reordered, duplicated and deleted
 //   media-upload a small picture is uploaded by the Media pane's file input and shows as a tile and in its details (Media has no delete)
 //            (stage, character, world, scenes, media-upload: free, no paid job; every one watches the jobs it could start)
+//   phoneperf phone size (390x844, touch; Studio slows the CPU 4x): how long a project takes to become usable, a 3-clip
+//            timeline played 20 s (fps, p5), and how long a scrub takes to show the new frame (metrics openMs, p5fps, scrubMs)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
-import { state } from './account.js';
+import { state, loadMe } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
 import { snapStats } from './timeline.js';
 import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
@@ -33,6 +35,7 @@ import { api, bus } from './lib.js';
 import { openStream } from './stream.js';
 import { runJob, uploadFiles } from './media.js';
 import { streamState } from './trouble.js';
+import { show as showLanding, hide as hideLanding } from './landing.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
@@ -171,24 +174,27 @@ installPlaytest({
   scenarios: [
     { id: 'smoke', title: 'Open the app, make a scene, add text, play it', seconds: 60, tags: ['smoke'] },
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
-    { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call but /v1/users/me', seconds: 30 },
+    { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call (the session probe is skipped when hg.in is unset)', seconds: 30 },
     { id: 'createprice', title: 'Every Create form shows its credit price when opened, and it changes when an option that changes the cost changes', seconds: 120 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
+    { id: 'phoneperf', title: 'Phone speed (390x844, touch, CPU slowed 4x): the editor is usable within 5 s of opening a project, a 3-clip timeline plays 20 s with p5 fps above 30, and a scrub shows the new frame within 200 ms', seconds: 120, tags: ['mobile'] },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
+    { id: 'aibusy', title: 'An AI turn that has to wait for a free slot shows its place in line, and gives up after the bound with one plain sentence (test account, AI mock)', seconds: 120 },
     { id: 'signupcap', title: 'Starter credits are capped: health counts signups and refused grants, and the limits are shown; this account sees its balance', seconds: 30 },
     { id: 'mockproviders', title: 'Mock providers: health says whether providers are stand-ins and shows $0 real cost; a mock job finishes at once (beta/local only)', seconds: 60 },
     { id: 'phone', title: 'Phone (390x844, touch): the five bottom tabs and the timeline stay on screen, no page zoom; every screen has no horizontal scroll, primary buttons fully on screen, controls at least 44 px; a deliberately overflowing element is reported', seconds: 120, tags: ['mobile'] },
     { id: 'eventstreams', title: 'Live streams: four tabs open on one account, the oldest is closed with a bye and opens again by itself, and all jobs still reach the page', seconds: 90 },
     { id: 'create', title: 'Create: one tool form from each group (images, video, 3D, animation, audio, chains) shows its fields, its price and a Make button; Make is never pressed and no job starts', seconds: 90 },
+    { id: 'checkout', title: 'Buying credits: the packs (and the test-mode card note on beta), one tap opens checkout while the others wait, a failed start says one plain line and frees the packs, and coming back paid, processing, declined or cancelled each says so (paid: the new balance on the pill and a Receipt); on a phone each pack is one row at least 44 px tall with no sideways scroll. Stripe is never called', seconds: 60, tags: ['mobile'] },
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
     { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
-    { id: 'ai-undo', title: 'AI pane: Undo this removes what the AI added, and Ctrl+Z brings it back', seconds: 60 },
+    { id: 'ai-undo', title: 'AI pane: after a multi-op edit a toast offers Undo, Ctrl+Z (or Undo) puts the timeline back, Redo brings the AI change back, and the Undo button is labelled', seconds: 90 },
     { id: 'ai-proposal', title: 'AI pane: an answer over 40 credits shows a proposal card with its price, and nothing starts (Make it is never pressed)', seconds: 60 },
     { id: 'ai-nocredits', title: 'AI pane: with no credits left the answer is a plain 402 line with Add credits, and the timeline is unchanged', seconds: 60 },
     { id: 'ai-signedout', title: 'AI pane signed out: the sign-in gate shows, a typed message opens Sign in and nothing is sent', seconds: 40 },
@@ -209,23 +215,67 @@ installPlaytest({
     t.metric('signedIn', state.user ? 1 : 0);
     if (id === 'signedout') {
       t.scene('Welcome');
+      // Setup shortcut (named): clear the session hint and show the welcome so a test-account tab still plays the
+      // anonymous landing path (the real cookie is untouched; Sign in from the landing still works afterwards).
+      try { localStorage.removeItem('hg.in'); } catch { /* */ }
+      const was = state.user;
+      if (was) state.user = null;
+      showLanding();
       const welcome = await until(() => document.querySelector('#landing:not([hidden]), .landing:not([hidden])'), 8000);
       t.metric('welcome', welcome ? 1 : 0);
-      if (welcome && !state.user) {
-        // What the first screen must say and show, and that it asked Gen for nothing but who's signed in.
+      if (welcome) {
         const L = document.querySelector('#landing');
         t.metric('signInWithGoogle', /Sign in with Google/.test(L.textContent) ? 1 : 0);
         t.metric('examples', L.querySelectorAll('.ld-ex').length);
-        const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/') && p !== '/v1/users/me');
-        t.metric('v1CallsSignedOut', v1.length);
-        for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
-        // The "who am I?" check answers a signed-out visit with nobody, not a 401 the console shows as an error.
-        const me = await window.__hgMe;
-        t.metric('meStatus', me?.status ?? 0);
-        if (me && me.status !== 200) t.problem('bug', `signed-out load: /v1/users/me answered ${me.status} (a console error)`);
+        // A first visit (no test session) must not have probed /v1/users/me at boot.
+        if (!was) {
+          const me = window.__hgMe ? await window.__hgMe : null;
+          t.metric('meProbedAtBoot', me ? 1 : 0);
+          if (me) t.problem('bug', 'signed-out first visit probed /v1/users/me (expected skip when hg.in is unset)');
+          if (me && me.status === 401) t.problem('bug', 'signed-out load: /v1/users/me answered 401 (a console error)');
+          const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/'));
+          t.metric('v1CallsSignedOut', v1.length);
+          for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
+        }
+        // Prove the skip on this tab too: with hg.in cleared, loadMe must not fetch any /v1 route.
+        const probed = [];
+        const real = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          try {
+            const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+            if (path.startsWith('/v1/')) probed.push(path);
+          } catch { /* */ }
+          return real(input, init);
+        };
+        window.__hgMe = null;
+        await loadMe();
+        window.fetch = real;
+        t.metric('meProbed', probed.includes('/v1/users/me') ? 1 : 0);
+        t.metric('v1DuringSkipLoad', probed.length);
+        if (probed.length) for (const p of probed) t.problem('bug', `signed-out loadMe called ${p}`);
+        else t.event('session-probe-skipped');
+        // Labels centred in their buttons, and the "Look around first" link on the text's left margin.
+        const btns = [...L.querySelectorAll('.ld-hero .ld-cta button, .ld-nav .ld-signin')].filter((x) => x.offsetWidth);
+        const off = btns.map((x) => { const r = document.createRange(); r.selectNodeContents(x); const a = r.getBoundingClientRect(), c = x.getBoundingClientRect(); return Math.abs((a.left + a.right) / 2 - (c.left + c.right) / 2); });
+        t.metric('buttonLabelOffCentrePx', Math.round(Math.max(0, ...off)));
+        const look = L.querySelector('.ld-look'), sub = L.querySelector('.ld-sub');
+        if (look && sub) t.metric('lookLinkOffsetPx', Math.round(Math.abs(look.getBoundingClientRect().left - sub.getBoundingClientRect().left)));
+        // Sign in from the landing opens the sheet (Google completes the rest; playtests can't finish OAuth).
+        const signIn = L.querySelector('.ld-hero .ld-google, .ld-nav .ld-signin, button.ld-google');
+        t.metric('signInReady', signIn ? 1 : 0);
+        if (!signIn) t.problem('bug', 'landing has no Sign in with Google control');
+        else {
+          signIn.click();
+          const dlg = await until(() => document.querySelector('#authDialog')?.open, 4000, 100);
+          t.metric('signInSheet', dlg ? 1 : 0);
+          t.event(dlg ? 'sign-in-opened' : 'sign-in-missing');
+          if (!dlg) t.problem('bug', 'Sign in from the landing did not open the sign-in sheet');
+          else document.querySelector('#authDialog')?.close?.();
+        }
         t.event('welcome-checked');
       }
-      t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
+      if (was) { state.user = was; hideLanding(); }
+      t.finish(welcome ? 'done' : 'stuck');
       return;
     }
     if (id.startsWith('ai-')) {
@@ -265,37 +315,69 @@ installPlaytest({
       const titles = () => (P.doc?.clips ?? []).filter((c) => c.kind === 'text').length;
       const mockOff = () => { t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session: nothing to play'); t.event('mock-off'); t.finish('done'); };
       const HELLO = { match: 'says Hello', cost: 0.01, json: { say: 'Added a title that says Hello.', ops: [TITLE_OP('Hello')] } };
+      // Three text adds in one turn: the undo label is "AI added 3 clips" and one Ctrl+Z reverses all three.
+      const THREE = {
+        match: 'three titles',
+        cost: 0.01,
+        json: { say: 'Added three titles.', ops: [TITLE_OP('One'), TITLE_OP('Two'), TITLE_OP('Three')] },
+      };
       if (id === 'ai-edit' || id === 'ai-undo') {
-        if (!await mockAi([HELLO])) return mockOff();
-        if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
-        const before = { clips: clips(), titles: titles(), credits: credits() };
-        await typeAi('add a title that says Hello');
+        if (id === 'ai-edit') {
+          if (!await mockAi([HELLO])) return mockOff();
+          if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+          const before = { clips: clips(), titles: titles(), credits: credits() };
+          await typeAi('add a title that says Hello');
+          t.event('asked');
+          const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
+          const added = await until(() => titles() > before.titles, 5000, 100);
+          t.metric('clipsAdded', clips() - before.clips);
+          t.event(added ? 'title-added' : 'no-title');
+          const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
+          t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
+          if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
+          const paid = await until(() => credits() < before.credits, 8000, 150);
+          t.metric('creditsDelta', before.credits - credits());
+          t.event(paid ? 'credits-dropped' : 'credits-unchanged');
+          if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
+          t.finish(reply && added && paid ? 'done' : 'stuck');
+          return;
+        }
+        if (!await mockAi([THREE])) return mockOff();
+        if (!await aiScene('Playtest AI undo')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const before = { clips: clips(), titles: titles() };
+        await typeAi('add three titles please');
         t.event('asked');
-        const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
-        const added = await until(() => titles() > before.titles, 5000, 100);
+        const added = await until(() => titles() >= before.titles + 3, 20000, 100);
         t.metric('clipsAdded', clips() - before.clips);
-        t.event(added ? 'title-added' : 'no-title');
-        const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
-        t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
-        if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
-        const paid = await until(() => credits() < before.credits, 8000, 150);
-        t.metric('creditsDelta', before.credits - credits());
-        t.event(paid ? 'credits-dropped' : 'credits-unchanged');
-        if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
-        if (id === 'ai-edit') { t.finish(reply && added && paid ? 'done' : 'stuck'); return; }
-        // Undo this: a click on the reply's own button, then Ctrl+Z.
-        const undo = [...document.querySelectorAll('#aiMessages button')].find((b) => /Undo this/.test(b.textContent));
-        t.metric('undoOffered', undo ? 1 : 0);
-        if (!undo || !added) { t.finish('stuck'); return; }
-        undo.click();
-        const gone = await until(() => titles() === before.titles, 5000, 100);
-        t.metric('undoRemoved', gone ? 1 : 0);
-        t.event(gone ? 'undone' : 'undo-failed');
+        t.event(added ? 'three-added' : 'no-titles');
+        if (!added) { t.finish('stuck'); return; }
+        // Toast after the AI edit offers Undo in one tap (criteria 3).
+        const toastEl = () => { const el = document.querySelector('#toast'); return el && !el.hidden ? el : null; };
+        const toastOk = await until(() => {
+          const el = toastEl();
+          if (!el) return false;
+          const words = el.textContent ?? '';
+          const btn = [...el.querySelectorAll('button')].find((b) => /^Undo$/i.test(b.textContent.trim()));
+          return /AI added 3 clips/i.test(words) && btn ? btn : false;
+        }, 5000, 100);
+        t.metric('toastUndo', toastOk ? 1 : 0);
+        t.event(toastOk ? 'toast-undo' : 'no-toast-undo');
+        if (!toastOk) t.problem('bug', `no Undo toast after the AI edit: "${toastEl()?.textContent ?? ''}"`);
+        const tip = document.querySelector('#undoBtn')?.title ?? '';
+        t.metric('undoLabelled', /Undo:\s*AI added 3 clips/i.test(tip) ? 1 : 0);
+        t.event(/Undo:\s*AI added 3 clips/i.test(tip) ? 'undo-labelled' : 'undo-unlabelled');
+        // One Ctrl+Z puts the timeline back exactly (criteria 1); the bar's Undo is the same path.
         press('z', { ctrlKey: true });
-        const back = await until(() => titles() > before.titles, 5000, 100);
-        t.metric('undoRestored', back ? 1 : 0);
-        t.event(back ? 'ctrl-z-restored' : 'ctrl-z-failed');
-        t.finish(gone && back ? 'done' : 'stuck');
+        const gone = await until(() => titles() === before.titles && clips() === before.clips, 5000, 100);
+        t.metric('undoRemoved', gone ? 1 : 0);
+        t.event(gone ? 'ctrl-z-undone' : 'ctrl-z-failed');
+        if (!gone) { t.finish('stuck'); return; }
+        // Redo brings the AI change back (criteria 2).
+        press('z', { ctrlKey: true, shiftKey: true });
+        const back = await until(() => titles() >= before.titles + 3, 5000, 100);
+        t.metric('redoRestored', back ? 1 : 0);
+        t.event(back ? 'redo-restored' : 'redo-failed');
+        t.finish(toastOk && gone && back ? 'done' : 'stuck');
         return;
       }
       if (id === 'ai-proposal') {
@@ -822,6 +904,102 @@ installPlaytest({
       t.finish(opened === groups.length && caught && !started ? 'done' : 'stuck');
       return;
     }
+    if (id === 'checkout') {
+      t.scene('Buying credits');
+      if (!state.user) { t.note('Not signed in: the bot needs the test sign-in (Studio\'s beta playtests give it)'); t.finish('stuck'); return; }
+      const jobs = watchJobs();
+      // Setup shortcut (named): the checkout routes answer from here, so Stripe is never called and no money moves. Starting
+      // a checkout fails like Stripe being down (502), and each return reads one of four made-up sessions.
+      const realFetch = window.fetch.bind(window);
+      const start = state.user.credits ?? 0;
+      const sessions = {
+        cs_test_ptpaid: { status: 'paid', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: 'https://pay.stripe.com/receipts/playtest', declined: null, balance: start + 1000 },
+        cs_test_ptproc: { status: 'processing', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: null, declined: null, balance: start },
+        cs_test_ptdecl: { status: 'declined', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: null, declined: 'Your card was declined.', balance: start },
+        cs_test_ptopen: { status: 'open', mode: 'payment', credits: 1000, name: 'Starter Pack', amountTotal: 1000, currency: 'usd', receiptUrl: null, declined: null, balance: start },
+      };
+      let starts = 0;
+      window.fetch = async (input, init) => {
+        const u = String(input?.url ?? input);
+        const sid = u.match(/\/v1\/billing\/checkout\/(cs_test_pt\w+)/)?.[1];
+        if (sid) return new Response(JSON.stringify(sessions[sid]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (/\/v1\/(billing|subscriptions)\/checkout$/.test(u.split('?')[0]) && (init?.method ?? 'GET') === 'POST') { starts++; return new Response(JSON.stringify({ error: 'Stripe error {"type":"api_error"} sk_test_abcdefghijklmnop' }), { status: 502, headers: { 'Content-Type': 'application/json' } }); }
+        if (/\/v1\/users\/me$/.test(u.split('?')[0])) { const r = await realFetch(input, init); const j = await r.json(); if (j.user && sessions.__paid) j.user.credits = sessions.cs_test_ptpaid.balance; return new Response(JSON.stringify(j), { status: r.status, headers: { 'Content-Type': 'application/json' } }); }
+        return realFetch(input, init);
+      };
+      const toastText = () => { const el = document.querySelector('#toast'); return el && !el.hidden ? el.textContent.trim() : ''; };
+      const raw = (s) => /[{}]|sk_test_|sk_live_|Traceback|api_error/.test(s);
+      try {
+        document.querySelector('#creditsPill')?.click();
+        const open = await until(() => document.querySelector('#accountDialog[open]'), 5000, 100);
+        if (!open) { t.problem('bug', 'the credits pill did not open the account sheet'); t.finish('stuck'); return; }
+        await until(() => document.querySelector('#packs .acct-pack, #packs .acct-note'), 6000, 150);
+        const packs = [...document.querySelectorAll('#packs .acct-pack')];
+        t.metric('packs', packs.length);
+        const packs0 = await realFetch('/v1/billing/packs').then((r) => r.json()).catch(() => ({}));
+        t.metric('stripeTestMode', packs0?.stripe?.mode === 'test' ? 1 : 0);
+        if (packs0?.stripe?.mode === 'test' && !document.querySelector('#packs .acct-test')) t.problem('bug', 'Stripe is in test mode here but the sheet does not say so (the test card note)');
+        if (packs0?.stripe?.mode === 'live' && document.querySelector('#packs .acct-test')) t.problem('bug', 'the test card note shows on a live Gen');
+        if (!packs.length) t.note('Buying credits is not open on this Gen (no Stripe key): the pack taps were not played');
+        // On a phone: the sheet fits, every pack is one row at least 44 px tall and fully on screen once scrolled to.
+        if (window.innerWidth <= 600 && packs.length) {
+          const sheet = document.querySelector('#accountDialog');
+          t.metric('sheetOverflowX', sheet.scrollWidth > sheet.clientWidth + 1 ? 1 : 0);
+          if (sheet.scrollWidth > sheet.clientWidth + 1) t.problem('bug', 'the account sheet scrolls sideways on a phone');
+          for (const p of packs) {
+            p.scrollIntoView({ block: 'center' });
+            await sleep(50);
+            const r = p.getBoundingClientRect();
+            if (r.height < 44) t.problem('bug', `a pack is under 44 px tall on a phone (${Math.round(r.height)})`);
+            if (r.left < -1 || r.right > window.innerWidth + 1) t.problem('bug', 'a pack is cut off at the side on a phone');
+          }
+          const price = packs[0].querySelector('.acct-pack-price')?.getBoundingClientRect();
+          t.metric('phonePackRow', price && price.top < packs[0].getBoundingClientRect().top + packs[0].getBoundingClientRect().height / 2 + 4 ? 1 : 0);
+        }
+        // One tap: the others wait while checkout opens; Stripe down: one plain line and every pack free again.
+        if (packs.length) {
+          packs[0].click();
+          const waited = packs.slice(1).every((b) => b.disabled);
+          t.metric('othersWaitWhileOpening', waited ? 1 : 0);
+          if (!waited) t.problem('bug', 'the other packs can be tapped while a checkout opens');
+          await until(() => !document.querySelector('#accountError')?.hidden, 5000, 100);
+          const err = document.querySelector('#accountError')?.textContent.trim() ?? '';
+          t.event(`checkout failed to start: ${err}`);
+          if (!err) t.problem('bug', 'a checkout that failed to start says nothing');
+          if (raw(err)) t.problem('bug', `a checkout that failed to start shows raw text: ${err.slice(0, 80)}`);
+          if (packs.some((b) => b.disabled)) t.problem('bug', 'the packs stay locked after a checkout failed to start');
+          if (starts !== 1) t.problem('bug', `one tap started ${starts} checkouts`);
+        }
+        document.querySelector('#accountClose')?.click();
+        await until(() => !document.querySelector('#accountDialog[open]'), 3000, 100);
+        // Coming back from Stripe: each outcome in words, never raw, the paid one with the new balance and a Receipt.
+        const { checkoutReturned } = await import('./account.js');
+        const want = { cs_test_ptpaid: /credits added/i, cs_test_ptproc: /processing/i, cs_test_ptdecl: /declined.*nothing was charged/i, cs_test_ptopen: /cancelled.*nothing was charged/i };
+        for (const [sid, re] of Object.entries(want)) {
+          if (sid === 'cs_test_ptpaid') sessions.__paid = true;
+          await checkoutReturned(sid);
+          await sleep(150);
+          const said = toastText();
+          t.event(`${sid.slice(11)}: ${said}`);
+          if (!re.test(said)) t.problem('bug', `coming back ${sessions[sid].status} said "${said.slice(0, 80)}"`);
+          if (raw(said)) t.problem('bug', `coming back ${sessions[sid].status} shows raw text`);
+          if (sid === 'cs_test_ptpaid') {
+            const pill = Number(document.querySelector('#creditsCount')?.textContent.replace(/[^\d]/g, '')) || 0;
+            t.metric('pillAfterPaid', pill);
+            if (pill !== sessions.cs_test_ptpaid.balance) t.problem('bug', `the credits pill shows ${pill} after a paid return, not ${sessions.cs_test_ptpaid.balance}`);
+            if (![...document.querySelectorAll('#toast button')].some((b) => /receipt/i.test(b.textContent))) t.problem('bug', 'a paid return offers no Receipt');
+          }
+        }
+        if (jobs.sent.length) t.problem('bug', `buying credits started ${jobs.sent.length} job(s)`);
+        t.finish('done');
+      } finally {
+        window.fetch = realFetch;
+        jobs.stop();
+        // Back to the real balance (the made-up paid return showed a made-up one).
+        (await import('./account.js')).refreshCredits();
+      }
+      return;
+    }
     if (id === 'account') {
       t.scene('Account');
       const jobs = watchJobs();
@@ -1104,6 +1282,71 @@ installPlaytest({
       t.event('delete undo/redo');
       press('z', { ctrlKey: true });
       t.finish(snapped && overlay && gone && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'phoneperf') {
+      t.scene('Phone speed');
+      if (window.innerWidth > 900) { t.note('Not a phone-sized screen: run this scenario with mobile: true (390x844, touch)'); t.finish('stuck'); return; }
+      const list = async (kind) => ((await api(`/v1/assets?${new URLSearchParams({ limit: '40', project: state.user.project, kind })}`).catch(() => null))?.items ?? []).filter((a) => a.meta?.duration > 1);
+      const vids = await list('video');
+      t.metric('videos', vids.length);
+      await until(() => activeScene(), 10000);
+      t.metric('sinceNavigationMs', Math.round(performance.now()));
+      // Opening a project: from asking for the scene to the editor being usable (the tabs, the picture drawn, the
+      // timeline's ruler there), measured with the page's own clock so the CPU slowdown counts.
+      const t0 = performance.now();
+      made = await newScene('video', { title: `Playtest phone speed ${new Date().toISOString().slice(0, 16)}` });
+      const usable = () => activeScene()?.id === made?.id && P.active && P.id === made.id && document.querySelector('#mobileTabs')?.offsetHeight > 0
+        && document.querySelector('#tlRuler')?.children.length > 0 && document.querySelector('#stage canvas')?.offsetHeight > 0;
+      const opened = await until(usable, 15000, 20);
+      const openMs = Math.round(performance.now() - t0);
+      t.metric('openMs', openMs); t.event(`editor-usable ${openMs}ms`);
+      if (!opened) { t.note('the new scene did not become usable'); t.finish('stuck'); return; }
+      const canvasPx = document.querySelector('#stage canvas')?.width ?? 0;
+      t.metric('canvasWidthPx', canvasPx);
+      // Setup shortcut (named): three clips on the main track for 20 s (library clips, else colors), then words.
+      const SEC = 20, n = 3, each = SEC / n, main = mainTrack()?.id;
+      for (let i = 0; i < n; i++) {
+        const at = i * each;
+        if (vids.length) {
+          const a = vids[i % vids.length], len = Math.min(each, a.meta.duration);
+          const c = addClip({ track: main, asset: a.id, kind: 'video', duration: a.meta.duration, start: at, label: a.title || 'clip', history: false });
+          setClip(c.id, { start: at, out: len }, { history: false });
+        } else addClip({ track: main, kind: 'fill', color: ['#203a5c', '#5c2040', '#2c5c20'][i], start: at, seconds: each, history: false });
+      }
+      const len = Math.min(docLength(), SEC);
+      t.metric('clips', P.doc.clips.length); t.event('three-clips-ready');
+      await sleep(2500);
+      resetPlaybackStats();
+      press('Home');
+      click('#playBtn');
+      t.event('play-20s');
+      const through = await until(() => P.playhead >= len - 0.1, Math.max(30000, len * 3000), 100);
+      if (isPlaying()) click('#playBtn');
+      const run = pacingStats();
+      t.metric('fps', run.fps); t.metric('p5fps', run.p5fps); t.metric('worstFrameMs', run.worstMs); t.metric('frames', run.frames);
+      t.event(through ? `played-20s p5=${run.p5fps}fps` : 'play-stalled');
+      t.progress(0.7);
+      // Scrubs with the finger: a touch on the ruler at five places; each time the new frame is drawn is measured.
+      resetPlaybackStats();
+      const ruler = document.querySelector('#tlRuler');
+      const r = ruler.getBoundingClientRect();
+      for (const f of [0.15, 0.7, 0.35, 0.9, 0.5]) {
+        const before = pacingStats().scrubs;
+        const x = r.left + Math.max(8, Math.min(r.width - 8, r.width * f));
+        const o = { clientX: x, clientY: r.top + r.height / 2, pointerId: 7, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true };
+        ruler.dispatchEvent(new PointerEvent('pointerdown', o));
+        window.dispatchEvent(new PointerEvent('pointerup', o));
+        await until(() => pacingStats().scrubs > before, 3000, 10);
+        await sleep(400);
+      }
+      const sc = pacingStats();
+      t.metric('scrubMs', sc.scrubMs); t.metric('scrubs', sc.scrubs);
+      t.event(`scrub-to-frame max ${sc.scrubMs}ms of ${sc.scrubs}`);
+      const fine = openMs <= 5000 && run.p5fps > 30 && sc.scrubs >= 5 && sc.scrubMs <= 200;
+      t.metric('withinBudget', fine ? 1 : 0);
+      if (!fine) t.problem('bug', `phone speed over budget: open ${openMs} ms (5000), p5 ${run.p5fps} fps (>30), scrub ${sc.scrubMs} ms (200)`);
+      t.finish(through ? 'done' : 'stuck');
       return;
     }
     if (id === 'playback4') {
@@ -1505,6 +1748,35 @@ installPlaytest({
       window.fetch = realFetch;
       state.user = me;
       t.finish('done');
+      return;
+    }
+    if (id === 'aibusy') {
+      t.scene('AI line');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): two canned answers; the first holds its AI slot for 45 s, like a slow Claude (needs HAWKESGEN_AI_MOCK=1).
+      const q = await api('/v1/test/ai-mock', { method: 'POST', body: { answers: [{ match: 'slow first', holdMs: 45000, json: { say: 'Slow answer.', ops: [] } }, { match: 'second turn', json: { say: 'Second answer.', ops: [] } }] } }).catch((e) => ({ error: e.message }));
+      if (!q?.queued) { t.event('mock-off'); t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session'); t.finish('done'); return; }
+      made = await newScene('video', { title: `Playtest AI line ${new Date().toISOString().slice(0, 16)}` });
+      await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
+      // Setup shortcut (named): another AI turn of this account already holds the only slot (it is not awaited).
+      void api(`/v1/editor/projects/${made.id}/assistant`, { body: { messages: [{ role: 'user', text: 'slow first' }] } }).catch(() => {});
+      await sleep(1500);
+      // Real input: type the second message in the AI pane and press Enter.
+      const box = document.querySelector('#aiInput');
+      box.focus();
+      box.value = 'second turn: add a title';
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      pressOn(box, 'Enter');
+      t.event('asked-while-busy');
+      const line = await until(() => /In line for the AI/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 15000);
+      t.metric('lineShown', line ? 1 : 0);
+      t.event(line ? 'queue-position-shown' : 'no-queue-position');
+      const gaveUp = await until(() => /The AI is busy right now|busy/.test(document.querySelector('#aiMessages .msg.err')?.textContent ?? ''), 50000);
+      const words = document.querySelector('#aiMessages .msg.err')?.textContent ?? '';
+      t.metric('gaveUp', gaveUp ? 1 : 0);
+      t.event(gaveUp ? 'gave-up-plainly' : 'no-give-up');
+      t.note(words.slice(0, 200));
+      t.finish(line && gaveUp && !/[{}]|status|Error:/.test(words) ? 'done' : 'stuck');
       return;
     }
     if (id === 'uploads') {

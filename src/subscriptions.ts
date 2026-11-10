@@ -14,7 +14,7 @@ import { GenError } from './util.ts';
 import type { UserRow } from './users.ts';
 import {
   listSubscriptionPlans, getSubscriptionPlan, createSubscriptionPlan, createUserSubscription, updateUserSubscription,
-  getUserSubscription, grantCredits, stripeKeys, type UserSubscription,
+  getUserSubscription, grantCredits, stripeKeys, returnOrigin, type UserSubscription,
 } from './billing.ts';
 
 /** Provisional plans (J sets the real ones). */
@@ -52,8 +52,10 @@ export async function subscriptionCheckout(user: UserRow, planId: string, origin
   form.set('client_reference_id', user.id);
   if (user.stripe_customer_id) form.set('customer', user.stripe_customer_id);
   else form.set('customer_email', user.email);
-  form.set('success_url', `${origin}/?checkout=success#create`);
-  form.set('cancel_url', `${origin}/?checkout=cancelled#create`);
+  // Back to the app, which reads the session (billing.ts checkoutStatus) for the plan, the credits and the invoice.
+  const back = returnOrigin(origin);
+  form.set('success_url', `${back}/?checkout=success&session_id={CHECKOUT_SESSION_ID}#create`);
+  form.set('cancel_url', `${back}/?checkout=cancelled#create`);
   // The product tag: the portal and Studio share this Stripe account and ignore what isn't theirs (billing.ts isGenEvent).
   form.set('metadata[product]', 'gen');
   form.set('metadata[user_id]', user.id);
@@ -144,7 +146,7 @@ export async function setCancelAtPeriodEnd(user: UserRow, cancel: boolean) {
 /** Stripe's billing portal: cards, receipts, cancel. */
 export async function billingPortal(user: UserRow, origin: string) {
   if (!user.stripe_customer_id) throw new GenError('Nothing to manage yet: you have not paid for anything.', { status: 404 });
-  const s = await stripe('billing_portal/sessions', new URLSearchParams({ customer: user.stripe_customer_id, return_url: `${origin}/#create` }));
+  const s = await stripe('billing_portal/sessions', new URLSearchParams({ customer: user.stripe_customer_id, return_url: `${returnOrigin(origin)}/#create` }));
   return { url: s.url as string };
 }
 

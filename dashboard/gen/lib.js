@@ -21,6 +21,11 @@ export const h = (tag, attrs = {}, ...kids) => {
  * immutable and the browser never asks for it again (J, 2026-11-01: Media kept reloading its pictures and clips).
  */
 export const fileUrl = (id, sha) => `/v1/assets/${encodeURIComponent(id)}/file${sha ? `?v=${String(sha).slice(0, 16)}` : ''}`;
+/**
+ * A picture's small copy for a tile or a row (the library's level of detail, 256 px on a phone, 512 elsewhere; the
+ * original where it has no levels yet). A phone's tile is about 170 px wide: it never needs the full-size file.
+ */
+export const thumbUrl = (id, sha) => `${fileUrl(id, sha)}${sha ? '&' : '?'}lod=${matchMedia('(max-width: 900px)').matches ? 256 : 512}`;
 
 /**
  * Redraws a list in place instead of rebuilding it (J, 2026-11-01: "I hope in general the app doesn't refresh constantly").
@@ -134,6 +139,8 @@ export function friendly(err) {
   if (err?.data?.offline || (!status && (/failed to fetch|networkerror|load failed|network|^offline$/i.test(raw) || (typeof navigator !== 'undefined' && navigator.onLine === false)))) return { kind: 'offline', text: 'Can\'t reach Gen right now. Your work is kept here and saves as soon as you\'re back online.', fix: 'connection' };
   if (/AI isn.t available|no AI|connect your AI/i.test(raw)) return { kind: 'ai', text: 'The AI is not available right now. Try again in a little while.', fix: 'ai' };
   if (status === 413 || /too large|payload/i.test(raw)) return { kind: 'big', text: 'That file is too big (1.5 GB at most).' };
+  // Gen's own plain words for a full line or a busy day (src/aigate.ts, src/jobs.ts admitJob): they say what to do already.
+  if ((status === 429 || status === 503) && /^(The AI is busy right now|You already have \d+ AI requests|Too many jobs are waiting|Hawkes Gen is busy right now)/.test(raw)) return { kind: 'busy', text: plainError(raw), fix: 'retry' };
   if (status === 429 || /rate limit|too many/i.test(raw)) {
     const n = Math.max(1, Math.ceil(Number(err?.retryAfter) || 0));
     return { kind: 'slow', text: err?.retryAfter ? `Too many requests, try again in ${n} s.` : 'Too many requests, try again in a few seconds.', fix: 'retry', wait: err?.retryAfter ? n : null };

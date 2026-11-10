@@ -192,6 +192,18 @@ still.
 - The character sheet has **Rig it**, **Move from words**, **Stock move** and **Move from a video**. Each new move is
   merged into their model with `blender.character`, so the clip list grows and every stage that casts them can use it.
 
+**The assistants:**
+
+- **Character AI** (`src/sceneai.ts`): "make him walk", "give her a punch like in my video" become one `asset.make`
+  chain. It rigs first if the model has no clips, picks a stock clip when one fits (the prompt carries the real list
+  from `motions/quaternius.json`, so it never invents a name), else `motion.from-text` or `motion.from-video`, and
+  merges every new clip into the model with `blender.character`. Checked with real turns on 2026-11-08: stock
+  Walk_Loop plus a text move; a stock punch plus a video move.
+- **AI editor** (`EDITOR_TOOLS`): `mesh.rig`, `motion.from-text` and `motion.from-video`, with results going to the
+  library.
+- **AI director:** a cast member's `animation` must be a clip their model has. When a move is missing, it picks the
+  closest one and points to the character sheet or the Character AI (it can't run jobs itself).
+
 **The library:** the `character3d` kind gains `mocap/*` beside `motion/*` and `animation/*` (`presets/shared/kinds.json`).
 
 ## Engines

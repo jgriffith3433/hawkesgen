@@ -150,8 +150,71 @@ node tools/gen-cloudrun/alerts.mjs --lane beta --channel <id> --apply   # J: cre
 The queue-depth line is logged when the health cache refreshes while jobs wait, so it is sampled whenever something asks
 for health (the keep-alive and Studio do, but an instance nobody asks about logs nothing).
 
+## Backups
+
+Written 2026-11-08 (J: a scheduled, consistent backup to a separate bucket, with retention and a restore script).
+
+**Where the data lives** (per lane, `gen` live and `gen-beta`; the buckets are `hawkes-staging-gen[-beta]-state` and `-library`):
+
+| What | Where it lives | Protected by |
+|---|---|---|
+| `hawkesgen.db` (jobs, library rows, users, credit ledger, scenes) and `analytics.db` | the instance's disk (`/data`, gone when the instance goes) | Litestream streams them to `gs://<state bucket>/db/` every 1 s / 10 s, 15-minute snapshots, 7 days of generations, bucket versioning; restored on every start |
+| `settings.json` and small state files | disk | pushed to `gs://<state bucket>/state/` |
+| Library files (uploads, generated images, video, sound, 3D) | `gs://<project>-gen[-beta]-library` (disk is a cache), by content hash | each file is written there when made; **nothing else copies it** (no versioning, no second bucket) |
+
+So before this change the database had a live replica and 7 days of history, but both sit in the same bucket as the
+state and are not a snapshot you can open and check; and the library bucket had no backup at all.
+
+**What the backup is.** `src/backup.ts`: SQLite's *online backup* (`node:sqlite` `backup`) of `hawkesgen.db` and `analytics.db`
+in a worker thread with its own read-only connection, in one step, never a raw file copy. In WAL mode that holds a read
+snapshot and never blocks a writer; Gen keeps serving. The copy is checked (`integrity_check`), its row count per table
+and the sum of every account's credits are recorded in a manifest, and it is gzipped and written to a **separate bucket**
+`gs://hawkes-staging-gen-backups/<lane>/<db>-<time>.db.gz` with `<db>-<time>.json` beside it.
+
+- **How often:** once a day, 03:15 UTC (Cloud Scheduler job `gen-beta-backup` / `gen-backup` calls `POST /v1/admin/backup` with the lane's owner key; it wakes an idle instance).
+  Between backups Litestream's continuous replica still covers the last 7 days to the second.
+- **How long kept:** 30 days (a Cloud Storage lifecycle rule on the bucket deletes older objects; Gen's account can create and read
+  backups but not delete them). About 30 daily copies of each database. Change `--keep-days`.
+- **Writes are never locked for more than a second.** Measured by `test/backup.test.ts`: a second process inserts rows
+  every millisecond while a 9 MB database is backed up; 3,600 concurrent writes, the slowest took **1.9 ms** (0.6 ms on
+  two other runs), the backup took ~180 ms and Gen's event loop stalled **1 ms**. Every backup records its event-loop
+  stall as `writeStallMs` in its manifest; read it there for the real databases.
+- **The library bucket is not covered here.** Its files are write-once by hash; protecting it (versioning + soft delete, or a
+  copy to a second bucket) is the next part, not done.
+
+**Set it up** (needs gcloud signed in as J; every command is printed first, nothing changes without `--apply`; nothing was
+created from the agent's session, which has no cloud access). Beta first:
+
+```
+node tools/gen-cloudrun/backup-setup.mjs --lane beta                 # prints the exact gcloud commands
+GEN_OWNER_KEY=<gen-beta owner key> node tools/gen-cloudrun/backup-setup.mjs --lane beta --apply
+gcloud scheduler jobs run gen-beta-backup --project=hawkes-staging --location=us-east4   # try it now
+node tools/gen-cloudrun/restore-backup.mjs --list --bucket hawkes-staging-gen-backups --lane beta
+```
+
+It makes the bucket (private, uniform access), the 30-day rule, Gen's create/read grants, sets `HAWKESGEN_BACKUP_BUCKET` on the
+service (a plain env var: re-run the script if `deploy.ps1` is run afterwards and the variable is gone), and the scheduler
+job. Live is the same with `--lane live`, once beta has made a good backup. The scheduler job's header holds the owner key.
+
+**Restore.**
+
+1. Pick a backup: `node tools/gen-cloudrun/restore-backup.mjs --list --bucket hawkes-staging-gen-backups --lane live`.
+2. Restore it to a **scratch file** and check it (touches nothing running):
+   `node tools/gen-cloudrun/restore-backup.mjs --bucket hawkes-staging-gen-backups --lane live --at latest --to ./scratch/restored.db`
+   (`--at hawkesgen-20261108T031500Z` for one day; `--db analytics` for the analytics database). It prints
+   "integrity ok, every table's row count and the credits match the backup", or exits 2 and says what differs.
+3. To recover one account or table, open the scratch file with `sqlite3` and copy the rows back through the API or SQL.
+4. To bring a whole database back (disaster only, J present): scale writers off, put the verified file in as the new
+   Litestream generation with `litestream replicate ./scratch/restored.db gcs://<state bucket>/db/hawkesgen.db`
+   run from a machine with access, then start the service; its start restores the newest generation. Not rehearsed
+   against live; rehearse it on beta first.
+
+`test/backup.test.ts` restores a backup taken during writes into a scratch database and checks integrity, every table's
+row count and the credit total against the manifest, and that a mismatch is reported.
+
 ## Known limits
 
 - **One instance**: fine for Studio and a few customers; a crowd needs the database off SQLite first.
+- The library bucket has no second copy (see Backups).
 - A file made just before the instance stops may not be in the library bucket yet (backups run in the background).
 - `settings.brain` defaults to Cursor's CLI, which the image doesn't have: set a brain that works on Cloud Run.

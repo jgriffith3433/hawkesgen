@@ -128,6 +128,14 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   die at the fetch with Cloud Run time spent. The job fails at once, kind `token`, "resubmit it with a fresh token".
   The vault still keeps tokens 12 hours so a restarted Gen can read them; the age check is what decides. A build that
   ran out of memory is made again on a bigger machine only if its token is still under 45 minutes old.
+- **A fresh token from Studio, so queue time never matters** (`github.refresh = { url, build, key }`, next to repo, commit,
+  token and ref). `url` must be a public https address (checked at submit and again, resolved, before each call), `build` the
+  build's id and `key` the 64-hex key Studio made for that one build; the key is held in the token vault like the token
+  (the job keeps only its `tok_` reference). When the build starts (`customer.ts freshCustomerToken`), if the held token is
+  older than 45 minutes, missing or expired, or GitHub answers 401 to the project read, Gen POSTs `{ job, build, key }` to
+  `url` and uses the `{ token, repo, commit, expiresAt }` it returns (it must be for this build's repo and commit and not
+  about to expire); the new token replaces the held one, so an out-of-memory second try reads it too. Only a failed refresh
+  fails the build, kind `token`. No polling: one call per start. Without `refresh` the 45-minute rule above is unchanged.
 - **One build per job, across restarts** (2026-11-04, Sick of It v13, `j_bb4c57cd1cf3`: Unity built the game, Gen died
   keeping the ~1 GB output, and each restart built it again, five times; the fifth failed at the fetch and replaced the
   result). Now:
@@ -142,9 +150,14 @@ stays internal-only). `src/providers/builder/customer.ts`, `src/tools/build.ts r
   - **Streamed, not read.** The archive is downloaded to a file (`gcsDownload` streams) and kept with
     `ctx.emitFile` -> `library.ts putAssetFile`, which copies and hashes it in chunks. `fs.readFileSync` of the ~1 GB
     archive was what ran the 4 GiB instance out of memory.
-  - **Each execution's log is its own.** Before a new execution starts, Gen deletes the job's `unity.log` and
-    `result.json` from the bucket, so one that stops before Unity runs (the fetch) can't be shown with an earlier
-    execution's last Unity line, and its "git said:" text is git's.
+  - **No note, but an earlier success still in the bucket** (its notes lost, or a Gen from before `done.json`): its
+    `result.json` says ok and `artifact.tgz` is still there, so Gen finishes from it (`cloudrun.ts earlierRun`, the
+    result says `recovered`) and never builds over it.
+  - **Each execution's log is its own.** Before a new execution starts, Gen deletes what an earlier execution of the
+    job left (`unity.log`, `result.json`, `artifact.tgz` and the rest), so one that stops before Unity runs (the fetch)
+    can't be shown with an earlier execution's last Unity line, and its "git said:" text is git's. Gen also reads a
+    Unity log only when the execution's own `result.json` names it (`result.log`): one that failed at the license or
+    the fetch uploaded none.
   - If the result says the build stopped before the cache step (`license`, `source`), the log says
     `Library cache: not reached (the build stopped at "source")` instead of "none restored".
 - **Before anything starts**, Gen asks GitHub (with that token) for the project folder (the tree, when `path` is not

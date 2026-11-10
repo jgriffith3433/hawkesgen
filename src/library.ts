@@ -124,6 +124,25 @@ export function getAsset(assetId: string): Asset | null {
   return parseRow<Asset>(db.prepare('SELECT * FROM assets WHERE id = ?').get(assetId), JSON_COLS) ?? null;
 }
 
+/**
+ * The asset whose file this library path is (files are named <asset id><ext>, so this is a lookup by id), or null when
+ * the path is not a library file. Works whether or not the file is on this instance's disk.
+ */
+export function assetAt(file: string): { id: string; sha256: string; path: string } | null {
+  const m = /^(a_[0-9a-f]{6,})\./.exec(path.basename(String(file)));
+  const byId = m ? (db.prepare('SELECT id, sha256, path FROM assets WHERE id = ?').get(m[1]) as { id: string; sha256: string; path: string } | undefined) : undefined;
+  if (byId && path.resolve(byId.path) === path.resolve(file)) return byId;
+  return (db.prepare('SELECT id, sha256, path FROM assets WHERE path = ?').get(file) as { id: string; sha256: string; path: string } | undefined) ?? null;
+}
+
+/**
+ * A library file's content hash without reading it (an asset's row, a blob's name), or null for any other file. Recipe
+ * keys use this, so asking "does the library have this already?" never needs the file on this instance.
+ */
+export function libraryShaOf(file: string): string | null {
+  return blobShaOf(file) ?? assetAt(file)?.sha256 ?? null;
+}
+
 export function listAssets(q: { project?: string; kind?: string; tool?: string; client?: string; text?: string; starred?: boolean; job?: string; playtest?: boolean; limit?: number; offset?: number; projects?: string[] } = {}) {
   const where: string[] = [];
   const args: Record<string, unknown> = {};
@@ -226,10 +245,30 @@ export function canUseBlob(client: Client, hash: string): boolean {
   return Boolean(db.prepare(`SELECT 1 FROM assets WHERE sha256 = ?${scope ? ` AND ${scope}` : ''} LIMIT 1`).get(hash));
 }
 
+// Blobs whose bytes are in the library bucket (sha256/<hash>, the same key an asset with those bytes has): big uploads
+// that went straight there (POST /v1/blobs/upload, src/bigupload.ts). Any instance may not have them on disk yet:
+// blobPath answers where the file goes, and storage.ts ensureBlob / ensureInputs fetch it before it is read.
+db.exec(`CREATE TABLE IF NOT EXISTS blob_remote (sha TEXT PRIMARY KEY, ext TEXT NOT NULL DEFAULT '', bytes INTEGER NOT NULL, created INTEGER NOT NULL)`);
+
+/** Records that blob:<hash> is in the bucket (with the extension its local copy gets). */
+export function putBlobRemote(hash: string, ext: string, bytes: number) {
+  db.prepare('INSERT OR IGNORE INTO blob_remote (sha, ext, bytes, created) VALUES (?, ?, ?, ?)').run(hash, ext, bytes, Date.now());
+}
+export function blobRemote(hash: string): { ext: string; bytes: number } | null {
+  return (db.prepare('SELECT ext, bytes FROM blob_remote WHERE sha = ?').get(hash) as { ext: string; bytes: number } | undefined) ?? null;
+}
+/** The sha a local blob file is named by, or null when the path isn't a blob's. */
+export function blobShaOf(file: string): string | null {
+  if (path.resolve(path.dirname(path.dirname(file))) !== path.resolve(paths.blobs)) return null;
+  return /^([0-9a-f]{64})/.exec(path.basename(file))?.[1] ?? null;
+}
+
+/** The blob's local file: on disk, or (for one only in the bucket) where it will be once fetched. Null when Gen has no such blob. */
 export function blobPath(hash: string): string | null {
   if (!/^[0-9a-f]{64}$/.test(hash)) return null;
   const dir = path.join(paths.blobs, hash.slice(0, 2));
-  if (!fs.existsSync(dir)) return null;
-  const f = fs.readdirSync(dir).find((n) => n.startsWith(hash));
-  return f ? path.join(dir, f) : null;
+  const f = fs.existsSync(dir) ? fs.readdirSync(dir).find((n) => n.startsWith(hash) && !n.endsWith('.part')) : undefined;
+  if (f) return path.join(dir, f);
+  const r = blobRemote(hash);
+  return r ? path.join(dir, `${hash}${r.ext}`) : null;
 }

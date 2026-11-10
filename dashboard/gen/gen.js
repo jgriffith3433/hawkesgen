@@ -18,7 +18,7 @@ import { initStudio } from './studio.js';
 import { initDirector } from './director.js';
 import { initScenes, startWorkspace, activeKind, activeEditor, newScene } from './scenes.js';
 import { initEditor } from './editor.js';
-import { initLanding, show as showLanding } from './landing.js';
+import { initLanding, show as showLanding, hide as hideLanding } from './landing.js';
 import { initTour, startTour } from './tour.js';
 import { initGuide, startGuide } from './guide.js';
 import { openPalette } from './palette.js';
@@ -338,7 +338,14 @@ bus.on('sceneActive', () => {
 bus.on('touchDrag', (on) => $('#app').classList.toggle('touch-dragging', on));
 
 // ------------------------------------------------------------------ start
+// The session cookie is HttpOnly, so hg.in (set once a session is known) is the hint: without it the welcome shows at
+// once, the editor is never mounted, and loadMe skips /v1/users/me (that route's 401 is for API clients, not the landing).
+let hinted = false;
+try { hinted = localStorage.getItem('hg.in') === '1'; } catch { /* */ }
+if (!hinted && sessionStorage.getItem('hg.landing.looked') !== '1') { showLanding(); document.getElementById('bootCover')?.remove(); }
 await loadMe();
+try { if (state.user) localStorage.setItem('hg.in', '1'); else localStorage.removeItem('hg.in'); } catch { /* */ }
+if (state.user) { hideLanding(); document.body.classList.add('app-on'); }
 $('#app').dataset.kind = 'video';
 async function start() {
   await startWorkspace();
@@ -349,6 +356,6 @@ async function start() {
 if (state.user) { try { await start(); } catch (err) { toast(err.message); startSignedOut(); } } else startSignedOut();
 bus.emit('ready', state.user);
 document.getElementById('bootCover')?.remove();
-bus.on('signedIn', () => start().catch((err) => toast(err.message)));
+bus.on('signedIn', () => { try { localStorage.setItem('hg.in', '1'); } catch { /* */ } document.body.classList.add('app-on'); start().catch((err) => toast(err.message)); });
 startSync();
 setTimeout(fit, 50);

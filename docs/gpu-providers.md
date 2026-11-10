@@ -38,6 +38,13 @@ The queue side is the GPU lane in `src/jobs.ts`. The run protocol is unchanged a
 "fleet": { ..., "egressIp": "", "openComfyPort": false }
 ```
 
+**A family's own list is followed by every other enabled endpoint that names that family** (before `fleet`; `orderFor`
+in `route.ts`), so a second endpoint for a family is its fallback as soon as it is added: the 3D families (`rig`,
+`motion`, `mocap`, `blender`) go `runpod-3d`, then `modal-3d`, without editing `familyOrder`. Endpoints with `["*"]` are
+not appended: a family with its own list may keep off them on purpose. (2026-11-08: the 3D list was `["runpod-3d",
+"fleet"]`, so when RunPod ran out of credit 3D jobs had nowhere to go although Modal was up.) The Modal 3D worker is
+deployed by `ops-modal-deploy.yml` with `kind: 3d` (`modal.mjs --kind 3d`, app `hawkes-gen-3d`).
+
 **No `order` and no `familyOrder` is the old rule, exactly.** A family goes to its Cloud Run service when
 `backend`/`families` say `cloudrun` and the service is deployed. Everything else goes to the fleet. A Cloud Run failure
 fails the job as before. An existing settings file has neither key, so it behaves as it did.
@@ -77,7 +84,12 @@ Cooldowns live in memory, so a restart gives every provider a new chance. A succ
 **Cold starts.** An endpoint that hasn't run a job in Gen for 20 minutes (Modal's `scaledown_window`) has no worker up, so
 the next job starts one: it pulls the image and starts ComfyUI, which takes several minutes. The job says so up front
 ("starting a modal GPU (none has run for a while; a cold start takes several minutes)") instead of "waiting for a free
-GPU", and 429/503 answers while it starts get the cold start's 12 extra minutes before the provider cools down.
+GPU", and 429/503 answers while it starts get the cold-start wait (`coldStartSeconds`, default 12 minutes). On a cold
+endpoint, RunPod's "failed to assign worker" and a headers/pre-worker timeout are the worker still starting too: each POST
+gives up before RunPod's ~5.5 minute load-balancer hold and the next goes in, until the cold-start wait runs out, then the
+endpoint cools as capacity. (2026-11-10: Pixal3D's worker took longer than one hold; failing over at the first one meant
+no 3D model could ever be made. RunPod's job counters stay 0 on LOAD_BALANCER endpoints, so "0 jobs" is not a stuck worker.) `waitForInstanceMs` is the short busy wait
+only when `lastOk` is fresh; true cold uses the longer cold-start wait. 401/403 fail over at once (auth cool).
 
 **Credit.** RunPod starts no worker for an account at or below $0, and its gateway doesn't say so: requests just wait
 (2026-11-01: four playtests sat at "opening a browser on RunPod"). Gen reads the balance every 2 minutes (`credit.ts`,
@@ -229,8 +241,9 @@ start on it, but **RunPod keeps reusing a warm worker on the old image** (FlashB
 running on one is cut off and retried). The tag is `<comfy tag>-<context hash>` (`image-context.mjs` prints it; line endings
 don't count, so a Windows checkout names the tag GitHub's build pushes). Check it exists before pointing an endpoint at it
 (`docker manifest inspect`): a missing tag leaves every new worker unhealthy and RunPod holds requests until they time out.
-The first start on a host pulls about 6 GB, minutes: Gen waits up to 12 minutes past its usual wait for headers
-(`run.ts COLD_START_MS`), and RunPod's 400 "failed to assign worker" (no GPU of its types free) waits like a busy service.
+The first start on a host pulls about 6 GB, minutes: true cold (429/503 while booting) gets the cold-start wait
+(`coldStartSeconds` / 12 minutes). RunPod's 400 "failed to assign worker" on a warm endpoint waits like a busy
+service; on a cold one it gets the cold-start wait.
 **A new image on Modal:** `node tools/gpu-providers/modal.mjs --image <image>` rewrites `.data/modal/modal_app.py`, then
 `uvx --from modal modal deploy .data/modal/modal_app.py` with `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` from Gen's `.env` in the
 environment (the CLI reads them: no `modal setup`). Two things the app must keep (2026-10-31; before them Modal never ran a

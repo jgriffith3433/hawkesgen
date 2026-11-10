@@ -8,8 +8,7 @@ import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
 import { runCloudBuild, cloudConfig, cloudBuildStarted, forgetFinishedBuild, releaseFinishedBuild, regionsOf, type BuildOptions } from '../providers/builder/cloudrun.ts';
 import { resolveMachine, nextBigger, customerJobForMachine, type Machine } from '../providers/builder/sizes.ts';
-import { isCustomerMode, admitCustomer, customerBuildOf, customerToken, TOKEN_KIND, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
-import { dropToken } from '../providers/playtester/intake.ts';
+import { isCustomerMode, admitCustomer, customerBuildOf, freshCustomerToken, dropCustomerSecrets, TOKEN_KIND, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
 import { refundOrgCharge } from '../orgcredits.ts';
 import type { RunContext } from './types.ts';
 import { runVmBuild } from '../providers/builder/vm.ts';
@@ -168,9 +167,16 @@ export async function runCustomerBuild(ctx: RunContext) {
     if (!started) {
       // Customer builds run only on their own job (its account reaches nothing): refused at once when there is none.
       assertCustomerBuildsOn(cfg.gcp);
-      token = customerToken(b, undefined, ctx.log);
+      token = await freshCustomerToken(b, ctx.job.id, { log: ctx.log });
       ctx.step('reading the project from GitHub');
-      probe = await probeProject(b, token, ghFetch.fetch as typeof fetch);
+      try {
+        probe = await probeProject(b, token, ghFetch.fetch as typeof fetch);
+      } catch (e: any) {
+        // GitHub refused the token (401): ask Studio for a fresh one once, just before the fetch.
+        if (e?.kind !== TOKEN_KIND || !b.refresh) throw e;
+        token = await freshCustomerToken(b, ctx.job.id, { log: ctx.log, force: true });
+        probe = await probeProject(b, token, ghFetch.fetch as typeof fetch);
+      }
       baseJob = customerJobFor(jobForVersion(probe.version, unityImages(cfg.gcp)), cfg.gcp);
       await onSize(asked);
       ctx.log(`customer build: ${b.repo}@${b.commit.slice(0, 12)}${b.ref ? ` (${b.ref})` : ''}, project ${probe.path === '.' ? 'at the repo root' : probe.path}, Unity ${probe.version}${b.check ? ', compile-only check (no player build, Library cache restored, never saved)' : b.method ? `, ${b.method}` : ', every enabled scene'}, machine ${machine.name} (${machine.cpu} vCPU, ${machine.memoryGiB} GiB)`);
@@ -188,7 +194,7 @@ export async function runCustomerBuild(ctx: RunContext) {
     let up = !r.ok && r.oom && token ? nextBigger(r.machine ?? machine, cfg.gcp.sizes) : null;
     if (up) {
       // The build may have run for an hour: the token it started with must still be fresh enough to fetch with.
-      try { token = customerToken(b, undefined, ctx.log); } catch (e: any) {
+      try { token = await freshCustomerToken(b, ctx.job.id, { log: ctx.log }); } catch (e: any) {
         if (e?.kind !== TOKEN_KIND) throw e;
         ctx.log('the build ran out of memory, but its GitHub token is too old to build again; resubmit it with a fresh token');
         up = null;
@@ -240,6 +246,7 @@ export async function runCustomerBuild(ctx: RunContext) {
         machine: { name: ran.name, cpu: ran.cpu, memoryGiB: ran.memoryGiB }, machineAsked: asked.name,
         ...(retried ? { retried: { reason: 'out of memory', from: retried.from.name, to: retried.to.name, note: `ran out of memory on ${retried.from.name} (${retried.from.cpu} vCPU, ${retried.from.memoryGiB} GiB); built again on ${retried.to.name} (${retried.to.cpu} vCPU, ${retried.to.memoryGiB} GiB)` }, totalSeconds: Math.round(spent.seconds), totalCost: Math.round(spent.cost * 1000) / 1000 } : {}),
         ...(warning ? { warnings: [warning] } : {}),
+        ...(r.recovered ? { recovered: 'kept from an earlier execution of this job that had already built it' } : {}),
       });
       if (b.check) await releaseFinishedBuild(ctx.job.id);
       if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });
@@ -252,7 +259,7 @@ export async function runCustomerBuild(ctx: RunContext) {
       fs.rmSync(r.tmp, { recursive: true, force: true });
     }
   } finally {
-    dropToken(b.tokenRef);
+    dropCustomerSecrets(b);
   }
 }
 

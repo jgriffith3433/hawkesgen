@@ -169,7 +169,7 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
     if (url.startsWith('https://storage.googleapis.com/storage/v1/b/')) {
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
       if (method === 'DELETE') { writes.delete(key); return new Response(null, { status: 204 }); }
-      if ((key.endsWith('/cloud-job.json') || key.endsWith('/done.json') || key.endsWith('/unity.log')) && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
+      if ((key.endsWith('/cloud-job.json') || key.endsWith('/done.json') || key.endsWith('/unity.log') || key.endsWith('/spec.json')) && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
       if (key.endsWith('/result.json')) {
         const v = typeof result === 'function' ? (result as (n: number) => unknown)(runs) : result;
         return v === null ? new Response('not found', { status: 404 }) : new Response(JSON.stringify(v));
@@ -675,6 +675,70 @@ test('a token older than 45 minutes starts no build: Studio sends a fresh one be
   intake.dropToken(young); intake.dropToken(old);
 });
 
+// ------------------------------------------------------------------ github.refresh: a fresh token right before the fetch
+
+const KEY = 'ab'.repeat(32);
+const FRESH = 'ghs_freshInstallationTokenFromStudio0123456789';
+const withRefresh = () => ({ ...good(), github: { ...good().github, refresh: { url: 'https://studio.example.com/api/builds/gen-token', build: 'b_1a2b3c', key: KEY } } });
+
+test('github.refresh is admitted; its key goes to the vault and never stays in the params', () => {
+  const held: string[] = [];
+  const p = C.admitCustomer(withRefresh(), (t) => { held.push(t); return 'tok_' + String(held.length).repeat(24).slice(0, 24); });
+  assert.deepEqual(held, [TOKEN, KEY]);
+  assert.deepEqual(p.github.refresh, { url: 'https://studio.example.com/api/builds/gen-token', build: 'b_1a2b3c', keyRef: 'tok_' + '2'.repeat(24) });
+  assert.ok(!JSON.stringify(p).includes(KEY));
+  const b = C.customerBuildOf(p);
+  assert.equal(b.refresh?.build, 'b_1a2b3c');
+  const bad = (r: any) => assert.throws(() => C.admitCustomer({ ...good(), github: { ...good().github, refresh: r } }, () => 'tok_' + '0'.repeat(24)), (e: any) => e.kind === 'params' && !String(e.message).includes(KEY));
+  bad({ url: 'http://studio.example.com/x', build: 'b_1', key: KEY });
+  bad({ url: 'https://169.254.169.254/x', build: 'b_1', key: KEY });
+  bad({ url: 'https://localhost/x', build: 'b_1', key: KEY });
+  bad({ url: 'https://studio.example.com/x', build: 'b 1', key: KEY });
+  bad({ url: 'https://studio.example.com/x', build: 'b_1', key: 'short' });
+  assert.equal(C.customerBuildOf(C.admitCustomer(good())).refresh, null);
+});
+
+test('an old, lost or refused token is replaced by Studio\'s fresh one; only a failed refresh is a token failure', async () => {
+  const intake = await import('../src/providers/playtester/intake.ts');
+  const logs: string[] = [];
+  const calls: any[] = [];
+  const answer = (body: any, status = 200) => async (url: string, init: any) => { calls.push({ url, body: JSON.parse(init.body) }); return new Response(JSON.stringify(body), { status }); };
+  const resolve = (async (u: string) => new URL(u)) as any;
+  const mk = (age: number) => {
+    const tokenRef = intake.holdToken(TOKEN, Date.now() - age * 60_000);
+    return { repo: 'acme/rocket-game', commit: SHA, ref: null, path: null, method: null, tokenRef, check: false, machine: null,
+      refresh: { url: 'https://studio.example.com/api/builds/gen-token', build: 'b_1a2b3c', keyRef: intake.holdToken(KEY) } } as any;
+  };
+  const exp = new Date(Date.now() + 3600_000).toISOString();
+  const ok = { token: FRESH, repo: 'acme/rocket-game', commit: SHA, expiresAt: exp };
+  // Young token: no call.
+  let b = mk(10);
+  assert.equal(await C.freshCustomerToken(b, 'j_1', { log: (m) => logs.push(m), post: answer(ok) as any, resolve }), TOKEN);
+  assert.equal(calls.length, 0);
+  // 50 minutes old: Studio is asked with { job, build, key }, the new token replaces the held one.
+  b = mk(50);
+  assert.equal(await C.freshCustomerToken(b, 'j_2', { log: (m) => logs.push(m), post: answer(ok) as any, resolve }), FRESH);
+  assert.deepEqual(calls[0], { url: 'https://studio.example.com/api/builds/gen-token', body: { job: 'j_2', build: 'b_1a2b3c', key: KEY } });
+  assert.equal(intake.tokenFor(b.tokenRef), FRESH);
+  // Dropped (missing): refreshed too. Forced (GitHub's 401): refreshed whatever the age.
+  const gone = mk(1); intake.dropToken(gone.tokenRef);
+  assert.equal(await C.freshCustomerToken(gone, 'j_3', { log: (m) => logs.push(m), post: answer(ok) as any, resolve }), FRESH);
+  assert.equal(await C.freshCustomerToken(mk(1), 'j_4', { force: true, log: (m) => logs.push(m), post: answer(ok) as any, resolve }), FRESH);
+  // Failures are kind token and say nothing secret.
+  const fails = async (post: any, o: any = {}) => assert.rejects(() => C.freshCustomerToken(mk(50), 'j_5', { log: (m) => logs.push(m), post, resolve, ...o }), (e: any) => e.kind === 'token' && /Nothing was built/.test(e.message) && ![KEY, TOKEN, FRESH].some((x) => e.message.includes(x)));
+  await fails(answer({ error: 'no' }, 401));
+  await fails(answer({ error: 'no' }, 502));
+  await fails(answer({ token: 'nope' }));
+  await fails(answer({ ...ok, repo: 'evil/other' }));
+  await fails(answer({ ...ok, commit: 'd'.repeat(40) }));
+  await fails(answer({ ...ok, expiresAt: new Date(Date.now() + 30_000).toISOString() }));
+  await fails((async () => { throw new Error('connect ECONNREFUSED'); }) as any);
+  await fails(answer(ok), { resolve: (async () => { throw new Error('is private'); }) as any });
+  assert.ok(![KEY, TOKEN, FRESH].some((x) => logs.join('\n').includes(x)), 'the log has no secret');
+  // Without refresh: the old rule.
+  await assert.rejects(() => C.freshCustomerToken({ ...mk(50), refresh: null }, 'j_6', { log: () => {} }), (e: any) => e.kind === 'token' && /minutes old/.test(e.message));
+});
+
 test('the output is streamed into the library: same bytes and hash, no Buffer of the file', async () => {
   const lib = await import('../src/library.ts');
   const big = path.join(data, 'big.tgz');
@@ -865,7 +929,9 @@ test('check: it reserves 15 credits (UNITY_CHECK_CREDITS), not the flat build pr
 test('check: a compiler error ends the job as kind compile with its errors, no artifact, no cache saved, no outcome recorded', async () => {
   const g = fakeCloud({
     result: { ok: false, stage: 'unity', kind: 'compile', error: 'the project has compiler errors (Unity exited with code 1)', exitCode: 1, unity: '6000.3.7f1', seconds: { cache: 40, unity: 90, total: 150 },
-      cache: { restoredFrom: 'build', restoredBytes: 5_000_000, saved: false, savedKey: null, skipped: 'a compile-only check restores the Library cache and never saves it' } },
+      cache: { restoredFrom: 'build', restoredBytes: 5_000_000, saved: false, savedKey: null, skipped: 'a compile-only check restores the Library cache and never saves it' },
+      // As entrypoint.sh writes it: the log it uploaded (Gen reads only a log the execution's own result names).
+      log: 'unity-builds/j_chk1/unity.log' },
     cacheObjects: ['unity-cache/cust--usr_acme--acme--rocket-game--Game-x/build.tar.zst'],
     log: CS_LOG, canCreate: true,
   });
@@ -941,4 +1007,48 @@ test('check: entrypoint.sh compile-only command has no -buildTarget and no -exec
   assert.match(src, /stage save\nif \[ "\$CHECK" = true \]; then\n  SAVE_SKIPPED=/);
   assert.match(src, /\[ "\$CHECK" = true \] && grep -Eq 'error CS\[0-9\]\+' "\$OUT\/unity\.log"; then die compile/);
   assert.match(src, /if \[ "\$CUSTOMER" = true \] && \[ "\$CHECK" != true \]; then\n  # The build goes into HAWKES_OUT/, 'no build script is added for a check');
+});
+
+// ------------------------------------------------------------------ no note, but an earlier execution's success (j_bb4c57cd1cf3)
+// The backstop behind done.json: an earlier execution's result and artifact still in the bucket with no note of either
+// (lost, or written by a Gen from before the note) are finished from, never built over; anything else it left is cleared.
+
+const okResult = (job: string) => ({ ok: true, stage: 'end', exitCode: 0, unity: '6000.3.7f1', seconds: { unity: 300 }, cache: { restoredFrom: 'build', saved: true, savedKey: 'build' },
+  output: { object: `unity-builds/${job}/artifact.tgz`, bytes: 52_000_000, files: 12, changed: [], deleted: [] }, log: `unity-builds/${job}/unity.log` });
+
+test("a lost note and an earlier execution's success still in the bucket: kept from it, nothing runs again", async () => {
+  const job = 'j_keep2';
+  const g = fakeCloud({ result: okResult(job), cacheObjects: [`unity-builds/${job}/result.json`, `unity-builds/${job}/unity.log`, `unity-builds/${job}/artifact.tgz`, `unity-builds/${job}/spec.json`] });
+  g.writes.set(`unity-builds/${job}/spec.json`, Buffer.from(JSON.stringify({ job, cache: { prefix: 'unity-cache/cust--usr_acme--acme--rocket-game-0123456789', restore: ['build'], save: 'build', clean: false } })));
+  try {
+    // Started (the note was written) by a run long gone; the token is past GitHub's hour: nothing may need it.
+    const { ctx, logs, outputs } = ctxFor(job, C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    assert.equal(g.runs(), 0, 'not built again');
+    assert.equal(ctx.value.ok, true);
+    assert.match(ctx.value.recovered, /earlier execution/);
+    assert.equal(outputs[1].mime, 'application/gzip');
+    assert.match(logs.join('\n'), /already built it/);
+  } finally {
+    g.restore();
+  }
+});
+
+test("a new execution's failure is its own: the earlier one's result and Unity log are cleared first and never read as its own", async () => {
+  const job = 'j_own1';
+  const fetchFail = { ok: false, stage: 'source', kind: 'source', error: "couldn't fetch acme/rocket-game at cccccccccccc (is the commit pushed, and can the GitHub token read the repo?): git said: fatal: remote error: upload-pack: not our ref", exitCode: null, seconds: { license: 7, source: 0, total: 10 }, cache: { restoredFrom: null, saved: false }, output: null, log: null };
+  const earlier = { ...okResult(job), ok: false, kind: 'build', error: 'Unity exited with code 1' };
+  const g = fakeCloud({ result: (runs: number) => (runs === 0 ? earlier : fetchFail), cacheObjects: [`unity-builds/${job}/result.json`, `unity-builds/${job}/unity.log`] });
+  try {
+    const { ctx } = ctxFor(job, C.admitCustomer(good()));
+    await assert.rejects(() => runCustomerBuild(ctx), (e: any) => e.kind === 'source' && e.message === fetchFail.error);
+    const del = (k: string) => g.calls.findIndex((c) => c.method === 'DELETE' && c.url.includes(`unity-builds%2F${job}%2F${k}`));
+    const run = g.calls.findIndex((c) => c.url.endsWith(':run'));
+    assert.ok(del('result.json') >= 0 && del('result.json') < run, "the earlier result is cleared before the new execution starts");
+    assert.ok(del('unity.log') >= 0 && del('unity.log') < run, "the earlier Unity log too");
+    assert.equal(ctx.value.logTail, '', 'no Unity log: this execution never ran Unity');
+    assert.ok(!g.calls.some((c) => c.method === 'GET' && c.url.includes(`${job}%2Funity.log`) && g.calls.indexOf(c) > run), 'the old unity.log is never read');
+  } finally {
+    g.restore();
+  }
 });

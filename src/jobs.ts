@@ -21,7 +21,7 @@ import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
-import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, libraryShaOf, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
 import { orgOfProject, isHouseProject } from './orgsecrets.ts';
@@ -323,7 +323,10 @@ function prepareSubmit(client: Client, spec0: JobSpec): Job | Pending {
   return { tool, s: { project, params, inputs, labels: spec.labels, key: spec.key, priority: spec.priority } };
 }
 
-const sha256Sync = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+// A library file's hash comes from its row (or a blob's name), not its bytes: on Cloud Run the file may not be on this
+// instance yet (made by another instance, or before a restart), and checking the library for a take must not need it.
+// The file itself comes back from storage before the job runs (ensureInputs). Other files are hashed as they are.
+const sha256Sync = (file: string) => libraryShaOf(file) ?? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 /** The recipe key a job with these params and inputs would give its outputs (as runJob computes it). */
 export function jobRecipeKey(tool: Tool, params: Record<string, any>, inputs: Record<string, string | string[]>) {
@@ -396,11 +399,47 @@ function chargedOrg(client: Client, project: string): string | null {
   return billedOrg(client, project, Boolean(getUserForClient(client)));
 }
 
+/**
+ * What a customer's day of jobs has cost so far (UTC day, dollars: GPU, voice, Claude on a key; the usage table), read at
+ * most every 10 seconds. `forget` is for tests.
+ */
+let spendCache: { at: number; day: string; usd: number } | null = null;
+export function spentToday(now = Date.now(), forget = false): number {
+  const day = new Date(now).toISOString().slice(0, 10);
+  if (!forget && spendCache && spendCache.day === day && now - spendCache.at < 10_000) return spendCache.usd;
+  const since = Date.parse(`${day}T00:00:00Z`);
+  const usd = (db.prepare('SELECT SUM(cost) AS c FROM usage WHERE at >= ?').get(since) as { c: number | null }).c ?? 0;
+  spendCache = { at: now, day, usd };
+  return usd;
+}
+
+/**
+ * Whether Gen will take one more job from this caller at all, checked first thing in createJob and before an org's
+ * Studio balance is charged, so a refusal reserves and charges nothing:
+ *  - a customer project may have `queue.maxQueuedPerProject` jobs waiting (429, plain words): running jobs are capped by
+ *    the lanes, this caps the line behind them;
+ *  - past `queue.dailyCeilingUsd` of spend in a UTC day, customers' new jobs get "busy, try again later" (503).
+ * Studio's own projects, admin and owner keys, and the steps of a pipeline (`labels.parent`: their parent already
+ * got in) are exempt, so the studio keeps working.
+ */
+export function admitJob(client: Client, project: string, labels?: Record<string, unknown>) {
+  if (labels?.parent || exemptCheck()({ project, client: client.id })) return;
+  const q = loadSettings().queue;
+  if (q.dailyCeilingUsd > 0 && spentToday() >= q.dailyCeilingUsd) {
+    throw new GenError('Hawkes Gen is busy right now. Nothing was charged: please try again later.', { status: 503, kind: 'busy' });
+  }
+  const waitingNow = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE project = ? AND status = 'queued'").get(project) as { n: number }).n;
+  if (waitingNow >= q.maxQueuedPerProject) {
+    throw new GenError(`Too many jobs are waiting (${waitingNow}). Let some finish or cancel a few, then try again. Nothing was charged.`, { status: 429, kind: 'busy' });
+  }
+}
+
 /** createJob after charging the org's Studio balance (402 kind 'credits' when short, refused when unreachable). */
 async function createJobCharged(client: Client, tool: Tool, s: JobInit): Promise<Job> {
   const org = chargedOrg(client, s.project);
   if (!org) return createJob(client, tool, s);
   checkSubmit(client, tool.id);
+  admitJob(client, s.project, s.labels);
   const id = newId('j', 6);
   const quote = quoteJobCredits({ project: s.project, tool: tool.id, params: s.params });
   const charge = await chargeOrg(org, id, quote.credits, tool.id);
@@ -417,6 +456,7 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
   if (!charged && chargedOrg(client, s.project)) {
     throw new GenError("This studio's credits can't be charged on this path; submit the job through POST /v1/jobs (or the MCP).", { status: 403, kind: 'credits' });
   }
+  admitJob(client, s.project, s.labels);
   const { project, params, inputs } = s;
   // No priority asked for: a boost on one of its labels sets it (boostLabel). Customers' keys (role user) can lower
   // their own jobs but never raise them or ride an admin's boost: priority is the scheduler's business.
@@ -437,12 +477,18 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
   }
   // Paid from a customer Studio's balance (src/orgcredits.ts): the cell sees it and doesn't charge again.
   if (charged?.charge.credits) job.labels = { ...job.labels, orgCredits: charged.charge.credits };
-  db.prepare(`INSERT INTO jobs (id, key, client, project, tool, params, inputs, labels, priority, status, detail, log, outputs, result, error, server, family, gpu_seconds, cost, graphs, resumed, created)
+  try {
+    db.prepare(`INSERT INTO jobs (id, key, client, project, tool, params, inputs, labels, priority, status, detail, log, outputs, result, error, server, family, gpu_seconds, cost, graphs, resumed, created)
               VALUES (:id, :key, :client, :project, :tool, :params, :inputs, :labels, :priority, :status, :detail, :log, :outputs, :result, :error, :server, :family, :gpu_seconds, :cost, :graphs, :resumed, :created)`).run({
     id: job.id, key: job.key, client: job.client, project: job.project, tool: job.tool, params: J(params), inputs: J(inputs), labels: J(job.labels),
     priority: job.priority, status: job.status, detail: job.detail, log: '[]', outputs: '[]', result: null, error: null, server: null, family: job.family,
     gpu_seconds: 0, cost: 0, graphs: '[]', resumed: 0, created: job.created,
   });
+  } catch (e) {
+    // The reservation was made before the row: a job that was never made gives it back (a customer Studio's charge is returned by createJobCharged).
+    refundJobCredits(job.id, 'The job was not made');
+    throw e;
+  }
   events.emit('job', summary(job));
   queue.pump();
   return job;

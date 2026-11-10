@@ -261,6 +261,21 @@ export class Gcs {
     await this.req(`${API}/b/${bucket}/o/${enc(name)}`, { method: 'DELETE', ok404: true });
   }
 
+  /** Copies an object inside Cloud Storage (the rewrite API, looping until done): no bytes pass through here. */
+  async copy(from: string, to: string, meta: { contentType?: string; cacheControl?: string } = {}) {
+    const a = splitUri(from);
+    const b = splitUri(to);
+    let token = '';
+    for (let i = 0; i < 1000; i++) {
+      const q = token ? `?rewriteToken=${encodeURIComponent(token)}` : '';
+      const r = await (await this.req(`${API}/b/${a.bucket}/o/${enc(a.name)}/rewriteTo/b/${b.bucket}/o/${enc(b.name)}${q}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(meta) }))!.json();
+      if (r.done) return;
+      token = r.rewriteToken;
+      if (!token) throw new Error(`copy ${from} -> ${to}: no rewrite token`);
+    }
+    throw new Error(`copy ${from} -> ${to}: did not finish`);
+  }
+
   async patch(uri: string, meta: { contentType?: string; cacheControl?: string; metadata?: Record<string, string> }) {
     const { bucket, name } = splitUri(uri);
     await this.req(`${API}/b/${bucket}/o/${enc(name)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(meta) });

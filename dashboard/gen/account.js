@@ -2,16 +2,27 @@
 // house AI, charged in credits) unless the account connected its own Anthropic API key or Claude subscription.
 
 import { $, $$, h, api, toast, bus, icon } from './lib.js';
+import { explain } from './trouble.js';
 
 export const state = { user: null, admin: false, ai: null };
 
 export async function loadMe() {
+  // Back from Stripe: the page's early /v1/users/me may predate the credits, so wait for the checkout's answer and ask again.
+  if (returning) { window.__hgMe = null; await returning.catch(() => {}); returning = null; }
   try {
-    // index.html starts this request before the scripts load; use its answer once, else ask.
+    // index.html starts this request only when hg.in says a session existed; use its answer once.
     const early = window.__hgMe ? await window.__hgMe : null;
     window.__hgMe = null;
-    if (early) { try { state.user = early.ok ? JSON.parse(early.text).user ?? null : null; } catch { state.user = null; } }
-    else state.user = (await api('/v1/users/me')).user;
+    if (early) {
+      try { state.user = early.ok ? JSON.parse(early.text).user ?? null : null; } catch { state.user = null; }
+    } else {
+      // No early probe: only ask /v1/users/me when the session hint is set. Without it, stay signed out and skip the
+      // call — that route is a real 401 for API clients, and a console error on a first visit is noise (f_9f2b737d5561).
+      let hinted = false;
+      try { hinted = localStorage.getItem('hg.in') === '1'; } catch { /* */ }
+      if (hinted) state.user = (await api('/v1/users/me')).user;
+      else state.user = null;
+    }
   } catch { state.user = null; }
   // Signed out there is nothing to ask: /v1/me would only answer 401 (a console error on every anonymous load).
   state.admin = false;
@@ -45,6 +56,126 @@ export function showMe() {
 }
 export const refreshCredits = () => api('/v1/users/me').then((m) => { state.user = m.user; showMe(); }).catch(() => {});
 
+// ------------------------------------------------------------------------------------------------ buying credits
+// No polling (AGENTS.md): Stripe's webhook grants the credits on the server; the app asks once when Stripe sends the person
+// back (GET /v1/billing/checkout/<id>, which also grants if the webhook is late), and refreshes the balance when the page
+// comes back into view (another tab paid, a delayed payment cleared), at most every 30 s.
+const CHECKOUT_KEY = 'hg.checkout';
+const remember = (id) => { try { sessionStorage.setItem(CHECKOUT_KEY, id); } catch { /* private mode */ } };
+const remembered = () => { try { return sessionStorage.getItem(CHECKOUT_KEY); } catch { return null; } };
+const forget = () => { try { sessionStorage.removeItem(CHECKOUT_KEY); } catch { /* private mode */ } };
+let returning = null;
+const n = (x) => Number(x ?? 0).toLocaleString();
+const openReceipt = (url) => { const w = open(url, '_blank', 'noopener'); if (!w) location.href = url; };
+
+/** What a checkout came to, as a toast: credits added (with the receipt), still processing, declined or cancelled. */
+function showCheckout(st, { quietIfOpen = false } = {}) {
+  if (state.user && Number.isFinite(st.balance)) { state.user.credits = st.balance; showMe(); }
+  if (st.status === 'paid') {
+    const what = st.mode === 'subscription' ? `Your ${st.name} plan is on: ${n(st.credits)} credits added` : `${n(st.credits)} credits added`;
+    toast(`${what}. You have ${n(st.balance)}.`, st.receiptUrl ? { action: 'Receipt', onAction: () => openReceipt(st.receiptUrl), ms: 10000 } : { ms: 7000 });
+    bus.emit('creditsAdded', st);
+  } else if (st.status === 'processing') {
+    toast('Your payment is processing. The credits arrive as soon as it clears.', { ms: 9000 });
+  } else if (st.status === 'declined') {
+    toast(`${st.declined || 'Your card was declined.'} Nothing was charged.`, { action: 'Try again', onAction: () => openAccount('credits'), ms: 10000 });
+  } else if (!quietIfOpen) {
+    toast('Checkout cancelled. Nothing was charged.', { action: 'Add credits', onAction: () => openAccount('credits'), ms: 7000 });
+  }
+}
+
+/** The address Stripe sent the person back to (?billing= for packs, ?checkout= for plans): read it once, then clean it. */
+async function backFromCheckout() {
+  const qs = new URLSearchParams(location.search);
+  const back = qs.get('billing') ?? qs.get('checkout');
+  if (!back) return;
+  const sid = qs.get('session_id') || remembered();
+  for (const k of ['billing', 'checkout', 'session_id']) qs.delete(k);
+  history.replaceState(history.state, '', `${location.pathname}${[...qs].length ? `?${qs}` : ''}${location.hash}`);
+  forget();
+  if (!sid) {
+    if (back === 'success') toast('Thanks: your credits are on their way.');
+    else toast('Checkout cancelled. Nothing was charged.');
+    return;
+  }
+  try { await checkoutReturned(sid); }
+  catch (err) { toast(back === 'success' ? 'Thanks: your credits are on their way.' : explain(err).text); }
+}
+
+/** Reads one checkout and says what it came to (the return address, the Back button, the playtest's `checkout`). */
+export async function checkoutReturned(sessionId, opts) {
+  const st = await api(`/v1/billing/checkout/${encodeURIComponent(sessionId)}`);
+  showCheckout(st, opts);
+  return st;
+}
+
+/** The person came back with the browser's Back button (the page from before Checkout, restored): say what happened. */
+async function backByHistory() {
+  for (const b of $$('.acct-pack[aria-busy="true"]')) { b.removeAttribute('aria-busy'); }
+  for (const b of $$('.acct-pack')) b.disabled = false;
+  const sid = remembered();
+  if (!sid) return;
+  forget();
+  try { await checkoutReturned(sid, { quietIfOpen: true }); } catch { /* nothing to say */ }
+}
+
+let lastFresh = 0;
+function freshen() {
+  if (!state.user || document.visibilityState === 'hidden' || Date.now() - lastFresh < 30_000) return;
+  lastFresh = Date.now();
+  refreshCredits();
+}
+
+/** Starts a pack's or a plan's checkout from its button: one tap (the others wait), then off to Stripe. */
+async function checkout(btn, path, body) {
+  if (btn.disabled) return;
+  const packs = [...$$('.acct-pack')];
+  for (const b of packs) b.disabled = true;
+  btn.setAttribute('aria-busy', 'true');
+  const label = btn.querySelector('.acct-pack-price');
+  const was = label?.textContent;
+  if (label) label.textContent = 'Opening…';
+  $('#accountError').hidden = true;
+  try {
+    const r = await api(path, { body });
+    if (r.sessionId) remember(r.sessionId);
+    if (r.url) { location.href = r.url; return; }
+    throw new Error('Checkout did not open. Nothing was charged; try again.');
+  } catch (err) {
+    for (const b of packs) b.disabled = false;
+    btn.removeAttribute('aria-busy');
+    if (label) label.textContent = was;
+    $('#accountError').textContent = explain(err).text;
+    $('#accountError').hidden = false;
+  }
+}
+
+/** The account's purchases (the ledger's Stripe rows), newest first, each pack with its receipt. */
+async function drawPurchases() {
+  const box = $('#purchases');
+  box.replaceChildren();
+  let rows = [];
+  try { rows = ((await api('/v1/billing/ledger?limit=100')).entries ?? []).filter((e) => e.kind === 'stripe_purchase' || e.kind === 'subscription_credits').slice(0, 5); } catch { /* none shown */ }
+  $('#acctBuysTitle').hidden = !rows.length;
+  box.hidden = !rows.length;
+  for (const e of rows) {
+    const sid = /^cs_(test|live)_/.test(e.stripe_session_id ?? '') ? e.stripe_session_id : null;
+    const receipt = h('button', { class: 'ghost small', onclick: async (ev) => {
+      const b = ev.currentTarget;
+      b.disabled = true;
+      try {
+        if (sid) { const st = await api(`/v1/billing/checkout/${encodeURIComponent(sid)}`); if (st.receiptUrl) return openReceipt(st.receiptUrl); throw new Error('Stripe has no receipt for this one yet.'); }
+        const r = await api('/v1/billing/portal', { method: 'POST' });
+        if (r.url) location.href = r.url;
+      } catch (err) { toast(explain(err).text); } finally { b.disabled = false; }
+    } }, 'Receipt');
+    box.append(h('div', { class: 'acct-buy' },
+      h('div', { class: 'grow' }, h('div', { class: 'acct-buy-what' }, e.kind === 'subscription_credits' ? 'Monthly plan' : String(e.detail ?? 'Credits').replace(/^Purchased /, '').replace(/ — .*$/, '')),
+        h('div', { class: 'muted small' }, new Date(e.created).toLocaleDateString())),
+      h('b', { class: 'acct-buy-n' }, `+${n(e.delta)}`), receipt));
+  }
+}
+
 // Continue with Google (POST /v1/users/google); email and password only where Google isn't set up (local runs).
 let afterSignIn = null;
 let authMode = 'login';
@@ -67,6 +198,8 @@ function loadGoogle() {
 }
 async function signedIn(created, notice) {
   $('#authDialog').close();
+  // Cookie is set; mark the hint so loadMe actually asks /v1/users/me (without hg.in it skips that probe).
+  try { localStorage.setItem('hg.in', '1'); } catch { /* */ }
   await loadMe();
   bus.emit('signedIn', state.user);
   if (created) { toast(notice || `Welcome! You have ${state.user?.credits ?? 0} free credits.`); bus.emit('welcome'); }
@@ -120,14 +253,19 @@ export function initAccount() {
   // A click on the dimmed outside closes the sheet too.
   $('#accountDialog').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
   $('#billingPortalBtn').addEventListener('click', () => go('/v1/billing/portal', null, 'POST'));
-  const back = new URLSearchParams(location.search).get('checkout');
-  if (back === 'success') { toast('Thanks: your credits are on their way.'); setTimeout(refreshCredits, 2500); }
+  // Back from Stripe Checkout (by its return address, or the browser's Back button), and fresh credits on coming back.
+  returning = backFromCheckout();
+  addEventListener('pageshow', (e) => { if (e.persisted) backByHistory(); });
+  document.addEventListener('visibilitychange', freshen);
+  addEventListener('focus', freshen);
   // /#credits opens the credits (the Unity plugin's Buy credits button links here).
   if (location.hash === '#credits') loadMe().then(() => openAccount('credits'));
 }
 
 export async function signOut() {
   await api('/v1/users/logout', { method: 'POST' }).catch(() => {});
+  // Drop the session hint before reload so the next paint skips /v1/users/me (no 401 console noise after Sign out).
+  try { localStorage.removeItem('hg.in'); } catch { /* */ }
   location.reload();
 }
 
@@ -152,11 +290,14 @@ async function accountMenu(btn) {
 const initial = (u) => (u.name || u.email || '?').trim().slice(0, 1).toUpperCase();
 
 async function go(path, body, method) {
-  try { const r = await api(path, { method: method ?? 'POST', body }); if (r.url) location.href = r.url; } catch (err) { $('#accountError').textContent = err.message; $('#accountError').hidden = false; }
+  try { const r = await api(path, { method: method ?? 'POST', body }); if (r.url) location.href = r.url; } catch (err) { $('#accountError').textContent = explain(err).text; $('#accountError').hidden = false; }
 }
 
 export async function openAccount(section) {
   if (!state.user) return needSignIn(() => openAccount(section), 'login');
+  // The balance as it is now (a purchase in another tab, a job's refund), asked on opening: no polling.
+  await refreshCredits();
+  lastFresh = Date.now();
   $('#accountAvatar').textContent = initial(state.user);
   $('#accountName').textContent = state.user.name || state.user.email || '';
   $('#accountEmail').textContent = state.user.name ? state.user.email ?? '' : '';
@@ -176,20 +317,24 @@ export async function openAccount(section) {
     } else if (!stripe.configured) {
       plansBox.append(h('p', { class: 'muted small acct-note' }, 'Plans open soon.'));
     } else {
-      for (const p of plans) plansBox.append(h('button', { class: 'acct-pack', onclick: () => go('/v1/subscriptions/checkout', { planId: p.id }) },
+      for (const p of plans) plansBox.append(h('button', { class: 'acct-pack', onclick: (e) => checkout(e.currentTarget, '/v1/subscriptions/checkout', { planId: p.id }) },
         h('span', { class: 'acct-pack-name' }, p.name), h('b', { class: 'acct-pack-credits' }, p.creditsPerMonth.toLocaleString()), h('span', { class: 'muted small' }, 'credits every month'),
         h('span', { class: 'acct-pack-price' }, `$${(p.priceCents / 100).toFixed(0)} a month`)));
     }
   } catch { plansBox.append(h('p', { class: 'muted small acct-note' }, 'Plans aren\'t available for this account.')); }
   $('#billingPortalBtn').hidden = !state.user.hasBilling;
+  drawPurchases();
   const box = $('#packs');
   box.replaceChildren();
   try {
     const p = await api('/v1/billing/packs');
     const packs = p.packs ?? [];
-    if (!packs.length || p.stripe?.configured === false) box.append(h('p', { class: 'muted small acct-note' }, 'Buying credits isn\'t open here yet.'));
+    const buyable = packs.length && p.stripe?.configured !== false;
+    if (!buyable) box.append(h('p', { class: 'muted small acct-note' }, 'Buying credits isn\'t open here yet.'));
+    // Stripe's test mode (beta): say so, and which card to use, so nobody thinks a real card was charged.
+    if (buyable && p.stripe?.mode === 'test') box.append(h('p', { class: 'muted small acct-note acct-test' }, 'Test mode: nothing is charged. Pay with card 4242 4242 4242 4242, any future date, any CVC.'));
     const best = packs.length > 2 ? packs[1].id : null;
-    for (const pack of packs) box.append(h('button', { class: `acct-pack${pack.id === best ? ' best' : ''}`, onclick: () => go('/v1/billing/checkout', { packId: pack.id }) },
+    if (buyable) for (const pack of packs) box.append(h('button', { class: `acct-pack${pack.id === best ? ' best' : ''}`, onclick: (e) => checkout(e.currentTarget, '/v1/billing/checkout', { packId: pack.id }) },
       pack.id === best ? h('span', { class: 'acct-badge' }, 'Most popular') : pack.bonusPercent ? h('span', { class: 'acct-badge' }, `+${pack.bonusPercent}% bonus`) : '',
       h('span', { class: 'acct-pack-name' }, pack.name ?? 'Credits'), h('b', { class: 'acct-pack-credits' }, pack.credits.toLocaleString()), h('span', { class: 'muted small' }, 'credits'),
       h('span', { class: 'acct-pack-price' }, `$${pack.priceUsd ?? (pack.priceCents ?? 0) / 100}`)));

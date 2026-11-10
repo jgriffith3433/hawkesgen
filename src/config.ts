@@ -104,7 +104,11 @@ export type Settings = {
   /** gpuWaitMinutes: how long a GPU job may wait while no GPU provider can take it at all (none set up, all busy
    *  refusing, booting) before it fails with a plain reason (src/providers/gpu/nogpu.ts). Waiting behind other jobs on a
    *  GPU that exists has no limit. */
-  queue: { perProjectGpu: number; perProjectLane: number; projects: string[]; gpuWaitMinutes: number };
+  queue: { perProjectGpu: number; perProjectLane: number; projects: string[]; gpuWaitMinutes: number;
+    /** Jobs one customer project may have waiting at once (src/jobs.ts `admitJob`): past it a new job is refused with a plain 429 and nothing is reserved. */
+    maxQueuedPerProject: number;
+    /** What every job may spend in a UTC day (usage cost, dollars), all customers together: past it new customer jobs are refused ("busy, try again later"); 0 turns it off. Studio's own projects and admin keys are exempt. */
+    dailyCeilingUsd: number };
   /** Platform tokens from the portal (src/platform.ts): `issuer` the portal this lane trusts (empty: hawkesgames.com, or
    *  beta.hawkesgames.com on beta), `freeOrgs` the orgs that may submit jobs with a token before billing is connected
    *  (design partners, J's own). */
@@ -121,7 +125,9 @@ export type Settings = {
   /** Where Claude calls go: "max-plan" runs Claude Code (`claude -p`) on J's Max plan ($0 per call), "api" the API key
    * (billed per token), "bedrock" uses AWS Bedrock (billed per token to AWS). J switched to max-plan on 2026-10-18 when the API account ran out of credits. Calls at once
    * (inside every job: reviews, judges, captions) and how long one may take. */
-  claude: { backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number };
+  claude: { backend: 'max-plan' | 'api' | 'bedrock'; concurrency: number; timeoutMinutes: number;
+    /** AI turns (the editor, director and scene AIs) one account may have going or waiting at once, and how long one waits for a free slot before it gives up (src/aigate.ts). */
+    maxPerUser: number; maxWaitSeconds: number };
   /**
    * Which harness answers writing, review and JSON calls, and (via Studio) the coding agents.
    * "claude" is Claude Code (the Max plan or the API key above). "cursor" is Cursor's agent on the Cursor plan.
@@ -352,11 +358,11 @@ export const SETTINGS_DEFAULTS: Settings = {
   // so servers stay on one model instead of reloading (six at once made a 175-thing batch swap models all day).
   concurrency: { elevenlabs: 3, anthropic: 4, gemini: 3, local: 2, pipeline: 200, lod: 1 },
   lod: { projects: ['usr_*', 'ubeta_*'] },
-  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'], gpuWaitMinutes: 15 },
+  queue: { perProjectGpu: 2, perProjectLane: 2, projects: ['usr_*', 'ustg_*', 'ubeta_*', 'u_*', 'org_*'], gpuWaitMinutes: 15, maxQueuedPerProject: 20, dailyCeilingUsd: 200 },
   platform: { issuer: '', freeOrgs: [] },
   orgCredits: { url: '' },
   signups: { perIpPerDay: 3, starterCreditsPerDay: 5000 },
-  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10 },
+  claude: { backend: 'max-plan', concurrency: 3, timeoutMinutes: 10, maxPerUser: 2, maxWaitSeconds: 30 },
   brain: 'claude',
   model: '',
   localOpen: true,
@@ -573,6 +579,8 @@ function clean(s: Settings): Settings {
       perProjectLane: n(s.queue?.perProjectLane, 1, 64, SETTINGS_DEFAULTS.queue.perProjectLane),
       projects: Array.isArray(s.queue?.projects) ? s.queue!.projects.map(String).filter(Boolean).slice(0, 50) : SETTINGS_DEFAULTS.queue.projects,
       gpuWaitMinutes: n(s.queue?.gpuWaitMinutes, 1, 240, SETTINGS_DEFAULTS.queue.gpuWaitMinutes),
+      maxQueuedPerProject: n(s.queue?.maxQueuedPerProject, 1, 10_000, SETTINGS_DEFAULTS.queue.maxQueuedPerProject),
+      dailyCeilingUsd: n(s.queue?.dailyCeilingUsd, 0, 1_000_000, SETTINGS_DEFAULTS.queue.dailyCeilingUsd),
     },
     platform: {
       issuer: typeof s.platform?.issuer === 'string' && /^https?:\/\/[^\s]+$/.test(s.platform.issuer) ? s.platform.issuer : '',
@@ -587,6 +595,8 @@ function clean(s: Settings): Settings {
       backend: s.claude?.backend === 'api' ? 'api' : s.claude?.backend === 'bedrock' ? 'bedrock' : 'max-plan',
       concurrency: n(s.claude?.concurrency, 1, 16, SETTINGS_DEFAULTS.claude.concurrency),
       timeoutMinutes: n(s.claude?.timeoutMinutes, 1, 60, SETTINGS_DEFAULTS.claude.timeoutMinutes),
+      maxPerUser: n(s.claude?.maxPerUser, 1, 16, SETTINGS_DEFAULTS.claude.maxPerUser),
+      maxWaitSeconds: n(s.claude?.maxWaitSeconds, 1, 600, SETTINGS_DEFAULTS.claude.maxWaitSeconds),
     },
     brain: s.brain === 'cursor' || (s.brain as string) === 'grok' ? 'cursor' : s.brain === 'copilot' ? 'copilot' : 'claude',
     model: typeof (s as { model?: string }).model === 'string' ? (s as { model?: string }).model : '',
