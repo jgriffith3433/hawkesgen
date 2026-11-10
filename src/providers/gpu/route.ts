@@ -9,7 +9,7 @@ import type { GpuEndpoint, Settings } from '../../config.ts';
 import { env } from '../../config.ts';
 import type { Tool } from '../../tools/types.ts';
 import { cloudRoute, serviceForFamily, allServices, type CloudService, type ServiceMap } from '../cloudrun/services.ts';
-import { isDown, lastingDown } from './health.ts';
+import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, WARM_MS, healthOf, isDown, lastingDown } from './health.ts';
 import { runpodCreditProblem } from './credit.ts';
 import { endpointHeaders, missingSecrets, type Secrets } from './auth.ts';
 
@@ -59,16 +59,21 @@ export function orderFor(settings: Pick<Settings, 'gpu'>, family: string | null)
 }
 
 /** An endpoint as the run protocol's service: no preloads (every model the graph names rides along), through the broker. */
-export function endpointService(ep: GpuEndpoint, family: string, map: ServiceMap, bucket: string, get: Secrets = env): CloudService {
+export function endpointService(ep: GpuEndpoint, family: string, map: ServiceMap, bucket: string, get: Secrets = env, now = Date.now()): CloudService {
   const svcName = serviceForFamily(map, family);
   const spec = svcName ? allServices(map)[svcName] : undefined;
+  const lastOk = healthOf(ep.id).lastOk;
+  // Short wait only when lastOk is fresh (busy workers). True cold uses coldStartSeconds / the 12-minute default —
+  // never the 3-minute busy wait as first contact with scaled-to-zero or zombie workers (run.ts still caps assign-fail
+  // / headers-timeout below RunPod's LB hold so a false cold fails over fast).
+  const warm = lastOk != null && now - lastOk <= WARM_MS;
+  const coldMs = ep.coldStartSeconds ? ep.coldStartSeconds * 1000 : DEFAULT_COLD_WAIT_MS;
   return {
     name: ep.id, url: ep.url, gpu: ep.gpu, maxInstances: ep.maxConcurrent, pricePerSecond: ep.pricePerHour / 3600,
     graphLimitSeconds: ep.graphLimitSeconds, preload: new Set(), bucket,
     provider: ep.provider, lane: ep.id, broker: true, familyModels: spec?.models ?? [],
     headers: () => endpointHeaders(ep.provider, get),
-    // Elsewhere is waiting in line: a busy endpoint hands the job on after a short wait.
-    waitForInstanceMs: 3 * 60_000,
+    waitForInstanceMs: warm ? BUSY_WAIT_MS : coldMs,
     ...(ep.coldStartSeconds ? { coldStartMs: ep.coldStartSeconds * 1000 } : {}),
   };
 }

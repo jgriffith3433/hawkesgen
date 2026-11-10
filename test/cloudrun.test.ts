@@ -486,28 +486,63 @@ print(json.dumps({"final": final, "steps": steps, "written": sorted(store.w), "e
   assert.match(out.err, /no open audio model 'voxcpm2' \(it has qwen3-tts\)/);
 });
 
-test('a provider worker still starting (no headers for 5 minutes) is waited for, within the cold-start allowance', async () => {
-  let calls = 0;
+test('false cold: stale lastOk + headers timeout is capacity (not a long cold pull)', async () => {
+  const { resetHealth } = await import('../src/providers/gpu/health.ts');
+  resetHealth();
   const fake = fakeCloud(succeed);
-  const real = fake.deps.fetch;
-  // The gateway holds the request while a new host pulls the image: fetch gives up on headers after 5 minutes, twice.
-  fake.deps.fetch = (async (url: string, init: any) => {
-    if (++calls <= 2) { await fake.deps.sleep(300_000); throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } }); }
-    return real(url, init);
+  fake.deps.fetch = (async () => {
+    await fake.deps.sleep(300_000);
+    throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } });
   }) as any;
   const h = hooks();
-  const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 3 * 60_000, preload: new Set() });
-  const files = await cloudComfyRun({ id: 'j_cold' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any);
-  assert.equal(files.length, 1);
-  assert.equal(calls, 3);
-  assert.ok(h.steps.some((s: string) => /still starting/.test(s)), JSON.stringify(h.steps));
-  // Past the allowance it is a provider that can't take the job: the queue hands it on.
-  const never = fakeCloud(succeed);
-  never.deps.fetch = (async () => { await never.deps.sleep(300_000); throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } }); }) as any;
-  await assert.rejects(cloudComfyRun({ id: 'j_never' }, ep as any, hooks() as any, never.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any), (e: any) => e.unavailable === true);
+  const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 12 * 60_000, preload: new Set() });
+  const err = await cloudComfyRun({ id: 'j_zombie' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
+  assert.equal(err?.unavailable, true);
+  assert.equal(err?.capacity, true);
+  assert.ok(h.steps.some((s: string) => /cold start/.test(s)), 'banner once when lastOk is stale');
+  assert.ok(!h.steps.some((s: string) => /still starting/.test(s)), 'must not keep waiting as a cold pull');
 });
 
-test('RunPod\'s "failed to assign worker" (no GPU free right now) is waited out like a busy service', async () => {
+test('warm lastOk: headers timeout retries without a cold-start banner, then capacity', async () => {
+  const { markUp, resetHealth } = await import('../src/providers/gpu/health.ts');
+  resetHealth();
+  markUp('runpod');
+  let calls = 0;
+  const fake = fakeCloud(succeed);
+  fake.deps.fetch = (async () => {
+    calls++;
+    await fake.deps.sleep(60_000);
+    throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } });
+  }) as any;
+  const h = hooks();
+  const ep = svc({ name: 'runpod', provider: 'runpod', lane: 'runpod', headers: () => ({}), waitForInstanceMs: 3 * 60_000, preload: new Set() });
+  const err = await cloudComfyRun({ id: 'j_warm_to' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
+  assert.equal(err?.unavailable, true);
+  assert.ok(calls >= 2, `retried while warm, got ${calls}`);
+  assert.ok(!h.steps.some((s: string) => /cold start/.test(s)), JSON.stringify(h.steps));
+  resetHealth();
+});
+
+test('false cold: assign-fail with stale lastOk cools as capacity under the pre-worker cap', async () => {
+  const { resetHealth, PRE_WORKER_MS } = await import('../src/providers/gpu/health.ts');
+  resetHealth();
+  const fake = fakeCloud(succeed);
+  fake.deps.fetch = (async () => new Response(JSON.stringify({ status: 400, title: 'Bad Request', detail: 'failed to assign worker' }), { status: 400 })) as any;
+  const h = hooks();
+  // Long cold wait configured, but assign-fail must not sit through it.
+  const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 12 * 60_000, preload: new Set() });
+  const started = fake.deps.now();
+  const err = await cloudComfyRun({ id: 'j_assign_cold' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
+  assert.equal(err?.unavailable, true);
+  assert.equal(err?.capacity, true);
+  assert.ok(fake.deps.now() - started <= PRE_WORKER_MS + 20_000, `waited ${fake.deps.now() - started}ms, want <= pre-worker cap`);
+  assert.ok(h.steps.some((s: string) => /cold start/.test(s)));
+});
+
+test('RunPod\'s "failed to assign worker" on a warm endpoint is waited out like a busy service', async () => {
+  const { markUp, resetHealth } = await import('../src/providers/gpu/health.ts');
+  resetHealth();
+  markUp('runpod');
   let calls = 0;
   const fake = fakeCloud(succeed);
   const real = fake.deps.fetch;
@@ -516,9 +551,20 @@ test('RunPod\'s "failed to assign worker" (no GPU free right now) is waited out 
     return real(url, init);
   }) as any;
   const h = hooks();
-  const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 3 * 60_000, preload: new Set() });
+  const ep = svc({ name: 'runpod', provider: 'runpod', lane: 'runpod', headers: () => ({}), waitForInstanceMs: 3 * 60_000, preload: new Set() });
   const files = await cloudComfyRun({ id: 'j_assign' }, ep as any, h as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any);
   assert.equal(files.length, 1);
   assert.equal(calls, 3);
   assert.ok(h.steps.some((s: string) => /waiting for a free/.test(s)), JSON.stringify(h.steps));
+  assert.ok(!h.steps.some((s: string) => /cold start/.test(s)), JSON.stringify(h.steps));
+  resetHealth();
+});
+
+test('401/403 from a provider fails over at once (auth cool)', async () => {
+  const fake = fakeCloud(succeed);
+  fake.deps.fetch = (async () => new Response('nope', { status: 401 })) as any;
+  const ep = svc({ name: 'runpod', provider: 'runpod', headers: () => ({}), waitForInstanceMs: 3 * 60_000, preload: new Set() });
+  const err = await cloudComfyRun({ id: 'j_auth' }, ep as any, hooks() as any, fake.deps as any).runGraph({ '9': { class_type: 'SaveImage', inputs: {} } } as any).then(() => null, (e) => e);
+  assert.equal(err?.unavailable, true);
+  assert.equal(err?.auth, true);
 });

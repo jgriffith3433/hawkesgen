@@ -27,17 +27,12 @@ import { env } from '../../config.ts';
 import { GenError, sha256File } from '../../util.ts';
 import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
-import { healthOf } from '../gpu/health.ts';
+import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, PRE_WORKER_MS, WARM_MS, healthOf } from '../gpu/health.ts';
 
 /** A heartbeat younger than this means the run is still going on some instance. */
 const FRESH_MS = 60_000;
 /** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
 const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
-/** How long past its wait a provider's cold worker may take to answer at all (its first pull of a new image). */
-const COLD_START_MS = 12 * 60_000;
-// An endpoint that ran a job this recently still has a worker up (Modal's scaledown_window is 20 minutes); after that, a
-// wait is a worker starting from cold (pulling the image, starting ComfyUI: several minutes), not a queue.
-const WARM_MS = 20 * 60_000;
 
 export type CloudFile = ComfyFile & { uri: string; bytes?: number };
 export type RunDeps = {
@@ -230,7 +225,14 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     const elsewhere = Boolean(svc.provider && svc.provider !== 'cloudrun');
     const lastOk = healthOf(svc.lane ?? svc.name).lastOk;
     const cold = elsewhere && (!lastOk || deps.now() - lastOk > WARM_MS);
-    const until = deps.now() + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
+    // Decide the wait from live lastOk (not only what endpointService baked at route time): short when warm/busy,
+    // coldStartMs / 12 min when cold. Cloud Run keeps its long service wait.
+    const waitMs = elsewhere
+      ? (cold ? (svc.coldStartMs ?? DEFAULT_COLD_WAIT_MS) : BUSY_WAIT_MS)
+      : (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
+    const until = deps.now() + waitMs;
+    // Pre-worker (no headers / no assign): never sit through RunPod's ~5.5m LB hold on zombies.
+    const preWorkerUntil = deps.now() + Math.min(waitMs, elsewhere ? PRE_WORKER_MS : waitMs);
     // Said up front: a provider's gateway may hold the request the whole time without a word.
     if (cold) hooks.step(`${svc.name}: starting a ${where} GPU (none has run for a while; a cold start takes several minutes)`);
     for (let told = false; ; told = true) {
@@ -239,28 +241,46 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
       const broke = svc.provider === 'runpod' ? runpodCreditProblem() : null;
       if (broke) throw unavailable(`${svc.name}: ${broke}`, { capacity: true });
       let r: Response;
+      // Elsewhere: abort the wait for headers before RunPod's LB silently kills the POST (~5.5m). Cleared as soon as
+      // headers arrive so a long graph stream is not cancelled mid-run.
+      const preWorker = elsewhere ? new AbortController() : null;
+      const preWorkerTimer = preWorker
+        ? setTimeout(() => preWorker.abort(Object.assign(new Error('pre-worker timeout'), { code: 'PRE_WORKER_TIMEOUT' })), Math.max(1_000, preWorkerUntil - deps.now()))
+        : null;
       try {
-        r = await deps.fetch(`${svc.url}/run`, { method: 'POST', headers: await headers(), body, signal: hooks.signal });
+        const signal = preWorker ? AbortSignal.any([hooks.signal, preWorker.signal]) : hooks.signal;
+        r = await deps.fetch(`${svc.url}/run`, { method: 'POST', headers: await headers(), body, signal });
       } catch (e: any) {
         if (hooks.signal.aborted) throw cancelled(key);
         if (e.unavailable) throw e;
-        // A provider's gateway holds the request while a worker starts; a new image's first start on a host pulls it
-        // (minutes), past fetch's 5-minute wait for headers. That is a worker on its way, not an unreachable service.
-        const starting = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' && elsewhere && deps.now() < until + (svc.coldStartMs ?? COLD_START_MS);
-        hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
+        const headersTimeout = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT';
+        const preWorkerAbort = elsewhere && !hooks.signal.aborted && (e.code === 'PRE_WORKER_TIMEOUT' || e.cause?.code === 'PRE_WORKER_TIMEOUT' || preWorker?.signal.aborted);
+        // False cold: lastOk stale/null and no worker progress (headers never came). Zombies look like a cold pull
+        // but never finish — cool as capacity and hand the job on, don't wait out the cold-start allowance.
+        if ((headersTimeout || preWorkerAbort) && cold) {
+          throw unavailable(`${svc.name}: no ${where} GPU accepted the job (workers unhealthy or none free)`, { capacity: true });
+        }
+        // Warm endpoint: retry briefly for headers within the busy wait (no cold-start banner).
+        const starting = headersTimeout && elsewhere && !cold && deps.now() < until;
+        hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.name ?? e.message}; trying again`);
         await deps.sleep(10_000);
-        if (!starting && deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
+        if (deps.now() > (cold ? preWorkerUntil : until)) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.name ?? e.message})`, { capacity: headersTimeout || preWorkerAbort });
         continue;
+      } finally {
+        if (preWorkerTimer) clearTimeout(preWorkerTimer);
       }
       // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503, RunPod's load balancer
       // 400 "failed to assign worker" (no GPU of its types free right now). Wait our turn.
       const noWorker = r.status === 400 && svc.provider === 'runpod' && /failed to assign worker/i.test(await r.clone().text().catch(() => ''));
       if (r.status === 429 || r.status === 503 || noWorker) {
         await r.body?.cancel().catch(() => undefined);
-        // A worker starting from cold answers 429/503 until it is up: it gets the cold start's time too. RunPod's "failed
-        // to assign worker" is no GPU free, not a start.
-        const limit = until + (cold && !noWorker ? (svc.coldStartMs ?? COLD_START_MS) : 0);
-        if (deps.now() > limit) throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.round((limit - until + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS)) / 60_000)} minutes`, { capacity: true });
+        // Assign-fail with stale lastOk is capacity/unhealthy (zombies billing with 0 jobs), not a cold image pull —
+        // cap below the LB hold. True cold 429/503 (worker booting) already has the cold length in waitMs.
+        const limit = noWorker && cold ? preWorkerUntil : until;
+        if (deps.now() > limit) {
+          const waited = Math.max(waitMs, limit - (until - waitMs));
+          throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.max(1, Math.round(waited / 60_000))} minutes`, { capacity: true });
+        }
         if (!told && !(cold && !noWorker)) hooks.step(`${svc.name}: waiting for a free ${where} GPU`);
         await deps.sleep(15_000);
         continue;
