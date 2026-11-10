@@ -14,7 +14,7 @@ import { ensureLocal } from '../storage.ts';
 import { canProject, type Client } from '../auth.ts';
 import { loadSettings, PLAYTEST_TARGETS, type PlaytestTarget } from '../config.ts';
 import { parseBuild, storedBuild, checkTarget, checkEntry, checkArgs, publicUrl, resolveGithub, stageArchive, defaultStager, dropToken, type BuildRef, type FetchableBuild } from '../providers/playtester/intake.ts';
-import { runnerCandidates, isNativeTarget, claimRunner, runnerHealthKey, runnerCooldown } from '../providers/playtester/runners.ts';
+import { runnerCandidates, isNativeTarget, claimRunner, runnerHealthKey, runnerCooldown, cleanSkipProviders } from '../providers/playtester/runners.ts';
 import { runSession, groupCrashes, RunnerUnavailable, type SessionResult } from '../providers/playtester/native.ts';
 import { siteHeader, sitePageUrl, type CloudPlaytest } from '../providers/playtester/cloudrun.ts';
 import { markDown, markUp } from '../providers/gpu/health.ts';
@@ -108,6 +108,9 @@ export const playtestRunTool: Tool = {
     polish: { type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', description: 'The feel layer\'s cheap vision pass (Haiku scores a few frames against the 3D polish rubric: ugly buildings, z-fighting, floating objects, stretched textures, clipping). auto: when the game has the feel sensor (it pushed flags); on: always; off: never. docs/playtest.md#feel in Hawkes Studio.', advanced: true },
     polishFrames: { type: 'integer', default: 10, min: 2, max: 24, description: 'How many frames the polish pass scores', advanced: true },
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
+    // Studio's one-shot retry after a cut-off provider (hawkesstudio playtest-finish) sends this hint. Accept it so a
+    // beta playtest never 400s with "has no param skipProviders"; the router leaves those providers out for this job.
+    skipProviders: { type: 'json', description: 'Browser providers to leave out for this run only (runpod, modal, cloudrun, cloudrun-cpu). Hawkes Studio sends this on a second try after one provider cut the job off.', advanced: true, example: ['modal'] },
   },
   admit({ params, client, project, customer }) {
     const p = { ...params };
@@ -141,6 +144,9 @@ export const playtestRunTool: Tool = {
     }
     if (p.exe === null) delete p.exe;
     if (!p.args.length) delete p.args;
+    const skip = cleanSkipProviders(p.skipProviders);
+    if (skip.length) p.skipProviders = skip;
+    else delete p.skipProviders;
     return p;
   },
   async run(ctx) {
@@ -197,7 +203,11 @@ async function webRoute(ctx: RunContext, p: Record<string, any>, build: BuildRef
   if (!customer && !site && !settings.playtest.runners.length) return null;
   // An empty RunPod balance read a while ago is read again before the router skips RunPod for it (gpu/credit.ts).
   await recheckEmptyRunpodCredit();
-  const c = runnerCandidates({ project: ctx.job.project, labels: ctx.job.labels }, 'web', customer ? 'customer' : 'studio', settings);
+  const skipProviders = cleanSkipProviders(p.skipProviders ?? ctx.job.labels?.skipProviders);
+  const c = runnerCandidates({
+    project: ctx.job.project,
+    labels: skipProviders.length ? { ...ctx.job.labels, skipProviders } : ctx.job.labels,
+  }, 'web', customer ? 'customer' : 'studio', settings);
   const clouds = c.choices.flatMap((x) => (x.kind === 'browser' ? [x.cloud] : []));
   for (const s of c.skipped) ctx.log(`runner ${s}`);
   if (!clouds.length) throw new GenError(`No runner plays web builds${customer ? ' for customers' : ''} now: ${c.skipped.join('; ') || 'none set up'}`, { kind: 'runner', status: 503 });
