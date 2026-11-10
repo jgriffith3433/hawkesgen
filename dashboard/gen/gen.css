@@ -310,9 +310,21 @@ input.num { width: 70px; }
 .h-l { left: 0; }
 .h-r { right: 0; }
 .clip:hover .h-l, .clip:hover .h-r, .clip.selected .h-l, .clip.selected .h-r { background: rgba(255,255,255,.35); }
-.tl-join { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 4; width: 18px; height: 18px; padding: 0; justify-content: center; border-radius: 5px; font-size: 11px; background: var(--panel); border: 1px solid var(--line-2); color: var(--muted); opacity: 0; }
+.tl-join { position: absolute; top: 50%; transform: translate(-50%, -50%); z-index: 4; width: 18px; height: 18px; padding: 0; justify-content: center; border-radius: 5px; font-size: 11px; background: var(--panel); border: 1px solid var(--line-2); color: var(--muted); opacity: 0; touch-action: none; }
 .tl-track:hover .tl-join, .tl-join.on { opacity: 1; }
 .tl-join.on { color: var(--accent); border-color: var(--accent); }
+/* A set transition: a small block on the join — drag an edge to resize, tap to change type. */
+.tl-xf { position: absolute; top: 8px; bottom: 8px; z-index: 4; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: color-mix(in srgb, var(--accent) 22%, var(--panel)); border: 1px solid var(--accent); color: var(--text); font-size: 10px; font-weight: 600; letter-spacing: .02em; cursor: pointer; touch-action: none; user-select: none; box-sizing: border-box; min-width: 18px; }
+.tl-xf-label { pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 8px; max-width: 100%; }
+.tl-xf-h { position: absolute; top: 0; bottom: 0; width: 10px; cursor: ew-resize; touch-action: none; }
+.tl-xf-h.left { left: -1px; } .tl-xf-h.right { right: -1px; }
+.tl-xf-h::after { content: ""; position: absolute; top: 20%; bottom: 20%; width: 2px; left: 4px; border-radius: 1px; background: var(--accent); opacity: .85; }
+@media (pointer: coarse) {
+  .tl-join { width: 28px; height: 28px; opacity: 1; font-size: 14px; }
+  .tl-xf { top: 4px; bottom: 4px; font-size: 11px; }
+  .tl-xf-h { width: 16px; }
+  .tl-xf-h.left { left: -4px; } .tl-xf-h.right { right: -4px; }
+}
 .tl-insert { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; background: var(--accent); z-index: 6; border-radius: 2px; }
 .tl-range { position: absolute; top: 26px; bottom: 0; background: color-mix(in srgb, var(--accent) 14%, transparent); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); pointer-events: none; z-index: 3; }
 .tl-range::before { content: attr(data-label); position: absolute; top: 2px; left: 4px; font-size: 10.5px; color: var(--accent); white-space: nowrap; }

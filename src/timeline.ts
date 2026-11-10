@@ -19,6 +19,7 @@ import { getJob } from './jobs.ts';
 import { getTool } from './tools/index.ts';
 import { aiCanUse } from './editor.ts';
 import { sceneRef, type Render } from './scenes.ts';
+import { clampTransitionSeconds, isTransitionType } from './transitions.ts';
 
 export type Role = 'main' | 'video' | 'text' | 'audio' | 'any';
 export type Track = { id: string; name: string; role: Role; magnetic?: boolean; hidden?: boolean; locked?: boolean; mute?: boolean; solo?: boolean; volume?: number; pan?: number; color?: string };
@@ -186,7 +187,7 @@ export function normalize(input: any, kind: Kind = 'video'): Doc {
       ...(c0.opacity != null && num(c0.opacity, 1) !== 1 ? { opacity: r3(clamp(num(c0.opacity, 1), 0, 1)) } : {}),
       ...((BLENDS as readonly string[]).includes(c0.blend) && c0.blend !== 'normal' ? { blend: c0.blend } : {}),
       ...(sceneRef(c0.scene) ? { scene: sceneRef(c0.scene), ...(Number.isFinite(Number(c0.sceneVersion)) ? { sceneVersion: Number(c0.sceneVersion) } : {}) } : {}),
-      ...(c0.transition && c0.transition !== 'cut' ? { transition: String(c0.transition).slice(0, 30), transitionSeconds: clamp(num(c0.transitionSeconds, 0.5), 0.1, 3) } : {}),
+      ...(c0.transition && c0.transition !== 'cut' && isTransitionType(String(c0.transition)) ? { transition: String(c0.transition), transitionSeconds: clampTransitionSeconds(c0.transitionSeconds, 0.5) } : {}),
       ...(c0.zoom && typeof c0.zoom === 'object' ? { zoom: { from: clamp(num(c0.zoom.from, 1), 1, 4), to: clamp(num(c0.zoom.to, 1), 1, 4), x: clamp(num(c0.zoom.x, 0.5), 0, 1), y: clamp(num(c0.zoom.y, 0.5), 0, 1) } } : {}),
     };
     if (!c.asset && !c.job && !c.scene && kind !== 'text' && kind !== 'fill' && !c.failed) continue;
@@ -403,7 +404,37 @@ export function applyOps(doc0: Doc, ops: Op[], submit?: Submit, kind: Kind = 'vi
           look(c, op);
           if (op.start != null && !isMagnetic(doc, c.track)) c.start = Math.max(0, num(op.start, c.start));
           if (op.transition === 'cut' || op.transition === null) { delete c.transition; delete c.transitionSeconds; }
+          else if (op.transition != null) {
+            if (!isTransitionType(op.transition)) throw new Error(`transition is cut or ${['crossfade', 'fadeblack', 'fadewhite', 'slideleft', 'push'].join(', ')}`);
+            c.transitionSeconds = clampTransitionSeconds(op.transitionSeconds ?? c.transitionSeconds ?? 0.5);
+          } else if (op.transitionSeconds != null && c.transition) {
+            c.transitionSeconds = clampTransitionSeconds(op.transitionSeconds);
+          }
           results.push({ op: 'set', ok: true, id: c.id });
+          break;
+        }
+        case 'transition': {
+          // {"op":"transition","id":"c_...","type":"crossfade","seconds":0.5} add/change; type null|cut removes.
+          const c = find(op.id);
+          const tr = trackOf(doc, c.track);
+          if (!tr || (tr.role !== 'main' && tr.role !== 'video')) throw new Error('transitions sit on a video track');
+          const next = doc.clips.filter((x) => x.track === c.track).sort((a, b) => a.start - b.start);
+          const i = next.findIndex((x) => x.id === c.id);
+          if (i < 0 || i >= next.length - 1 || Math.abs(next[i + 1]!.start - clipEnd(c)) > 0.02) throw new Error('no adjacent clip after this one');
+          const type = op.type ?? op.transition;
+          if (type == null || type === 'cut' || type === '') {
+            delete c.transition;
+            delete c.transitionSeconds;
+            results.push({ op: 'transition', ok: true, id: c.id });
+            break;
+          }
+          if (!isTransitionType(type)) throw new Error(`transition is cut or crossfade, fadeblack, fadewhite, slideleft, push`);
+          c.transition = type;
+          c.transitionSeconds = clampTransitionSeconds(op.seconds ?? op.transitionSeconds ?? c.transitionSeconds ?? 0.5);
+          // A transition can't be longer than either side of the join.
+          const maxT = Math.min(clipLength(c), clipLength(next[i + 1]!)) - 0.05;
+          if (c.transitionSeconds > maxT) c.transitionSeconds = clampTransitionSeconds(Math.max(0.2, maxT));
+          results.push({ op: 'transition', ok: true, id: c.id });
           break;
         }
         case 'text': {

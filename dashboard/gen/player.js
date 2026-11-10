@@ -10,6 +10,7 @@
 import { $, h, fileUrl, fmt, bus, icon, peaks } from './lib.js';
 import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack, PROGRESS } from './project.js';
 import { keep, nearest, warm, onFrames, setBusy } from './frames.js';
+import { clampTransitionSeconds, precomputeTransition, sampleAt } from './transitions.js';
 
 const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, lead: null, drawn: false, keepSince: 0 };
 // Playback smoothness (J, 2026-11-01: "make the buffering of the videos a little better so we don't see hitching during
@@ -75,9 +76,10 @@ export function initPlayer() {
   $('#stepBack').addEventListener('click', () => seek(P.playhead - 1 / P.doc.fps));
   $('#stepFwd').addEventListener('click', () => seek(P.playhead + 1 / P.doc.fps));
   $('#loopBtn').addEventListener('click', () => { S.loop = !S.loop; $('#loopBtn').classList.toggle('on', S.loop); });
-  bus.on('doc', () => { fitStage(); refresh(); });
+  bus.on('doc', () => { rebuildXf(); fitStage(); refresh(); });
   bus.on('selection', () => drawHandles());
   bus.on('progressText', () => { S.dirty = true; });
+  rebuildXf();
   new ResizeObserver(fitStage).observe($('#viewer'));
   canvas.addEventListener('pointerdown', onCanvasDown);
   handles.addEventListener('pointerdown', onCanvasDown);
@@ -633,50 +635,94 @@ function textStyle(c) {
   };
 }
 
+/**
+ * Precomputed transition samples per outgoing clip id (rebuilt on doc change). The rAF loop only indexes this table —
+ * no getBoundingClientRect / layout reads while painting frames.
+ */
+let XF = new Map(); // clipId -> { joinEnd, seconds, type, nextId, samples }
+function rebuildXf() {
+  XF = new Map();
+  const fps = Math.max(1, P.doc.fps || 30);
+  for (const tr of tracks()) {
+    if (tr.role !== 'main' && tr.role !== 'video') continue;
+    const cs = onTrack(tr.id).filter(isVisual);
+    for (let i = 0; i < cs.length - 1; i++) {
+      const c = cs[i], n = cs[i + 1];
+      if (!c.transition || Math.abs(n.start - clipEnd(c)) > 0.02) continue;
+      const seconds = clampTransitionSeconds(c.transitionSeconds ?? 0.5);
+      XF.set(c.id, { joinEnd: clipEnd(c), seconds, type: c.transition, nextId: n.id, samples: precomputeTransition(c.transition, seconds, fps) });
+    }
+  }
+}
+/** Expose the join table for the playtest bot (preview maths under the playhead). */
+export const transitionAt = (t) => {
+  for (const [id, x] of XF) {
+    const s = sampleAt(x.samples, t, x.joinEnd, x.seconds);
+    if (s) return { id, type: x.type, seconds: x.seconds, joinEnd: x.joinEnd, sample: s };
+  }
+  return null;
+};
+
 /** Draws the timeline at time t onto a context at the scene's size. `live`: placeholders for clips still being made. */
 function draw(ctx, t, { live = false } = {}) {
   const W = P.doc.width, H = P.doc.height;
   ctx.save();
-  const k = ctx.canvas.width / W; // 1 except on the phone's smaller live canvas
-  ctx.setTransform(k, 0, 0, k, 0, 0);
+  const scaleK = ctx.canvas.width / W; // 1 except on the phone's smaller live canvas
+  ctx.setTransform(scaleK, 0, 0, scaleK, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
   ctx.clearRect(0, 0, W, H);
   const bg = P.doc.background ?? (P.kind === 'image' ? null : '#000000');
   if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H); }
   if (P.kind === 'audio') drawSound(ctx, t, live);
-  const main = mainTrack()?.id;
   for (const tr of [...tracks()].reverse()) {
     if (tr.hidden) continue;
     const cs = P.doc.clips.filter((c) => c.track === tr.id && isVisual(c)).sort((a, b) => a.start - b.start);
     for (let i = 0; i < cs.length; i++) {
       const c = cs[i];
-      if (!active(c, t)) continue;
-      // A transition at a join of the main track: the next clip comes in over the last part of this one.
-      const n = tr.id === main && c.transition && cs[i + 1] && Math.abs(cs[i + 1].start - clipEnd(c)) < 0.02 ? cs[i + 1] : null;
-      const T = c.transitionSeconds ?? 0.5;
-      const k = n && clipEnd(c) - t < T ? 1 - (clipEnd(c) - t) / T : 0;
-      if (k && /^fade/.test(c.transition)) {
-        drawClip(ctx, c, t, live, 1);
-        ctx.fillStyle = c.transition === 'fadewhite' ? '#fff' : '#000';
-        ctx.globalAlpha = Math.min(1, k * 2);
-        ctx.fillRect(0, 0, W, H);
-        ctx.globalAlpha = 1;
+      const xf = XF.get(c.id);
+      const inXf = xf && t >= xf.joinEnd - xf.seconds && t < xf.joinEnd;
+      const s = inXf ? sampleAt(xf.samples, t, xf.joinEnd, xf.seconds) : null;
+      if (!active(c, t) && !(s && s.aOut > 0.001)) continue;
+      if (s) {
+        const n = byId(xf.nextId) ?? cs[i + 1];
+        const tIn = n ? n.start + (t - (xf.joinEnd - xf.seconds)) : t;
+        drawXfPair(ctx, c, n, t, tIn, live, s, W, H);
         continue;
       }
       drawClip(ctx, c, t, live, 1);
-      if (k) {
-        ctx.save();
-        if (/^(wipe|slide)/.test(c.transition)) { ctx.beginPath(); ctx.rect(W * (1 - k), 0, W * k, H); ctx.clip(); if (c.transition.startsWith('slide')) ctx.translate(W * (1 - k), 0); drawClip(ctx, n, n.start, live, 1); } else drawClip(ctx, n, n.start, live, k);
-        ctx.restore();
-      }
     }
   }
-  // Coming in from black: the first part of a clip after a fade-through.
-  const prev = onTrack(main).find((c) => /^fade/.test(c.transition ?? '') && Math.abs(clipEnd(c) - t) < (c.transitionSeconds ?? 0.5) && t >= clipEnd(c));
-  if (prev) { ctx.fillStyle = prev.transition === 'fadewhite' ? '#fff' : '#000'; ctx.globalAlpha = Math.max(0, 1 - ((t - clipEnd(prev)) / ((prev.transitionSeconds ?? 0.5) / 2))); ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
   ctx.restore();
   emptyState();
+}
+
+/** Outgoing + incoming (+ optional dip fill) from one precomputed sample. */
+function drawXfPair(ctx, out, inn, tOut, tIn, live, s, W, H) {
+  if (s.aOut > 0.001) {
+    ctx.save();
+    if (s.oxOut || s.oyOut) ctx.translate(s.oxOut * W, s.oyOut * H);
+    drawClip(ctx, out, tOut, live, s.aOut);
+    ctx.restore();
+  }
+  if (s.fill && s.fillA > 0.001) {
+    ctx.globalAlpha = s.fillA;
+    ctx.fillStyle = s.fill;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+  if (inn && s.aIn > 0.001) {
+    ctx.save();
+    if (s.clipIn) {
+      const r = s.clipIn;
+      ctx.beginPath();
+      ctx.rect(r.x * W, r.y * H, r.w * W, r.h * H);
+      ctx.clip();
+    }
+    if (s.oxIn || s.oyIn) ctx.translate(s.oxIn * W, s.oyIn * H);
+    drawClip(ctx, inn, tIn, live, s.aIn);
+    ctx.restore();
+  }
 }
 
 /** An empty scene says how to start: drop something, pick from Media, or ask the AI. */

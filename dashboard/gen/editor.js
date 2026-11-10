@@ -223,6 +223,8 @@ export function composable() {
     if (c.kind === 'fill') return false;
     if (c.track !== main) return false;
     if (c.w != null || c.x != null || c.y != null || c.rotation || (c.opacity ?? 1) !== 1 || (c.blend && c.blend !== 'normal')) return false;
+    // Push is drawn in the browser; video.compose only approximates it, so a cut with push records here to match preview.
+    if (c.transition === 'push') return false;
   }
   // The main track plays as one cut from 0: no gaps.
   let at = 0;

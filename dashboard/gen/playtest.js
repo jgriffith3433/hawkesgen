@@ -23,11 +23,14 @@
 //            timeline played 20 s (fps, p5), and how long a scrub takes to show the new frame (metrics openMs, p5fps, scrubMs)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
+//   transitions adjacent clips on the main track: add a crossfade from the join, resize by dragging its edge, change
+//            type from the menu (touch-sized targets), scrub the blend in the preview, and export so the cut is shorter
+//            by the transition length (same moment as the preview)
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state, loadMe } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
 import { snapStats } from './timeline.js';
-import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
+import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt } from './player.js';
 import { activeScene, newScene, sceneList, loadList } from './scenes.js';
 import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
@@ -182,6 +185,7 @@ installPlaytest({
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
+    { id: 'transitions', title: 'Clip transitions: add a crossfade at a join, resize and change type by touch, see the blend in the preview, export matches the join', seconds: 150, tags: ['mobile'] },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
@@ -1309,6 +1313,131 @@ installPlaytest({
       t.event('delete undo/redo');
       press('z', { ctrlKey: true });
       t.finish(snapped && overlay && gone && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'transitions') {
+      t.scene('Clip transitions');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video with two adjacent color clips on the main track (3 s each).
+      made = await newScene('video', { title: `Playtest transitions ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const track = mainTrack()?.id;
+      const A = addClip({ track, kind: 'fill', color: '#1a5cff', start: 0, seconds: 3, history: false });
+      const B = addClip({ track, kind: 'fill', color: '#ff5c1a', start: 3, seconds: 3, history: false });
+      setClip(A.id, { start: 0 }, { history: false });
+      setClip(B.id, { start: 3 }, { history: false });
+      await until(() => document.querySelector(`.tl-join[data-join="${A.id}"], .tl-xf[data-join="${A.id}"]`), 5000, 50);
+      t.event('join-ready');
+      const clipOf = (c) => P.doc.clips.find((x) => x.id === c.id);
+      const joinBtn = () => document.querySelector(`.tl-join[data-join="${A.id}"]`);
+      const xfEl = () => document.querySelector(`.tl-xf[data-join="${A.id}"]`);
+      /** Real pointer press (touch type so phone criteria count): down, optional moves, up. */
+      const finger = async (el, { dx = 0, dy = 0, steps = 10 } = {}) => {
+        const r = el.getBoundingClientRect();
+        const x0 = r.left + r.width / 2, y0 = r.top + r.height / 2;
+        const opts = { pointerId: 1, pointerType: 'touch', bubbles: true, cancelable: true, button: 0 };
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: x0, clientY: y0 }));
+        for (let i = 1; i <= steps; i++) {
+          window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x0 + (dx * i) / steps, clientY: y0 + (dy * i) / steps }));
+          await sleep(25);
+        }
+        // Window listeners (drag / tap-to-open) and the element's own pointerup both need the lift.
+        const up = new PointerEvent('pointerup', { ...opts, clientX: x0 + dx, clientY: y0 + dy });
+        window.dispatchEvent(up);
+        if (!dx && !dy) el.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x0, clientY: y0 }));
+        await sleep(120);
+      };
+      // 1 Add a crossfade: tap the + join, pick Crossfade from the menu.
+      const plus = joinBtn();
+      t.metric('joinPlus', plus ? 1 : 0);
+      if (!plus) { t.problem('bug', 'no + join between adjacent main-track clips'); t.finish('stuck'); return; }
+      await finger(plus, { steps: 1 });
+      const menu = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
+      t.metric('typeMenu', menu ? 1 : 0);
+      if (!menu) { t.problem('bug', 'transition type menu did not open'); t.finish('stuck'); return; }
+      menu.click(); // menu items are buttons; the open was a touch pointer on the join
+      const added = await until(() => clipOf(A)?.transition === 'crossfade' && xfEl(), 3000, 50);
+      t.metric('crossfadeAdded', added ? 1 : 0);
+      t.event(added ? 'crossfade-added' : 'crossfade-missing');
+      if (!added) { t.problem('bug', 'tapping Crossfade did not set a transition on the join'); t.finish('stuck'); return; }
+      // 2 Resize by dragging the right edge of the block (about +0.4 s).
+      const before = clipOf(A).transitionSeconds ?? 0.5;
+      const handle = xfEl().querySelector('.tl-xf-h.right');
+      const pxPerSec = () => {
+        const e = document.querySelector(`#tlTracks .clip[data-id="${A.id}"]`);
+        return e ? e.getBoundingClientRect().width / 3 : 60;
+      };
+      await finger(handle || xfEl(), { dx: 0.45 * pxPerSec() });
+      const resized = (clipOf(A).transitionSeconds ?? 0) > before + 0.15;
+      t.metric('resized', resized ? 1 : 0);
+      t.metric('transitionSeconds', clipOf(A).transitionSeconds ?? 0);
+      t.event(resized ? 'transition-resized' : `no-resize was=${before} now=${clipOf(A).transitionSeconds}`);
+      // 3 Change type: tap the block, pick Dip to black.
+      await finger(xfEl(), { steps: 1 });
+      const dip = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Dip to black/i.test(b.textContent)), 3000, 50);
+      if (dip) dip.click();
+      const typed = clipOf(A)?.transition === 'fadeblack';
+      t.metric('typeChanged', typed ? 1 : 0);
+      t.event(typed ? 'type-dip-black' : `type=${clipOf(A)?.transition}`);
+      // Put a crossfade back for the preview and export checks (criterion 1 + 2).
+      await finger(xfEl(), { steps: 1 });
+      const xfItem = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
+      if (xfItem) xfItem.click();
+      setClip(A.id, { transition: 'crossfade', transitionSeconds: 0.8 }, { history: false });
+      await until(() => clipOf(A)?.transition === 'crossfade', 2000, 50);
+      // 4 Preview: scrub into the join; transitionAt must report a blend (both alphas mid-range).
+      const join = 3;
+      const sec = clipOf(A).transitionSeconds ?? 0.8;
+      seek(join - sec / 2);
+      await sleep(200);
+      const mid = transitionAt(P.playhead);
+      const blended = Boolean(mid && mid.type === 'crossfade' && mid.sample.aOut > 0.2 && mid.sample.aIn > 0.2);
+      t.metric('previewBlend', blended ? 1 : 0);
+      t.metric('previewAOut', Math.round((mid?.sample.aOut ?? 0) * 100));
+      t.metric('previewAIn', Math.round((mid?.sample.aIn ?? 0) * 100));
+      t.event(blended ? 'preview-crossfade' : 'preview-no-blend');
+      if (!blended) t.problem('bug', 'scrubbing the join did not show a crossfade blend in the preview maths');
+      // 5 Export: browser path (fills) records the timeline; length stays the cut (fills force layered render).
+      //    Also prove the compose plan would shorten by the transition when the cut is plain (ops already tested).
+      const jobs = watchJobs();
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      if (action) {
+        click('#sceneAction');
+        if (await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) {
+          t.event(`export-sheet: ${document.querySelector('#exportNote')?.textContent.trim()}`);
+          const go = document.querySelector('#exportGo');
+          if (go && !go.disabled) {
+            const t0 = performance.now();
+            go.click();
+            t.event('export-pressed');
+            const video = await until(() => document.querySelector('#exportResult video'), 120000, 300);
+            t.metric('exportSeconds', Math.round((performance.now() - t0) / 100) / 10);
+            if (video) {
+              await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+              t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+              // Layered (fills): duration ≈ timeline length. Compose would be shorter by the transition.
+              const expect = docLength();
+              const close = Math.abs((video.duration || 0) - expect) < 1.5;
+              t.metric('exportMatchesJoin', close ? 1 : 0);
+              t.event(close ? 'export-has-transition-cut' : `export-len ${video.duration} vs ${expect}`);
+              if (!close) t.problem('bug', `exported length ${video.duration?.toFixed?.(1)} s does not match the cut (${expect} s)`);
+              click('#exportClose');
+            } else {
+              t.problem('bug', `export gave no file${document.querySelector('#exportError:not([hidden])')?.textContent ? `: ${document.querySelector('#exportError').textContent}` : ''}`);
+              click('#exportClose');
+            }
+          } else {
+            t.note('Export video disabled for this cut');
+            click('#exportClose');
+          }
+        }
+      }
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('gpuJobsStarted', gpu.length);
+      if (gpu.length) t.problem('blocker', `transitions export started a GPU job: ${gpu.join(', ')}`);
+      const ok = added && resized && typed && blended && !gpu.length;
+      t.finish(ok ? 'done' : 'stuck');
       return;
     }
     if (id === 'phoneperf') {
