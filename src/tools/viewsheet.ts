@@ -9,7 +9,7 @@ import type { Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
 import { localPath } from '../storage.ts';
-import { ask, usageOf } from '../providers/anthropic.ts';
+import { ask, usageOf, claudeUnavailable } from '../providers/anthropic.ts';
 import { planSheet } from './sheet.ts';
 import { imageSize } from './threed.ts';
 // @ts-ignore: plain JS client
@@ -270,7 +270,14 @@ export const viewSheetTool: Tool = {
           `For each of the back, left and right views decide ok: true only when it is the SAME character as the front (same colors, props, outfit, proportions and the same number of limbs, nothing added, merged or lost) AND it really is that view (a back view shows the back of the head and body; left and right are true side profiles, not 3/4 views: the LEFT view (the camera moved to the viewer's left) faces the RIGHT edge of the picture and the RIGHT view faces the LEFT edge) AND the whole body is in frame on a plain background. ` +
           `When not ok, say in one short sentence what is wrong. ${creature ? 'This is a robot or creature: every limb must be separate and visible in every view.' : ''}`,
         images, schema: CHECK_SCHEMA, effort: 'low', maxTokens: 3000,
-      }, ctx.signal);
+      }, ctx.signal).catch((e: any) => {
+        // Claude out of reach (the plan's limit, an outage): go on with the views unchecked rather than lose them.
+        if (ctx.signal?.aborted || !claudeUnavailable(e)) throw e;
+        ctx.log(`view check ${attempt + 1}: skipped (${String(e.message).slice(0, 200)}), views kept unchecked`);
+        attempts.push({ attempt: attempt + 1, bad: [], skipped: String(e.message).slice(0, 200) } as any);
+        return null;
+      });
+      if (!r) break;
       ctx.usage(usageOf(r, `${r.model} view check`));
       const verdict: ViewCheck = JSON.parse(r.text);
       const bad = badViews(verdict);
