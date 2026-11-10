@@ -21,9 +21,18 @@
   </script>
   <script src="/gen/nozoom.js"></script>
   <script>
-    // Start the session check now, in parallel with the module graph, so the first screen (the welcome when signed out)
-    // doesn't wait for every script to load before the question is even asked. account.js loadMe() reuses it.
-    window.__hgMe = fetch('/v1/users/me', { credentials: 'same-origin' }).then(function (r) { return r.text().then(function (t) { return { status: r.status, ok: r.ok, text: t }; }); }).catch(function () { return null; });
+    // Session cookie is HttpOnly, so hg.in (set once a session is known) is the hint. With no hint, skip /v1/users/me:
+    // that route answers 401 for anonymous API clients, and a signed-out first visit must log no console error.
+    // With a hint, start the check now (parallel with the module graph); account.js loadMe() reuses it.
+    (function () {
+      var hinted = false;
+      try { hinted = localStorage.getItem('hg.in') === '1'; } catch (e) {}
+      if (hinted) {
+        window.__hgMe = fetch('/v1/users/me', { credentials: 'same-origin' }).then(function (r) {
+          return r.text().then(function (t) { return { status: r.status, ok: r.ok, text: t }; });
+        }).catch(function () { return null; });
+      }
+    })();
     // Never leave the cover up if the app fails to start.
     setTimeout(function () { var c = document.getElementById('bootCover'); if (c) c.remove(); }, 20000);
   </script>

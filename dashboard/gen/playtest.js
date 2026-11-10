@@ -3,7 +3,7 @@
 // Studio's beta playtests it's signed in as the project's test account (src/testsignin.ts).
 //   smoke    the page opens; signed in, a new video scene, text added with T, played with Space, then removed
 //   media    the Media pane lists the library and a tile can be picked (the AI's chip shows it)
-//   signedout what someone who isn't signed in sees: the welcome, and Start free
+//   signedout what someone who isn't signed in sees: the welcome, Sign in with Google, no /v1 probe without hg.in
 //   playback two or three of the library's clips cut together, played through the cuts and scrubbed back over them:
 //            how often and how long the clock waited for data, seeks while playing, frames with no picture
 //   create   one form from each Create group (images, video, 3D, animation, audio, chains): fields, price and Make button; Make is never pressed
@@ -24,7 +24,7 @@
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
 import { installPlaytest } from './playtest/hawkes-playtest.js';
-import { state } from './account.js';
+import { state, loadMe } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
 import { snapStats } from './timeline.js';
 import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
@@ -35,6 +35,7 @@ import { api, bus } from './lib.js';
 import { openStream } from './stream.js';
 import { runJob, uploadFiles } from './media.js';
 import { streamState } from './trouble.js';
+import { show as showLanding, hide as hideLanding } from './landing.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
@@ -173,7 +174,7 @@ installPlaytest({
   scenarios: [
     { id: 'smoke', title: 'Open the app, make a scene, add text, play it', seconds: 60, tags: ['smoke'] },
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
-    { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call but /v1/users/me', seconds: 30 },
+    { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call (the session probe is skipped when hg.in is unset)', seconds: 30 },
     { id: 'createprice', title: 'Every Create form shows its credit price when opened, and it changes when an option that changes the cost changes', seconds: 120 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
@@ -214,29 +215,67 @@ installPlaytest({
     t.metric('signedIn', state.user ? 1 : 0);
     if (id === 'signedout') {
       t.scene('Welcome');
+      // Setup shortcut (named): clear the session hint and show the welcome so a test-account tab still plays the
+      // anonymous landing path (the real cookie is untouched; Sign in from the landing still works afterwards).
+      try { localStorage.removeItem('hg.in'); } catch { /* */ }
+      const was = state.user;
+      if (was) state.user = null;
+      showLanding();
       const welcome = await until(() => document.querySelector('#landing:not([hidden]), .landing:not([hidden])'), 8000);
       t.metric('welcome', welcome ? 1 : 0);
-      if (welcome && !state.user) {
-        // What the first screen must say and show, and that it asked Gen for nothing but who's signed in.
+      if (welcome) {
         const L = document.querySelector('#landing');
         t.metric('signInWithGoogle', /Sign in with Google/.test(L.textContent) ? 1 : 0);
         t.metric('examples', L.querySelectorAll('.ld-ex').length);
-        const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/') && p !== '/v1/users/me');
-        t.metric('v1CallsSignedOut', v1.length);
-        for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
-        // The "who am I?" check answers a signed-out visit with nobody, not a 401 the console shows as an error.
-        const me = await window.__hgMe;
-        t.metric('meStatus', me?.status ?? 0);
-        if (me && me.status !== 200) t.problem('bug', `signed-out load: /v1/users/me answered ${me.status} (a console error)`);
+        // A first visit (no test session) must not have probed /v1/users/me at boot.
+        if (!was) {
+          const me = window.__hgMe ? await window.__hgMe : null;
+          t.metric('meProbedAtBoot', me ? 1 : 0);
+          if (me) t.problem('bug', 'signed-out first visit probed /v1/users/me (expected skip when hg.in is unset)');
+          if (me && me.status === 401) t.problem('bug', 'signed-out load: /v1/users/me answered 401 (a console error)');
+          const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/'));
+          t.metric('v1CallsSignedOut', v1.length);
+          for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
+        }
+        // Prove the skip on this tab too: with hg.in cleared, loadMe must not fetch any /v1 route.
+        const probed = [];
+        const real = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          try {
+            const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+            if (path.startsWith('/v1/')) probed.push(path);
+          } catch { /* */ }
+          return real(input, init);
+        };
+        window.__hgMe = null;
+        await loadMe();
+        window.fetch = real;
+        t.metric('meProbed', probed.includes('/v1/users/me') ? 1 : 0);
+        t.metric('v1DuringSkipLoad', probed.length);
+        if (probed.length) for (const p of probed) t.problem('bug', `signed-out loadMe called ${p}`);
+        else t.event('session-probe-skipped');
         // Labels centred in their buttons, and the "Look around first" link on the text's left margin.
         const btns = [...L.querySelectorAll('.ld-hero .ld-cta button, .ld-nav .ld-signin')].filter((x) => x.offsetWidth);
         const off = btns.map((x) => { const r = document.createRange(); r.selectNodeContents(x); const a = r.getBoundingClientRect(), c = x.getBoundingClientRect(); return Math.abs((a.left + a.right) / 2 - (c.left + c.right) / 2); });
         t.metric('buttonLabelOffCentrePx', Math.round(Math.max(0, ...off)));
         const look = L.querySelector('.ld-look'), sub = L.querySelector('.ld-sub');
         if (look && sub) t.metric('lookLinkOffsetPx', Math.round(Math.abs(look.getBoundingClientRect().left - sub.getBoundingClientRect().left)));
+        // Sign in from the landing opens the sheet (Google completes the rest; playtests can't finish OAuth).
+        const signIn = L.querySelector('.ld-hero .ld-google, .ld-nav .ld-signin, button.ld-google');
+        t.metric('signInReady', signIn ? 1 : 0);
+        if (!signIn) t.problem('bug', 'landing has no Sign in with Google control');
+        else {
+          signIn.click();
+          const dlg = await until(() => document.querySelector('#authDialog')?.open, 4000, 100);
+          t.metric('signInSheet', dlg ? 1 : 0);
+          t.event(dlg ? 'sign-in-opened' : 'sign-in-missing');
+          if (!dlg) t.problem('bug', 'Sign in from the landing did not open the sign-in sheet');
+          else document.querySelector('#authDialog')?.close?.();
+        }
         t.event('welcome-checked');
       }
-      t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
+      if (was) { state.user = was; hideLanding(); }
+      t.finish(welcome ? 'done' : 'stuck');
       return;
     }
     if (id.startsWith('ai-')) {
