@@ -278,7 +278,12 @@ for (const a of AREAS) {
   if (a.sel !== '#sheetGrip') $(a.sel).append(grip);
   const app = $('#app');
   const v = Number(kept(`hg.${a.prop}`));
-  if (v) app.style.setProperty(a.prop, `${v}px`);
+  if (v) {
+    // Keep ~450px above the timeline so the AI and Media panes stay usable at 720p (saved sizes can be taller).
+    const capped = a.prop === '--tl' ? Math.min(v, Math.max(a.min, window.innerHeight - 54 - 450)) : v;
+    app.style.setProperty(a.prop, `${capped}px`);
+    if (capped !== v) keep(`hg.${a.prop}`, String(capped));
+  }
   if (a.fold && kept(`hg.${a.fold}`) === '1') app.classList.add(a.fold);
   const fold = (on) => {
     app.classList.toggle(a.fold, on);

@@ -22,7 +22,8 @@
   --shadow: 0 16px 50px rgba(0, 0, 0, .45);
   --left: 300px;
   --right: 360px;
-  --tl: min(300px, 40dvh);
+  /* Cap so ≥450px stays above the timeline at 720p; taller screens keep up to 300px / 40dvh. */
+  --tl: min(300px, 40dvh, calc(100dvh - 504px));
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -109,7 +110,7 @@ input.num { width: 70px; }
 .me { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .avatar { width: 32px; height: 32px; border-radius: 50%; padding: 0; justify-content: center; font-weight: 700; background: var(--panel-3); border: 1px solid var(--line-2); color: var(--text); }
 
-.pane { background: var(--panel); display: flex; flex-direction: column; min-height: 0; position: relative; }
+.pane { background: var(--panel); display: flex; flex-direction: column; min-height: 0; position: relative; overflow: hidden; }
 .pane.left { grid-area: left; border-right: 1px solid var(--line); }
 .pane.right { grid-area: right; border-left: 1px solid var(--line); }
 .center { grid-area: center; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; background: var(--bg); }
@@ -131,6 +132,12 @@ input.num { width: 70px; }
 .seg button { flex: 1; justify-content: center; background: transparent; padding: 7px; font-weight: 500; color: var(--muted); border-radius: 8px; }
 .seg button.on { background: var(--panel-3); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.3); }
 .pane-body { flex: 1; overflow-y: auto; padding: 6px 12px 14px; min-height: 0; }
+/* Media: top and chips stay put; the tile grid scrolls inside the pane so long lists are not cut off. */
+#pane-media { display: flex; flex-direction: column; overflow: hidden; }
+#pane-media .media-top,
+#pane-media #mediaFilter,
+#pane-media .drop-hint { flex: none; }
+#pane-media .media-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-top: 10px; }
 .media-top { display: flex; gap: 6px; margin-bottom: 8px; }
 .media-top input { flex: 1; min-width: 0; }
 .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; margin-top: 10px; }
@@ -209,8 +216,8 @@ input.num { width: 70px; }
 .pick.on { border-color: var(--accent); }
 .pick img { width: 100%; height: 100%; object-fit: cover; }
 
-/* AI pane */
-.ai-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }
+/* AI pane: flex column; messages + chip list scroll; head / gate / context / prompt never shrink so the box stays pinned. */
+.ai-head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); flex: none; }
 .ai-head .ico-wrap { color: var(--accent); }
 .ai-messages { flex: 1 1 0; overflow-y: auto; padding: 0 14px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
 .ai-messages > :first-child { margin-top: 12px; }
@@ -228,11 +235,12 @@ input.num { width: 70px; }
 .msg-ops .bad { color: var(--danger); }
 .proposal { margin-top: 10px; padding: 10px; border-radius: 10px; background: var(--panel-3); white-space: normal; font-size: 13px; }
 .proposal ul { margin: 6px 0 8px; padding-left: 18px; color: var(--muted); }
-.ai-gate { padding: 8px 14px 0; border-top: 1px solid var(--line); font-size: 13px; flex: 0 5 auto; min-height: 0; overflow-y: auto; }
-.pane.right { overflow: hidden; }
+/* Sign-in sits above the chips (HTML order) and never shrinks into them. */
+.ai-gate { padding: 8px 14px 0; border-top: 1px solid var(--line); font-size: 13px; flex: none; }
 .ai-gate p { margin: 0 0 10px; }
-.ai-head, .ai-context, .ai-form { flex: none; }
-.ai-suggest { padding: 8px 14px 0; flex: 0 10 auto; min-height: 0; overflow-y: auto; }
+.ai-context, .ai-form { flex: none; }
+/* Chips wrap in the row; when short on height they scroll inside their own box instead of clipping. */
+.ai-suggest { padding: 8px 14px 0; flex: 0 1 auto; min-height: 0; max-height: min(140px, 34%); overflow-x: hidden; overflow-y: auto; flex-wrap: wrap; align-content: flex-start; }
 .ai-suggest .chip { font-size: 12px; text-align: left; }
 .ai-context { display: flex; align-items: center; gap: 4px; padding: 8px 14px 0; }
 .ctx-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); background: var(--panel-2); border: 1px dashed var(--line-2); border-radius: 999px; padding: 3px 10px; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -1104,11 +1112,11 @@ html, body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   .pal-wrap { padding-top: 12px; }
   .pal { max-height: calc(100dvh - 24px); }
   /* The AI sheet: the conversation scrolls, the ideas scroll sideways, the box to type in always shows. */
-  .ai-head, .ai-context, .ai-form { flex: none; }
-  .ai-suggest { flex: none; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .ai-head, .ai-context, .ai-form, .ai-gate { flex: none; }
+  .ai-suggest { flex: none; max-height: none; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding-bottom: 2px; }
   .ai-suggest::-webkit-scrollbar { display: none; }
   .ai-suggest .chip { flex: none; white-space: nowrap; }
-  .ai-gate { max-height: 40%; }
+  .ai-gate { max-height: 40%; overflow-y: auto; }
   .ai-form { padding: 8px 10px 10px; }
   /* Text boxes at 16px so iOS never zooms in on them. */
   textarea, select, input[type=search], input[type=text], input[type=email], input:not([type]) { font-size: 16px; }
