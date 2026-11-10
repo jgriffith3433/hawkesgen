@@ -118,3 +118,22 @@ test('the address is believed only from the trusted hop: a forged header cannot 
   assert.equal(callerKey(req('127.0.0.1', { 'x-forwarded-for': '1.2.3.4', authorization: 'Bearer abc' }), 'strict'), 'ip:1.2.3.4');
   assert.match(callerKey(req('127.0.0.1', { authorization: 'Bearer abc' }), 'moderate'), /^k:/);
 });
+
+test("Gen's own calls (the self token from this machine) are never limited: a batch of jobs can't fail each other", async () => {
+  const { SELF_TOKEN } = await import('../src/auth.ts');
+  resetLimits();
+  for (let i = 0; i < DEFAULT_RULES.moderate.burst + 30; i++) {
+    const r = await call('/v1/estimate', { method: 'POST', key: SELF_TOKEN, body: { items: [] }, headers: { 'x-hawkesgen-project': 'starter' } });
+    await r.arrayBuffer();
+    if (r.status === 429) assert.fail(`self call limited on request ${i + 1}`);
+  }
+  // Anyone else with the same pattern still is.
+  resetLimits();
+  let limited = false;
+  for (let i = 0; i < DEFAULT_RULES.moderate.burst + 5 && !limited; i++) {
+    const r = await call('/v1/estimate', { method: 'POST', key, body: { items: [] } });
+    await r.arrayBuffer();
+    limited = r.status === 429;
+  }
+  assert.ok(limited);
+});
