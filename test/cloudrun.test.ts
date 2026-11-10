@@ -589,3 +589,45 @@ test('cold: the LB hold, then "failed to assign worker" while the worker loads, 
   assert.equal(files.length, 1);
   assert.equal(calls, 13);
 });
+
+test('RunPod: a run past one load-balancer hold is followed by asking again, which keeps the worker up (beta, 2026-11-10)', async () => {
+  const { resetHealth } = await import('../src/providers/gpu/health.ts');
+  resetHealth();
+  let n = 0;
+  const fake = fakeCloud((body, f) => {
+    n++;
+    // The LB cuts the first request while the script runs: progress only, the heartbeat fresh in the bucket.
+    if (n < 3) {
+      f.objects.set(`${body.out}heartbeat.json`, Buffer.from(JSON.stringify({ at: f.deps.now(), detail: `running for ${n * 330}s` })));
+      return [{ t: 'progress', detail: `running for ${n * 330}s` }];
+    }
+    return succeed(body, f);
+  });
+  const ep = svc({ name: 'runpod', provider: 'runpod', lane: 'runpod', headers: () => ({}), waitForInstanceMs: 12 * 60_000, graphLimitSeconds: 1800, preload: new Set() });
+  const h = hooks();
+  const files = await cloudComfyRun({ id: 'j_long3d' }, ep as any, h as any, fake.deps as any).runGraph({ hawkes_job: { script: 'x' } } as any);
+  assert.equal(files[0].filename, 'out.png');
+  assert.equal(fake.posts.length, 3);
+  // One request per graph is the same key every time: the worker attaches, it doesn't start the script again.
+  assert.equal(new Set(fake.posts.map((p: any) => p.body.key)).size, 1);
+  assert.equal(h.steps.filter((s: string) => /starting a runpod GPU/.test(s)).length, 1);
+});
+
+test('Cloud Run keeps waiting on the heartbeat after a broken stream (no second request)', async () => {
+  let n = 0;
+  const fake = fakeCloud((body, f) => {
+    n++;
+    f.objects.set(`${body.out}heartbeat.json`, Buffer.from(JSON.stringify({ at: f.deps.now(), detail: 'running' })));
+    return [{ t: 'progress', detail: 'running' }];
+  });
+  let polls = 0;
+  const sleep = fake.deps.sleep;
+  fake.deps.sleep = async (ms: number) => {
+    polls++;
+    await sleep(ms);
+    if (polls === 3) fake.objects.set(`${fake.posts[0].body.out}manifest.json`, Buffer.from(JSON.stringify({ t: 'done', files: [{ filename: 'late.png', subfolder: '', type: 'output', uri: 'x' }], seconds: 30 })));
+  };
+  const files = await cloudComfyRun({ id: 'j_cr_follow' }, svc() as any, hooks() as any, fake.deps as any).runGraph({ '1': { class_type: 'X', inputs: {} } } as any);
+  assert.equal(files[0].filename, 'late.png');
+  assert.equal(n, 1);
+});

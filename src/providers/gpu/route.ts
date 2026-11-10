@@ -6,7 +6,7 @@
 // provider's request limit). With no order at all, the old rule applies unchanged: Cloud Run when settings send the
 // family there and its service is deployed, else the fleet.
 import type { GpuEndpoint, Settings } from '../../config.ts';
-import { env } from '../../config.ts';
+import { env, RUNPOD_3D_GRAPH_SECONDS } from '../../config.ts';
 import type { Tool } from '../../tools/types.ts';
 import { cloudRoute, serviceForFamily, allServices, type CloudService, type ServiceMap } from '../cloudrun/services.ts';
 import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, WARM_MS, healthOf, isDown, lastingDown } from './health.ts';
@@ -132,14 +132,19 @@ export function gpuCandidates(job: Job, tool: ToolLike, settings: Pick<Settings,
     if (!ep.families.includes('*') && !ep.families.includes(family)) { skip(`${id}: doesn't run the ${family || 'job\'s'} family`, true); continue; }
     // "*" is the ComfyUI image: a 3D tool's script needs an endpoint running the 3D image, which names its family.
     if (tool.image && !ep.families.includes(family)) { skip(`${id}: runs the ComfyUI image ("*"); ${family} needs an endpoint with the ${tool.image} image that names it`, true); continue; }
-    if (perGraph > ep.graphLimitSeconds) { skip(`${id}: one graph may run ${Math.round(perGraph / 60)} min, past its limit`, true); continue; }
+    const cap = tool.image === '3d' && ep.provider === 'runpod' ? Math.max(ep.graphLimitSeconds, RUNPOD_3D_GRAPH_SECONDS) : ep.graphLimitSeconds;
+    if (perGraph > cap) { skip(`${id}: one graph may run ${Math.round(perGraph / 60)} min, past its limit`, true); continue; }
     if (!bucket) { skip(`${id}: settings.gpu.cloudrun.bucket is not set (the worker's files go there)`, true); continue; }
     if (!env('HAWKESGEN_PUBLIC_URL')) { skip(`${id}: HAWKESGEN_PUBLIC_URL is not set (the worker reaches the bucket through Gen)`, true); continue; }
     const missing = missingSecrets(ep.provider, get);
     if (missing) { skip(`${id}: ${missing}`, true); continue; }
     const broke = ep.provider === 'runpod' ? runpodCreditProblem(get) : null;
     if (broke) { skip(`${id}: ${broke}`, true); continue; }
-    choices.push({ kind: 'service', service: endpointService(ep, family, map, bucket, get) });
+    const service = endpointService(ep, family, map, bucket, get);
+    // A 3D script (Pixal3D loading its weights on a cold worker) runs past RunPod's 300 s default; Gen holds the worker
+    // past each load-balancer hold (run.ts reattach), so the cap the worker enforces is the 3D one.
+    if (tool.image === '3d' && ep.provider === 'runpod') service.graphLimitSeconds = Math.max(service.graphLimitSeconds, RUNPOD_3D_GRAPH_SECONDS);
+    choices.push({ kind: 'service', service });
   }
   return { choices, skipped, blockers };
 }

@@ -191,7 +191,10 @@ the same path a dropped Cloud Run stream takes. But a host may stop an instance 
 
 - **Modal:** the generated app keeps containers 20 minutes after the last request (`scaledown_window=1200`).
 - **RunPod:** idle workers stop after the endpoint's idle timeout. So RunPod endpoints default to `graphLimitSeconds: 300`,
-  and longer graphs (video) go to the next provider.
+  and longer graphs (video) go to the next provider. A 3D script on RunPod gets 1800 s instead: when the load balancer
+  ends Gen's request and the run's heartbeat is still fresh, Gen sends the same request again, the worker attaches it
+  to the run already going there, and so the worker always has a request open (src/providers/cloudrun/run.ts). A run
+  that still passes its limit goes to the fleet only when the fleet can start.
 
 ## Secrets
 
