@@ -110,6 +110,16 @@ test('mesh.views3d stays on Comfy * endpoints; 3D familyOrder does not pin it to
   assert.ok(!lanes.includes('runpod-3d'), 'Comfy mesh.views3d must not go to the 3D image endpoint');
 });
 
+test('a RunPod worker lets a graph run 30 min (Gen holds it); the 300 s limit still picks which graphs go there', () => {
+  const s = gpuSettings({ providers: [ep({ id: 'runpod', families: ['*'], graphLimitSeconds: 300 })], order: ['runpod', 'fleet'] });
+  // Beta 2026-11-10: Pixal3D (a ComfyUI graph) ran past 300 s on a cold worker and the worker stopped it.
+  const c = gpuCandidates({ family: 'mesh.views3d', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get);
+  const svc = c.choices.find((x: any) => x.kind === 'service') as any;
+  assert.equal(svc.service.graphLimitSeconds, 1800);
+  const long = gpuCandidates({ family: 'mesh.views3d', params: {}, labels: {} }, { ...comfyTool, gpuSeconds: () => 900 }, s, map, Date.now(), get);
+  assert.ok(!long.choices.some((x: any) => x.kind === 'service'), 'a graph estimated past 300 s still skips RunPod');
+});
+
 test('endpointService: waitForInstanceMs is short only when lastOk is fresh; true cold uses coldStartSeconds', () => {
   resetHealth();
   const cold = endpointService(ep({ id: 'runpod-a', coldStartSeconds: 900 }), 'z-image', map, 'bkt', get);
@@ -426,7 +436,8 @@ test('a run on RunPod: its key in the headers, the broker store with this run\'s
   assert.equal(p.body.store.broker, 'https://gen.example.test/v1/gpu/broker');
   assert.deepEqual(readToken(p.body.store.token), { key, bucket: 'bkt' });
   assert.ok(p.body.models.some((m: any) => `${m.dir}/${m.file}` === model), 'a family model the graph names rides along');
-  assert.equal(p.body.timeoutSeconds, 300);
+  // The worker's own stop is the held cap, not the 300 s routing limit: Gen holds the worker past each LB hold.
+  assert.equal(p.body.timeoutSeconds, 1800);
 });
 
 test('a provider that refuses our key, or has no GPU in its wait, throws "unavailable" (the queue moves on)', async () => {
