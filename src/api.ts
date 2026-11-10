@@ -31,6 +31,7 @@ import * as storage from './storage.ts';
 import { startUpload, finishUpload } from './bigupload.ts';
 import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, pruneLods, lodStatus } from './lod.ts';
 import { usageSummary } from './usage.ts';
+import { readRunpodLive } from './providers/gpu/runpodLive.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
 import * as fleetImage from './providers/comfy/image.ts';
@@ -1798,8 +1799,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         account = { at: Date.now(), value: await fleet.checkAccount().catch((e) => ({ error: e.message })) };
       }
       const busy = Object.fromEntries([...queue.busy.entries()]);
+      const runpod = await readRunpodLive().catch((e) => ({ error: String(e?.message ?? e) }));
       return send(res, 200, {
-        servers, error, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
+        servers, error, runpod, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
         busy, autoStart: queue.autoStartState(), families: Object.fromEntries(queue.families), types: fleet.TYPES, regions: fleet.REGIONS, defaultType: fleet.DEFAULT_TYPE, diskPerMonth: fleet.DISK_PER_MONTH,
         disks: machines.lastDisks(),
       });
