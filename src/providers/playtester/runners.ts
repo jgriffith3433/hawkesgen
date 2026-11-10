@@ -6,8 +6,8 @@
 //
 // With no runners set, web runs keep today's order (settings.playtest.backend: RunPod, the L4 service, the CPU service,
 // as cloudPlaytestsFor says) as implicit entries, and desktop targets have nowhere to play.
-import type { PlaytestRunner, PlaytestTarget, Settings } from '../../config.ts';
-import { env } from '../../config.ts';
+import type { PlaytestProvider, PlaytestRunner, PlaytestTarget, Settings } from '../../config.ts';
+import { PLAYTEST_PROVIDERS, env } from '../../config.ts';
 import { isDown } from '../gpu/health.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { cloudPlaytestsFor, gpuProvidersNotSetUp, runpodPlaytest, modalPlaytest, providerOfVariant, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
@@ -107,6 +107,19 @@ export function browserService(r: PlaytestRunner, settings: Pick<Settings, 'play
 export const runnersTried = (labels?: Record<string, unknown>): string[] => (Array.isArray(labels?.runnersTried) ? (labels!.runnersTried as unknown[]).map(String) : []);
 
 /**
+ * Providers Studio asks this run to leave out (playtest.run param `skipProviders`, also on labels): known browser
+ * providers once each. Unknown names are dropped so a stale hint never refuses the job (2026-11-10: Studio's retry used
+ * to 400 with "has no param skipProviders").
+ */
+export function cleanSkipProviders(v: unknown): PlaytestProvider[] {
+  if (!Array.isArray(v)) return [];
+  return [...new Set(v.map(String).filter((x): x is PlaytestProvider => (PLAYTEST_PROVIDERS as readonly string[]).includes(x)))];
+}
+
+/** labels.skipProviders (or the same list from the job's params). */
+export const providersSkipped = (labels?: Record<string, unknown>): PlaytestProvider[] => cleanSkipProviders(labels?.skipProviders);
+
+/**
  * The runners this run may use now, in order, and why the others were skipped. `lane` is whose build it is: customers'
  * builds go only to runners that take them. Full runners go after the ones with room (the run waits on them last).
  */
@@ -121,6 +134,7 @@ export function runnerCandidates(
   const room: RunnerChoice[] = [];
   const full: RunnerChoice[] = [];
   const tried = new Set(runnersTried(job.labels));
+  const skipProv = new Set(providersSkipped(job.labels));
   const list = runnersFor(job.project, settings, specs);
   if (!list.length) skipped.push(settings.playtest.runners?.length ? 'no runners' : 'no runners in settings.playtest.runners and no browser service set up');
   // Today's browser services (no web runner listed): say which GPU providers aren't set up, for the software note.
@@ -130,6 +144,10 @@ export function runnerCandidates(
     if (!r.targets.includes(target)) { skipped.push(`${r.id}: doesn't play ${target}`); continue; }
     if (!r.lanes.includes(lane)) { skipped.push(`${r.id}: doesn't take ${lane === 'customer' ? 'customers\'' : 'the studio\'s'} builds`); continue; }
     if (tried.has(r.id)) { skipped.push(`${r.id}: this run already failed there`); continue; }
+    if (r.provider !== 'native' && skipProv.has(r.provider as PlaytestProvider)) {
+      skipped.push(`${r.id}: skipProviders left ${r.provider} out`);
+      continue;
+    }
     const cool = isDown(cooldownKey(r.id), now);
     if (cool) { skipped.push(`${r.id}: ${cool.reason} (skipped for ${Math.ceil((cool.until - now) / 60_000)} min)`); continue; }
     const broke = r.provider === 'runpod' ? runpodCreditProblem(get) : null;

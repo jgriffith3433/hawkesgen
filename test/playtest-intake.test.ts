@@ -221,6 +221,18 @@ test('the router: by target and lane, first with room first, cooldowns and tries
   markDown(runnerHealthKey('proton-a'), 'refused', 60_000);
   assert.deepEqual(ids(runnerCandidates({ project: 'usr_a', labels: { runnersTried: ['needs-key'] } }, 'proton', 'customer', s, { get })), ['proton-b']);
   resetHealth();
+  // Studio's skipProviders hint: leave those browser providers out for this job only (native runners stay).
+  const withSkip = settingsWith([
+    R({ id: 'runpod', provider: 'runpod', url: 'https://abc.api.runpod.ai', targets: ['web'] }),
+    R({ id: 'modal', provider: 'modal', url: 'https://ws--app.modal.run', targets: ['web'] }),
+    R({ id: 'native', targets: ['linux'] }),
+  ]);
+  assert.deepEqual(
+    ids(runnerCandidates({ project: 'x', labels: { skipProviders: ['modal', 'bogus'] } }, 'web', 'studio', withSkip)),
+    ['runpod'],
+  );
+  assert.ok(runnerCandidates({ project: 'x', labels: { skipProviders: ['modal'] } }, 'web', 'studio', withSkip).skipped.some((x) => /skipProviders left modal out/.test(x)));
+  assert.deepEqual(ids(runnerCandidates({ project: 'x', labels: { skipProviders: ['modal'] } }, 'linux', 'studio', withSkip)), ['native']);
   // Full: proton-a holds its one run, so it goes after the ones with room.
   const release = claimRunner('proton-a');
   assert.deepEqual(ids(runnerCandidates({ project: 'usr_a' }, 'proton', 'customer', s, { get })), ['proton-b', 'needs-key', 'proton-a']);
@@ -468,6 +480,26 @@ test('site.mjs: a customer\'s archive is fetched, unpacked and served on the run
   }
   // Too big: refused while downloading, not truncated.
   await assert.rejects(site.download('https://x.example/b', path.join(process.env.HAWKESGEN_DATA_DIR!, 'big'), { max: 10, fetchImpl }), /limit/);
+});
+
+// ------------------------------------------------------------------ skipProviders (Studio's retry hint)
+
+test('playtest.run accepts skipProviders: known providers kept, unknown dropped, empty omitted', () => {
+  const raw = validateParams(playtestRunTool, { url: 'https://example.com/', skipProviders: ['modal', 'bogus', 'runpod', 'modal'] });
+  const admitted = playtestRunTool.admit!({
+    params: raw,
+    client: { id: 'c', role: 'owner', projects: ['*'] },
+    project: 'studio',
+    customer: false,
+  }) as Record<string, unknown>;
+  assert.deepEqual(admitted.skipProviders, ['modal', 'runpod']);
+  const empty = playtestRunTool.admit!({
+    params: validateParams(playtestRunTool, { url: 'https://example.com/', skipProviders: ['aws', 'nope'] }),
+    client: { id: 'c', role: 'owner', projects: ['*'] },
+    project: 'studio',
+    customer: false,
+  }) as Record<string, unknown>;
+  assert.equal('skipProviders' in empty, false);
 });
 
 // ------------------------------------------------------------------ prices
