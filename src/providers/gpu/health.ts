@@ -11,6 +11,18 @@ const lastError = new Map<string, { reason: string; at: number }>();
 /** Cooldowns by kind of trouble: capacity clears up soon, a bad key or an account problem doesn't. */
 export const COOLDOWN = { capacity: 5 * 60_000, unreachable: 10 * 60_000, auth: 30 * 60_000 } as const;
 
+/** An endpoint that ran a job this recently still has a worker up (Modal's scaledown_window is 20 minutes). */
+export const WARM_MS = 20 * 60_000;
+/** Busy-endpoint wait when lastOk is fresh: hand the job on after this. */
+export const BUSY_WAIT_MS = 3 * 60_000;
+/**
+ * Cap on waiting for any worker to accept a POST (headers / assign). Below RunPod's ~5.5 minute LB hold so Gen fails
+ * over instead of hanging on zombie workers labeled as a cold start.
+ */
+export const PRE_WORKER_MS = 4 * 60_000;
+/** Default cold-start wait when lastOk is stale and the endpoint has no coldStartSeconds. */
+export const DEFAULT_COLD_WAIT_MS = 12 * 60_000;
+
 export function markDown(id: string, reason: string, ms: number = COOLDOWN.unreachable, now = Date.now()) {
   down.set(id, { until: now + ms, reason, at: now });
   lastError.set(id, { reason, at: now });

@@ -18,8 +18,8 @@ delete process.env.K_SERVICE;
 
 const { loadServiceMap, cloudRoute } = await import('../src/providers/cloudrun/services.ts');
 const { cloudComfyRun, runKey, setCloudDeps } = await import('../src/providers/cloudrun/run.ts');
-const { gpuCandidates, orderFor } = await import('../src/providers/gpu/route.ts');
-const { markDown, markUp, isDown, resetHealth, awsRefused, COOLDOWN, healthOf } = await import('../src/providers/gpu/health.ts');
+const { gpuCandidates, orderFor, endpointService } = await import('../src/providers/gpu/route.ts');
+const { markDown, markUp, isDown, resetHealth, awsRefused, COOLDOWN, healthOf, BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, WARM_MS } = await import('../src/providers/gpu/health.ts');
 const { checkRunpodCredit, runpodCreditProblem, runpodCredit, setRunpodCredit } = await import('../src/providers/gpu/credit.ts');
 const { brokerToken, readToken, allowed, resetBrokerKey } = await import('../src/providers/gpu/broker.ts');
 const { handleBroker } = await import('../src/providers/gpu/brokerRoute.ts');
@@ -92,6 +92,38 @@ test('a second endpoint for a family is its fallback without editing familyOrder
   assert.equal(orderFor({ gpu }, 'rig').join(), 'modal-3d,runpod-3d', 'already listed ones keep their place');
   assert.equal(orderFor({ gpu }, 'z-image').join(), 'runpod,modal,fleet', 'families without their own list are unchanged');
   assert.equal(orderFor({ gpu }, null).join(), 'runpod,modal,fleet');
+});
+
+test('mesh.views3d stays on Comfy * endpoints; 3D familyOrder does not pin it to runpod-3d', () => {
+  resetHealth();
+  const s = gpuSettings({
+    providers: [
+      ep({ id: 'runpod', families: ['*'], graphLimitSeconds: 3300 }),
+      ep({ id: 'runpod-3d', families: ['rig', 'motion', 'mocap', 'blender'], graphLimitSeconds: 1800 }),
+    ],
+    order: ['runpod', 'runpod-3d', 'fleet'],
+    familyOrder: { motion: ['runpod-3d', 'fleet'], rig: ['runpod-3d', 'fleet'] },
+  });
+  const c = gpuCandidates({ family: 'mesh.views3d', params: {}, labels: {} }, comfyTool, s, map, Date.now(), get);
+  const lanes = c.choices.map((x: any) => (x.kind === 'fleet' ? 'fleet' : x.service.lane));
+  assert.ok(lanes.includes('runpod'), JSON.stringify(lanes));
+  assert.ok(!lanes.includes('runpod-3d'), 'Comfy mesh.views3d must not go to the 3D image endpoint');
+});
+
+test('endpointService: waitForInstanceMs is short only when lastOk is fresh; true cold uses coldStartSeconds', () => {
+  resetHealth();
+  const cold = endpointService(ep({ id: 'runpod-a', coldStartSeconds: 900 }), 'z-image', map, 'bkt', get);
+  assert.equal(cold.waitForInstanceMs, 900_000, 'stale/null lastOk → coldStartSeconds');
+  assert.equal(cold.coldStartMs, 900_000);
+  const unset = endpointService(ep({ id: 'runpod-b' }), 'z-image', map, 'bkt', get);
+  assert.equal(unset.waitForInstanceMs, DEFAULT_COLD_WAIT_MS, 'no coldStartSeconds → 12 min cold wait');
+  assert.equal(unset.coldStartMs, undefined);
+  markUp('runpod-a');
+  const warm = endpointService(ep({ id: 'runpod-a', coldStartSeconds: 900 }), 'z-image', map, 'bkt', get);
+  assert.equal(warm.waitForInstanceMs, BUSY_WAIT_MS, 'fresh lastOk → busy wait only');
+  const stale = endpointService(ep({ id: 'runpod-a', coldStartSeconds: 900 }), 'z-image', map, 'bkt', get, Date.now() + WARM_MS + 1);
+  assert.equal(stale.waitForInstanceMs, 900_000, 'lastOk older than WARM_MS → cold wait again');
+  resetHealth();
 });
 
 // ------------------------------------------------------------------ routing
@@ -589,7 +621,7 @@ test('a cold provider says it is starting a GPU (not "waiting for a free" one) a
   assert.ok(!h.steps.some((x) => /waiting for a free/.test(x)), JSON.stringify(h.steps));
   // Past the cold allowance it is still handed on.
   const never = fakeProvider(() => ({ status: 503 }));
-  await assert.rejects(cloudComfyRun({ id: 'j_coldnever' }, md, hooks() as any, never.deps as any).runGraph({} as any), (e: any) => e.unavailable && /came free in 15 minutes/.test(e.message));
+  await assert.rejects(cloudComfyRun({ id: 'j_coldnever' }, md, hooks() as any, never.deps as any).runGraph({} as any), (e: any) => e.unavailable && /came free in 12 minutes/.test(e.message));
 });
 
 test('RunPod out of credit: its endpoints and playtest runners are skipped, a waiting job moves on, the card shows it', async () => {
