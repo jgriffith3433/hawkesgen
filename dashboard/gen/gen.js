@@ -339,7 +339,7 @@ bus.on('touchDrag', (on) => $('#app').classList.toggle('touch-dragging', on));
 
 // ------------------------------------------------------------------ start
 // The session cookie is HttpOnly, so hg.in (set once a session is known) is the hint: without it the welcome shows at
-// once and the editor is never mounted; the answer from /v1/users/me then confirms it (or opens the editor).
+// once, the editor is never mounted, and loadMe skips /v1/users/me (that route's 401 is for API clients, not the landing).
 let hinted = false;
 try { hinted = localStorage.getItem('hg.in') === '1'; } catch { /* */ }
 if (!hinted && sessionStorage.getItem('hg.landing.looked') !== '1') { showLanding(); document.getElementById('bootCover')?.remove(); }

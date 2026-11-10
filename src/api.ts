@@ -663,9 +663,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     await primePlatform(req);
     const client = authenticateRequest(req);
-    // The app asks "who am I?" on every visit: a signed-out visitor (no key sent) is told "nobody" rather than a 401, so a
-    // first visit logs no error in the browser's console. A key that's sent and refused is still a 401 (2026-11-08).
-    if (!client && route === '/v1/users/me' && method === 'GET' && !req.headers.authorization) return send(res, 200, { user: null });
+    // /v1/users/me stays a real auth check for API and MCP clients (401 with no key). The web app skips that probe when
+    // there is no session hint (hg.in); see dashboard/gen/index.html and account.js loadMe.
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
     // The editors connected to this account's MCP (src/genoauth.ts): listed, and disconnected one at a time.
     if (route === '/v1/users/me/connections' && method === 'GET') {
