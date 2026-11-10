@@ -104,11 +104,20 @@ test('signed in, /mcp lists the friendly tools, which default to the account\'s 
   assert.deepEqual(run.inputSchema.required, [], 'no project needed: the account has one');
 });
 
-test('refresh tokens rotate; disconnecting stops the token at once', async () => {
-  const r1 = (await (await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refresh }) })).json()) as any;
+test('refresh tokens rotate with a short grace for a lost answer; disconnecting stops the token at once', async () => {
+  const O = await import('../src/mcp-oauth.ts');
+  const swap = (refresh_token: string) => fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token }) });
+  const r1 = (await (await swap(refresh)).json()) as any;
   assert.match(r1.access_token, /^hgm_/);
-  const reuse = await fetch(`${base}/oauth/token`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refresh }) });
-  assert.equal(reuse.status, 400, 'the old refresh token worked once');
+  assert.equal(r1.expires_in, O.ACCESS_TTL);
+  assert.notEqual(r1.refresh_token, refresh, 'rotated');
+  // An editor that never got that answer retries with the old token inside the grace window and stays signed in.
+  assert.equal((await swap(refresh)).status, 200, 'the old refresh token works again inside the grace window');
+  const realNow = Date.now;
+  Date.now = () => realNow() + (O.REFRESH_GRACE + 60) * 1000;
+  let reuse: Response;
+  try { reuse = await swap(refresh); } finally { Date.now = realNow; (await import('../src/ratelimit.ts')).resetLimits(); }
+  assert.equal(reuse.status, 400, 'after the grace window the old refresh token is gone');
   const list = (await (await fetch(`${base}/v1/users/me/connections`, { headers: { cookie } })).json()) as any;
   assert.equal(list.connections.length, 1);
   assert.equal(list.connections[0].name, 'Claude Code');
