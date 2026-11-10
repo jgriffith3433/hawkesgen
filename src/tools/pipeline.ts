@@ -24,7 +24,7 @@ import crypto from 'node:crypto';
 import type { Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
-import { ask, usageOf } from '../providers/anthropic.ts';
+import { ask, usageOf, claudeUnavailable } from '../providers/anthropic.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
 import { SELF_TOKEN, SELF_URL } from '../auth.ts';
@@ -59,9 +59,6 @@ export function resultRef(v: unknown, results: unknown[]): unknown {
   }
   return cur;
 }
-
-/** A pick that failed because Claude is out of reach (rate limit, plan limit, overload, not answering), not because of the request. */
-export const pickUnavailable = (e: any) => e?.kind === 'throttled' || e?.status === 429 || e?.status === 503 || e?.status === 529;
 
 export const assetMakeTool: Tool = {
   id: 'asset.make',
@@ -200,7 +197,7 @@ ${ctx.params.canon ? `Canon: ${String(ctx.params.canon).slice(0, 3000)}
 ${layout}`,
             images: [...refs, ...views.flat()], schema: PICK_SCHEMA, effort: 'medium', maxTokens: 4000,
           }, ctx.signal).catch((e: any) => {
-            if (ctx.signal?.aborted || !pickUnavailable(e)) throw e;
+            if (ctx.signal?.aborted || !claudeUnavailable(e)) throw e;
             ctx.log(`no pick (${String(e.message).slice(0, 200)}): kept candidate 0`);
             return null;
           });

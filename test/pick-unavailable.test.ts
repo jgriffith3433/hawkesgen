@@ -1,4 +1,4 @@
-// asset.make keeps its first candidate when Claude is out of reach for the pick (src/tools/pipeline.ts pickUnavailable).
+// asset.make keeps its first candidate when Claude is out of reach for the pick and image.viewsheet goes on unchecked (claudeUnavailable in src/providers/anthropic.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-pick-unavailable-'));
-const { pickUnavailable } = await import('../src/tools/pipeline.ts');
+const { claudeUnavailable: pickUnavailable } = await import('../src/providers/anthropic.ts');
 const { GenError } = await import('../src/util.ts');
 
 test('a rate limit, plan limit or outage lets the pick fall back; anything else still fails the job', () => {

@@ -76,6 +76,8 @@ export function turnGate(): { who?: string; onWait?: (e: WaitInfo) => void } {
   const who = callScope.getStore()?.who;
   return who ? { who, onWait: (e) => events.emit('ai', { project: who, ...e }) } : {};
 }
+/** A call that failed because Claude is out of reach (rate or plan limit, overload, not set up), not because of what was asked. */
+export const claudeUnavailable = (e: any) => e?.kind === 'throttled' || e?.status === 429 || e?.status === 503 || e?.status === 529;
 /** Whether the running job is a customer's (whatever the Claude setting). */
 export const customerJob = () => callScope.getStore()?.customer === true;
 
