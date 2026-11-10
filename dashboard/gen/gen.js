@@ -54,9 +54,16 @@ initGuide();
 const onTimelineScene = () => ['video', 'image', 'audio'].includes(activeKind());
 
 // ------------------------------------------------------------------ the bar
-const saveWords = { saved: 'Saved', saving: 'Saving…', dirty: 'Saving…', local: 'Not saved: sign in to keep it', error: 'Couldn\'t save, retrying' };
-bus.on('save', (s) => { $('#saveState').textContent = saveWords[s] ?? ''; $('#saveState').dataset.s = s; });
-addEventListener('beforeunload', (e) => { if (['dirty', 'saving', 'error'].includes($('#saveState').dataset.s)) { activeEditor()?.save?.(); e.preventDefault(); } });
+const saveWords = { saving: 'Saving…', dirty: 'Saving…', local: 'Not saved: sign in to keep it', offline: 'Offline - changes kept', error: 'Couldn\'t save - Retry' };
+const clock = () => new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+bus.on('save', (s) => {
+  const el = $('#saveState');
+  el.textContent = s === 'saved' ? `Saved ${clock()}` : saveWords[s] ?? '';
+  el.dataset.s = s;
+  el.tabIndex = s === 'error' ? 0 : -1;
+});
+$('#saveState').addEventListener('click', () => { if ($('#saveState').dataset.s === 'error') activeEditor()?.save?.(); });
+addEventListener('beforeunload', (e) => { if (['dirty', 'saving', 'error', 'offline'].includes($('#saveState').dataset.s)) { activeEditor()?.save?.(); e.preventDefault(); } });
 bus.on('undo', () => activeEditor()?.undo?.());
 bus.on('doc', () => {
   $('#aspectSel').value = `${P.doc.width}x${P.doc.height}`;

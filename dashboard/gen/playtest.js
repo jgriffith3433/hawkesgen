@@ -180,6 +180,7 @@ installPlaytest({
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'phoneperf', title: 'Phone speed (390x844, touch, CPU slowed 4x): the editor is usable within 5 s of opening a project, a 3-clip timeline plays 20 s with p5 fps above 30, and a scrub shows the new frame within 200 ms', seconds: 120, tags: ['mobile'] },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
+    { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
@@ -1204,6 +1205,32 @@ installPlaytest({
         await until(() => clip()?.failed, 60000);
       }
       t.finish(failed ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'savebadge') {
+      t.scene('Save badge');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest save ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const badge = () => document.querySelector('#saveState');
+      const track = addTrack({ name: 'Save', role: 'any' }).id;
+      addClip({ track, kind: 'fill', color: '#203a5c', start: 0, seconds: 2, history: false });
+      const sawSaving = await until(() => /Saving/.test(badge().textContent), 3000, 20);
+      t.metric('showsSaving', sawSaving ? 1 : 0);
+      const saved = await until(() => /^Saved \d/.test(badge().textContent), 15000, 50);
+      t.metric('showsSaved', saved ? 1 : 0); t.event(saved ? 'badge-saved' : 'badge-not-saved');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      window.dispatchEvent(new Event('offline'));
+      addClip({ track, kind: 'fill', color: '#5c2040', start: 3, seconds: 2, history: false });
+      const off = await until(() => /Offline/.test(badge().textContent), 5000, 50);
+      t.metric('showsOffline', off ? 1 : 0); t.event(off ? 'badge-offline' : 'badge-not-offline');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+      window.dispatchEvent(new Event('online'));
+      const back = await until(() => /^Saved \d/.test(badge().textContent) && !P.dirty, 15000, 50);
+      t.metric('savedAfterReconnect', back ? 1 : 0); t.event(back ? 'badge-saved-after-reconnect' : 'badge-not-saved-after-reconnect');
+      const n = P.doc.clips.length;
+      t.note(`clips before reload: ${n}`);
+      t.finish(sawSaving && saved && off && back ? 'done' : 'stuck');
       return;
     }
     if (id === 'editing') {
