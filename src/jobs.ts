@@ -461,6 +461,9 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
   // No priority asked for: a boost on one of its labels sets it (boostLabel). Customers' keys (role user) can lower
   // their own jobs but never raise them or ride an admin's boost: priority is the scheduler's business.
   const spec = { ...s, priority: client.role === 'user' ? Math.min(0, Number(s.priority) || 0) : s.priority ?? boostFor(s.labels) };
+  // A Claude answer someone is watching for (labels `waiting`: the portal's Overseer) goes ahead of background work in
+  // its lane, a step up and no more (tools/api.ts waitedOn gives its call the same place at Claude's gate).
+  if (s.labels?.waiting && (tool.id === 'llm.text' || tool.id === 'llm.json')) spec.priority = Math.max(1, Number(spec.priority) || 0);
   const family = tool.provider === 'comfy' ? (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null : null;
   const job: Job = {
     id: charged?.id ?? newId('j', 6), key: spec.key ? String(spec.key) : null, client: client.id, project, tool: tool.id, params, inputs,

@@ -5,7 +5,7 @@ import type { RunContext, Tool } from './types.ts';
 import { loadSettings } from '../config.ts';
 import fs from 'node:fs';
 import { speak, soundEffect, designVoice, saveDesignedVoice, dialogue, voiceChange, isolateVoice } from '../providers/elevenlabs.ts';
-import { ask, DEFAULT_MODEL, MODELS, usageOf } from '../providers/anthropic.ts';
+import { ask, callScope, DEFAULT_MODEL, MODELS, usageOf } from '../providers/anthropic.ts';
 import { GenError, run } from '../util.ts';
 import { voiceOpenParams, referenceInput, sfxExtra, dialogueExtra, designExtra, saveExtra, listExtra, deleteExtra } from '../audio/params.ts';
 import { routeAudio } from '../audio/plan.ts';
@@ -275,6 +275,14 @@ function partials(ctx: RunContext) {
   };
 }
 
+/** A job someone is waiting on (labels `waiting`, e.g. the portal's Overseer answer, a player watching): its Claude
+ *  call is that person's turn (`who` = the job's project), so it goes ahead of Gen's own background calls, waits a bounded
+ *  time for a slot and fails plainly instead of backing off for minutes (src/aigate.ts, claudecode.ts). */
+export function waitedOn<T>(ctx: RunContext, fn: () => Promise<T>): Promise<T> {
+  if (!ctx.job?.labels?.waiting) return fn();
+  return callScope.run({ customer: false, ...callScope.getStore(), who: ctx.job.project }, fn);
+}
+
 const llmParams = {
   prompt: { type: 'text', required: true },
   system: { type: 'text' },
@@ -296,7 +304,7 @@ export const llmTextTool: Tool = {
     const p = ctx.params;
     ctx.step(`asking ${p.model}`);
     const live = partials(ctx);
-    const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, onText: live.onText }, ctx.signal).finally(live.stop);
+    const r = await waitedOn(ctx, () => ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, onText: live.onText }, ctx.signal)).finally(live.stop);
     ctx.usage(usageOf(r));
     ctx.result({ text: r.text, model: r.model, usage: r.usage });
   },
@@ -316,7 +324,7 @@ export const llmJsonTool: Tool = {
     if (!p.schema || typeof p.schema !== 'object') throw new GenError('schema must be a JSON Schema object');
     ctx.step(`asking ${p.model} for JSON`);
     const live = partials(ctx);
-    const r = await ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, schema: p.schema, onText: live.onText }, ctx.signal).finally(live.stop);
+    const r = await waitedOn(ctx, () => ask({ prompt: p.prompt, system: p.system, images: ctx.inputs.images ?? [], model: p.model, effort: p.effort, maxTokens: p.maxTokens, schema: p.schema, onText: live.onText }, ctx.signal)).finally(live.stop);
     ctx.usage(usageOf(r));
     let value: unknown;
     try {
