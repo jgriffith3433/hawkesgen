@@ -60,6 +60,9 @@ export function resultRef(v: unknown, results: unknown[]): unknown {
   return cur;
 }
 
+/** A pick that failed because Claude is out of reach (rate limit, plan limit, overload, not answering), not because of the request. */
+export const pickUnavailable = (e: any) => e?.kind === 'throttled' || e?.status === 429 || e?.status === 503 || e?.status === 529;
+
 export const assetMakeTool: Tool = {
   id: 'asset.make',
   version: 3,
@@ -184,6 +187,8 @@ export const assetMakeTool: Tool = {
             (meshPick ? `the candidates, 4 orthographic stills each (front, right, back, left), candidates 0 to ${views.length - 1} in order.` :
               per > 1 ? `the candidates, ${per} frames each (start, middle, end of its video), candidates 0 to ${views.length - 1} in order.` :
                 `the candidates 0 to ${views.length - 1}, in order.`);
+          // Claude out of reach (the plan's limit, an outage): the candidates are made and paid for, so keep the first
+          // rather than throw them all away; the pick says why.
           const r = await ask({
             system: 'You are the art director for a small game studio. Choose the candidate that best fits the brief, the criteria, the art direction and the canon. Prefer clean, usable game assets: correct subject, on-model with the references, readable silhouette, no artifacts, no text unless asked. A candidate that breaks canon loses even if it looks better.',
             prompt: `Brief (the picked step's params): ${JSON.stringify(steps[i].params ?? {}).slice(0, 2000)}
@@ -194,9 +199,13 @@ ${ctx.params.canon ? `Canon: ${String(ctx.params.canon).slice(0, 3000)}
 ` : ''}
 ${layout}`,
             images: [...refs, ...views.flat()], schema: PICK_SCHEMA, effort: 'medium', maxTokens: 4000,
-          }, ctx.signal);
-          ctx.usage(usageOf(r, `${r.model} pick`));
-          picked = JSON.parse(r.text);
+          }, ctx.signal).catch((e: any) => {
+            if (ctx.signal?.aborted || !pickUnavailable(e)) throw e;
+            ctx.log(`no pick (${String(e.message).slice(0, 200)}): kept candidate 0`);
+            return null;
+          });
+          if (r) ctx.usage(usageOf(r, `${r.model} pick`));
+          picked = r ? JSON.parse(r.text) : { best: 0, reason: 'Claude was not available to choose, so the first candidate was kept' };
           const best = Math.max(0, Math.min(pickJobs.length - 1, Number(picked.best) || 0));
           winner = pickJobs[best];
           ctx.log(`picked candidate ${best}: ${picked.reason}`);
