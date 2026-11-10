@@ -351,7 +351,7 @@
  "186": {
   "class_type": "DecimateMesh",
   "inputs": {
-   "target_face_count": 700000,
+   "target_face_count": 150000,
    "placement_mode": "midpoint",
    "mesh": [
     "241",
@@ -607,7 +607,7 @@
  "288": {
   "class_type": "PrimitiveInt",
   "inputs": {
-   "value": 4096
+   "value": 2048
   },
   "_meta": {
    "title": "Texture Resolution"

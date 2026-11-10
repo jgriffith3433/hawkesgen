@@ -1,0 +1,73 @@
+# Puts a new GPU worker image on the RunPod endpoint (docs/gpu-providers.md, "The image"); was `runpod.mjs --update` on J's
+# laptop. 2026-11-07: worker.py's disk fixes (room for each job's models, nothing of a failed run left behind) only reach
+# RunPod with a new image on the endpoint, and nobody should have to run a script for that.
+#
+# By itself: when "GPU image" (a pushed gpu-image-* tag) succeeds, the image it pushed goes on the endpoint. By hand:
+#   gh workflow run ops-runpod-image.yml --repo jgriffith3433/hawkesgen -f tag=<comfy tag>-<context hash>
+# The tag is checked on GHCR first (a missing tag leaves every new worker unhealthy). Env, worker token and disk stay;
+# RunPod starts new workers on the new image and lets warm ones finish (no job is cut off). Changes no prices.
+name: ops-runpod-image
+on:
+  workflow_run:
+    workflows: ['GPU image']
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag on ghcr.io/jgriffith3433/hawkes-gen-gpu (empty: the tag this commit builds)'
+        required: false
+      endpoint:
+        description: 'RunPod endpoint name'
+        default: hawkes-gen-gpu
+permissions:
+  contents: read
+  id-token: write
+  packages: read
+concurrency:
+  group: ops-runpod-image
+  cancel-in-progress: false
+jobs:
+  update:
+    name: New image on the RunPod endpoint
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: The image
+        id: img
+        env:
+          TAG_IN: ${{ inputs.tag }}
+        run: |
+          tag="$TAG_IN"
+          if [ -z "$tag" ]; then tag=$(node tools/gpu-providers/image-context.mjs "$RUNNER_TEMP/gpu" | sed -n 's/^TAG=//p'); fi
+          [ -n "$tag" ] || { echo "::error::no tag"; exit 1; }
+          echo "image=ghcr.io/jgriffith3433/hawkes-gen-gpu:$tag" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The tag exists
+        run: docker manifest inspect "${{ steps.img.outputs.image }}" > /dev/null || { echo "::error::${{ steps.img.outputs.image }} is not on GHCR"; exit 1; }
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-gen
+          service_account: ops-reader@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Update the endpoint
+        env:
+          NAME: ${{ inputs.endpoint || 'hawkes-gen-gpu' }}
+          IMAGE: ${{ steps.img.outputs.image }}
+        run: |
+          key=$(gcloud secrets versions access latest --secret=gen-runpod-api-key --project "${{ vars.GCP_PROJECT }}")
+          echo "::add-mask::$key"
+          id=$(curl -s --max-time 30 -H "Authorization: Bearer $key" 'https://api.runpod.io/v2/serverless?limit=100' \
+            | jq -r --arg n "$NAME" '.endpoints[] | select(.name == $n or (.name | startswith($n + " "))) | .id' | head -1)
+          [ -n "$id" ] || { echo "::error::no RunPod endpoint named $NAME"; exit 1; }
+          RUNPOD_API_KEY="$key" node tools/gpu-providers/runpod.mjs --image "$IMAGE" --update "$id" --apply --recycle | tee -a "$GITHUB_STEP_SUMMARY"
