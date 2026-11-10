@@ -178,6 +178,7 @@ installPlaytest({
     { id: 'smoke', title: 'Open the app, make a scene, add text, play it', seconds: 60, tags: ['smoke'] },
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
     { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call (the session probe is skipped when hg.in is unset)', seconds: 30 },
+    { id: 'first-paint', title: 'First paint, signed out (desktop and 390x844): at 0.5, 1, 2 and 3 s after navigation no media panel, timeline or AI panel is visible, only the landing page; no console error or failed request; the hero buttons\' labels are centred', seconds: 20, tags: ['mobile'] },
     { id: 'createprice', title: 'Every Create form shows its credit price when opened, and it changes when an option that changes the cost changes', seconds: 120 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
@@ -218,6 +219,57 @@ installPlaytest({
     // The account is known once it's there, or the welcome for someone not signed in is.
     await until(() => state.user || document.querySelector('#landing:not([hidden])'), 10000);
     t.metric('signedIn', state.user ? 1 : 0);
+    if (id === 'first-paint') {
+      t.scene('First paint');
+      const errors = watchConsole();
+      // Setup shortcut (named): a signed-in test tab looks signed out (the session itself is untouched).
+      try { localStorage.removeItem('hg.in'); } catch { /* */ }
+      const was = state.user;
+      if (was) { state.user = null; showLanding(); }
+      const seen = (el) => Boolean(el) && el.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true }) !== false && (() => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })();
+      const CHROME = { media: '#leftPane', mediaGrid: '#mediaGrid', timeline: '#timelinePane', ai: '#rightPane' };
+      let leaked = 0;
+      for (const at of [0.5, 1, 2, 3]) {
+        const wait = at * 1000 - performance.now();
+        if (wait > 0) await sleep(wait);
+        const now = performance.now() / 1000;
+        const rows = Object.entries(CHROME).map(([k, sel]) => { const el = document.querySelector(sel); return { k, inDom: Boolean(el), visible: seen(el) }; });
+        const shown = rows.filter((r) => r.visible).map((r) => r.k);
+        const L = document.querySelector('#landing');
+        const landing = Boolean(L) && !L.hidden && seen(L);
+        leaked += shown.length;
+        t.metric(`editorVisible_${at}s`, shown.length);
+        t.metric(`landingVisible_${at}s`, landing ? 1 : 0);
+        t.log(`${at}s (read at ${now.toFixed(2)}s): ${rows.map((r) => `${r.k} ${r.inDom ? (r.visible ? 'VISIBLE' : 'hidden') : 'absent'}`).join(', ')}; landing ${landing ? 'shown' : 'NOT shown'}`);
+        t.event(`first-paint-${at}s`, shown.length ? `editor visible: ${shown.join(', ')}` : 'landing only');
+        if (shown.length) t.problem('bug', `at ${at}s a signed-out visitor sees the editor (${shown.join(', ')})`);
+        if (!landing) t.problem('bug', `at ${at}s the landing page is not showing`);
+      }
+      const failed = performance.getEntriesByType('resource').filter((e) => e.responseStatus >= 400).map((e) => `${e.responseStatus} ${new URL(e.name, location.href).pathname}`);
+      t.metric('failedRequests', failed.length);
+      for (const f of failed) t.problem('bug', `failed request: ${f}`);
+      // Each hero button's label (the text's box) against the button's box.
+      const worst = [];
+      for (const b of document.querySelectorAll('#landing .ld-hero button')) {
+        const r = b.getBoundingClientRect();
+        if (!r.width || !seen(b)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(b);
+        const q = range.getBoundingClientRect();
+        const off = Math.abs((q.left + q.width / 2) - (r.left + r.width / 2));
+        worst.push(off);
+        t.log(`hero button "${b.textContent.trim().slice(0, 30)}": label off centre by ${off.toFixed(1)} px`);
+        if (off > 2 && !b.classList.contains('link')) t.problem('bug', `hero button "${b.textContent.trim()}" label is ${off.toFixed(1)} px off centre`);
+      }
+      t.metric('heroButtons', worst.length);
+      t.metric('labelOffCentrePx', worst.length ? Math.round(Math.max(...worst) * 10) / 10 : 0);
+      errors.stop();
+      t.metric('consoleErrors', errors.errors.length);
+      for (const e of errors.errors) t.problem('bug', `console error: ${e}`);
+      if (was) { state.user = was; hideLanding(); }
+      t.finish(leaked || errors.errors.length || failed.length ? 'lost' : 'done');
+      return;
+    }
     if (id === 'signedout') {
       t.scene('Welcome');
       // Setup shortcut (named): clear the session hint and show the welcome so a test-account tab still plays the
