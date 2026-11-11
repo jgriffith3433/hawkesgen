@@ -85,7 +85,7 @@ input.num { width: 70px; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
 /* The app grid */
-.app { height: 100vh; height: 100dvh; display: grid; grid-template-columns: var(--left) minmax(0, 1fr) var(--right); grid-template-rows: 54px minmax(0, 1fr) var(--tl-now, var(--tl)); grid-template-areas: "bar bar bar" "left center right" "tl tl tl"; }
+.app { position: relative; height: 100vh; height: 100dvh; display: grid; grid-template-columns: var(--left) minmax(0, 1fr) var(--right); grid-template-rows: 54px minmax(0, 1fr) var(--tl-now, var(--tl)); grid-template-areas: "bar bar bar" "left center right" "tl tl tl"; }
 .app.no-left { grid-template-columns: 0 minmax(0, 1fr) var(--right); }
 .app.no-right { grid-template-columns: var(--left) minmax(0, 1fr) 0; }
 .app.no-left.no-right { grid-template-columns: 0 minmax(0, 1fr) 0; }
@@ -380,6 +380,21 @@ input.num { width: 70px; }
 .foot { text-align: center; color: var(--muted); font-size: 13px; padding: 24px 16px 40px; }
 .foot a { color: var(--muted); }
 .mobile-tabs { display: none; }
+.drawer-toggle { display: none; }
+
+/* Tablets and narrow laptops (901-1100px): the side panels fold into drawers over the stage, opened by the bar's Media
+   and AI buttons, so the stage and the timeline keep the whole width. */
+@media (min-width: 901px) and (max-width: 1100px) {
+  .app, .app.no-left, .app.no-right, .app.no-left.no-right { grid-template-columns: minmax(0, 1fr); grid-template-areas: "bar" "center" "tl"; }
+  .drawer-toggle { display: inline-flex; }
+  .drawer-toggle[aria-expanded="true"] { border-color: var(--accent); color: var(--text); }
+  .app .pane.left, .app .pane.right { grid-area: auto; position: absolute; top: 54px; bottom: var(--tl-now, var(--tl)); width: min(340px, 86vw); z-index: 30; display: none; box-shadow: 0 12px 40px rgba(0,0,0,.5); }
+  .app .pane.left { left: 0; border-right: 1px solid var(--line-2); }
+  .app .pane.right { right: 0; border-left: 1px solid var(--line-2); }
+  .app.drawer-left .pane.left, .app.drawer-right .pane.right { display: flex; }
+  .app.no-left .pane.left > :not(.grip), .app.no-right .pane.right > :not(.grip) { display: revert !important; }
+  .app .grip-left, .app .grip-right { display: none; }
+}
 
 /* Laptops: slimmer side panes so the viewer keeps room */
 @media (max-width: 1360px) { :root { --left: 250px; --right: 310px; } }

@@ -201,6 +201,7 @@ installPlaytest({
     { id: 'checkout', title: 'Buying credits: the packs (and the test-mode card note on beta), one tap opens checkout while the others wait, a failed start says one plain line and frees the packs, and coming back paid, processing, declined or cancelled each says so (paid: the new balance on the pill and a Receipt); on a phone each pack is one row at least 44 px tall with no sideways scroll. Stripe is never called', seconds: 60, tags: ['mobile'] },
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
+    { id: 'timeline-resize', title: 'Drag the timeline\'s top edge to resize it (kept in this browser, 120px to 70% of the window); under 1100px wide the side panels are Media and AI buttons', seconds: 45 },
     { id: 'panels', title: 'Side panels at 1280x720-class desktop: AI prompt fully visible, Sign in and chips never overlap, Media and chip lists scroll inside their panes', seconds: 60 },
     { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
     { id: 'ai-undo', title: 'AI pane: after a multi-op edit a toast offers Undo, Ctrl+Z (or Undo) puts the timeline back, Redo brings the AI change back, and the Undo button is labelled', seconds: 90 },
@@ -336,6 +337,62 @@ installPlaytest({
       }
       if (was) { state.user = was; hideLanding(); }
       t.finish(welcome ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'timeline-resize') {
+      t.scene('Timeline size');
+      hideLanding();
+      // Setup shortcut (named): forget a saved size so the default applies.
+      try { localStorage.removeItem('hg.--tl'); } catch { /* */ }
+      const app = document.querySelector('#app');
+      app.style.removeProperty('--tl');
+      await sleep(80);
+      const pane = document.querySelector('#timelinePane');
+      const grip = pane?.querySelector('.grip-tl');
+      const H = () => Math.round(pane.getBoundingClientRect().height);
+      const drag = async (dy) => {
+        const r = grip.getBoundingClientRect();
+        const x = r.left + r.width / 2, y0 = r.top + r.height / 2;
+        const ev = (type, y) => (type === 'pointerdown' ? grip : window).dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button: 0, pointerId: 7, pointerType: 'touch', bubbles: true, cancelable: true }));
+        ev('pointerdown', y0);
+        for (let i = 1; i <= 12; i++) { ev('pointermove', y0 + (dy * i) / 12); await sleep(30); }
+        ev('pointerup', y0 + dy);
+        await sleep(80);
+      };
+      if (!grip) { t.problem('bug', 'the timeline has no drag handle on its top edge'); t.finish('stuck'); return; }
+      t.metric('viewportH', window.innerHeight); t.metric('defaultTimelinePx', H()); t.metric('areaAbovePx', window.innerHeight - H());
+      if (window.innerHeight >= 700 && window.innerHeight - H() < 440) t.problem('bug', 'the default timeline leaves under ~450px above it');
+      const h0 = H();
+      await drag(-120);
+      const h1 = H();
+      t.metric('afterDragUpPx', h1); t.event(h1 > h0 + 60 ? 'timeline-taller' : 'timeline-did-not-grow');
+      if (h1 <= h0 + 60) t.problem('bug', 'dragging the timeline edge up did not make it taller');
+      await drag(2000 * -1);
+      const hMax = H();
+      t.metric('maxTimelinePx', hMax);
+      if (hMax > window.innerHeight * 0.7 + 2) t.problem('bug', 'the timeline grew past 70% of the window');
+      await drag(3000);
+      const hMin = H();
+      t.metric('minTimelinePx', hMin);
+      await drag(-150);
+      let saved = null; try { saved = localStorage.getItem('hg.--tl'); } catch { /* */ }
+      t.metric('savedPx', Number(saved) || 0);
+      if (!saved) t.problem('bug', 'the timeline size is not kept in this browser');
+      else t.event('timeline-size-kept');
+      const wide = matchMedia('(min-width: 901px) and (max-width: 1100px)').matches;
+      t.metric('drawerWidth', wide ? 1 : 0);
+      const tog = document.querySelector('#drawerLeft');
+      if (wide) {
+        const shown = getComputedStyle(tog).display !== 'none';
+        const panesHidden = getComputedStyle(document.querySelector('#leftPane')).display === 'none';
+        if (!shown || !panesHidden) t.problem('bug', 'under 1100px the side panels should fold behind the Media and AI buttons');
+        click('#drawerLeft'); await sleep(150);
+        const open = getComputedStyle(document.querySelector('#leftPane')).display !== 'none';
+        t.event(open ? 'drawer-opened' : 'drawer-did-not-open');
+        if (!open) t.problem('bug', 'the Media button did not open the side panel');
+        click('#drawerLeft'); await sleep(100);
+      } else t.note('Window is not 901-1100px wide: the drawer check was skipped');
+      t.finish('done');
       return;
     }
     if (id === 'panels') {

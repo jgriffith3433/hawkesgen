@@ -260,7 +260,7 @@ dropTarget({
 const AREAS = [
   { prop: '--left', sel: '#leftPane', min: 220, max: 560, fold: 'no-left' },
   { prop: '--right', sel: '#rightPane', min: 260, max: 600, invert: true, fold: 'no-right' },
-  { prop: '--tl', sel: '#timelinePane', min: 120, max: 720, invert: true, axis: 'y', fold: 'tl-small', foldTo: 40 },
+  { prop: '--tl', sel: '#timelinePane', min: 120, max: 720, maxShare: 0.7, invert: true, axis: 'y', fold: 'tl-small', foldTo: 40 },
   // Phones: the sheet and the timeline drag almost the whole screen (J, 2026-11-01); the CSS keeps a strip of the
   // picture and the timeline's bar, so the max here is only a ceiling.
   { prop: '--sheet', sel: '#sheetGrip', min: 90, max: 2000, invert: true, axis: 'y', phone: true },
@@ -279,8 +279,8 @@ for (const a of AREAS) {
   const app = $('#app');
   const v = Number(kept(`hg.${a.prop}`));
   if (v) {
-    // Keep ~450px above the timeline so the AI and Media panes stay usable at 720p (saved sizes can be taller).
-    const capped = a.prop === '--tl' ? Math.min(v, Math.max(a.min, window.innerHeight - 54 - 450)) : v;
+    // At most 70% of the window (the default, in CSS, keeps ~450px above the timeline at 720p).
+    const capped = a.maxShare ? Math.min(v, Math.max(a.min, Math.floor(window.innerHeight * a.maxShare))) : v;
     app.style.setProperty(a.prop, `${capped}px`);
     if (capped !== v) keep(`hg.${a.prop}`, String(capped));
   }
@@ -306,7 +306,7 @@ for (const a of AREAS) {
       const raw = v0 + (a.invert ? -d : d);
       if (a.fold && raw < a.min * 0.55) { if (!app.classList.contains(a.fold)) fold(true); return; }
       if (a.fold && app.classList.contains(a.fold)) fold(false);
-      const val = Math.min(a.max, Math.max(a.min, raw));
+      const val = Math.min(a.maxShare ? Math.min(a.max, Math.floor(window.innerHeight * a.maxShare)) : a.max, Math.max(a.min, raw));
       app.style.setProperty(a.prop, `${val}px`);
       keep(`hg.${a.prop}`, String(val));
     };
@@ -319,6 +319,23 @@ for (const a of AREAS) {
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
   });
+}
+
+// 901-1100px: the side panels are drawers over the stage (CSS), opened by the bar's Media and AI buttons.
+{
+  const app = $('#app');
+  const wide = matchMedia('(min-width: 901px) and (max-width: 1100px)');
+  const shut = () => { app.classList.remove('drawer-left', 'drawer-right'); $('#drawerLeft').setAttribute('aria-expanded', 'false'); $('#drawerRight').setAttribute('aria-expanded', 'false'); };
+  for (const [id, cls] of [['#drawerLeft', 'drawer-left'], ['#drawerRight', 'drawer-right']]) {
+    $(id).addEventListener('click', () => {
+      const on = !app.classList.contains(cls);
+      shut();
+      if (on) { app.classList.add(cls); $(id).setAttribute('aria-expanded', 'true'); }
+    });
+  }
+  $('#viewerWrap')?.addEventListener('pointerdown', () => { if (wide.matches) shut(); });
+  wide.addEventListener('change', shut);
+  addEventListener('keydown', (e) => { if (e.key === 'Escape' && wide.matches) shut(); });
 }
 
 // Phones: the page never zooms. That guard is the first script in index.html (it runs before the app loads) and the
