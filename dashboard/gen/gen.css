@@ -1384,4 +1384,18 @@ body:not(.app-on) #app { display: none; }
   .app.panes-short .ai-form { padding: var(--space-1-5) var(--space-3-5) var(--space-2); }
   .app.panes-short .ai-form textarea { min-height: 36px; max-height: 56px; padding: var(--space-1-5) var(--space-3); }
   .app.panes-short .send { width: 36px; height: 36px; }
+  /* The connect-your-AI box scrolls inside the pane instead of pushing the heading or the box to type in out of it. */
+  .ai-gate { flex: 0 1 auto; min-height: 0; max-height: 50%; overflow-y: auto; }
+  .app.panes-short .ai-gate { max-height: 40%; padding-bottom: var(--space-1); }
+  .app.panes-short .ai-gate p { margin-bottom: var(--space-1-5); }
 }
+/* A short centre (the timeline is tall): the stage's start box and the tool row make room for the picture, so no text
+   overlaps or is cut off. */
+.app.panes-short .viewer { padding-top: var(--space-1); }
+.app.panes-short .stage-empty { gap: var(--space-0-75); padding: var(--space-1-5); overflow: hidden; place-content: safe center; }
+.app.panes-short .stage-empty #stageEmptyS, .app.panes-short .stage-empty .ico-wrap.big, .app.panes-short .stage-empty-ideas { display: none; }
+.app.panes-short .stage-empty-t { font-size: var(--text-md); margin: 0; }
+.app.panes-short .stage-empty-acts { margin-top: var(--space-1); gap: var(--space-1-5); }
+.app.panes-short .transport { padding-top: var(--space-0-5); padding-bottom: var(--space-0-5); }
+.app.panes-short .toolbar { min-height: 34px; padding-top: var(--space-0-5); padding-bottom: var(--space-1); }
+.app.panes-tiny .toolbar, .app.panes-tiny .stage-empty-acts { display: none; }

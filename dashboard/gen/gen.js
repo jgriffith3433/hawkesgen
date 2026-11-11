@@ -334,11 +334,12 @@ for (const a of AREAS) {
   });
 }
 
-// The row above the timeline gets short when the timeline is tall: the AI pane then compacts (CSS, .panes-short). The
-// observer reports the pane's own height, so nothing reads layout while a drag or playback runs.
+// The row above the timeline gets short when the timeline is tall: the AI pane and the stage's start box then compact
+// (CSS, .panes-short under 300px, .panes-tiny under 210px). The observer reports the centre's own height (the centre is
+// there at every width, the side panes are drawers under 1100px), so nothing reads layout while a drag or playback runs.
 if (typeof ResizeObserver === 'function') {
   const app = $('#app');
-  new ResizeObserver((es) => { for (const e of es) { const h = e.contentRect.height; if (h > 0) app.classList.toggle('panes-short', h < 300); } }).observe($('#rightPane'));
+  new ResizeObserver((es) => { for (const e of es) { const h = e.contentRect.height; if (h > 0) { app.classList.toggle('panes-short', h < 300); app.classList.toggle('panes-tiny', h < 210); } } }).observe($('#viewerWrap'));
 }
 
 // A shorter window can't leave the timeline taller than 70% of it: clamp the saved size when the window changes.
