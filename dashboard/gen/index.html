@@ -26,12 +26,16 @@
     // With a hint, start the check now (parallel with the module graph); account.js loadMe() reuses it.
     (function () {
       var hinted = false;
-      // A playtest run (?playtest=<id>) arrives with the test-session cookie already set by Studio's bot but never with the
-      // hg.in hint (a fresh browser, empty storage), so without it the bot stayed on the landing page, "stuck" at t=0.
-      // Set the hint for it, except the scenarios that play the signed-out path themselves (they clear it and expect no probe).
+      // A playtest run arrives with the test-session cookie already set by Studio's bot but never with the hg.in hint
+      // (a fresh browser, empty storage), so without it the bot stayed on the landing page, "stuck" at t=0. Studio opens
+      // the page with an EMPTY ?playtest= (the scenario is chosen later through start(), not the URL), so the presence of
+      // the parameter is the signal, not its value. Test sign-ins exist on beta and local copies only, never on the live
+      // host, so a live signed-out visit with the hint would only earn a 401. The scenarios that play the signed-out path
+      // themselves (signedout, first-paint) clear the hint and expect no probe, and handle a signed-in tab.
       try {
-        var pt = new URLSearchParams(location.search).get('playtest');
-        if (pt && pt !== 'signedout' && pt !== 'first-paint') localStorage.setItem('hg.in', '1');
+        var q = new URLSearchParams(location.search), pt = q.get('playtest');
+        var live = /^(www\.)?hawkesgen\.ai$/.test(location.hostname);
+        if (q.has('playtest') && !live && pt !== 'signedout' && pt !== 'first-paint') localStorage.setItem('hg.in', '1');
       } catch (e) {}
       try { hinted = localStorage.getItem('hg.in') === '1'; } catch (e) {}
       if (hinted) {

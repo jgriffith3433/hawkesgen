@@ -28,7 +28,8 @@ test('playtest runs set the session hint, except the signed-out scenarios', () =
   const html = readFileSync(new URL('../dashboard/gen/index.html', import.meta.url), 'utf8');
   const set = html.indexOf("localStorage.setItem('hg.in', '1')");
   assert.ok(set > 0 && set < html.indexOf('if (hinted)'), 'the playtest hint is set before the probe decision');
-  assert.match(html, /get\('playtest'\)/);
+  assert.match(html, /q\.has\('playtest'\)/, 'an empty ?playtest= (what Studio sends) counts');
+  assert.match(html, /hawkesgen\\\.ai/, 'never on the live host');
   assert.match(html, /pt !== 'signedout' && pt !== 'first-paint'/);
   // The scenarios that play the signed-out path are the ones left out.
   const pt = readFileSync(new URL('../dashboard/gen/playtest.js', import.meta.url), 'utf8');
