@@ -65,7 +65,16 @@ const file = path.join(STATE_DIR, `service-${spec.name}.yaml`);
 fs.mkdirSync(STATE_DIR, { recursive: true });
 fs.writeFileSync(file, JSON.stringify(yaml, null, 2));
 console.log(`service definition: ${file}`);
-gcloud(args, ['run', 'services', 'replace', file, `--project=${args.project}`, `--region=${args.region}`]);
+// The cap is also set on the service itself (--max), which applies at once and needs no new revision. A new revision
+// needs room to start its first instance, and on 2026-11-11 the replace failed with "Quota exceeded for total allowable
+// CPU" because the old revision's own instances filled us-east4: the per-revision cap could never land. Capping the
+// service first frees that room, and capping it again after the replace keeps it if the replace cleared it.
+const where = [`--project=${args.project}`, `--region=${args.region}`];
+const capService = () => gcloud(args, ['run', 'services', 'update', spec.name, ...where, `--max=${maxInstances}`]);
+const exists = !args.apply || gcloud(args, ['run', 'services', 'describe', spec.name, ...where, '--format=value(metadata.name)'], { read: true });
+if (exists) capService();
+gcloud(args, ['run', 'services', 'replace', file, ...where]);
+capService();
 const bind = ['run', 'services', 'add-iam-policy-binding', spec.name, `--project=${args.project}`, `--region=${args.region}`, `--member=serviceAccount:${genSa}`, '--role=roles/run.invoker'];
 // GitHub's deployer (roles/run.developer) may not set a service's IAM policy: the service is up either way, and the line
 // below says what its owner runs once so Gen may call it.
