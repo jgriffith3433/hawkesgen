@@ -433,7 +433,7 @@ function finish(out, asset) {
     h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/v1/assets/${asset}/file?download=1`, download: `${P.doc.title || 'hawkes-gen'}.mp4` }, icon('download'), 'Download'),
       h('button', { class: 'ghost', onclick: () => import('./media.js').then((m) => m.shareAsset(asset, P.doc.title)) }, icon('share'), 'Share a link'), h('span', { class: 'muted small' }, 'Also saved to Media.')));
   // The deliverables (shapes, captions, titles, thumbnails, a trailer): deliver.js.
-  const words = P.doc.clips.filter((c) => c.kind === 'text' && c.text?.trim() && !trackOf(c.track)?.hidden).map((c) => ({ start: c.start, end: clipEnd(c), text: c.text }));
+  const words = P.doc.clips.filter((c) => c.kind === 'text' && !c.title && c.text?.trim() && !trackOf(c.track)?.hidden).map((c) => ({ start: c.start, end: clipEnd(c), text: c.text }));
   import('./deliver.js').then((m) => m.mountDeliver(out, asset, { title: P.doc.title, world: P.doc.world ?? null, captions: words, wide: P.doc.width / P.doc.height > 1.7 }));
   bus.emit('jobDone');
   if (P.id) import('./scenes.js').then((sc) => sc.setRender(P.id, asset, 'video')).then((s) => { if (s && s.id === P.id) { P.version = s.version; P.doc.render = s.doc.render; } }).catch(() => {});
