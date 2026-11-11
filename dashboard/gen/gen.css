@@ -549,7 +549,9 @@ input.num { width: 70px; }
   .app.no-left .pane.left > :not(.grip), .app.no-right .pane.right > :not(.grip) { display: revert !important; }
   .app.tl-small .tl-body { display: flex; }
   .bar { gap: 8px; padding: 0 10px; }
-  .brand b, .bar-mid, .save-state { display: none; }
+  .brand b, .bar-mid { display: none; }
+  .save-state { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-xs); line-height: 44px; }
+  .save-state:empty { display: none; }
   #creditsPill { padding: 6px 10px; min-height: 44px; font-size: var(--text-xs); white-space: nowrap; }
   #creditsPill.low::after { content: ""; }
   #creditsPill[hidden] { display: none; }

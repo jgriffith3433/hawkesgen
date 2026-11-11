@@ -35,7 +35,8 @@
 //            inside the safe area, and the exported video shows the same title as the preview (ink overlap at one moment)
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state, loadMe } from './account.js';
-import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
+import { take, forgetRecovered, P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
+import * as journal from './journal.js';
 import { snapStats } from './timeline.js';
 import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, mixdown, clipGain, duckAt, frameAt } from './player.js';
 import { activeScene, newScene, sceneList, loadList } from './scenes.js';
@@ -192,7 +193,7 @@ installPlaytest({
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'phoneperf', title: 'Phone speed (390x844, touch, CPU slowed 4x): the editor is usable within 5 s of opening a project, a 3-clip timeline plays 20 s with p5 fps above 30, and a scrub shows the new frame within 200 ms', seconds: 120, tags: ['mobile'] },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
-    { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there', seconds: 90 },
+    { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there; a reload under a second after an offline edit keeps it; the badge is visible at 390x844 touch', seconds: 90, tags: ['mobile'] },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'audio-mix', title: 'Audio mix: waveforms on clips, fade-in handle, auto-duck ~10 dB under a voice line in preview and mixdown', seconds: 150 },
     { id: 'transitions', title: 'Clip transitions: add a crossfade at a join, resize and change type by touch, see the blend in the preview, export matches the join', seconds: 150, tags: ['mobile'] },
@@ -1472,7 +1473,33 @@ installPlaytest({
       t.metric('savedAfterReconnect', back ? 1 : 0); t.event(back ? 'badge-saved-after-reconnect' : 'badge-not-saved-after-reconnect');
       const n = P.doc.clips.length;
       t.note(`clips before reload: ${n}`);
-      t.finish(sawSaving && saved && off && back ? 'done' : 'stuck');
+      // Reload: a fresh page load takes the server's copy and replays the journal. The page can't be reloaded under the
+      // bot, so this plays that same path (named shortcut): an edit with the network off, under a second, then the
+      // stale server copy is taken again as on load, and the edit must come back and later save.
+      const phone = window.innerWidth <= 900;
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      window.dispatchEvent(new Event('offline'));
+      const tEdit = performance.now();
+      addClip({ track, kind: 'fill', color: '#2a5c20', start: 6, seconds: 2, history: false });
+      const mark = P.doc.clips.length;
+      await sleep(400);
+      const kept = (await journal.pending(P.id)).some((o) => o.doc.clips.length === mark);
+      t.metric('journalHasEdit', kept ? 1 : 0);
+      const stale = await api(`/v1/editor/projects/${P.id}`);
+      forgetRecovered(P.id);
+      take(stale);
+      const restored = await until(() => P.doc.clips.length === mark, 3000, 50);
+      t.metric('restoredAfterReload', restored ? 1 : 0); t.metric('reloadMs', Math.round(performance.now() - tEdit));
+      t.event(restored ? 'edit-survived-reload' : 'edit-lost-on-reload');
+      const bw = document.querySelector('#saveState')?.getBoundingClientRect();
+      const showing = !!bw && bw.width > 20 && bw.height > 10 && bw.right <= window.innerWidth && bw.left >= 0 && /Offline|Saving/.test(badge().textContent);
+      t.metric('badgeVisible', showing ? 1 : 0); t.metric('badgeHeight', Math.round(bw?.height ?? 0));
+      t.event(showing ? (phone ? 'badge-visible-on-phone' : 'badge-visible') : 'badge-not-visible');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+      window.dispatchEvent(new Event('online'));
+      const final = await until(() => /^Saved \d/.test(badge().textContent) && !P.dirty, 15000, 50);
+      t.metric('savedAfterRestore', final ? 1 : 0);
+      t.finish(sawSaving && saved && off && back && kept && restored && showing && final ? 'done' : 'stuck');
       return;
     }
     if (id === 'audio-mix') {
