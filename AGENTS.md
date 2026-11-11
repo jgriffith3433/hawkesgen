@@ -673,9 +673,9 @@ returns a verdict, scores and findings.
   30 fps, encoded after the run on the machine that played it: NVENC, else libx264; on the control server only if that fails), about 30 distinct fps even with two playtests on the
   playtester; elsewhere, or if the screencast won't start, Playwright's `recordVideo` (25 fps). `recorder` forces one;
   `result.recorder` says which. Measurements and the alternatives tried (tab capture): `docs/playtest-video.md`.
-- **Reviews converge** (`playtest.review` v3): at most `maxFindings` (default 5) new findings, worst first, polish and ideas
-  only without bugs; `known` (the caller's backlog) is never reported again, and the answer says by id which known ones
-  look fixed or still present; `mode` full / verify / regression (the last two report only regressions and blockers);
+- **Reviews converge** (`playtest.review` v3): at most `maxFindings` (default 10) new findings, worst first; polish and
+  ideas stay beside bugs; `known` (the caller's backlog) is never reported again, and the answer says by id which known
+  ones look fixed or still present; `mode` full / verify / regression (the last two report only regressions and blockers);
   `bar` (the product's quality bar) is judged as `meetsBar`. `settleReview` enforces the caps and mode on the answer
   (tested in `test/playtest.test.ts`). Studio's side: `hawkesstudio/docs/daily.md` ("Reviews converge").
 - **Motion** (`playtest.review` v5, `src/tools/playtest-motion.ts`): besides the stills, the judge sees `motion`

@@ -156,18 +156,26 @@ test('screencast: the encode on the recording machine (through ssh) makes the sa
   }
 });
 
-test('settleReview: worst first, polish only without bugs, capped, mode-limited, known ids only', () => {
+test('settleReview: worst first, polish beside bugs, capped at 10, mode-limited, known ids only', () => {
   const f = (severity: string, title: string, regression = false) => ({ severity, title, regression });
   const r = settleReview({ verdict: 'fix-first', findings: [f('polish', 'p1'), f('bug', 'b1'), f('idea', 'i1'), f('bug', 'b2'), f('blocker', 'x1')], known: [{ id: 'f_1', status: 'fixed' }, { id: 'f_nope', status: 'present' }] }, { maxFindings: 2, known: [{ id: 'f_1', title: 't' }] });
   assert.deepEqual(r.findings.map((x: any) => x.title), ['x1', 'b1']);
   assert.equal(r.trimmed, 3);
   assert.deepEqual(r.known.map((k: any) => k.id), ['f_1']);
+  // Polish stays beside bugs (sorted worst first); only the cap trims.
+  const withBugs = settleReview({ verdict: 'fix-first', findings: [f('polish', 'p1'), f('bug', 'b1'), f('idea', 'i1'), f('blocker', 'x1')] }, {});
+  assert.deepEqual(withBugs.findings.map((x: any) => x.title), ['x1', 'b1', 'p1', 'i1']);
   const polish = settleReview({ verdict: 'fix-first', findings: [f('idea', 'i1'), f('polish', 'p1')] }, {});
   assert.deepEqual(polish.findings.map((x: any) => x.title), ['p1', 'i1']);
+  // Verify keeps regressions and blockers only (including polish that got worse); non-regressions drop.
   const verify = settleReview({ verdict: 'fix-first', findings: [f('bug', 'old'), f('bug', 'worse', true), f('polish', 'p', true)] }, { mode: 'verify' });
-  assert.deepEqual(verify.findings.map((x: any) => x.title), ['worse']);
-  const ship = settleReview({ verdict: 'ship', findings: [f('bug', 'a'), f('bug', 'b'), f('bug', 'c')] }, {});
-  assert.equal(ship.findings.length, 2);
+  assert.deepEqual(verify.findings.map((x: any) => x.title), ['worse', 'p']);
+  // A ship review keeps polish up to the default cap of 10 (no special ship cut of 2).
+  const shipPolish = settleReview({ verdict: 'ship', findings: Array.from({ length: 14 }, (_, i) => f('polish', `p${i}`)) }, {});
+  assert.equal(shipPolish.findings.length, 10);
+  assert.equal(shipPolish.trimmed, 4);
+  const shipBugs = settleReview({ verdict: 'ship', findings: [f('bug', 'a'), f('bug', 'b'), f('bug', 'c')] }, {});
+  assert.equal(shipBugs.findings.length, 3);
   const shipBlocked = settleReview({ verdict: 'ship', findings: [f('blocker', 'a')] }, {});
   assert.equal(shipBlocked.verdict, 'fix-first');
   assert.deepEqual(settleReview({ verdict: 'ship', findings: [] }, {}).findings, []);

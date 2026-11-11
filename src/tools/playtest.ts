@@ -1712,11 +1712,12 @@ function thin<T>(xs: T[], max: number) {
 
 // ----------------------------------------------------------------- review
 //
-// Reviews converge: a review reports at most a few findings (worst first; polish and ideas only when there is nothing
-// worse), never one already in the caller's list of known findings (it says by id which of those look fixed or still
-// there instead), and judges the build against the product's quality bar when one is given. Its mode says what the run
-// is for: "full" (the daily review), "verify" (did this change work, did anything regress) or "regression" (only what
-// got worse, and blockers). The caps and the mode are enforced on the answer too (settleReview), not only asked for.
+// Reviews converge: a review reports at most maxFindings findings (default 10, worst first; polish and ideas stay
+// beside bugs, sorted worst first), never one already in the caller's list of known findings (it says by id which of
+// those look fixed or still there instead), and judges the build against the product's quality bar when one is given.
+// Its mode says what the run is for: "full" (the daily review), "verify" (did this change work, did anything regress)
+// or "regression" (only what got worse, and blockers). The caps and the mode are enforced on the answer too
+// (settleReview), not only asked for.
 
 const SEVERITIES = ['blocker', 'bug', 'polish', 'idea'];
 const SEVERITY_RANK: Record<string, number> = { blocker: 0, bug: 1, polish: 2, idea: 3 };
@@ -1802,12 +1803,12 @@ Rules:
 - Report only what the evidence supports (screenshots, console errors, the report's problems and metrics). Don't invent.
 - Blocker: the game can't be played or progressed. Bug: something is wrong (broken, wrong, missing, crashing).
   Polish: works but looks or feels unfinished. Idea: an improvement worth doing.
-- At most the LIMIT findings, worst first. Polish and ideas only when you found no blocker or bug.
+- At most the LIMIT findings, worst first. Polish and ideas stay beside blockers and bugs (still worst first).
 - Never report a problem that is already in KNOWN FINDINGS (same problem, even in other words): say in "known", by id,
   whether it looks fixed or is still present, and only when this run actually shows it.
 - When a QUALITY BAR is given, judge against it: it says what "done" means for this product. Something the bar doesn't ask
-  for is not a bug. A build that meets its bar gets "ship" and at most a couple of findings.
-- "ship" comes with few or no findings and never with a blocker.
+  for is not a bug. A build that meets its bar gets "ship"; polish findings may still be listed up to the LIMIT.
+- "ship" never comes with a blocker.
 - Judge against the product's story and art direction when they are given. Flag anything off-tone.
 - Ignore problems caused only by the automation (the bot's odd movement) unless a player could hit them.
 - Don't comment on the runner's own frame-rate warning unless the screenshots also show stutter or the game reports low fps.
@@ -1843,17 +1844,16 @@ Fill "phone" with scores for these, and use area "mobile" for these findings.`;
 export type KnownFinding = { id: string; title: string; severity?: string; status?: string };
 
 /**
- * Holds a review to its mode and limits, whatever the model answered: findings worst first, polish and ideas only when
- * there is no blocker or bug, only regressions and blockers outside a full review, at most maxFindings (a "ship" verdict
- * at most 2 and never with a blocker); "known" only for ids that were given. What was cut is counted in review.trimmed.
+ * Holds a review to its mode and limits, whatever the model answered: findings worst first (polish and ideas stay
+ * beside bugs), only regressions and blockers outside a full review, at most maxFindings (default 10; a "ship" verdict
+ * with a blocker becomes fix-first); "known" only for ids that were given. What was cut is counted in review.trimmed.
  */
-export function settleReview(review: any, { mode = 'full', maxFindings = 5, known = [] as KnownFinding[] } = {}) {
+export function settleReview(review: any, { mode = 'full', maxFindings = 10, known = [] as KnownFinding[] } = {}) {
   const all: any[] = (Array.isArray(review.findings) ? review.findings : []).filter((f: any) => f?.title);
   let list = [...all].sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
   if (mode !== 'full') list = list.filter((f) => f.severity === 'blocker' || f.regression === true);
-  if (list.some((f) => f.severity === 'blocker' || f.severity === 'bug')) list = list.filter((f) => f.severity === 'blocker' || f.severity === 'bug');
   if (review.verdict === 'ship' && list.some((f) => f.severity === 'blocker')) review.verdict = 'fix-first';
-  const cap = Math.max(0, Math.min(maxFindings, review.verdict === 'ship' ? 2 : maxFindings));
+  const cap = Math.max(0, maxFindings);
   list = list.slice(0, cap);
   review.trimmed = all.length - list.length;
   review.findings = list;
@@ -1906,7 +1906,7 @@ export const playtestReviewTool: Tool = {
   description:
     'Claude watches a playtest.run job (its screenshots, report, console and metrics) against the product\'s story, art ' +
     'direction and quality bar, and returns scores, a verdict and at most maxFindings new findings (blocker, bug, polish, ' +
-    'idea; polish and ideas only when there is nothing worse) with the screenshots that show each one and how to fix it. ' +
+    'idea; worst first, polish stays beside bugs) with the screenshots that show each one and how to fix it. ' +
     'Give the known findings (the backlog) and it reports only new problems, saying by id which known ones look fixed or ' +
     'still present. mode: full (daily), verify (did a change work, did anything regress: regressions and blockers only), ' +
     'regression (live checks: regressions and blockers only). Give a previous review to hear what changed. Give acceptance ' +
@@ -1923,7 +1923,7 @@ export const playtestReviewTool: Tool = {
     story: { type: 'text', description: 'The story doc or its key points (tone, characters, rules)' },
     focus: { type: 'text', description: 'What J wants checked this time' },
     mode: { type: 'enum', values: ['full', 'verify', 'regression'], default: 'full', description: 'full: the daily review. verify: did the change in focus work, and did anything regress. regression: only what got worse, and blockers (live checks)' },
-    maxFindings: { type: 'integer', default: 5, min: 0, max: 20, description: 'At most this many new findings, worst first' },
+    maxFindings: { type: 'integer', default: 10, min: 0, max: 20, description: 'At most this many new findings, worst first (default 10)' },
     known: { type: 'json', description: 'Findings already known (the backlog, ideas and won\'t-fix): [{ id, title, severity, status }]. Not reported again; the review says which look fixed or are still present', advanced: true },
     bar: { type: 'text', description: 'The product\'s quality bar: what "done" means for it. The review judges against it and says whether the build meets it' },
     criteria: { type: 'json', description: 'Acceptance criteria to judge, e.g. ["The main menu shows Training"]: result.criteria says for each yes, no or unclear, with evidence', advanced: true },
