@@ -319,10 +319,10 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         // Cloud Run when settings.playtest says so (docs/playtest-cloudrun.md), else the playtesters / GPU servers.
         // Installing the browser on a server takes a few minutes the first time.
         // Games (anything but a site crawl) start the playtester if it's off.
-        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', game: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
+        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', game: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), signal: ctx.signal, ...(route ?? {}) });
         host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
           opening.then((h) => h?.close(), () => {});
-          if (p.gpu === 'require') throw e;
+          if (p.gpu === 'require' || ctx.signal.aborted) throw e;
           ctx.log(`no GPU browser (${e.message}); playing here in software`);
           softwareBecause = String(e.message ?? e).slice(0, 300);
           return null;
@@ -333,6 +333,8 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       }
       // A browser with no GPU (the Cloud Run CPU service, docs/playtest-cloudrun.md): the run says so, and loading and
       // playing get `slow` times longer (SwiftShader draws every frame on the CPU).
+      // Cancelled while the browser opened: its worker is let go now, not after a play nobody wants.
+      if (ctx.signal.aborted) { host?.close(); host = null; throw new Error('cancelled while opening the browser'); }
       if (host?.software) softwareBecause = host.software;
       slow = Math.max(1, host?.slow ?? 1);
       if (slow > 1) p.bootTimeout = Math.round(p.bootTimeout * slow);
@@ -981,10 +983,10 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
 
   try {
     if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
-      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, game: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
+      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, game: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), signal: ctx.signal, ...(route ?? {}) });
       host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
         opening.then((h) => h?.close(), () => {});
-        if (p.gpu === 'require') throw e;
+        if (p.gpu === 'require' || ctx.signal.aborted) throw e;
         ctx.log(`no GPU browser (${e.message}); playing here in software`);
         softwareBecause = String(e.message ?? e).slice(0, 300);
         return null;
@@ -992,6 +994,8 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       if (!host && p.gpu === 'require') throw new GenError('No GPU server is ready for the playtest (start one, or use gpu: auto)', { kind: 'gpu' });
       if (!host && !softwareBecause) softwareBecause = 'no GPU machine was ready (the playtester did not start and no GPU server was running)';
     }
+    // Cancelled while the browser opened: its worker is let go now, not after a play nobody wants.
+    if (ctx.signal.aborted) { host?.close(); host = null; throw new Error('cancelled while opening the browser'); }
     if (host?.software) softwareBecause = host.software;
     slow = Math.max(1, host?.slow ?? 1);
     if (slow > 1) p.bootTimeout = Math.round(p.bootTimeout * slow);
