@@ -371,6 +371,11 @@ installPlaytest({
       const grip = pane?.querySelector('.grip-tl');
       const H = () => Math.round(pane.getBoundingClientRect().height);
       const wideNow = () => matchMedia('(max-width: 1100px)').matches; // side panels are drawers: no AI pane in the row above
+      // The longest gap between animation frames while the drags run: reported on its own, never as proof of smoothness
+      // (the drag is synthetic: 12 moves 30 ms apart, and a software-rendered browser is slow on any layout).
+      let gapWorst = 0, gapLast = performance.now(), gapOn = true;
+      const gapLoop = (n) => { gapWorst = Math.max(gapWorst, n - gapLast); gapLast = n; if (gapOn) requestAnimationFrame(gapLoop); };
+      requestAnimationFrame(gapLoop);
       const drag = async (dy) => {
         const r = grip.getBoundingClientRect();
         const x = r.left + r.width / 2, y0 = r.top + r.height / 2;
@@ -414,6 +419,9 @@ installPlaytest({
       const hMin = H();
       t.metric('minTimelinePx', hMin);
       await drag(-150);
+      gapOn = false;
+      t.metric('dragWorstFrameGapMs', Math.round(gapWorst));
+      t.note(`Longest frame gap during the synthetic drags: ${Math.round(gapWorst)} ms (reported separately; not proof of smoothness)`);
       let saved = null; try { saved = localStorage.getItem('hg.--tl'); } catch { /* */ }
       t.metric('savedPx', Number(saved) || 0);
       if (!saved) t.problem('bug', 'the timeline size is not kept in this browser');
@@ -421,14 +429,26 @@ installPlaytest({
         // A reload reads this value back into --tl (gen.js, sizing the areas), so it must be what the screen shows.
         const same = Math.abs(Number(saved) - H()) <= 1;
         t.metric('keptMatchesShownPx', same ? 1 : 0);
-        // A stand-in for a reload (the contract can't survive one): the page's own restore code on a fresh element.
-        const fresh = document.createElement('div');
-        const back = window.hgRestoreTimelineSize?.(fresh);
-        t.metric('restoredPx', back ?? 0);
-        const restoredOk = back != null && Math.abs(back - H()) <= 1;
+        // The bot can't reload the page it runs in, so the page is loaded a second time: a same-origin frame the size of the
+        // window runs gen.js from the top against the same localStorage, which is what a reload does. Its timeline's height
+        // is read once it has laid out. (Not the same tab, but the real restore code and CSS, not a copy of them.)
+        const frame = document.createElement('iframe');
+        frame.setAttribute('aria-hidden', 'true'); frame.tabIndex = -1;
+        frame.style.cssText = `position:fixed;left:0;top:0;width:${window.innerWidth}px;height:${window.innerHeight}px;border:0;opacity:0;pointer-events:none;z-index:-1`;
+        frame.src = location.pathname;
+        document.body.append(frame);
+        const shownAfter = async () => {
+          await until(() => { try { return !!frame.contentDocument?.querySelector('#timelinePane .grip-tl'); } catch { return false; } }, 15000, 100);
+          await sleep(300);
+          try { return Math.round(frame.contentDocument.querySelector('#timelinePane').getBoundingClientRect().height); } catch { return 0; }
+        };
+        const reloaded = await shownAfter();
+        frame.remove();
+        t.metric('reloadedPx', reloaded);
+        const restoredOk = reloaded > 0 && Math.abs(reloaded - H()) <= 1;
         t.metric('restoredMatchesShown', restoredOk ? 1 : 0);
-        if (!restoredOk) t.problem('bug', `a reload would restore ${back}px, not the ${H()}px on screen`);
-        else t.event('timeline-size-restored (stand-in for a reload)');
+        if (!restoredOk) t.problem('bug', `a fresh load of the page shows the timeline at ${reloaded}px, not the ${H()}px it was dragged to`);
+        else t.event(`timeline-size-after-fresh-load ${reloaded}px (page loaded again in a frame, not a reload of this tab)`);
         if (same) t.event('timeline-size-kept'); else t.problem('bug', `the kept timeline size (${saved}px) is not the one on screen (${H()}px)`);
       }
       const wide = matchMedia('(min-width: 901px) and (max-width: 1100px)').matches;

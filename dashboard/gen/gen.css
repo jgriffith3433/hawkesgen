@@ -1383,6 +1383,11 @@ body:not(.app-on) #app { display: none; }
 /* A short row above a tall timeline (up to 70% of the window): the AI pane drops what it can spare (ideas, the context
    chip, a roomy heading) so its heading and its box stay whole. gen.js sets .panes-short from the pane's own height. */
 @media (min-width: 901px) {
+  /* Snug (the row above the timeline under 480px, which the 720p default is): the context chip goes and the ideas and the
+     connect box take less, so the heading and the box to type in are whole at the default size too. */
+  .app.panes-snug .ai-context { display: none; }
+  .app.panes-snug .ai-suggest { max-height: min(84px, 24%); }
+  .app.panes-snug .ai-gate { max-height: 42%; }
   .app.panes-short .ai-suggest, .app.panes-short .ai-context { display: none; }
   .app.panes-short .ai-head { padding: var(--space-2) var(--space-3-5) var(--space-1-5); }
   .app.panes-short .ai-form { padding: var(--space-1-5) var(--space-3-5) var(--space-2); }

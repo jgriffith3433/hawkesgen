@@ -272,7 +272,7 @@ const AREAS = [
 const shownSize = (a) => {
   // The desktop timeline too: --tl is a min() expression until a drag writes pixels, and a custom property reads back as
   // that text, never a number, so the drag must start from the pane's real height.
-  if (a.prop === '--tlm' || a.prop === '--tl') return $('#timelinePane').getBoundingClientRect().height; $('#timelinePane').getBoundingClientRect().height;
+  if (a.prop === '--tlm' || a.prop === '--tl') return $('#timelinePane').getBoundingClientRect().height;
   return Math.max(...['#leftPane', '#rightPane'].map((s) => $(s).getBoundingClientRect().height));
 };
 const keep = (k, v) => { try { localStorage.setItem(k, v); } catch { /* */ } };
@@ -346,7 +346,7 @@ for (const a of AREAS) {
 // there at every width, the side panes are drawers under 1100px), so nothing reads layout while a drag or playback runs.
 if (typeof ResizeObserver === 'function') {
   const app = $('#app');
-  new ResizeObserver((es) => { for (const e of es) { const h = e.contentRect.height; if (h > 0) { app.classList.toggle('panes-short', h < 300); app.classList.toggle('panes-tiny', h < 210); } } }).observe($('#viewerWrap'));
+  new ResizeObserver((es) => { for (const e of es) { const h = e.contentRect.height; if (h > 0) { app.classList.toggle('panes-snug', h < 480); app.classList.toggle('panes-short', h < 300); app.classList.toggle('panes-tiny', h < 210); } } }).observe($('#viewerWrap'));
 }
 
 // A shorter window can't leave the timeline taller than 70% of it: clamp the saved size when the window changes.
