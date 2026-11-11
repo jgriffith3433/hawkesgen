@@ -303,25 +303,41 @@ for (const a of AREAS) {
     const v0 = folded ? (a.foldTo ?? 0) : a.phone ? shownSize(a) : parseFloat(getComputedStyle(app).getPropertyValue(a.prop)) || a.min;
     app.classList.add('sizing');
     app.style.setProperty('--sizing-cursor', a.axis === 'y' ? 'row-resize' : 'col-resize');
-    const move = (ev) => {
+    // One write per frame, from the last pointer position: the stage and timeline re-flow once, never per event.
+    let last = null, raf = 0, lastVal = null;
+    const apply = () => {
+      raf = 0;
+      const ev = last; if (!ev) return;
       const d = (a.axis === 'y' ? ev.clientY : ev.clientX) - start;
       const raw = v0 + (a.invert ? -d : d);
       if (a.fold && raw < a.min * 0.55) { if (!app.classList.contains(a.fold)) fold(true); return; }
       if (a.fold && app.classList.contains(a.fold)) fold(false);
       const val = Math.min(a.maxShare ? Math.min(a.max, Math.floor(window.innerHeight * a.maxShare)) : a.max, Math.max(a.min, raw));
+      lastVal = val;
       app.style.setProperty(a.prop, `${val}px`);
-      keep(`hg.${a.prop}`, String(val));
     };
-    const up = () => {
-      removeEventListener('pointermove', move); removeEventListener('pointerup', up); app.classList.remove('sizing');
+    const move = (ev) => { if (ev.pointerId !== e.pointerId) return; last = ev; if (!raf) raf = requestAnimationFrame(apply); };
+    const up = (ev) => {
+      if (ev && ev.pointerId !== e.pointerId) return;
+      removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
+      cancelAnimationFrame(raf); apply(); app.classList.remove('sizing');
+      if (lastVal != null) keep(`hg.${a.prop}`, String(lastVal)); // remembered once, when the drag ends
       // Keep what the screen shows, so the next drag has no dead zone past the cap.
       if (a.phone) { const shown = Math.round(shownSize(a)); if (shown > 0) { app.style.setProperty(a.prop, `${shown}px`); keep(`hg.${a.prop}`, String(shown)); } }
       fit();
     };
     addEventListener('pointermove', move);
     addEventListener('pointerup', up);
+    addEventListener('pointercancel', up);
   });
 }
+
+// A shorter window can't leave the timeline taller than 70% of it: clamp the saved size when the window changes.
+addEventListener('resize', () => {
+  const app = $('#app'), v = parseFloat(app.style.getPropertyValue('--tl'));
+  const cap = Math.max(120, Math.floor(window.innerHeight * 0.7));
+  if (v && v > cap) app.style.setProperty('--tl', `${cap}px`);
+}, { passive: true });
 
 // 901-1100px: the side panels are drawers over the stage (CSS), opened by the bar's Media and AI buttons.
 {
