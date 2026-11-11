@@ -28,6 +28,11 @@
 //   transitions adjacent clips on the main track: add a crossfade from the join, resize by dragging its edge, change
 //            type from the menu (touch-sized targets), scrub the blend in the preview, and export so the cut is shorter
 //            by the transition length (same moment as the preview)
+//   no-lost-work an edit, offline and another edit, a reload keeps both, the Saving / Saved / Offline badges, an AI op undone and redone by tap
+//   editor-fit   1280x720, 1920x1080, 390x844, 844x390 (the editor in frames of those sizes): prompt box, Media header, timeline
+//            tracks, play button and panel toggles in view and not overlapping; each fault names the control and the size
+//   polished-cut a crossfade, a lower third and music under a voice line: longest frame gap (ms, fails over 50) and the music's dB
+//            under and outside the voice line (metrics longestFrameGapMs, musicUnderVoiceDb, musicOutsideVoiceDb)
 //   audio-mix music + voice on the timeline: waveforms drawn, fade handle dragged, auto-duck ~10 dB under the line
 //            (preview maths + offline mixdown loudness); no GPU
 //   titles   Create > Titles: six animated presets whose previews move; a lower third added by a tap animates in and out
@@ -35,7 +40,7 @@
 //            inside the safe area, and the exported video shows the same title as the preview (ink overlap at one moment)
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state, loadMe } from './account.js';
-import { take, forgetRecovered, P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
+import { take, forgetRecovered, audible, P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
 import * as journal from './journal.js';
 import { snapStats } from './timeline.js';
 import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, mixdown, clipGain, duckAt, frameAt } from './player.js';
@@ -194,6 +199,9 @@ installPlaytest({
     { id: 'phoneperf', title: 'Phone speed (390x844, touch, CPU slowed 4x): the editor is usable within 5 s of opening a project, a 3-clip timeline plays 20 s with p5 fps above 30, and a scrub shows the new frame within 200 ms', seconds: 120, tags: ['mobile'] },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there; a reload under a second after an offline edit keeps it; the badge is visible at 390x844 touch', seconds: 90, tags: ['mobile'] },
+    { id: 'no-lost-work', title: 'No lost work: an edit, then offline and another edit, then a reload keeps both; the badge shows Saving, Saved and Offline; an AI op is undone and redone by tap (390x844 touch too); a failure names the step', seconds: 120, tags: ['mobile'] },
+    { id: 'editor-fit', title: 'Editor fit at 1280x720, 1920x1080, 390x844 and 844x390: the prompt box, Media header, timeline tracks, play button and panel toggles are fully in view and overlap nothing; a failure names the control and the size', seconds: 150, tags: ['mobile'] },
+    { id: 'polished-cut', title: 'Polished cut: a fixture with a crossfade, a lower-third title and music under a voice line plays; logs the longest frame gap in ms (fails over 50) and the music level in dB under the voice (fails unless lower than outside it)', seconds: 120 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'audio-mix', title: 'Audio mix: waveforms on clips, fade-in handle, auto-duck ~10 dB under a voice line in preview and mixdown', seconds: 150 },
     { id: 'transitions', title: 'Clip transitions: add a crossfade at a join, resize and change type by touch, see the blend in the preview, export matches the join', seconds: 150, tags: ['mobile'] },
@@ -1461,6 +1469,355 @@ installPlaytest({
         await until(() => clip()?.failed, 60000);
       }
       t.finish(failed ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'no-lost-work') {
+      t.scene('No lost work');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video scene. Every edit after it is a tap on the timeline's own buttons, so it plays the same on a phone.
+      made = await newScene('video', { title: `Playtest no-lost-work ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const failed = [];
+      const fail = (step, why) => { failed.push(step); t.problem('bug', `no-lost-work failed at "${step}": ${why}`); t.event('step-failed', step); };
+      const badge = () => document.querySelector('#saveState');
+      const badgeText = () => badge()?.textContent ?? '';
+      const phone = window.innerWidth <= 900;
+      t.metric('viewportW', window.innerWidth); t.metric('touch', phone ? 1 : 0);
+      /** A real tap (pointer down and up, touch type) on a control; falls back to nothing: the control must be there. */
+      const tap = async (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+        const o = { pointerId: 7, pointerType: phone ? 'touch' : 'mouse', bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y };
+        el.dispatchEvent(new PointerEvent('pointerdown', o));
+        el.dispatchEvent(new PointerEvent('pointerup', o));
+        el.click();
+        await sleep(60);
+        return true;
+      };
+      const texts = () => (P.doc?.clips ?? []).filter((c) => c.kind === 'text').map((c) => c.id);
+      const setOnline = (on) => { Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => on }); window.dispatchEvent(new Event(on ? 'online' : 'offline')); };
+      // Step 1: an edit made online. The badge says Saving, then Saved with the time.
+      if (!await tap(document.querySelector('#textBtn'))) { fail('edit 1: tap Add text', 'the timeline has no Add text button on screen'); t.finish('stuck'); return; }
+      const edit1 = texts();
+      if (edit1.length !== 1) { fail('edit 1: tap Add text', `expected 1 text clip, found ${edit1.length}`); t.finish('stuck'); return; }
+      const sawSaving = await until(() => /Saving/.test(badgeText()), 3000, 20);
+      t.metric('badgeSaving', sawSaving ? 1 : 0); t.event(sawSaving ? 'badge-saving' : 'badge-saving-missing', badgeText());
+      if (sawSaving) await sleep(500); // the screenshot at this event shows the Saving badge
+      if (!sawSaving) fail('badge: Saving', `after an edit the badge says "${badgeText()}"`);
+      const saved = await until(() => /^Saved \d/.test(badgeText()) && !P.dirty, 15000, 50);
+      t.metric('badgeSaved', saved ? 1 : 0); t.event(saved ? 'badge-saved' : 'badge-saved-missing', badgeText());
+      if (saved) await sleep(500);
+      if (!saved) fail('badge: Saved', `the badge says "${badgeText()}" 15 s after the edit`);
+      // Step 2: go offline, edit again. The badge says Offline and the edit is kept in the journal.
+      setOnline(false);
+      seek(Math.min(P.playhead + 1.5, 60));
+      if (!await tap(document.querySelector('#textBtn'))) fail('edit 2: tap Add text', 'the Add text button is not on screen');
+      const both = texts();
+      const edit2 = both.filter((x) => !edit1.includes(x));
+      if (edit2.length !== 1) fail('edit 2 (offline): tap Add text', `expected 1 new text clip, found ${edit2.length}`);
+      const off = await until(() => /Offline/.test(badgeText()), 5000, 50);
+      t.metric('badgeOffline', off ? 1 : 0); t.event(off ? 'badge-offline' : 'badge-offline-missing', badgeText());
+      if (off) await sleep(500);
+      if (!off) fail('badge: Offline', `with the network off the badge says "${badgeText()}"`);
+      const br = badge()?.getBoundingClientRect();
+      const showing = !!br && br.width > 20 && br.height > 10 && br.left >= 0 && br.right <= window.innerWidth;
+      t.metric('badgeVisible', showing ? 1 : 0);
+      if (!showing) fail('badge: visible', `the badge is not fully on screen at ${window.innerWidth}px (${br ? `${Math.round(br.left)}-${Math.round(br.right)}` : 'absent'})`);
+      await sleep(400);
+      const kept = (await journal.pending(P.id)).some((o) => edit2.every((id2) => o.doc.clips.some((c) => c.id === id2)));
+      t.metric('journalHasOfflineEdit', kept ? 1 : 0);
+      if (!kept) fail('edit 2 kept offline', 'the offline edit is not in the local journal');
+      // Step 3: reload. The page can't be reloaded under the bot, so (a named shortcut, as in savebadge) the server's older copy
+      // is taken again as on a fresh load: the offline edit must come back from the journal, the earlier one from the server.
+      const stale = await api(`/v1/editor/projects/${P.id}`);
+      t.metric('serverHasOfflineEdit', (stale?.doc?.clips ?? []).some((c) => edit2.includes(c.id)) ? 1 : 0);
+      forgetRecovered(P.id);
+      take(stale);
+      const back = await until(() => { const now = texts(); return edit1.every((x) => now.includes(x)) && edit2.every((x) => now.includes(x)); }, 4000, 50);
+      t.metric('bothEditsAfterReload', back ? 1 : 0); t.event(back ? 'both-edits-after-reload' : 'edit-lost-on-reload');
+      if (!back) fail('reload: both edits present', `after the reload the timeline has ${texts().length} text clip(s); wanted the one made online and the one made offline`);
+      setOnline(true);
+      const resaved = await until(() => /^Saved \d/.test(badgeText()) && !P.dirty, 15000, 50);
+      t.metric('savedAfterReconnect', resaved ? 1 : 0); t.event(resaved ? 'badge-saved-after-reconnect' : 'badge-saved-after-reconnect-missing', badgeText());
+      if (!resaved) fail('badge: Saved after going online', `the badge says "${badgeText()}"`);
+      // Step 4: an AI op, undone and redone with taps only (a phone has no keyboard; its bar hides Undo and Redo, so the toast and the search sheet carry them).
+      const THREE_AI = { match: 'three titles', cost: 0.01, json: { say: 'Added three titles.', ops: [TITLE_OP('One'), TITLE_OP('Two'), TITLE_OP('Three')] } };
+      if (!await mockAi([THREE_AI])) { fail('AI op', 'the AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in: no AI op to undo'); t.finish('stuck'); return; }
+      if (phone) { await tap(document.querySelector('#mobileTabs [data-m="ai"]')); await sleep(300); }
+      const n0 = texts().length;
+      await typeAi('add three titles please');
+      t.event('asked-ai');
+      const added = await until(() => texts().length >= n0 + 3, 20000, 100);
+      if (!added) { fail('AI op: add three titles', `the AI's answer did not add titles (${texts().length - n0} of 3)`); t.finish('stuck'); return; }
+      t.event('ai-op-applied');
+      const viaPalette = async (label) => {
+        await tap(document.querySelector('#paletteBtn'));
+        const row = await until(() => withText(document, '.pal-item', new RegExp(`^${label}`)), 3000, 50);
+        const el = withText(document, '.pal-item', new RegExp(`^${label}`));
+        if (!row || !el) return false;
+        await tap(el);
+        return true;
+      };
+      const btnUsable = (sel) => { const b = document.querySelector(sel); return b && !b.disabled && b.getBoundingClientRect().width > 0 && getComputedStyle(b).display !== 'none'; };
+      const toastUndo = [...document.querySelectorAll('#toast button')].find((b) => /^Undo$/i.test(b.textContent.trim()));
+      let undone = false;
+      if (toastUndo) undone = await tap(toastUndo) && await until(() => texts().length === n0, 4000, 100);
+      if (!undone && btnUsable('#undoBtn')) undone = await tap(document.querySelector('#undoBtn')) && await until(() => texts().length === n0, 4000, 100);
+      if (!undone) undone = await viaPalette('Undo') && await until(() => texts().length === n0, 4000, 100);
+      t.metric('aiOpUndone', undone ? 1 : 0); t.event(undone ? 'ai-op-undone' : 'ai-op-undo-failed');
+      if (!undone) fail('undo the AI op', `${texts().length - n0} of the AI's 3 titles are still there after Undo`);
+      let redone = false;
+      if (btnUsable('#redoBtn')) redone = await tap(document.querySelector('#redoBtn')) && await until(() => texts().length >= n0 + 3, 4000, 100);
+      if (!redone) redone = await viaPalette('Redo') && await until(() => texts().length >= n0 + 3, 4000, 100);
+      t.metric('aiOpRedone', redone ? 1 : 0); t.event(redone ? 'ai-op-redone' : 'ai-op-redo-failed');
+      if (!redone) fail('redo the AI op', `Redo did not bring the 3 titles back (${texts().length - n0} of 3)`);
+      t.metric('failedSteps', failed.length);
+      t.note(failed.length ? `FAIL: ${failed.join('; ')}` : 'PASS: both edits survived, badges Saving, Saved and Offline shown, AI op undone and redone');
+      t.finish(failed.length ? 'stuck' : 'done');
+      return;
+    }
+    if (id === 'editor-fit') {
+      t.scene('Editor fit');
+      hideLanding();
+      // Setup shortcut (named): clear a saved timeline size, so the default layout is what is measured.
+      try { localStorage.removeItem('hg.--tl'); localStorage.removeItem('hg.tl-small'); localStorage.removeItem('hg.--tlm'); sessionStorage.setItem('hg.landing.looked', '1'); } catch { /* */ }
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest editor-fit ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      // The new scene has its tracks; give them a clip so the rows have something to draw, and let it save so the frames below load it.
+      addClip({ track: mainTrack()?.id, kind: 'fill', color: '#203a5c', start: 0, seconds: 4, history: false });
+      await until(() => /^Saved \d/.test(document.querySelector('#saveState')?.textContent ?? '') && !P.dirty, 15000, 100);
+      const failed = [];
+      const name = (el) => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/)[0] : ''}`;
+      /** Measures one editor window (a document at a size). Every fault names the size and the control. */
+      const measure = async (win, doc, label) => {
+        const vw = win.innerWidth, vh = win.innerHeight;
+        const probs = [];
+        const $ = (sel) => doc.querySelector(sel);
+        const shown = (el) => Boolean(el) && !el.closest('[hidden]') && el.checkVisibility?.({ checkVisibilityCSS: true }) !== false && win.getComputedStyle(el).display !== 'none';
+        const box = (el) => el.getBoundingClientRect();
+        const rects = [];
+        /** el must be on screen, fully inside the window (and inside `within`), uncovered at its centre. */
+        const need = (what, el, { within, allowPartial = false, overlaps = true } = {}) => {
+          if (!shown(el) || box(el).width < 1 || box(el).height < 1) { probs.push(`${label}: ${what} is not on screen`); return; }
+          const r = box(el);
+          const cut = [];
+          if (r.left < -1) cut.push(`${Math.round(-r.left)}px past the left edge`);
+          if (r.top < -1) cut.push(`${Math.round(-r.top)}px past the top`);
+          if (r.right > vw + 1) cut.push(`${Math.round(r.right - vw)}px past the right edge`);
+          if (r.bottom > vh + 1) cut.push(`${Math.round(r.bottom - vh)}px past the bottom`);
+          if (within && shown(within)) { const w = box(within); if (r.left < w.left - 1 || r.right > w.right + 1 || r.top < w.top - 1 || r.bottom > w.bottom + 1) cut.push(`outside its panel (${Math.round(r.left)},${Math.round(r.top)}-${Math.round(r.right)},${Math.round(r.bottom)} in ${Math.round(w.left)},${Math.round(w.top)}-${Math.round(w.right)},${Math.round(w.bottom)})`); }
+          if (cut.length && !allowPartial) probs.push(`${label}: ${what} is cut off: ${cut.join(', ')}`);
+          if (!cut.length) {
+            const top = doc.elementFromPoint(Math.min(vw - 1, Math.max(0, r.left + r.width / 2)), Math.min(vh - 1, Math.max(0, r.top + r.height / 2)));
+            if (top && !el.contains(top) && !top.contains(el) && !top.closest('#toast')) probs.push(`${label}: ${what} is covered by ${name(top)}`);
+          }
+          if (overlaps) rects.push({ what, r });
+        };
+        const overlapCheck = () => {
+          for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+            const a = rects[i].r, b = rects[j].r;
+            if (a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1) probs.push(`${label}: ${rects[i].what} overlaps ${rects[j].what}`);
+          }
+          rects.length = 0;
+        };
+        const click2 = async (sel) => { const b = $(sel); if (b) { b.click(); await sleep(350); } return Boolean(b); };
+        const app = $('#app');
+        const phone = vw <= 900, drawer = vw > 900 && vw <= 1100;
+        await sleep(300);
+        const common = () => {
+          need('the play button (#playBtn)', $('#playBtn'));
+          const tr = $('#tlTracks');
+          need('the timeline tracks (#tlTracks)', tr, { overlaps: true });
+          const firstRow = tr?.querySelector('.tl-track:not(.tl-new)');
+          if (!firstRow) probs.push(`${label}: the timeline tracks have no track row`);
+          else need('the first timeline track row', firstRow, { within: $('#tlScroll'), overlaps: false });
+        };
+        const toggles = () => {
+          if (phone) { for (const b of doc.querySelectorAll('#mobileTabs button')) need(`the panel toggle "${b.textContent.trim()}" (#mobileTabs)`, b); }
+          else if (drawer) { for (const sel of ['#drawerLeft', '#drawerRight']) need(`the panel toggle (${sel})`, $(sel)); }
+          else {
+            for (const sel of ['.grip-left', '.grip-right']) {
+              const g = $(sel);
+              if (!shown(g)) { probs.push(`${label}: the panel toggle edge (${sel}) is not on screen`); continue; }
+              const r = box(g), cx = r.left + r.width / 2;
+              if (cx < 0 || cx > vw || r.bottom <= 0 || r.top >= vh) probs.push(`${label}: the panel toggle edge (${sel}) is cut off`);
+            }
+          }
+        };
+        const prompt = () => { const right = $('#rightPane'); need('the prompt box (#aiInput)', $('#aiInput'), { within: right }); need('the prompt form (#aiForm)', $('#aiForm'), { within: right, overlaps: false }); need('the prompt Send button (#aiSend)', $('#aiSend'), { within: right, overlaps: false }); };
+        const mediaHead = () => { const left = $('#leftPane'); need('the Media header: search (.media-top)', $('.media-top'), { within: left }); need('the Media header: filters (#mediaFilter)', $('#mediaFilter'), { within: left }); };
+        if (phone) {
+          for (const [m, fn] of [['edit', null], ['media', mediaHead], ['ai', prompt]]) {
+            await click2(`#mobileTabs button[data-m="${m}"]`);
+            if (m === 'media') await click2('#paneTabs [data-pane="media"]');
+            common(); toggles(); if (fn) fn();
+            if (m === 'edit') { for (const [what, sel] of [['the Media header: search (.media-top)', '.media-top'], ['the prompt box (#aiInput)', '#aiInput']]) if (shown($(sel))) { /* the sheet is closed on Edit: a hidden pane is fine */ } }
+            overlapCheck();
+          }
+          await click2('#mobileTabs button[data-m="edit"]');
+        } else if (drawer) {
+          await click2('#drawerLeft'); await click2('#paneTabs [data-pane="media"]'); common(); toggles(); mediaHead(); overlapCheck();
+          await click2('#drawerRight'); common(); toggles(); prompt(); overlapCheck();
+          app?.classList.remove('drawer-left', 'drawer-right');
+        } else {
+          app?.classList.remove('no-left', 'no-right', 'tl-small');
+          await click2('#paneTabs [data-pane="media"]');
+          common(); toggles(); mediaHead(); prompt(); overlapCheck();
+        }
+        return probs;
+      };
+      // Each size is the real editor in a frame of that size (the page itself can't be resized under the bot; named shortcut), plus the window as it is.
+      const SIZES = [[1280, 720], [1920, 1080], [390, 844], [844, 390]];
+      const listIds = async () => { const r = await api('/v1/scenes').catch(() => null); const l = Array.isArray(r) ? r : r?.items ?? r?.scenes ?? []; return new Set(l.map((x) => x.id)); };
+      const before = await listIds();
+      const results = [];
+      const own = await measure(window, document, `window ${window.innerWidth}x${window.innerHeight}`);
+      results.push([`window ${window.innerWidth}x${window.innerHeight}`, own]);
+      for (const [w, h] of SIZES) {
+        const label = `${w}x${h}`;
+        const fr = document.createElement('iframe');
+        fr.setAttribute('data-playtest', 'editor-fit');
+        Object.assign(fr.style, { position: 'fixed', left: '0', top: '0', width: `${w}px`, height: `${h}px`, border: '0', zIndex: '2147483000', background: '#000' });
+        fr.src = `${location.pathname}?fit=${w}x${h}`;
+        document.body.appendChild(fr);
+        const ready = await until(() => { try { const d = fr.contentDocument; return d && d.querySelector('#playBtn') && d.querySelector('#tlTracks .tl-track') && d.defaultView.innerWidth === w; } catch { return false; } }, 25000, 200);
+        if (!ready) { results.push([label, [`${label}: the editor did not open in a ${label} window (no play button or timeline track)`]]); fr.remove(); continue; }
+        const probs = await measure(fr.contentWindow, fr.contentDocument, label);
+        t.event(`fit-${label}`, probs.length ? `${probs.length} problem(s)` : 'all in view');
+        results.push([label, probs]);
+        await sleep(400); // the screenshot at this event shows this size
+        fr.remove();
+      }
+      for (const [label, probs] of results) {
+        t.metric(`fitProblems_${label.replace(/\s/g, '_')}`, probs.length);
+        for (const p of probs) { failed.push(p); t.problem('bug', `editor-fit: ${p}`); }
+      }
+      // The frames' own boot may have made an "Untitled" first scene for the account: it goes again.
+      try {
+        const now = await api('/v1/scenes');
+        const list = Array.isArray(now) ? now : now?.items ?? now?.scenes ?? [];
+        if (before.size) for (const s of list) if (!before.has(s.id) && s.id !== made?.id && s.title === 'Untitled') extra.push(s.id);
+      } catch { /* the list is only for tidying */ }
+      t.metric('fitProblems', failed.length);
+      t.note(failed.length ? `FAIL: ${failed[0]}${failed.length > 1 ? ` (+${failed.length - 1} more)` : ''}` : 'PASS: every control is in view and clear at 1280x720, 1920x1080, 390x844 and 844x390');
+      t.finish(failed.length ? 'stuck' : 'done');
+      return;
+    }
+    if (id === 'polished-cut') {
+      t.scene('Polished cut');
+      const jobs = watchJobs();
+      await until(() => activeScene(), 10000);
+      const stamp = Date.now();
+      const tone = (seconds, freq) => {
+        const rate = 22050, n = Math.floor(seconds * rate);
+        const pcm = new Int16Array(n);
+        for (let i = 0; i < n; i++) pcm[i] = Math.sin(2 * Math.PI * freq * i / rate) * 0.45 * 0x7fff;
+        const bytes = pcm.byteLength, out = new DataView(new ArrayBuffer(44 + bytes));
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); out.setUint32(4, 36 + bytes, true); w(8, 'WAVE'); w(12, 'fmt ');
+        out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true);
+        out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, bytes, true);
+        new Uint8Array(out.buffer, 44).set(new Uint8Array(pcm.buffer));
+        return new Blob([out.buffer], { type: 'audio/wav' });
+      };
+      const up = async (blob, title) => {
+        const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(title)}`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'audio/wav', 'X-Filename': encodeURIComponent(title) }, body: blob,
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `upload ${r.status}`);
+        return { id: j.id ?? j.asset?.id, duration: j.meta?.duration ?? j.asset?.meta?.duration };
+      };
+      const failed = [];
+      const fail = (step, why) => { failed.push(step); t.problem('bug', `polished-cut failed at "${step}": ${why}`); t.event('step-failed', step); };
+      // Setup shortcut (named): the fixture's two sounds (music 10 s, a voice line 3 s) are uploaded, then the project is built.
+      let musicA, voiceA;
+      try { musicA = await up(tone(10, 220), `playtest-cut-music-${stamp}.wav`); voiceA = await up(tone(3, 660), `playtest-cut-voice-${stamp}.wav`); }
+      catch (e) { jobs.stop(); fail('fixture sounds', `could not upload them: ${e.message || e}`); t.finish('stuck'); return; }
+      made = await newScene('video', { title: `Playtest polished-cut ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { jobs.stop(); t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const main = mainTrack()?.id;
+      const musicTr = tracks().find((x) => /music/i.test(x.name))?.id;
+      const voiceTr = tracks().find((x) => /voice/i.test(x.name))?.id;
+      if (!main || !musicTr || !voiceTr) { jobs.stop(); fail('fixture tracks', 'a new video has no main, Music or Voice track'); t.finish('stuck'); return; }
+      const A = addClip({ track: main, kind: 'fill', color: '#1a5cff', start: 0, seconds: 4, history: false });
+      const B = addClip({ track: main, kind: 'fill', color: '#ff5c1a', start: 4, seconds: 4, history: false });
+      setClip(A.id, { start: 0 }, { history: false }); setClip(B.id, { start: 4 }, { history: false });
+      setClip(A.id, { transition: 'crossfade', transitionSeconds: 0.8 }, { history: false });
+      const music = addClip({ track: musicTr, asset: musicA.id, kind: 'audio', duration: musicA.duration || 10, start: 0, label: 'music tone', history: false });
+      setClip(music.id, { start: 0, in: 0, out: Math.min(8, musicA.duration || 10), volume: 1 }, { history: false });
+      const VOICE_AT = 2.5, VOICE_LEN = Math.min(3, voiceA.duration || 3);
+      const voice = addClip({ track: voiceTr, asset: voiceA.id, kind: 'audio', duration: voiceA.duration || 3, start: VOICE_AT, label: 'voice line', history: false });
+      setClip(voice.id, { start: VOICE_AT, in: 0, out: VOICE_LEN }, { history: false });
+      // The lower third is added the way a person does it: a tap on its card in Create > Titles.
+      document.querySelector('#paneTabs button[data-pane="generate"]')?.click();
+      await until(() => document.querySelector('.title-card[data-title="lower-third"]'), 8000, 100);
+      seek(0.3);
+      document.querySelector('.title-card[data-title="lower-third"]')?.click();
+      const lt = await until(() => P.doc.clips.find((c) => c.title === 'lower-third'), 3000, 50) ? P.doc.clips.find((c) => c.title === 'lower-third') : null;
+      if (!lt) { jobs.stop(); fail('lower-third title', 'tapping the lower third did not add a title clip'); t.finish('stuck'); return; }
+      setClip(lt.id, { start: 0.3, out: (lt.in ?? 0) + 2.2 }, { history: false });
+      t.event('fixture-ready', `crossfade 0.8 s at 4 s, lower third 0.3-2.5 s, voice ${VOICE_AT}-${VOICE_AT + VOICE_LEN} s over music`);
+      await sleep(2500); // let the clips load: the measure is playback, not first load
+      const len = docLength();
+      // 1 The look: the crossfade blends the two colours, and the lower third leaves ink on the frame.
+      const px = async (time) => { const cv = await frameAt(time), d = cv.getContext('2d').getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 3), 1, 1).data; return [d[0], d[1], d[2]]; };
+      const near = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 60;
+      const CA = [26, 92, 255], CB = [255, 92, 26];
+      let blend = false;
+      for (const tt of [3.6, 3.8, 4.0, 4.2, 4.4]) { const p = await px(tt); if (!near(p, CA) && !near(p, CB)) blend = true; }
+      t.metric('crossfadeBlends', blend ? 1 : 0); t.event(blend ? 'crossfade-blends' : 'crossfade-missing');
+      if (!blend) fail('crossfade', 'no frame around the join at 4 s is a blend of the two clips');
+      const inkOf = async (time) => { const cv = await frameAt(time), W = cv.width, H = cv.height, d = cv.getContext('2d').getImageData(0, Math.floor(H / 2), W, H - Math.floor(H / 2)).data; return d; };
+      const withT = await inkOf(1.6), without = await inkOf(3.0);
+      let diff = 0;
+      for (let i = 0; i < withT.length; i += 4) if (Math.abs(withT[i] - without[i]) + Math.abs(withT[i + 1] - without[i + 1]) + Math.abs(withT[i + 2] - without[i + 2]) > 30) diff++;
+      t.metric('lowerThirdInkPx', diff); t.event(diff > 200 ? 'lower-third-drawn' : 'lower-third-missing');
+      if (diff <= 200) fail('lower-third title', `the frame at 1.6 s shows no title in the lower half (${diff} px differ from the frame without it)`);
+      // 2 Smoothness: play the whole cut with Space and take the longest gap between frames.
+      resetPlaybackStats();
+      seek(0);
+      press(' ');
+      t.event('play-cut');
+      const through = await until(() => P.playhead >= len - 0.15, Math.max(20000, len * 3000), 100);
+      if (isPlaying()) press(' ');
+      const run = pacingStats();
+      t.metric('longestFrameGapMs', run.worstMs); t.metric('fps', run.fps); t.metric('p5fps', run.p5fps); t.metric('frames', run.frames);
+      t.event(`longest-frame-gap ${run.worstMs}ms`, `fps ${run.fps}, p5 ${run.p5fps}`);
+      t.log(`longest frame gap ${run.worstMs} ms over ${run.frames} frames`);
+      if (!through) fail('play the cut', `the playhead stopped at ${P.playhead.toFixed(1)} s of ${len.toFixed(1)} s`);
+      if (!run.frames) fail('longest frame gap', 'no frames were drawn while playing');
+      else if (run.worstMs > 50) fail('longest frame gap', `${run.worstMs} ms is over the 50 ms limit (${run.fps} fps, p5 ${run.p5fps})`);
+      // 3 The music's level in dB: in a mixdown with the voice left out of the mix (the music bed on its own), under the line and outside it.
+      let underDb = null, outsideDb = null;
+      try {
+        const spans = dialogueSpans(P.doc.clips, trackOf, clipEnd, audible);
+        setClip(voice.id, { muted: true }, { history: false });
+        const buf = await mixdown(0, len, 44100, spans);
+        const rms = (from, dur) => {
+          const a = Math.floor(from * buf.sampleRate), n = Math.floor(dur * buf.sampleRate);
+          let s = 0, c = 0;
+          for (let ch = 0; ch < buf.numberOfChannels; ch++) { const d = buf.getChannelData(ch); for (let i = a; i < Math.min(d.length, a + n); i++) { s += d[i] * d[i]; c++; } }
+          return 10 * Math.log10(s / Math.max(1, c) + 1e-20);
+        };
+        underDb = rms(VOICE_AT + 0.6, 1.5);
+        outsideDb = (rms(0.6, 1) + rms(VOICE_AT + VOICE_LEN + 0.8, 1.2)) / 2;
+      } catch (e) { fail('music level', `the mixdown failed: ${e.message || e}`); }
+      setClip(voice.id, { muted: false }, { history: false });
+      if (underDb !== null) {
+        const r1 = (x) => Math.round(x * 10) / 10;
+        t.metric('musicUnderVoiceDb', r1(underDb)); t.metric('musicOutsideVoiceDb', r1(outsideDb)); t.metric('musicDipDb', r1(outsideDb - underDb));
+        t.event('music-level', `${r1(underDb)} dB under the voice line, ${r1(outsideDb)} dB outside it`);
+        t.log(`music level under the voice line ${r1(underDb)} dB, outside ${r1(outsideDb)} dB`);
+        if (!(underDb < outsideDb)) fail('music level under the voice', `${r1(underDb)} dB under the line is not lower than ${r1(outsideDb)} dB outside it`);
+      }
+      const paid = jobs.sent.filter((x) => !/^(media\.normalize)$/.test(x));
+      jobs.stop();
+      if (paid.length) t.problem('blocker', `polished-cut started a paid job: ${paid.join(', ')}`);
+      t.metric('failedSteps', failed.length);
+      t.note(failed.length ? `FAIL: ${failed.join('; ')}` : `PASS: longest frame gap ${run.worstMs} ms, music ${underDb !== null ? underDb.toFixed(1) : '?'} dB under the voice vs ${outsideDb !== null ? outsideDb.toFixed(1) : '?'} dB outside`);
+      t.finish(failed.length || paid.length ? 'stuck' : 'done');
       return;
     }
     if (id === 'savebadge') {
