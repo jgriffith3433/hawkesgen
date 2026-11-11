@@ -419,6 +419,14 @@ installPlaytest({
         // A reload reads this value back into --tl (gen.js, sizing the areas), so it must be what the screen shows.
         const same = Math.abs(Number(saved) - H()) <= 1;
         t.metric('keptMatchesShownPx', same ? 1 : 0);
+        // A stand-in for a reload (the contract can't survive one): the page's own restore code on a fresh element.
+        const fresh = document.createElement('div');
+        const back = window.hgRestoreTimelineSize?.(fresh);
+        t.metric('restoredPx', back ?? 0);
+        const restoredOk = back != null && Math.abs(back - H()) <= 1;
+        t.metric('restoredMatchesShown', restoredOk ? 1 : 0);
+        if (!restoredOk) t.problem('bug', `a reload would restore ${back}px, not the ${H()}px on screen`);
+        else t.event('timeline-size-restored (stand-in for a reload)');
         if (same) t.event('timeline-size-kept'); else t.problem('bug', `the kept timeline size (${saved}px) is not the one on screen (${H()}px)`);
       }
       const wide = matchMedia('(min-width: 901px) and (max-width: 1100px)').matches;
