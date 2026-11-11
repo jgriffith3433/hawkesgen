@@ -31,7 +31,13 @@ if (spec.gpu) {
   if (!gpu.regions.includes(args.region)) throw new Error(`${spec.gpu} isn't offered for Cloud Run services in ${args.region} (offered: ${gpu.regions.join(', ')})`);
   if (spec.cpu < gpu.minCpu || spec.memoryGi < gpu.minMemoryGi) throw new Error(`${spec.gpu} needs at least ${gpu.minCpu} vCPU and ${gpu.minMemoryGi} GiB`);
 }
-const maxInstances = Math.max(1, Math.min(20, Number(args.maxInstances ?? spec.maxInstances)));
+const asked = Math.max(1, Math.min(20, Number(args.maxInstances ?? spec.maxInstances)));
+// The live region (us-east4: gen, studio and the Studio cells run there and share its Cloud Run CPU quota) gets at
+// most one CPU browser instance, whatever was asked: 2026-11-11, four 4 vCPU CPU browsers held 16 of us-east4's 20 vCPU
+// and Studio's own server couldn't start. Matches LIVE_REGION_CPU_INSTANCES in src/providers/playtester/cloudrun.ts.
+const LIVE_REGION = process.env.REGION_LIVE || 'us-east4';
+const maxInstances = variant === 'cpu' && args.region === LIVE_REGION ? Math.min(asked, 1) : asked;
+if (maxInstances < asked) console.log(`${args.region} is the live region: at most ${maxInstances} instance(s) (asked ${asked})`);
 const tabs = Math.max(1, Math.min(8, Number(args.tabs ?? spec.tabsPerInstance)));
 const image = args.image ?? readState(stateName(variant, 'image'))?.tag ?? imageTag(args, spec);
 const workerSa = args.workerSa ?? `gen-playtest@${args.project}.iam.gserviceaccount.com`;
