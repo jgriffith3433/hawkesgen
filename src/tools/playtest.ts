@@ -34,6 +34,7 @@ import { beginLive } from './livePlay.ts';
 import { FeelLog, PUSH_BINDING, cutFeelClips, pickPolishFrames, polishScan, feelBrief } from './playtest-feel.ts';
 import { pickMotionWindows, motionMarks, motionStrips, motionLegend, videoFreezes, MOTION_FPS } from './playtest-motion.ts';
 import { playFirstFive } from './firstfive.ts';
+import { armPhoneNetwork, applyPhoneMetrics, buildPhoneResult, type TransferHit } from './playtest-phone.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
@@ -69,15 +70,16 @@ const FPS_SCRIPT = `(() => {
 
 export const playtestRunTool: Tool = {
   id: 'playtest.run',
-  version: 4,
+  version: 5,
   title: 'Playtest a game in the browser',
   description:
     'Opens a game or site in Chromium and plays it: through the Hawkes playtest contract (window.hawkesPlaytest: the game\'s ' +
     'own bot plays a scenario), or a generic smoke test (click, keys) when the page has none, or a crawl of every page ' +
     '(mode "site"). Records the video, screenshots every few seconds and at events, console errors, failed requests, ' +
-    'load time and frame rate. Outputs the video, screenshots and a report (the video and report also go to S3); give a ' +
-    'baseline (the previous run) to compare screenshots at matching events. A hung browser, tunnel or page ends the run as ' +
-    '"stuck" with what was recorded. Follow it with playtest.review.',
+    'load time and frame rate. Phone runs (mobile:true, 390x844 touch, iPhone 13 + DPR 2) also use 4x CPU + Slow 4G and ' +
+    'report result.phone (MB before gameplay, seconds to gameplay, fps p5). Outputs the video, screenshots and a report ' +
+    '(the video and report also go to S3); give a baseline (the previous run) to compare screenshots at matching events. ' +
+    'A hung browser, tunnel or page ends the run as "stuck" with what was recorded. Follow it with playtest.review.',
   provider: 'playtest',
   output: 'video',
   inputs: {},
@@ -100,7 +102,7 @@ export const playtestRunTool: Tool = {
     shotEvery: { type: 'number', default: 5, min: 1, max: 120, description: 'Seconds between screenshots', advanced: true },
     width: { type: 'integer', default: 1280, min: 320, max: 3840, advanced: true },
     height: { type: 'integer', default: 720, min: 240, max: 2160, advanced: true },
-    mobile: { type: 'boolean', default: false, description: 'Emulate a phone (touch, 390x844)', advanced: true },
+    mobile: { type: 'boolean', default: false, description: 'Emulate a phone (touch, 390x844, iPhone 13 + DPR 2). Also applies 4x CPU + Slow 4G and fills result.phone with the load budget.', advanced: true },
     headed: { type: 'boolean', default: false, description: 'Show the browser window (WebGL runs on the real GPU either way)', advanced: true },
     gpu: { type: 'enum', values: ['auto', 'require', 'off'], default: 'auto', description: 'Where the browser runs. auto: this PC if it has a GPU (Windows), else the playtester (T4) if it is running, else a ready GPU fleet server, else here in software. require: one of those GPU machines or fail. off: here.', advanced: true },
     maxPages: { type: 'integer', default: 40, min: 1, max: 300, description: 'Site mode: how many pages to visit', advanced: true },
@@ -432,9 +434,22 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       feelShot = shot;
       /** page.evaluate with a limit: a page that stops answering is stuck. */
       const ev = <R>(f: any, arg?: any, ms = 15_000): Promise<R> => within(page.evaluate(f, arg), ms, 'the page');
+      let phoneHits: TransferHit[] = [];
+      let phoneCdp: { detach?: () => Promise<void> } | null = null;
 
       try {
         const target = host ? host.mapUrl(withParams(p.url, {})) : withParams(p.url, {});
+        // Phone load budget: throttle before the first navigation so Studio can file MB / time / fps findings.
+        if (p.mobile) {
+          try {
+            const armed = await within(armPhoneNetwork(context, page, T), 15_000, 'phone throttling');
+            phoneHits = armed.log.hits;
+            phoneCdp = armed.cdp;
+            ctx.log('phone: 4x CPU + Slow 4G');
+          } catch (e: any) {
+            ctx.log(`phone throttling failed (${e?.message?.split('\n')[0] ?? e}); continuing without it`);
+          }
+        }
         ctx.step(`loading ${target}`);
         const resp = await within<any>(page.goto(target, { waitUntil: 'load', timeout: p.bootTimeout * 1000 }), p.bootTimeout * 1000 + 15_000, 'loading the page').catch((e: any) => {
           if (e instanceof Stuck) throw e;
@@ -627,13 +642,26 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       }
       const fps = summarizeFps(fpsSamples);
       if (fps.average && fps.average < 30 && !software) problems.push({ severity: 'warning', message: `low frame rate: ${fps.average} fps on average (worst ${fps.worst}) in this browser`, source: 'runner' });
+      await phoneCdp?.detach?.().catch(() => {});
 
       liveOutcome = outcome;
+      const metricsBase: Record<string, unknown> = { ...(report?.metrics ?? {}) };
+      const phone = p.mobile
+        ? buildPhoneResult({
+          hits: phoneHits,
+          events: report?.events ?? [],
+          metrics: metricsBase,
+          loadSeconds,
+          fpsSamples,
+          fpsP5: fps.p5,
+        })
+        : null;
       const result: any = {
         url: p.url, target: _target, build: buildSource(p.build), mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract || firstFive ? p.scenario : null, outcome,
         stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
         seconds: T(), loadSeconds, fps, renderer, software, softwareBecause, contract, scenarios,
-        metrics: report?.metrics ?? {}, events: report?.events ?? [], log: report?.log ?? [],
+        metrics: phone ? applyPhoneMetrics(metricsBase, phone) : metricsBase,
+        events: report?.events ?? [], log: report?.log ?? [],
         problems: dedupeBy(problems, (x) => x.message),
         console: { errors: errors.length, warnings: consoleLines.length - errors.length, first: consoleLines.slice(0, 30) },
         failedRequests: dedupeBy(failed, (x) => x.url).slice(0, 50),
@@ -644,6 +672,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         s3: null as any,
         feel: feel.flags,
         polish: null as any,
+        ...(phone ? { phone } : {}),
       };
       feelShot = null;
       // The browser is done with: let the next playtest have it while this one saves.
@@ -900,6 +929,7 @@ type PeerRun = {
   problems: Problem[]; consoleLines: { type: string; text: string; t: number }[]; failed: { url: string; status: number | string }[];
   report: any; outcome: string | null; stuck: string | null; loadSeconds: number | null; sc: any; scenarios: any[];
   lastScene?: string; lastAnswer: number; lastProblems: number; detail: string; fpsSamples: number[]; webm: string | null;
+  phoneHits: TransferHit[];
 };
 
 /** Each player's page: the game's URL with the shared room and the player's number. */
@@ -1073,7 +1103,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       const peer: PeerRun = {
         i, scenario: i > 0 && p.scenarioPeers ? p.scenarioPeers : p.scenario, url: host ? host.mapUrl(url) : url, context, page, screencast, recorder, videoDir,
         problems: [], consoleLines: [], failed: [], report: null, outcome: null, stuck: null, loadSeconds: null, sc: null, scenarios: [],
-        lastAnswer: Date.now(), lastProblems: 0, detail: '', fpsSamples: [], webm: null,
+        lastAnswer: Date.now(), lastProblems: 0, detail: '', fpsSamples: [], webm: null, phoneHits: [],
       };
       page.setDefaultTimeout(30_000);
       page.on('console', (m: any) => {
@@ -1109,6 +1139,15 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
     try {
       ctx.step(`loading ${n} players (room ${room})`);
       await Promise.all(peers.map(async (peer) => {
+        if (p.mobile) {
+          try {
+            const armed = await within(armPhoneNetwork(peer.context, peer.page, T), 15_000, 'phone throttling');
+            peer.phoneHits = armed.log.hits;
+            ctx.log(`peer ${peer.i}: phone 4x CPU + Slow 4G`);
+          } catch (e: any) {
+            ctx.log(`peer ${peer.i}: phone throttling failed (${e?.message?.split('\n')[0] ?? e}); continuing without it`);
+          }
+        }
         const resp = await within<any>(peer.page.goto(peer.url, { waitUntil: 'load', timeout: p.bootTimeout * 1000 }), p.bootTimeout * 1000 + 15_000, 'loading the page').catch((e: any) => {
           if (e instanceof Stuck) throw e;
           peer.problems.push({ severity: 'bug', message: `the page did not load: ${e.message.split('\n')[0]}`, source: 'browser' });
@@ -1296,11 +1335,22 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
     liveOutcome = merged.outcome;
     const allConsole = peers.flatMap((x) => x.consoleLines.map((c) => ({ ...c, text: `peer ${x.i}: ${c.text}` })));
     const allErrors = allConsole.filter((c) => c.type === 'error').length;
+    const metricsBase: Record<string, unknown> = { ...(peers[0].report?.metrics ?? {}) };
+    const phone = p.mobile
+      ? buildPhoneResult({
+        hits: peers[0].phoneHits,
+        events: peers[0].report?.events ?? [],
+        metrics: metricsBase,
+        loadSeconds: peers[0].loadSeconds,
+        fpsSamples: peers[0].fpsSamples,
+        fpsP5: players[0].fps.p5,
+      })
+      : null;
     const result: any = {
       url: p.url, mode: 'contract', scenario: p.scenario, scenarioPeers: p.scenarioPeers || p.scenario, outcome: merged.outcome, room,
       stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
       seconds: T(), loadSeconds: Math.max(...peers.map((x) => x.loadSeconds ?? 0)) || null, fps: players[0].fps, renderer, software, softwareBecause, contract: true, scenarios: peers[0].scenarios,
-      metrics: peers[0].report?.metrics ?? {}, events: merged.events, log: merged.log,
+      metrics: phone ? applyPhoneMetrics(metricsBase, phone) : metricsBase, events: merged.events, log: merged.log,
       problems: dedupeBy([...problems, ...merged.problems], (x) => x.message),
       console: { errors: allErrors, warnings: allConsole.length - allErrors, first: allConsole.slice(0, 30) },
       failedRequests: dedupeBy(peers.flatMap((x) => x.failed.map((f) => ({ ...f, peer: x.i }))), (x) => `${x.peer} ${x.url}`).slice(0, 50),
@@ -1310,6 +1360,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       video: null as string | null,
       visual: null as any,
       s3: null as any,
+      ...(phone ? { phone } : {}),
     };
     await within(browser.close(), 15_000, 'closing the browser').catch(() => {});
     host?.close();
