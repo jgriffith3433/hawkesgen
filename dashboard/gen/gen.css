@@ -17,7 +17,7 @@
   --text-inv: #0b0c10;
   --ink: var(--text);
   --on-primary: #ffffff;
-  --muted: #8b93a3;
+  --muted: #9ba3b3;
   --accent: #8b7bff;
   --accent-ink: #0b0c10;
   --accent-2: #4fe0c0;
@@ -184,10 +184,13 @@ button:disabled { opacity: .4; cursor: default; }
 /* Token focus ring on every interactive control (Tab / keyboard). */
 :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible,
 .chip:focus-visible, .card:focus-visible, .gen-card:focus-visible, .dir-card:focus-visible, .wld-card:focus-visible, .scene-row:focus-visible, .scene-tab:focus-visible {
-  outline: none;
+  outline: var(--focus-outline);
+  outline-offset: 2px;
   border-color: var(--focus-border);
   box-shadow: var(--focus-ring);
 }
+/* Clips and tiles sit inside clipped lanes: draw their ring inside so it is never cut off. */
+.clip:focus-visible, .tile:focus-visible, .lane-item:focus-visible { outline-offset: -2px; }
 /* Primary actions: solid, quiet, no gradient. */
 .primary, button.primary, a.btn.primary { background: var(--text); color: var(--text-inv); border-color: var(--text); font-weight: var(--weight-semibold); }
 .primary:hover:not(:disabled), button.primary:hover:not(:disabled), a.btn.primary:hover { background: var(--on-primary); border-color: var(--on-primary); color: var(--text-inv); }
@@ -324,7 +327,7 @@ input.num { width: 70px; }
 .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: var(--space-2); margin-top: var(--space-2-5); }
 .tile { position: relative; aspect-ratio: 16 / 11; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; cursor: grab; }
 .tile:hover { border-color: var(--line-2); }
-.tile:focus-visible { outline: none; border-color: var(--focus-border); box-shadow: var(--focus-ring); }
+.tile:focus-visible { border-color: var(--focus-border); box-shadow: var(--focus-ring); }
 .tile img, .tile video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
 .tile-audio { height: 100%; display: grid; place-items: center; color: var(--audio); background: linear-gradient(160deg, color-mix(in srgb, var(--audio) 18%, var(--panel-2)), var(--panel-2)); }
 .tile-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: var(--space-3-5) var(--space-1-75) var(--space-1-25); font-size: var(--text-label); color: var(--on-primary); background: linear-gradient(transparent, rgba(0, 0, 0, .75)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1400,3 +1403,9 @@ body:not(.app-on) #app { display: none; }
 .app.panes-short .transport { padding-top: var(--space-0-5); padding-bottom: var(--space-0-5); }
 .app.panes-short .toolbar { min-height: 34px; padding-top: var(--space-0-5); padding-bottom: var(--space-1); }
 .app.panes-tiny .toolbar, .app.panes-tiny .stage-empty-acts { display: none; }
+
+/* Touch targets: on a phone every control in the bars, panes, menus and the library drawer is at least 44x44 px (WCAG 2.5.5; the a11y scenario measures it). Timeline handles and clip grips are content, not controls. */
+@media (max-width: 600px) and (pointer: coarse) {
+  .bar button, .bar a.btn, .pane button, .pane a.btn, .pane .chip, .pane select, .pane input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]):not([type=hidden]),
+  #mobileTabs button, .menu button, .media-drawer button, .media-drawer a.btn, #landing button, #landing a.btn, .tile-info, .tile-add, .icon-btn { min-height: 44px; min-width: 44px; }
+}

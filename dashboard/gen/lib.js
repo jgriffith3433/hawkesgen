@@ -41,7 +41,10 @@ export function applyButtonVariant(btn) {
     const text = (btn.textContent || '').replace(/\s+/g, ' ').trim();
     if (!text) {
       const title = btn.getAttribute('title');
-      if (title) btn.setAttribute('aria-label', title);
+      // No words and no title: the icon's own name is the last resort ("close" -> "Close"), so a screen reader never hears "button".
+      const ico = btn.querySelector('[data-icon]')?.getAttribute('data-icon');
+      const name = title || (ico ? ico.replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase()) : '');
+      if (name) btn.setAttribute('aria-label', name);
     }
   }
   return btn;
@@ -377,7 +380,7 @@ export const ICON = {
   chevron: svg('<path d="M6 9l6 6 6-6"/>'),
   more: svg('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'),
 };
-export const icon = (name, cls = 'ico') => h('span', { class: cls, html: ICON[name] ?? '' });
+export const icon = (name, cls = 'ico') => h('span', { class: cls, 'data-icon': name, 'aria-hidden': 'true', html: ICON[name] ?? '' });
 
 /** A tiny event hub the modules talk through. */
 const subs = new Map();

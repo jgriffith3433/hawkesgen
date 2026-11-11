@@ -35,6 +35,7 @@
 //            under and outside the voice line (metrics longestFrameGapMs, musicUnderVoiceDb, musicOutsideVoiceDb)
 //   audio-mix music + voice on the timeline: waveforms drawn, fade handle dragged, auto-duck ~10 dB under the line
 //            (preview maths + offline mixdown loudness); no GPU
+//   a11y     axe-core (pinned, loaded only in this scenario) on landing, editor and library, focus rings, Escape on the drawer, 44 px taps on a phone; {"seed":true} must fail it
 //   titles   Create > Titles: six animated presets whose previews move; a lower third added by a tap animates in and out
 //            and keeps its ink off the frame's edge at 16:9 and 9:16 (measured on the drawn pixels), a long name wraps
 //            inside the safe area, and the exported video shows the same title as the preview (ink overlap at one moment)
@@ -233,6 +234,7 @@ installPlaytest({
     { id: 'media-upload', title: 'Media: a small picture is uploaded with the file button and shows as a tile and in its details; no job starts but the CPU conversion, if any', seconds: 60 },
     { id: 'uploads', title: 'Uploads: three big files go up together with a percentage each and the server stays up; a fourth at once is refused with a plain "uploads at once" message; options {"mb":500}', seconds: 240 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
+    { id: 'a11y', title: 'Accessibility: axe-core (pinned 4.10.2, loaded only here) on the landing, the editor and the library; any serious or critical issue fails the run and names its rule and screen; the first 20 tab stops show a focus ring; Escape closes the library drawer and focus returns to its opener; at 390x844 every tap target is at least 44x44 px; option {"seed":true} adds a deliberate violation that must fail the run', seconds: 90, tags: ['mobile', 'menus'] },
     { id: 'tokens', title: 'Design tokens and shared UI: landing, editor, library and admin share the same custom properties, buttons, inputs, chips, cards, typography and 16px stroke icons across toolbars, with clean layout at desktop (1440x900) and phone (390x844)', seconds: 90, tags: ['mobile'] },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
@@ -3003,6 +3005,123 @@ installPlaytest({
       t.event('scrubbed-back');
       t.progress(0.9);
       t.finish(through && again ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'a11y') {
+      const AXE_URL = 'https://cdn.jsdelivr.net/npm/axe-core@4.10.2/axe.min.js';
+      const phone = window.innerWidth <= 600;
+      const seeded = Boolean(options?.seed);
+      t.metric('phone', phone ? 1 : 0);
+      t.scene('Accessibility');
+      // axe-core is fetched here and nowhere else: the app never ships it.
+      if (!window.axe) {
+        await new Promise((ok) => { const s = document.createElement('script'); s.src = AXE_URL; s.onload = ok; s.onerror = ok; s.dataset.a11y = '1'; document.head.append(s); });
+      }
+      if (!window.axe) { t.problem('blocker', `axe-core could not be loaded from ${AXE_URL}`); t.finish('stuck'); return; }
+      t.event('axe-loaded', window.axe.version);
+      let failures = 0;
+      const nameOf = (el) => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/)[0] : ''}`;
+      /** One screen through axe: every serious or critical violation becomes a problem naming its rule and the screen. */
+      const audit = async (screen, ctx = document) => {
+        let seed = null;
+        if (seeded) {
+          // Setup shortcut (named): a deliberate critical violation (a picture with no alt, a button with no name) the run must catch.
+          seed = document.createElement('div');
+          seed.innerHTML = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="8" height="8"><button type="button" style="width:20px;height:20px"></button>';
+          document.body.append(seed);
+        }
+        let res;
+        try { res = await window.axe.run(ctx, { resultTypes: ['violations'] }); } catch (e) { t.problem('bug', `axe failed on ${screen}: ${e?.message ?? e}`); failures++; return; }
+        seed?.remove();
+        const bad = res.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+        t.metric(`axe_${screen}`, bad.length);
+        t.event(`axe-${screen}`, `${bad.length} serious or critical, ${res.violations.length} in all`);
+        for (const v of bad) {
+          failures++;
+          const where = v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join('; ');
+          t.problem('bug', `a11y ${v.impact} "${v.id}" on ${screen} (${v.nodes.length}): ${v.help} - ${where}`);
+        }
+      };
+      /** Every control that is visible now and smaller than 44x44 (timeline handles and clip grips are content). */
+      const tapFaults = (screen) => {
+        const seen = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !el.closest('[hidden], svg'); };
+        const small = [...document.querySelectorAll('button, a[href], select, summary, [role=tab], [role=button], .chip, input:not([type=hidden]):not([type=file])')]
+          .filter((el) => seen(el) && !el.closest('#tlTracks, .tl-heads, #landing[hidden]') && !el.matches('.tl-hb, .clip-act, input[type=range], input[type=color]') && !el.disabled)
+          .filter((el) => { const r = el.getBoundingClientRect(); return r.height < 43.5 || r.width < 43.5; });
+        t.metric(`smallTargets_${screen}`, small.length);
+        for (const el of small.slice(0, 6)) { failures++; const r = el.getBoundingClientRect(); t.problem('bug', `tap target ${nameOf(el)} is ${Math.round(r.width)}x${Math.round(r.height)} px on ${screen}, under 44x44`); }
+      };
+
+      // 1. Landing (the welcome someone signed out sees; the signed-in tab shows it for a moment and goes back).
+      t.scene('A11y landing');
+      showLanding();
+      await sleep(600);
+      await audit('landing');
+      if (phone) tapFaults('landing');
+      hideLanding();
+      await sleep(300);
+
+      // 2. Editor: a scene to look at, then the first 20 tab stops.
+      t.scene('A11y editor');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `A11y ${new Date().toISOString().slice(0, 16)}` });
+      await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
+      await sleep(800);
+      await audit('editor');
+      if (phone) tapFaults('editor');
+      // Tab order: no positive tabindex (it would jump the order), and each of the first 20 stops shows a ring when focused.
+      const stops = [...document.querySelectorAll('a[href], button, input, select, textarea, summary, [tabindex]')]
+        .filter((el) => !el.disabled && el.tabIndex >= 0 && visibleEl(el) && !el.closest('#landing'));
+      const positive = stops.filter((el) => el.tabIndex > 0);
+      t.metric('positiveTabindex', positive.length);
+      if (positive.length) { failures++; t.problem('bug', `tab order: ${positive.length} control(s) with tabindex above 0, e.g. ${nameOf(positive[0])}`); }
+      let ringless = 0;
+      for (const el of stops.slice(0, 20)) {
+        el.focus({ focusVisible: true });
+        await sleep(60);
+        const cs = getComputedStyle(el);
+        const ring = (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) || (cs.boxShadow && cs.boxShadow !== 'none');
+        if (!ring) { ringless++; failures++; t.problem('bug', `no visible focus ring on ${nameOf(el)} (tab stop ${stops.indexOf(el) + 1})`); }
+        t.event('tab-stop', `${stops.indexOf(el) + 1} ${nameOf(el)} ring=${ring ? 'yes' : 'no'}`);
+      }
+      t.metric('focusStopsChecked', Math.min(20, stops.length));
+      t.metric('focusRingMissing', ringless);
+      document.activeElement?.blur?.();
+
+      // 3. Library: axe, then Escape closes the drawer and focus goes back to the button that opened it.
+      t.scene('A11y library');
+      if (window.innerWidth <= 900) click('#mobileTabs button[data-m="media"]');
+      else click('#paneTabs button[data-pane="media"]');
+      await until(() => document.querySelectorAll('#mediaGrid .tile:not(.busy)').length > 0 || document.querySelector('#mediaGrid .empty-note'), 15000);
+      await sleep(600);
+      await audit('library');
+      if (phone) tapFaults('library');
+      const tile = document.querySelector('#mediaGrid .tile:not(.busy)');
+      if (!tile) t.note('The test account has no library files: the drawer was not exercised');
+      else {
+        const opener = tile.querySelector('.tile-info') ?? tile;
+        opener.focus();
+        opener.click();
+        const opened = await until(() => document.querySelector('#mediaDrawer .media-drawer'), 5000, 100);
+        t.metric('drawerOpens', opened ? 1 : 0);
+        if (opened) {
+          await sleep(300);
+          await audit('library-drawer', document.querySelector('#mediaDrawer'));
+          if (phone) tapFaults('library-drawer');
+          pressOn(document.activeElement ?? document.body, 'Escape');
+          const closed = await until(() => !document.querySelector('#mediaDrawer'), 3000, 100);
+          await sleep(100);
+          const back = document.activeElement === opener;
+          t.metric('escapeCloses', closed ? 1 : 0);
+          t.metric('focusReturns', back ? 1 : 0);
+          t.event(closed ? 'escape-closed-drawer' : 'escape-did-not-close');
+          if (!closed) { failures++; t.problem('bug', 'Escape does not close the library drawer'); }
+          else if (!back) { failures++; t.problem('bug', `after Escape focus is on ${document.activeElement ? nameOf(document.activeElement) : 'nothing'}, not the button that opened the drawer`); }
+        } else { failures++; t.problem('bug', 'the library drawer did not open'); }
+      }
+      t.metric('a11yFailures', failures);
+      t.event(failures ? 'a11y-failed' : 'a11y-passed', `${failures} issue(s)`);
+      t.finish(failures ? 'stuck' : 'done');
       return;
     }
     if (id === 'tokens') {
