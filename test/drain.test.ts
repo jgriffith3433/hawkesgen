@@ -28,7 +28,29 @@ test('drain waits for a running job to finish, then reports nothing left', async
   const { events } = await import('../src/bus.ts');
   setTimeout(() => { db.prepare("UPDATE jobs SET status = 'done' WHERE id = ?").run(a.id); events.emit('job', { id: a.id }); }, 30);
   assert.equal(await p, 0);
-  assert.equal(getJob(a.id)!.labels.drained, undefined);
+  // Marked at the start of the wait (a hard kill never reaches the end of it); harmless once the job is done.
+});
+
+test('six planned restarts during one long job (a Unity build) never use the crash limit', async () => {
+  const j = make();
+  db.prepare("UPDATE jobs SET status = 'running' WHERE id = ?").run(j.id);
+  for (let i = 1; i <= 6; i++) {
+    queue.draining = false;
+    // SIGTERM, then the instance is killed before the wait ends: only the mark made at the start survives.
+    void queue.drain(300);
+    assert.ok(getJob(j.id)!.labels.drained, `restart ${i}: marked at once`);
+    (queue as any).start();
+    const now = getJob(j.id)!;
+    assert.notEqual(now.status, 'failed', `restart ${i}`);
+    assert.equal(now.resumed, 0, 'no crash resume counted');
+    assert.equal(now.labels.drainResumes, i);
+    // The pick-up runs it again (here: straight back to running, as the queue would).
+    db.prepare("UPDATE jobs SET status = 'running' WHERE id = ?").run(j.id);
+  }
+  db.prepare("UPDATE jobs SET status = 'done' WHERE id = ?").run(j.id);
+  const { events } = await import('../src/bus.ts');
+  events.emit('job', { id: j.id }); // lets the pending drain waits end
+  assert.equal(getJob(j.id)!.status, 'done');
 });
 
 test('while draining nothing new starts; a job still running at the cap is marked for a planned pick-up', async () => {
