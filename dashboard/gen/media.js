@@ -205,8 +205,11 @@ const assetLite = (a) => ({ id: a.id, kind: a.kind, title: a.title ?? a.recipe?.
  * The detail drawer: a bigger look at one library file with the words that made it, what made it and when, and
  * Use in timeline (Esc or the backdrop closes it).
  */
+let drawerOpener = null;
 export function openDrawer(a) {
   closeDrawer();
+  // Escape (or Close) hands focus back to whatever opened the drawer: the tile or its Details button.
+  drawerOpener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
   const prompt = a.recipe?.params?.prompt ?? a.recipe?.params?.text ?? '';
   const url = fileUrl(a.id, a.sha256);
   const big = a.kind === 'image' ? h('img', { src: url, alt: a.title || prompt || 'Image' })
@@ -234,7 +237,14 @@ export function openDrawer(a) {
   drawer.tabIndex = -1;
   drawer.focus();
 }
-export function closeDrawer() { document.getElementById('mediaDrawer')?.remove(); }
+export function closeDrawer() {
+  const open = document.getElementById('mediaDrawer');
+  if (!open) return;
+  const back = drawerOpener;
+  drawerOpener = null;
+  open.remove();
+  if (back?.isConnected) back.focus({ preventScroll: true });
+}
 
 export async function openAsset(a) {
   const lite = a.id && a.kind ? { ...assetLite(a), tool: a.tool, recipe: a.recipe ?? null } : a;
