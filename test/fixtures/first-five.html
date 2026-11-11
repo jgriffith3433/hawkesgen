@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Fixture game</title>
+<style>body{margin:0;font:18px sans-serif;background:#111;color:#eee}.screen{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#111}.screen.on{display:flex}button{font-size:20px;padding:12px 28px}canvas{position:fixed;inset:0;width:100%;height:100%}#hud{position:fixed;top:8px;left:8px}#dbg{position:fixed;bottom:8px;right:8px}</style></head>
+<body>
+<div class="screen on" id="terms"><h1>Before you play</h1><p>Please read our Terms of Service and Privacy Policy.</p>
+<label><input type="checkbox" id="agree"> I agree to the terms</label><button id="accept">Accept</button></div>
+<div class="screen" id="menu"><h1>Fixture Run</h1><button id="play">Play</button></div>
+<canvas id="c" width="320" height="180" style="display:none"></canvas>
+<div id="hud" style="display:none"><div>Press Space to jump</div><div id="score">Score 0</div></div>
+<button id="dbg" style="display:none">Debug panel</button>
+<script>
+const $=(i)=>document.getElementById(i); let score=0,y=0;
+$('accept').onclick=()=>{ if(!$('agree').checked) return; $('terms').classList.remove('on'); $('menu').classList.add('on'); };
+$('play').onclick=()=>{ $('menu').classList.remove('on'); $('c').style.display='block'; $('hud').style.display='block'; $('dbg').style.display='block'; loop(); };
+addEventListener('keydown',e=>{ if(e.code==='Space'){ y=60; score+=10; $('score').textContent='Score '+score; } });
+function loop(){ const g=$('c').getContext('2d'); g.fillStyle='#234'; g.fillRect(0,0,320,180); g.fillStyle='#fc0'; g.fillRect(40,120-y,30,30); y=Math.max(0,y-2); requestAnimationFrame(loop); }
+</script></body></html>

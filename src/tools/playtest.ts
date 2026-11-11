@@ -33,6 +33,7 @@ import { startLiveShots, endLiveShots } from './liveShots.ts';
 import { beginLive } from './livePlay.ts';
 import { FeelLog, PUSH_BINDING, cutFeelClips, pickPolishFrames, polishScan, feelBrief } from './playtest-feel.ts';
 import { pickMotionWindows, motionMarks, motionStrips, motionLegend, videoFreezes, MOTION_FPS } from './playtest-motion.ts';
+import { playFirstFive } from './firstfive.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
@@ -68,7 +69,7 @@ const FPS_SCRIPT = `(() => {
 
 export const playtestRunTool: Tool = {
   id: 'playtest.run',
-  version: 3,
+  version: 4,
   title: 'Playtest a game in the browser',
   description:
     'Opens a game or site in Chromium and plays it: through the Hawkes playtest contract (window.hawkesPlaytest: the game\'s ' +
@@ -86,7 +87,10 @@ export const playtestRunTool: Tool = {
     target: { type: 'enum', values: [...PLAYTEST_TARGETS], default: 'web', description: 'What the build is: web (a page, played in Chromium), electron (an Electron app), linux (a native Linux build), proton (a Windows .exe under Proton) or windows (a Windows .exe on Windows). Desktop targets play on native runners (settings.playtest.runners).' },
     exe: { type: 'string', description: 'Inside the build: the executable to launch (desktop targets; default: the runner finds the one executable) or the page to open (web; default index.html)', example: 'MyGame.exe' },
     args: { type: 'json', description: 'Command-line arguments for a desktop build: a list of strings (at most 32)', advanced: true, example: ['-screen-fullscreen', '0'] },
-    scenario: { type: 'string', default: 'smoke', description: 'The contract scenario to play (the game lists them)' },
+    scenario: { type: 'string', default: 'smoke', description: 'The contract scenario to play (the game lists them). "first-five" is built in and needs no contract: a cold player\'s first five minutes in any web game, played from what is on screen (terms, sign-in, menus, then the game); it reports milestones, taps, walls with the seconds they cost, developer panels and ftue.wordsMinuteOne.' },
+    fresh: { type: 'boolean', default: false, description: 'first-five: open the page cold (no cookies, globals, storage or hints; a scenario that is first-five always does)', advanced: true },
+    milestones: { type: 'boolean', default: true, description: 'first-five: report milestone events (gameplay, first-input-accepted, first-success, tutorial-step:<x>)', advanced: true },
+    seconds: { type: 'integer', default: 300, min: 30, max: 900, description: 'first-five: how long to play', advanced: true },
     mode: { type: 'enum', values: ['auto', 'contract', 'generic', 'site'], default: 'auto', description: 'auto: the contract if the page has it, else the generic smoke test' },
     seed: { type: 'integer', default: 1, min: 0, max: 2147483647 },
     speed: { type: 'number', default: 1, min: 0.25, max: 16, description: 'Asks the game to run faster (if it supports it)' },
@@ -293,6 +297,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
     let t0 = Date.now();
     const T = () => Math.round((Date.now() - t0) / 100) / 10;
     let report: any = null;
+    let firstFive: { devShots: { event: number; shot: number }[] } | null = null;
     let outcome = 'done';
     let contract = false;
     let scenarios: any[] = [];
@@ -357,6 +362,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
 
       // The video: a screencast (every frame, 30 fps) where it can, else Playwright's recordVideo, which has to be
       // asked for when the tab opens: a screencast that won't start reopens the tab with it.
+      const coldStart = p.scenario === 'first-five' || p.fresh === true;
       const openTab = async (video: boolean) => {
         context = await within(browser.newContext({
           ...(p.mobile ? { ...devices['iPhone 13'], deviceScaleFactor: 2 } : {}),
@@ -367,9 +373,9 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         }), 30_000, 'opening a browser tab');
         if (host?.prepareContext) await within(host.prepareContext(context), 15_000, 'preparing the tab');
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
-        const pageGlobals = globalsScript(p.globals);
+        const pageGlobals = coldStart ? null : globalsScript(p.globals);
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
-        const jar = pageCookies(p.cookies);
+        const jar = coldStart ? [] : pageCookies(p.cookies);
         if (jar.length) await within(context.addCookies(jar), 15_000, 'preparing the tab');
         // The game pushes feel flags here the moment they happen (no polling); each worth it gets a screenshot.
         await within(context.exposeBinding(PUSH_BINDING, (_src: any, msg: any) => {
@@ -439,7 +445,14 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         if (resp && resp.status() >= 400) problems.push({ severity: 'bug', message: `the page answered HTTP ${resp.status()}`, source: 'browser' });
         await shot('loaded');
 
-        if (p.mode === 'site') {
+        if (p.scenario === 'first-five' && p.mode !== 'site') {
+          // A cold player's first five minutes: no contract, no hints, only what is on screen.
+          const idx = async (reason: string) => { const n = shots.length; await shot(reason); return shots.length > n ? n : -1; };
+          const ff = await playFirstFive({ seconds: p.seconds ?? 300, mobile: Boolean(p.mobile), milestones: p.milestones !== false, T, killed: () => killed, shot: idx, ctx, ev, page });
+          report = { outcome: ff.outcome, events: ff.events, metrics: ff.metrics, log: ff.log, problems: [] };
+          firstFive = { devShots: ff.devShots };
+          outcome = ff.outcome;
+        } else if (p.mode === 'site') {
           pages = await crawl(page, target, p.maxPages, ctx, shot, problems, () => killed);
           outcome = 'done';
         } else {
@@ -617,7 +630,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
 
       liveOutcome = outcome;
       const result: any = {
-        url: p.url, target: _target, build: buildSource(p.build), mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract ? p.scenario : null, outcome,
+        url: p.url, target: _target, build: buildSource(p.build), mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract || firstFive ? p.scenario : null, outcome,
         stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
         seconds: T(), loadSeconds, fps, renderer, software, softwareBecause, contract, scenarios,
         metrics: report?.metrics ?? {}, events: report?.events ?? [], log: report?.log ?? [],
@@ -687,6 +700,11 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       for (const [i, s] of shots.entries()) {
         await ctx.emit({ data: fs.readFileSync(s.file), ext: '.jpg', mime: 'image/jpeg', title: `${s.t}s ${s.reason}${s.scene ? ` — ${s.scene}` : ''}`, meta: { playtest: 'shot', t: s.t, reason: s.reason, scene: s.scene ?? null } });
         result.shots[i].asset = lastAsset();
+      }
+      // First five: a developer panel's event names the screenshot asset that shows it.
+      for (const d of firstFive?.devShots ?? []) {
+        const ev0 = result.events[d.event];
+        try { ev0.detail = JSON.stringify({ ...JSON.parse(ev0.detail), shot: result.shots[d.shot]?.asset ?? null }); } catch { /* keep */ }
       }
 
       // The feel layer: a screenshot and a short clip for the worst flags, then the cheap vision pass.
