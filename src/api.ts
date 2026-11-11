@@ -522,6 +522,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       // admin key (anyone else gets the cached answer, so it can't be used to skip the cache). Not an HTTP cache: no headers.
       let deep = false;
       if (q('deep') === '1') { try { const c = authenticateRequest(req); deep = !!c && c.role !== 'user'; } catch { /* not signed in: cached answer */ } }
+      // This instance answering its lane's health: Hawkes Studio hears that the lane runs this deploy (studioannounce.ts).
+      void import('./studioannounce.ts').then((m) => m.announceDeployed()).catch(() => {});
       return send(res, 200, deep ? healthBody(true) : cachedHealth());
     }
 
