@@ -69,3 +69,47 @@ test('checkPlan reads only (GETs) and says what --apply would change', async () 
   assert.match(lines.join('\n'), /template t1: would PATCH \(image now old, wanted new\)/);
   assert.match(lines.join('\n'), /endpoint e1 \(x\): would PATCH/);
 });
+
+// J, 2026-11-11: no warm idle RunPod workers. 08:36 UTC that day the GPU and 3D endpoints kept idle workers 600 s and 900 s.
+test('every endpoint body keeps no warm worker and none idle past IDLE_SECONDS, whatever idle it is given', () => {
+  assert.equal(lib.IDLE_SECONDS, 60);
+  const gpu = { pools: ['AMPERE_16'], excludedTypes: [], count: 1 };
+  for (const idle of [undefined, 0, 5, 30, 60, 300, 600, 900, 3600]) {
+    const w = lib.lbEndpoint({ name: 'x', gpu, max: 3, idle, perWorker: 1, timeoutMs: 1 }).workers;
+    assert.equal(w.min, 0);
+    assert.equal(w.max, 3);
+    assert.ok(w.idleTimeout >= 5 && w.idleTimeout <= lib.IDLE_SECONDS, `idle ${idle} -> ${w.idleTimeout}`);
+  }
+  assert.equal(lib.lbEndpoint({ name: 'x', gpu, max: 1, idle: 900, perWorker: 1, timeoutMs: 1 }).workers.idleTimeout, 60);
+  assert.equal(lib.lbEndpoint({ name: 'x', gpu, max: 1, idle: 30, perWorker: 1, timeoutMs: 1 }).workers.idleTimeout, 30);
+});
+
+test('an endpoint wastes idle time when it keeps a warm worker or idles past IDLE_SECONDS', () => {
+  assert.equal(lib.wastesIdle({ workers: { min: 0, max: 3, idleTimeout: 600 } }), true);
+  assert.equal(lib.wastesIdle({ workers: { min: 0, max: 1, idleTimeout: 900 } }), true);
+  assert.equal(lib.wastesIdle({ workers: { min: 1, max: 2, idleTimeout: 60 } }), true);
+  assert.equal(lib.wastesIdle({ workers: { min: 0, max: 4, idleTimeout: 60 } }), false);
+  assert.equal(lib.wastesIdle({ workers: { min: 0, max: 0, idleTimeout: 5 } }), false);
+  assert.deepEqual(lib.idleWorkers(3), { min: 0, max: 3, idleTimeout: 60 });
+});
+
+test('the RunPod setup scripts make every endpoint with the idle rule (no script keeps its own longer idle)', async () => {
+  const fs = await import('node:fs');
+  const files = ['../tools/gpu-providers/runpod.mjs', '../tools/gpu-providers/runpod-unity.mjs', '../tools/playtest-runpod/setup.mjs', '../tools/play-native/setup.mjs', '../tools/playtest-runpod/capacity.mjs'];
+  for (const f of files) {
+    const src = fs.readFileSync(new URL(f, import.meta.url), 'utf8');
+    // An idle above 60 s written into a script (a literal like idle: 900 or a 300 s default) is the waste this rule ended.
+    assert.doesNotMatch(src, /idle:\s*(?:6[1-9]|[7-9]\d|\d{3,})\b/, f);
+    assert.doesNotMatch(src, /arg\('idle',\s*'(?:6[1-9]|[7-9]\d|\d{3,})'\)/, f);
+    assert.doesNotMatch(src, /Math\.min\((?:6[1-9]|[7-9]\d|\d{3,}), Number\(arg\('idle'/, f);
+  }
+});
+
+test('every image update also puts the whole account on the idle rule, before it looks at the image', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../tools/gpu-providers/runpod.mjs', import.meta.url), 'utf8');
+  const upd = src.slice(src.indexOf('if (update) {'));
+  const sweep = upd.indexOf('await idleSweep(api)');
+  assert.ok(sweep > 0, '--update runs the idle sweep');
+  assert.ok(sweep < upd.indexOf("Already on this image"), 'the sweep runs even when the image is already on the endpoint');
+});

@@ -18,6 +18,9 @@ import { isDown } from '../gpu/health.ts';
 import { endpointIdOf, runpodEndpointMax, setRunpodEndpointMax, MAX_WORKERS } from './runpodcap.ts';
 import { playtestVariantsFor, providerHealthKey, providerOfVariant } from './cloudrun.ts';
 
+/** The most a RunPod worker stays up with no request open (tools/gpu-providers/runpod-v2.mjs IDLE_SECONDS; J, 2026-11-11: no warm idle pods). */
+export const RUNPOD_IDLE_SECONDS = 60;
+
 const API = 'https://api.runpod.io/v2';
 export const AWS_REASON = 'AWS is suspended (since 2026-10-28): no EC2 playtesters until the account is back';
 
@@ -207,7 +210,8 @@ export async function setPlaytestCapacity(body: any, settings: Pick<Settings, 'p
     let clamped: string | null = workers < wanted
       ? `RunPod's worker quota is ${acct.quota} across the account and its other endpoints have ${acct.others}: this endpoint may have ${acct.maxWorkers} (${acct.maxWorkers * perWorker} browsers)`
       : null;
-    const patchWorkers = (max: number) => rp('PATCH', `/serverless/${acct.endpoint}`, key, fetcher, { workers: { min: acct.min, max, idleTimeout: acct.idleTimeout } });
+    // None warm and none idle past RUNPOD_IDLE_SECONDS (tools/gpu-providers/runpod-v2.mjs IDLE_SECONDS), whatever the endpoint had.
+    const patchWorkers = (max: number) => rp('PATCH', `/serverless/${acct.endpoint}`, key, fetcher, { workers: { min: 0, max, idleTimeout: Math.min(RUNPOD_IDLE_SECONDS, acct.idleTimeout) } });
     if (workers !== acct.workers) {
       try {
         await patchWorkers(workers);

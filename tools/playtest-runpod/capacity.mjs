@@ -12,7 +12,7 @@
 // itself: RunPod bills a worker per second only while it runs, and workers min stays 0, so more workers play the same
 // queue sooner for about the same money (each extra worker adds at most its cold start and its idle tail).
 import { APPLY, arg, secret, say, header } from '../gpu-providers/lib.mjs';
-import { runpod } from '../gpu-providers/runpod-v2.mjs';
+import { runpod, idleWorkers, wastesIdle } from '../gpu-providers/runpod-v2.mjs';
 
 /** The most this script will set: a mistake can't scale the endpoint past it. */
 export const CEILING = 10;
@@ -28,8 +28,9 @@ const before = await api.req('GET', `/serverless/${id}`);
 const w = before.workers ?? {};
 header(`RunPod endpoint ${id} (${before.name ?? '?'})`);
 say(`now: workers ${w.min ?? '?'}..${w.max ?? '?'}, idle ${w.idleTimeout ?? '?'} s; GPU pools ${(before.gpu?.pools ?? []).join(', ') || '?'}`);
-if (w.max === max) { say(`workers.max is already ${max}: nothing to do`); process.exit(0); }
-const body = { workers: { min: w.min ?? 0, max, idleTimeout: w.idleTimeout ?? 60 } };
+// The idle rule comes along (runpod-v2.mjs IDLE_SECONDS): min 0, idle at most 60 s, whatever the endpoint had.
+if (w.max === max && !wastesIdle(before)) { say(`workers.max is already ${max}: nothing to do`); process.exit(0); }
+const body = { workers: idleWorkers(max, w.idleTimeout ?? 60) };
 say(`${APPLY ? 'setting' : 'would set'} workers.max ${w.max ?? '?'} -> ${max} (${max * 2} playtest browsers with 2 per worker)`);
 if (!APPLY) { say('dry run: add --apply to change it'); process.exit(0); }
 await api.req('PATCH', `/serverless/${id}`, body);

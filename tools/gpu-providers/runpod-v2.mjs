@@ -18,6 +18,22 @@
 
 export const API = 'https://api.runpod.io/v2';
 
+/**
+ * How long a RunPod worker with no request open stays up, for every one of Gen's endpoints, and that none is kept warm
+ * (min workers 0). J, 2026-11-11: "Make sure runpod isn't wasted on builds and playtests if at all possible", "No warm
+ * idle pods". A worker bills until this runs out, so 60 s is the most an idle one costs. A long run is never cut by it:
+ * Gen holds a request open for the whole run and asks again the moment RunPod ends one (src/providers/cloudrun/run.ts
+ * reattach), so the worker always has a request open while it works. 2026-11-11 08:36 UTC the GPU and 3D endpoints
+ * had idle timeouts of 600 s and 900 s from their console setup, and idle workers sat on them.
+ */
+export const IDLE_SECONDS = 60;
+
+/** An endpoint's workers as Gen keeps them: none warm, each gone IDLE_SECONDS after its last request. `idle` only lowers it. */
+export const idleWorkers = (max, idle = IDLE_SECONDS) => ({ min: 0, max, idleTimeout: Math.max(5, Math.min(IDLE_SECONDS, Number(idle) || IDLE_SECONDS)) });
+
+/** Whether an endpoint keeps warm workers or idle ones longer than IDLE_SECONDS (what --idle fixes). */
+export const wastesIdle = (ep) => Number(ep?.workers?.min ?? 0) > 0 || Number(ep?.workers?.idleTimeout ?? 0) > IDLE_SECONDS;
+
 /** The serverless GPU pools (docs.runpod.io/references/gpu-types) and RunPod's flex prices per worker hour, 2026-10-29. */
 export const POOL_PRICES = { AMPERE_16: 0.58, AMPERE_24: 0.69, ADA_24: 1.10, AMPERE_48: 1.22, ADA_48_PRO: 1.75, AMPERE_80: 2.72, ADA_80_PRO: 4.79 };
 export const POOL_GPUS = { AMPERE_16: 'RTX A4000 class (16 GB)', AMPERE_24: 'L4 / A5000 class (24 GB)', ADA_24: 'RTX 4090 (24 GB)', AMPERE_48: 'A6000 / A40 (48 GB)', ADA_48_PRO: 'L40S class (48 GB)', AMPERE_80: 'A100 (80 GB)', ADA_80_PRO: 'H100 (80 GB)' };
@@ -81,7 +97,7 @@ export const envObject = (pairs) => Object.fromEntries(pairs.filter(([, v]) => v
 export function lbEndpoint({ name, templateId, gpu, max, idle, perWorker, timeoutMs }) {
   return {
     name, type: 'LOAD_BALANCER', ...(templateId ? { templateId } : {}), gpu,
-    workers: { min: 0, max, idleTimeout: idle }, scaling: { type: 'REQUEST_COUNT', requestCount: perWorker }, timeout: timeoutMs,
+    workers: idleWorkers(max, idle), scaling: { type: 'REQUEST_COUNT', requestCount: perWorker }, timeout: timeoutMs,
   };
 }
 

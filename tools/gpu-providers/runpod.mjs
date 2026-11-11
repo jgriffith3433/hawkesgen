@@ -18,10 +18,34 @@
 // All calls go to RunPod's API v2 (runpod-v2.mjs): REST v1 is retired on 2026-11-15 and GraphQL early 2027.
 // With --endpoint <id> it prints the settings entry for that endpoint.
 import { APPLY, arg, secret, workerImage, say, header, redact, printEntry, print3dEntry, KIND, IMAGE_3D } from './lib.mjs';
-import { runpod, upsertTemplate, findEndpoint, lbEndpoint, readCatalog, gpuFor } from './runpod-v2.mjs';
+import { runpod, upsertTemplate, findEndpoint, lbEndpoint, readCatalog, gpuFor, IDLE_SECONDS, idleWorkers, wastesIdle } from './runpod-v2.mjs';
 
 // --kind unity-render: the render farm's endpoint (runpod-unity.mjs, docs/unity-render.md).
 if (KIND === 'unity-render') { await import('./runpod-unity.mjs'); process.exit(0); }
+
+// The idle rule (runpod-v2.mjs IDLE_SECONDS) on every endpoint of the account: min workers 0, idle timeout at most
+// IDLE_SECONDS; max workers stay. Prints what it would change; changes it with --apply. --idle runs only this; --update
+// runs it first too, so every image update (ops-runpod-image.yml) also puts the whole account back on the rule, including
+// an endpoint someone set up or changed in the console.
+async function idleSweep(api) {
+  const eps = await api.list('/serverless', 'endpoints');
+  let n = 0;
+  for (const ep of eps) {
+    const w = ep.workers ?? {};
+    if (!wastesIdle(ep)) { say(`${ep.name} (${ep.id}): min ${w.min ?? 0}, idle ${w.idleTimeout ?? '?'} s: fine`); continue; }
+    n++;
+    const workers = idleWorkers(Number(w.max ?? 0));
+    say(`${ep.name} (${ep.id}): min ${w.min ?? 0}, idle ${w.idleTimeout ?? '?'} s -> min 0, idle ${workers.idleTimeout} s (max ${workers.max})`);
+    if (APPLY) await api.req('PATCH', `/serverless/${ep.id}`, { workers });
+  }
+  say(n ? (APPLY ? `idle rule: changed ${n} endpoint(s)` : `(dry run: --apply changes ${n} endpoint(s))`) : 'idle rule: every endpoint already keeps no warm or long-idle workers');
+}
+if (process.argv.includes('--idle')) {
+  const idleKey = secret('RUNPOD_API_KEY');
+  if (!idleKey) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env'); process.exit(1); }
+  await idleSweep(runpod(idleKey));
+  process.exit(0);
+}
 
 // --kind 3d: the 3D worker (server/gpu3d): Blender, the rig, motion and mocap venvs; weights on a network volume.
 const is3d = KIND === '3d';
@@ -44,6 +68,8 @@ const update = arg('update');
 if (update) {
   if (!key) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env'); process.exit(1); }
   const api = runpod(key);
+  header('Idle rule, every endpoint');
+  await idleSweep(api);
   const ep = await api.req('GET', `/serverless/${update}`);
   header(`Endpoint ${ep.name} (${ep.id})`);
   say(`image: ${ep.image ?? '(from its template)'}
@@ -58,7 +84,8 @@ if (update) {
   };
   if (ep.image === image) { say('Already on this image.'); await recycle(); process.exit(0); }
   if (!APPLY) { say('(dry run: --apply saves it)'); await recycle(); process.exit(0); }
-  const saved = await api.req('PATCH', `/serverless/${update}`, { image });
+  // The idle rule comes along (runpod-v2.mjs IDLE_SECONDS): an endpoint made in the console kept warm or long-idle workers.
+  const saved = await api.req('PATCH', `/serverless/${update}`, { image, ...(wastesIdle(ep) ? { workers: idleWorkers(Number(ep.workers?.max ?? 0)) } : {}) });
   say(`saved: endpoint ${saved.id ?? update} now runs ${saved.image ?? image}; new workers start on it`);
   await recycle();
   process.exit(0);
@@ -93,7 +120,7 @@ if (APPLY && is3d) {
   const gpu3d = gpuFor(['NVIDIA L40S', 'NVIDIA L40', 'NVIDIA RTX 6000 Ada Generation', 'NVIDIA RTX A6000', 'NVIDIA A40'], { pools: ['ADA_48_PRO', 'AMPERE_48'], catalog });
   say(`excluded in those pools: ${gpu3d.excludedTypes.join(', ') || 'none'}`);
   const body = {
-    ...lbEndpoint({ name, templateId: t.id, gpu: gpu3d, max, idle: 900, perWorker: 1, timeoutMs: 3_600_000 }),
+    ...lbEndpoint({ name, templateId: t.id, gpu: gpu3d, max, idle: IDLE_SECONDS, perWorker: 1, timeoutMs: 3_600_000 }),
     ...(volume ? { networkVolumes: [volume] } : {}),
   };
   const old = await findEndpoint(api, name);
@@ -113,9 +140,9 @@ if (APPLY) {
 
 header('Then the endpoint, in the RunPod console (Serverless > New Endpoint)');
 say(`1. Import from template: ${templateId ?? name}. Endpoint type: Load balancer.`);
-say(`2. GPU: ${gpu} (48 GB, like the fleet's L40S). Max workers ${max}, active (min) workers 0, idle timeout 600 s, FlashBoot on.`);
+say(`2. GPU: ${gpu} (48 GB, like the fleet's L40S). Max workers ${max}, active (min) workers 0, idle timeout ${IDLE_SECONDS} s, FlashBoot on.`);
 if (is3d) {
-  say('3. Health check path: /ping (the 3D worker answers 200 at once: it has no ComfyUI to wait for). Port 8080 exposed. Idle timeout 900 s: a long job keeps going after its request ends (Gen follows its heartbeat).');
+  say('3. Health check path: /ping (the 3D worker answers 200 at once: it has no ComfyUI to wait for). Port 8080 exposed. Idle timeout ${IDLE_SECONDS} s: Gen keeps a request open for the whole job and asks again when RunPod ends one, so a long job is never cut by it.');
   say('4. A network volume (about 150 GB, same region as the GPUs) attached to the endpoint: RunPod mounts it at /runpod-volume and the worker keeps every 3D weight there (rig ~5 GB, Kimodo + Llama 3 8B ~20 GB, HY-Motion ~20 GB, GEM-X ~4 GB), so only the first job ever downloads them.');
   if (!workerToken) say('   GPU_WORKER_TOKEN is not set in hawkesgen/.env: set it first. The 3D worker refuses hawkes_job scripts without a worker token.');
 } else {
