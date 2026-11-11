@@ -10,6 +10,7 @@
 import crypto from 'node:crypto';
 import { registerKind, listScenes, createScene, getScene, saveScene, deleteScene, sceneRef, type Scene, type Render } from './scenes.ts';
 import { GenError } from './util.ts';
+import { titleDoc } from './titles.ts';
 import { getJob } from './jobs.ts';
 import { getTool, TOOLS } from './tools/index.ts';
 import { toolMap, toolCraft, notes } from './knowledge.ts';
@@ -165,6 +166,7 @@ const OPS_DOC = `Edits (each an object in "ops"). Tracks are named by id (see "t
 - {"op":"set","id":"c_...","volume":0-4,"speed":0.25-4,"muted":bool,"fadeIn":s,"fadeOut":s,"transition":"cut"|"crossfade"|"fadeblack"|"fadewhite"|"slideleft"|"push","transitionSeconds":s,"zoom":{"from":1,"to":1.3,"x":0.5,"y":0.4},"text":"...","x":..,"y":..,"w":..,"rotation":deg,"opacity":0-1,"blend":"normal"|"multiply"|"screen"|"overlay"|"lighten"|"darken"|"soft-light"|"difference","color":"#rrggbb","size":share of frame height,"weight":100-900,"font":"..."}
 - {"op":"transition","id":"c_...","type":"crossfade"|"fadeblack"|"fadewhite"|"slideleft"|"push","seconds":0.2-2} add or change the join into the next clip on a video/main track (clips must meet); {"op":"transition","id":"c_...","type":null} removes it
 - {"op":"text","text":"...","start":s,"end":s,"track":"<id>","x":..,"y":..,"size":..,"color":"..","align":"left"|"center"|"right"}  words on screen. Their x is their center, or their left edge when align is "left" (right edge when "right"); keep them inside the frame (a size of about 0.06 to 0.14 of its height for titles)
+- {"op":"title","preset":"big-title"|"lower-third"|"caption-bar"|"kinetic"|"end-card"|"corner-label","text":"...","text2":"...","start":s,"end":s,"track":"<id>","color":"#rrggbb","accent":"#rrggbb","font":"...","animIn":s,"animOut":s}  a styled, animated title that animates in and out by itself, stays inside the safe area and sizes itself for a tall 9:16 frame. Prefer it to "text" whenever the person asks for a title, a name or role, a caption bar, an end card or a label. Pick the preset by meaning: ${titleDoc()}. text is the main line, text2 the second one (role, subtitle, credit); leave size, x and y out. Change one later with {"op":"set","id":"c_...","title":"<preset>"|null,"text":..,"text2":..,"color":..} (title null makes it plain words again)
 - {"op":"track","add":{"name":"...","role":"any"|"video"|"audio"|"text","at":index}} | {"op":"track","id":"<id>","set":{"name":..,"hidden":bool,"locked":bool,"mute":bool,"solo":bool,"volume":0-2,"pan":-1..1}} | {"op":"track","remove":"<id>"}
 - {"op":"settings","width":w,"height":h,"fps":n,"title":"...","fit":"crop"|"pad","background":"#rrggbb","length":s,"bpm":n}  (fit: clips of another shape fill the frame, cropped, or fit inside it with bars)`;
 
@@ -207,7 +209,7 @@ export function contextFor(doc: Doc, selection: Selection, library: { id: string
   const clips = doc.clips.map((c) => ({
     id: c.id, track: c.track, kind: c.kind, start: r3(c.start), length: r3(clipLength(c)), in: c.in, out: c.out,
     ...(c.duration ? { sourceLength: c.duration } : {}), ...(c.asset ? { asset: c.asset } : {}), ...(c.pending ? { pending: true } : {}),
-    ...(c.failed ? { failed: c.failed } : {}), ...(c.label ? { label: c.label } : {}), ...(c.text ? { text: c.text } : {}),
+    ...(c.failed ? { failed: c.failed } : {}), ...(c.label ? { label: c.label } : {}), ...(c.text ? { text: c.text } : {}), ...(c.title ? { title: c.title, ...(c.text2 ? { text2: c.text2 } : {}) } : {}),
     ...(c.speed ? { speed: c.speed } : {}), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted ? { muted: true } : {}),
     ...(c.transition ? { transition: c.transition } : {}), ...(c.scene ? { scene: c.scene } : {}),
     ...(c.fadeIn ? { fadeIn: c.fadeIn } : {}), ...(c.fadeOut ? { fadeOut: c.fadeOut } : {}), ...(c.color ? { color: c.color } : {}),

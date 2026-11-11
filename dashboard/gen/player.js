@@ -12,6 +12,7 @@ import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, has
 import { keep, nearest, warm, onFrames, setBusy } from './frames.js';
 import { clampTransitionSeconds, precomputeTransition, sampleAt } from './transitions.js';
 import { dialogueSpans, duckFactorAt, shouldDuckClip, DUCK_TO } from './audio-mix.js';
+import { drawTitle, titleBox } from './titles.js';
 
 const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, lead: null, drawn: false, keepSince: 0 };
 // Playback smoothness (J, 2026-11-01: "make the buffering of the videos a little better so we don't see hitching during
@@ -605,6 +606,7 @@ export function boxOf(c, ctx = g) {
   const W = P.doc.width, H = P.doc.height;
   const cx = (c.x ?? 0.5) * W, cy = (c.y ?? 0.5) * H;
   if (c.kind === 'fill') return c.w == null ? { x: W / 2, y: H / 2, w: W, h: H } : { x: cx, y: cy, w: c.w * W, h: c.w * W * (H / W) };
+  if (c.kind === 'text' && c.title) { const b = titleBox(ctx, c, W, H); if (b) return b; }
   if (c.kind === 'text') { const t = textFit(c, ctx); return { x: t.x, y: t.y, w: t.w, h: t.h }; }
   const src = sourceOf(c, true) ?? (c.kind === 'image' && c.asset && IMGS.get(c.asset)?.naturalWidth ? { w: IMGS.get(c.asset).naturalWidth, h: IMGS.get(c.asset).naturalHeight } : null);
   const nw = src?.w ?? W, nh = src?.h ?? H;
@@ -774,6 +776,7 @@ function drawClip(ctx, c, t, live, alpha) {
     ctx.restore();
     return;
   }
+  if (c.kind === 'text' && c.title && drawTitle(ctx, c, P.kind === 'image' ? c.start + clipLength(c) / 2 : t, W, H)) { ctx.restore(); return; }
   if (c.kind === 'text') {
     const t = textFit(c, ctx);
     ctx.translate(t.x, t.y); ctx.rotate(((c.rotation ?? 0) * Math.PI) / 180);

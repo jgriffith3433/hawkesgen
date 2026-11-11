@@ -281,6 +281,15 @@ portal and Studio use Gen in the back end with their own keys.
       track's waveform scrolling past the playhead, the spectrum while it plays, and the words being said (text clips,
       voice lines' labels). The selected visual clip has handles on the canvas (move, size from a corner, turn from the
       top; snaps to the middle and to 15°).
+    - **Titles** (J: "a Titles section to the editor's Create panel"; `dashboard/gen/titles.js`, `src/titles.ts`, `test/titles.test.ts`): six
+      animated presets (big title, lower third, caption bar, kinetic words, end card, corner label), each a **text clip
+      with `title`** (`text2` the second line, `accent`, `animIn`, `animOut`). One file holds the layout, safe area
+      (5%; a tall frame also keeps the bottom 12% clear), auto-scale (`titleUnit`: height, but at most 3/4 of the
+      width) and in/out maths, and `player.js draw` runs it, so the preview and the browser-recorded export are the same
+      pixels (a cut with a title is never `composable()`). Create > Titles has animated preview cards (`.title-card`);
+      the Inspector edits words, second line, preset, color, accent, size, in/out seconds, font and weight. The AI
+      editor has a `title` op (`src/editor.ts` OPS_DOC) and `set` takes `title`/`text2`/`accent`/`animIn`/`animOut`.
+      `src/titles.ts` mirrors the preset ids and defaults (a test keeps them in step). Playtest scenario `titles`.
     - **Exports** become the scene's render: a video scene's is `video.compose` when the cut is plain (pictures and
       clips only on the magnetic track, fitting the frame; text as captions; sound anywhere), else the timeline plays
       once in the browser and records (canvas + mix, `recordTimeline`, webm converted by Gen); an image scene's is the

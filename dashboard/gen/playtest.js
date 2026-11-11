@@ -30,11 +30,14 @@
 //            by the transition length (same moment as the preview)
 //   audio-mix music + voice on the timeline: waveforms drawn, fade handle dragged, auto-duck ~10 dB under the line
 //            (preview maths + offline mixdown loudness); no GPU
+//   titles   Create > Titles: six animated presets whose previews move; a lower third added by a tap animates in and out
+//            and keeps its ink off the frame's edge at 16:9 and 9:16 (measured on the drawn pixels), a long name wraps
+//            inside the safe area, and the exported video shows the same title as the preview (ink overlap at one moment)
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state, loadMe } from './account.js';
 import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
 import { snapStats } from './timeline.js';
-import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, mixdown, clipGain, duckAt } from './player.js';
+import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, mixdown, clipGain, duckAt, frameAt } from './player.js';
 import { activeScene, newScene, sceneList, loadList } from './scenes.js';
 import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
@@ -193,6 +196,7 @@ installPlaytest({
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
     { id: 'audio-mix', title: 'Audio mix: waveforms on clips, fade-in handle, auto-duck ~10 dB under a voice line in preview and mixdown', seconds: 150 },
     { id: 'transitions', title: 'Clip transitions: add a crossfade at a join, resize and change type by touch, see the blend in the preview, export matches the join', seconds: 150, tags: ['mobile'] },
+    { id: 'titles', title: 'Titles: six animated presets in Create with moving previews; a lower third animates in and out inside the frame at 16:9 and 9:16, and the export shows it as the preview does', seconds: 200 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
@@ -1721,6 +1725,132 @@ installPlaytest({
       t.event('delete undo/redo');
       press('z', { ctrlKey: true });
       t.finish(snapped && overlay && gone && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'titles') {
+      t.scene('Titles');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest titles ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const jobs = watchJobs();
+      // 1 Create > Titles: at least six presets, each with a preview that moves.
+      document.querySelector('#paneTabs button[data-pane="generate"]')?.click();
+      await until(() => document.querySelectorAll('.title-card').length >= 6, 8000, 100);
+      const cards = [...document.querySelectorAll('.title-card')];
+      t.metric('titlePresets', cards.length);
+      t.event(`titles-section ${cards.length} presets`);
+      if (cards.length < 6) t.problem('bug', `the Titles section shows ${cards.length} presets, not 6`);
+      const moving = [];
+      for (const card of cards) {
+        const cv = card.querySelector('canvas');
+        const seen = new Set();
+        for (let i = 0; i < 6; i++) { seen.add(cv.toDataURL().length + ':' + cv.toDataURL().slice(-60)); await sleep(260); }
+        moving.push(seen.size > 1);
+        if (seen.size < 2) t.problem('bug', `the ${card.dataset.title} preview does not animate`);
+      }
+      t.metric('animatedPreviews', moving.filter(Boolean).length);
+      t.event(`previews-animate ${moving.filter(Boolean).length}/${cards.length}`);
+      // Setup shortcut (named): a solid color behind everything for 8 s, so the title's ink is whatever differs from it.
+      const BASE = [58, 110, 165];
+      addClip({ track: mainTrack()?.id, kind: 'fill', color: '#3a6ea5', start: 0, seconds: 8, history: false });
+      seek(0);
+      // 2 A tap on the lower third puts it on the timeline.
+      document.querySelector('.title-card[data-title="lower-third"]')?.click();
+      const clipOf = () => P.doc.clips.find((c) => c.title === 'lower-third');
+      if (!await until(clipOf, 3000, 50)) { t.problem('bug', 'tapping the lower third did not add a title clip'); t.finish('stuck'); return; }
+      const lt = clipOf();
+      setClip(lt.id, { start: 0 }, { history: false });
+      t.event('lower-third-added');
+      const ink = async (time) => {
+        const cv = await frameAt(time), W = cv.width, H = cv.height, d = cv.getContext('2d').getImageData(0, 0, W, H).data;
+        let x0 = W, y0 = H, x1 = -1, y1 = -1, n = 0;
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          if (Math.abs(d[i] - BASE[0]) + Math.abs(d[i + 1] - BASE[1]) + Math.abs(d[i + 2] - BASE[2]) > 30) { n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        }
+        return { n, x0, y0, x1, y1, W, H };
+      };
+      const run = async (label) => {
+        const L = clipOf().out - clipOf().in;
+        const times = [0.05, 0.2, 0.4, L / 2, L - 0.4, L - 0.2, L - 0.05];
+        const got = [];
+        for (const tt of times) got.push(await ink(tt));
+        const after = await ink(L + 0.3);
+        const rest = got[3], { W, H } = rest;
+        const edge = got.filter((g) => g.n).some((g) => g.x0 < 2 || g.y0 < 2 || g.x1 > g.W - 3 || g.y1 > g.H - 3);
+        const margin = 0.045, bottom = H > W ? 0.1 : 0.045;
+        const safe = rest.n > 0 && rest.x0 >= W * margin && rest.x1 <= W * (1 - margin) && rest.y0 >= H * margin && rest.y1 <= H * (1 - bottom);
+        const grows = got[0].n < got[1].n && got[1].n < got[3].n;
+        const leaves = got[6].n < got[3].n && got[4].n >= got[6].n && after.n === 0;
+        t.metric(`${label}Ink`, rest.n);
+        t.event(`${label}: in ${grows ? 'ok' : 'bad'} out ${leaves ? 'ok' : 'bad'} safe ${safe ? 'ok' : 'bad'} edge ${edge ? 'touched' : 'clear'} box ${rest.x0},${rest.y0}-${rest.x1},${rest.y1} of ${W}x${H}`);
+        if (!grows) t.problem('bug', `the lower third did not animate in at ${label} (ink ${got.map((g) => g.n).join(', ')})`);
+        if (!leaves) t.problem('bug', `the lower third did not animate out and clear at ${label} (ink ${got.map((g) => g.n).join(', ')}, after ${after.n})`);
+        if (edge) t.problem('bug', `the lower third touched the frame edge while animating at ${label}`);
+        if (!safe) t.problem('bug', `the lower third left the safe area at ${label}: ${rest.x0},${rest.y0}-${rest.x1},${rest.y1} of ${W}x${H}`);
+        return grows && leaves && safe && !edge;
+      };
+      const okWide = await run('wide16x9');
+      // Long words wrap inside the safe area.
+      const longName = 'Doctor Alexandra Rivera-Montgomery of the Northern Harbour Authority';
+      setClip(lt.id, { text: longName, text2: 'Chief harbour master and keeper of the western light' }, { history: false });
+      const okLong = await run('wideLongName');
+      setClip(lt.id, { text: 'Alex Rivera', text2: 'Director of photography' }, { history: false });
+      // 9:16: the Tall shape button in the scene's settings (nothing selected).
+      P.selection.clips.clear(); bus.emit('selection');
+      await until(() => document.querySelector('.shape[title^="Tall"]'), 4000, 100);
+      click('.shape[title^="Tall"]');
+      await until(() => P.doc.height > P.doc.width, 3000, 50);
+      t.metric('tallW', P.doc.width); t.metric('tallH', P.doc.height);
+      await sleep(300);
+      const okTall = await run('tall9x16');
+      setClip(lt.id, { text: longName, text2: 'Chief harbour master and keeper of the western light' }, { history: false });
+      const okTallLong = await run('tallLongName');
+      setClip(lt.id, { text: 'Alex Rivera', text2: 'Director of photography' }, { history: false });
+      // 3 Export: a title cut renders in the browser (the same draw as the preview); one moment is compared as ink masks.
+      const L = lt.out - lt.in, probe = L / 2;
+      const before = await ink(probe);
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      let match = false;
+      if (action) {
+        click('#sceneAction');
+        if (await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) {
+          const go = document.querySelector('#exportGo');
+          if (go && !go.disabled) {
+            go.click();
+            t.event('export-pressed');
+            const video = await until(() => document.querySelector('#exportResult video'), 150000, 300) && document.querySelector('#exportResult video');
+            if (video) {
+              await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+              video.pause(); video.currentTime = probe;
+              await new Promise((r) => { const to = setTimeout(r, 6000); video.addEventListener('seeked', () => { clearTimeout(to); r(); }, { once: true }); });
+              const W = before.W, H = before.H, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+              const g = cv.getContext('2d'); g.drawImage(video, 0, 0, W, H);
+              const d = g.getImageData(0, 0, W, H).data, p0 = g.getImageData(2, 2, 1, 1).data;
+              const prev = (await frameAt(probe)).getContext('2d').getImageData(0, 0, W, H).data, pb = [prev[0], prev[1], prev[2]];
+              let both = 0, either = 0;
+              for (let i = 0; i < W * H; i++) {
+                const j = i * 4;
+                const a = Math.abs(prev[j] - pb[0]) + Math.abs(prev[j + 1] - pb[1]) + Math.abs(prev[j + 2] - pb[2]) > 60;
+                const b = Math.abs(d[j] - p0[0]) + Math.abs(d[j + 1] - p0[1]) + Math.abs(d[j + 2] - p0[2]) > 60;
+                if (a && b) both++; if (a || b) either++;
+              }
+              const iou = either ? both / either : 0;
+              t.metric('exportInkOverlapPct', Math.round(iou * 100));
+              t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+              match = iou > 0.6;
+              t.event(match ? `export-matches-preview ${Math.round(iou * 100)}%` : `export-differs ${Math.round(iou * 100)}%`);
+              if (!match) t.problem('bug', `the exported title differs from the preview (overlap ${Math.round(iou * 100)}%)`);
+            } else t.problem('bug', 'export of a cut with a title gave no file');
+            click('#exportClose');
+          } else { t.note('Export video disabled'); click('#exportClose'); }
+        }
+      }
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('gpuJobsStarted', gpu.length);
+      if (gpu.length) t.problem('blocker', `titles started a GPU job: ${gpu.join(', ')}`);
+      t.finish(cards.length >= 6 && moving.every(Boolean) && okWide && okLong && okTall && okTallLong && match && !gpu.length ? 'done' : 'stuck');
       return;
     }
     if (id === 'transitions') {
