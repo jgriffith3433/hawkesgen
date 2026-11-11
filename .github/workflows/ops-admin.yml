@@ -1,0 +1,70 @@
+# On-demand ops-admin actions for Gen (not scheduled). Dry-run / plan by default; tick apply to change GCP.
+# clear-stuck-executions: list incomplete hawkes-unity-build* and studio-cell-agent* Cloud Run job executions in
+# hawkes-staging (default us-east4) with age (minutes) and vCPU; with apply, cancel those older than the threshold
+# (default 90 min) and print freed vCPU (sum of cancelled). Script: tools/clear-stuck-executions.mjs.
+#
+#   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesgen --ref beta -f action=clear-stuck-executions
+#   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesgen --ref beta -f action=clear-stuck-executions -f apply=true
+#   gh workflow run ops-admin.yml --repo jgriffith3433/hawkesgen --ref beta -f action=clear-stuck-executions -f apply=true -f older_than=90
+name: ops-admin
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [clear-stuck-executions]
+        default: clear-stuck-executions
+      apply:
+        description: Run the change (unticked = list / plan only)
+        type: boolean
+        default: false
+      older_than:
+        description: clear-stuck-executions — cancel only executions at least this many minutes old
+        type: string
+        default: '90'
+      region:
+        description: clear-stuck-executions — Cloud Run region
+        type: choice
+        options: [us-east4, us-central1, us-west1]
+        default: us-east4
+permissions:
+  contents: read
+  id-token: write
+concurrency:
+  group: ops-admin
+  cancel-in-progress: false
+jobs:
+  admin:
+    name: ${{ inputs.action }} (${{ inputs.apply && 'apply' || 'plan' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/${{ vars.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-gen
+          service_account: gen-deployer@${{ vars.GCP_PROJECT }}.iam.gserviceaccount.com
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Run
+        env:
+          ACTION: ${{ inputs.action }}
+          APPLY: ${{ inputs.apply }}
+          PROJECT: ${{ vars.GCP_PROJECT }}
+          REGION: ${{ inputs.region }}
+          OLDER: ${{ inputs.older_than }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in
+          clear-stuck-executions)
+            [[ "$OLDER" =~ ^[0-9]+$ ]] || { echo "older_than must be a whole number of minutes"; exit 1; }
+            args=(--project "$PROJECT" --region "$REGION" --older-than "$OLDER")
+            if [ "$APPLY" = true ]; then args+=(--apply); fi
+            node tools/clear-stuck-executions.mjs "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+            ;;
+          *)
+            echo "unknown action: $ACTION"; exit 1
+            ;;
+          esac
