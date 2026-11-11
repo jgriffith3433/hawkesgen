@@ -18,7 +18,7 @@ import { jobWorkspace, prepare3d, weightsPrelude } from '../providers/workspace.
 import { GEMX_COMMIT, GEMX_PYTHON, GEMX_ROOT, MOCAP_LICENSES, MOCAP_WEIGHTS, weightsScript } from '../providers/mocap/install.ts';
 import { KIMODO_PYTHON } from '../providers/motion/install.ts';
 import { checkOps } from './character.ts';
-import { retargetOps, retargetLines, checkLines, readChecks } from './motion.ts';
+import { retargetOps, retargetLines, checkLines, readChecks, rigNames, retargetChecks, withRetargetChecks } from './motion.ts';
 
 const VIDEO_EXT = ['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v'];
 
@@ -67,7 +67,7 @@ export function mocapJobScript(o: { ext: string; plan: MocapPlan; character: boo
 
 export const motionFromVideoTool: Tool = {
   id: 'motion.from-video',
-  version: 1,
+  version: 2,
   title: 'Humanoid animation from a video (motion capture)',
   description:
     'Lifts a person\'s motion out of an ordinary video and makes it a humanoid clip: motion capture without a suit. NVIDIA GEM-X finds the main ' +
@@ -90,9 +90,12 @@ export const motionFromVideoTool: Tool = {
     camera: { type: 'enum', values: ['auto', 'still', 'moving'], default: 'auto', description: 'still: a locked-off camera (most accurate). auto / moving: the camera\'s turn is estimated from the background.' },
     loop: { type: 'boolean', default: false, description: 'Seamless loop, after retarget (needs a character). For idles and cycles.' },
     inPlace: { type: 'boolean', default: false, description: 'Take the hips\' travel off the ground, after retarget (needs a character).' },
+    names: { type: 'enum', values: ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'soma', 'bvh'], default: 'auto', advanced: true, description: 'How the character\'s bones are named (needs a character). auto reads limbs and fingers separately.' },
+    map: { type: 'json', advanced: true, description: 'Bones the automatic naming misses: { "the rig\'s bone": "Mixamo name without the prefix" }, e.g. { "Chest": "Spine2" } (needs a character).' },
     name: { type: 'string', default: 'mocap', description: 'The clip\'s name on the rig.' },
   },
   models: () => [`gem-x@${GEMX_COMMIT.slice(0, 12)}`, 'soma-x@v0.3.3', `blender-${BLENDER_VERSION}`],
+  estimateMode: (_p, inputs) => (inputs && !inputs.character ? 'bvh-only' : 'with-character'),
   gpuSeconds: (p) => 150 + Math.min(60, Number(p.seconds) || 10) * 6,
   async run(ctx) {
     const c = ctx.comfy!;
@@ -104,7 +107,7 @@ export const motionFromVideoTool: Tool = {
     const character: string | undefined = ctx.inputs.character;
     if ((plan.loop || plan.inPlace) && !character) throw new GenError('loop and inPlace are applied when the clip is retargeted. Pass the rig as character, or turn them off to get the BVH only.');
     if (character && !['.glb', '.gltf', '.fbx'].includes(path.extname(character).toLowerCase())) throw new GenError('character must be a .glb, .gltf or .fbx');
-    const ops = character ? retargetOps([plan.name], 'soma', plan) : null;
+    const ops = character ? retargetOps([plan.name], 'soma', plan, rigNames(ctx.params)) : null;
     if (ops) checkOps(ops, [character!, `${plan.name}.bvh`]);
     const outDir = ctx.tmp('mocap');
 
@@ -148,7 +151,7 @@ export const motionFromVideoTool: Tool = {
     const gemx = read('gemx.json');
     const convert = read('convert.json');
     const info = read('character.json');
-    const [check] = readChecks(outDir, 1);
+    const [check] = withRetargetChecks(readChecks(outDir, 1), character ? retargetChecks(info, [plan.name]) : []);
     for (const w of info?.warnings ?? []) ctx.log(`warning: ${w}`);
     if (check && !check.ok) ctx.log(`warning: the motion check found: ${check.problems.join('; ')}`);
     const meta = { backend: 'gem-x', seconds: gemx?.seconds, frames: gemx?.frames, camera: plan.camera, check: check ? { ok: check.ok, problems: check.problems } : undefined };

@@ -137,3 +137,8 @@ test("Gen's own calls (the self token from this machine) are never limited: a ba
   }
   assert.ok(limited);
 });
+
+test("the GPU workers' storage broker is never limited (its run token is the credential)", () => {
+  assert.equal(classify('POST', '/v1/gpu/broker'), null);
+  assert.equal(classify('GET', '/v1/jobs/j_1'), 'generous');
+});

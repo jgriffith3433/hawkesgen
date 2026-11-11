@@ -14,8 +14,8 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.ts",
     "dev": "node --disable-warning=ExperimentalWarning --watch-path=src src/server.ts",
     "cli": "node --disable-warning=ExperimentalWarning src/cli.ts",
-    "typecheck": "tsc -p .",
-    "test": "node --disable-warning=ExperimentalWarning --test --test-force-exit \"test/**/*.test.ts\""
+    "typecheck": "node tools/typecheck.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --import ./test/env.ts --test --test-force-exit \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.134.0",

@@ -117,9 +117,57 @@ export function planMotion(p: Record<string, any>): MotionPlan {
   };
 }
 
+export type RigNames = { names?: string; map?: Record<string, string> };
+const RIG_NAMES = ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'soma', 'bvh'];
+const LIMBS = ['LeftUpLeg', 'LeftLeg', 'RightUpLeg', 'RightLeg', 'LeftArm', 'LeftForeArm', 'RightArm', 'RightForeArm'];
+
+/** The character's bone naming from a job's params: `names` (auto, mixamo, unity, ...) and `map` ({ "its bone": "Mixamo name
+ * without the prefix" }) for a rig the automatic naming can't read. Passed to the import op. */
+export function rigNames(p: Record<string, any>): RigNames {
+  const out: RigNames = {};
+  if (p.names != null && p.names !== '') {
+    if (!RIG_NAMES.includes(p.names)) throw new GenError(`names is one of ${RIG_NAMES.join(', ')}`);
+    out.names = p.names;
+  }
+  if (p.map != null && p.map !== '') {
+    const m = typeof p.map === 'string' ? (() => { try { return JSON.parse(p.map); } catch { throw new GenError('map is JSON: { "LeftUpperLeg": "LeftUpLeg", ... }'); } })() : p.map;
+    if (!m || typeof m !== 'object' || Array.isArray(m) || Object.values(m).some((v) => typeof v !== 'string')) throw new GenError('map is { "the rig\'s bone": "Mixamo name without the prefix (LeftUpLeg, LeftArm, ...)" }');
+    out.map = m;
+  }
+  return out;
+}
+
+/** What the retarget did to each take, from blender.character's own report (character.json): the check of the result,
+ * not of the BVH. A take whose arms or legs were not mapped, or whose FBX isn't Unity-humanoid, has problems. */
+export function retargetChecks(info: any, clips: string[]): ({ ok: boolean; problems: string[] } | null)[] {
+  if (!info) return clips.map(() => null);
+  const ops: any[] = info.ops ?? [];
+  const done = ops.filter((o) => o.op === 'retarget').flatMap((o) => o.clips ?? []);
+  return clips.map((name) => {
+    const r = done.find((c: any) => c.name === name);
+    if (!r) return { ok: false, problems: ['the clip was not retargeted onto the character'] };
+    const problems: string[] = [];
+    const lost = (r.missing ?? []).filter((m: string) => LIMBS.includes(m));
+    if (lost.length) problems.push(`retarget: no bone for ${lost.join(', ')}; those limbs hold their rest pose`);
+    const fbx = ops.find((o) => o.op === 'export' && o.format === 'fbx' && (o.clips ?? []).includes(name));
+    if (fbx && fbx.humanoid === false) problems.push('the FBX is not a Unity Humanoid (a core bone is unmapped); pass names or map for the character');
+    return { ok: problems.length === 0, problems };
+  });
+}
+
+/** The BVH checks with the retarget check merged in (problems added; ok false when either failed). */
+export function withRetargetChecks(checks: (MotionCheck | null)[], re: ({ ok: boolean; problems: string[] } | null)[]): (MotionCheck | null)[] {
+  return checks.map((c, i) => {
+    const r = re[i];
+    if (!r) return c;
+    const base: MotionCheck = c ?? { ok: true, problems: [], metrics: {}, fix: null };
+    return { ...base, ok: base.ok && r.ok, problems: [...base.problems, ...r.problems], fix: r.ok ? base.fix : base.fix ?? 'Give the character its bone names with names or map.' };
+  });
+}
+
 /** blender.character ops: retarget each BVH, then the edits, then one file and one preview per take. */
-export function retargetOps(clips: string[], scheme: 'soma' | 'smpl', o: { loop: boolean; inPlace: boolean }) {
-  const ops: Record<string, unknown>[] = [{ op: 'import', file: 0, clips: false }];
+export function retargetOps(clips: string[], scheme: 'soma' | 'smpl', o: { loop: boolean; inPlace: boolean }, rig: RigNames = {}) {
+  const ops: Record<string, unknown>[] = [{ op: 'import', file: 0, clips: false, ...(rig.names ? { names: rig.names } : {}), ...(rig.map ? { map: rig.map } : {}) }];
   clips.forEach((name, i) => {
     ops.push({ op: 'retarget', file: i + 1, name, from: scheme });
     if (o.inPlace) ops.push({ op: 'inplace', clip: name, mode: 'travel' });
@@ -224,7 +272,7 @@ export function motionJobScript(o: { character: boolean }, bin = { blender: BLEN
 
 export const motionFromTextTool: Tool = {
   id: 'motion.from-text',
-  version: 2,
+  version: 3,
   title: 'Humanoid animation from a text prompt',
   description:
     'Makes a humanoid clip from a sentence on a GPU worker (the 3D image) or fleet server. Kimodo-SOMA-RP-v1.2 writes a BVH on the SOMA skeleton ' +
@@ -258,18 +306,23 @@ export const motionFromTextTool: Tool = {
       type: 'json', advanced: true,
       description: 'Kimodo constraints (type, frame_indices, ...) or root waypoints { type: "root2d", at: [0, 1], path: [[0, 0], [0, 1]] } in meters.',
     },
+    names: { type: 'enum', values: ['auto', 'mixamo', 'unity', 'unreal', 'rigify', 'smpl', 'soma', 'bvh'], default: 'auto', advanced: true, description: 'How the character\'s bones are named (needs a character). auto reads limbs and fingers separately.' },
+    map: { type: 'json', advanced: true, description: 'Bones the automatic naming misses: { "the rig\'s bone": "Mixamo name without the prefix" }, e.g. { "Chest": "Spine2" } (needs a character).' },
     takes: { type: 'integer', min: 1, max: 8, default: 1, description: 'How many variations to make. File the preview videos into one slot and run library.judge with this prompt as the criteria.' },
     seed: { type: 'integer', min: 1, max: 2 ** 31 - 1, advanced: true, description: 'Seed for the first take. The next takes count up. Random when empty.' },
   },
   models: () => [`${KIMODO_MODEL}@${KIMODO_COMMIT.slice(0, 12)}`, `hy-motion-1.0@${HY_COMMIT.slice(0, 12)}`, `blender-${BLENDER_VERSION}`],
-  gpuSeconds: (p) => 180 + (Number(p.takes) || 1) * 40,
+  // Measured 2026-11-07/08: a 2-take job with a character took 325-376 s (Blender retarget, glb, fbx and preview per take on
+  // top of the model), and about 30 s of work without one (the BVH only). An estimate that doesn't say is priced with one.
+  estimateMode: (_p, inputs) => (inputs && !inputs.character ? 'bvh-only' : 'with-character'),
+  gpuSeconds: (p, inputs) => (inputs && !inputs.character ? 15 + (Number(p.takes) || 1) * 8 : 190 + (Number(p.takes) || 1) * 80),
   async run(ctx) {
     const c = ctx.comfy!;
     const plan = planMotion({ ...ctx.params, loop: ctx.params.loop, inPlace: ctx.params.inPlace });
     const character: string | undefined = ctx.inputs.character;
     if ((plan.loop || plan.inPlace) && !character) throw new GenError('loop and inPlace are applied when the clip is retargeted. Pass the rig as character, or turn them off to get the BVH only.');
     if (character && !['.glb', '.gltf', '.fbx'].includes(path.extname(character).toLowerCase())) throw new GenError('character must be a .glb, .gltf or .fbx');
-    const ops = character ? retargetOps(plan.clips, 'soma', plan) : null;
+    const ops = character ? retargetOps(plan.clips, 'soma', plan, rigNames(ctx.params)) : null;
     if (ops) checkOps(ops, [character!, ...plan.clips.map((name) => `${name}.bvh`)]);
     const outDir = ctx.tmp('motion');
     const seed = ctx.seed(0);
@@ -337,7 +390,7 @@ export const motionFromTextTool: Tool = {
       if (fbx) outs.push({ file: fbx.file, title: 'fbx', ext: '.fbx', take: i });
       if (preview) outs.push({ file: preview.file, title: 'preview', ext: '.mp4', take: i });
     }
-    const checks = readChecks(outDir, plan.takes);
+    const checks = withRetargetChecks(readChecks(outDir, plan.takes), character ? retargetChecks(info, plan.clips) : []);
     checks.forEach((c, i) => { if (c && !c.ok) ctx.log(`warning: take ${i}: ${c.problems.join('; ')}`); });
     for (const [k, o] of outs.entries()) {
       if (k >= ctx.done) await ctx.emit({ data: fs.readFileSync(path.join(outDir, o.file)), ext: o.ext, title: o.title, seed: seed + o.take, meta: { ...meta, take: o.take, check: checks[o.take] ? { ok: checks[o.take]!.ok, problems: checks[o.take]!.problems } : undefined } });
