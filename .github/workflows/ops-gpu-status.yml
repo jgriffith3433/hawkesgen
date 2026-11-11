@@ -30,8 +30,8 @@ jobs:
           # API v2 (REST v1 retires 2026-11-15, GraphQL early 2027): GET /v2/serverless, RFC 9457 errors.
           eps=$(curl -s --max-time 30 -H "Authorization: Bearer $key" 'https://api.runpod.io/v2/serverless?limit=100')
           echo "$eps" | jq -e '.endpoints' >/dev/null || { echo "RunPod answered: $(echo "$eps" | jq -c '{title, detail} // .' | head -c 300)"; exit 1; }
-          { echo "### RunPod endpoints"; echo '| id | name | type | workers min/max, idle s | gpu pools | health |'; echo '|---|---|---|---|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
-          echo "$eps" | jq -r '.endpoints[] | [.id, .name, (.type // "?"), "\(.workers.min // "?")/\(.workers.max // "?") idle \(.workers.idleTimeout // "?")s", ((.gpu.pools // []) | join(","))] | @tsv' | while IFS=$'\t' read -r id name type w pools; do
+          { echo "### RunPod endpoints"; echo '| id | name | type | workers min/max | gpu pools | health |'; echo '|---|---|---|---|---|---|'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "$eps" | jq -r '.endpoints[] | [.id, .name, (.type // "?"), "\(.workers.min // "?")/\(.workers.max // "?")", ((.gpu.pools // []) | join(","))] | @tsv' | while IFS=$'\t' read -r id name type w pools; do
             h=$(curl -s --max-time 20 -H "Authorization: Bearer $key" "https://api.runpod.ai/v2/$id/health" | jq -c '{jobs, workers}' 2>/dev/null || echo unreachable)
             echo "| $id | $name | $type | $w | $pools | \`$h\` |" >> "$GITHUB_STEP_SUMMARY"
             echo "$id $name $type $w $pools $h"

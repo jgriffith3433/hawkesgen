@@ -23,12 +23,11 @@ import { runpod, upsertTemplate, findEndpoint, lbEndpoint, readCatalog, gpuFor, 
 // --kind unity-render: the render farm's endpoint (runpod-unity.mjs, docs/unity-render.md).
 if (KIND === 'unity-render') { await import('./runpod-unity.mjs'); process.exit(0); }
 
-// --idle: every endpoint of the account onto Gen's idle rule (runpod-v2.mjs IDLE_SECONDS): min workers 0, idle timeout
-// at most IDLE_SECONDS; max workers stay. Prints what it would change; --apply changes it (ops-runpod-idle.yml).
-if (process.argv.includes('--idle')) {
-  const idleKey = secret('RUNPOD_API_KEY');
-  if (!idleKey) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env'); process.exit(1); }
-  const api = runpod(idleKey);
+// The idle rule (runpod-v2.mjs IDLE_SECONDS) on every endpoint of the account: min workers 0, idle timeout at most
+// IDLE_SECONDS; max workers stay. Prints what it would change; changes it with --apply. --idle runs only this; --update
+// runs it first too, so every image update (ops-runpod-image.yml) also puts the whole account back on the rule, including
+// an endpoint someone set up or changed in the console.
+async function idleSweep(api) {
   const eps = await api.list('/serverless', 'endpoints');
   let n = 0;
   for (const ep of eps) {
@@ -39,7 +38,12 @@ if (process.argv.includes('--idle')) {
     say(`${ep.name} (${ep.id}): min ${w.min ?? 0}, idle ${w.idleTimeout ?? '?'} s -> min 0, idle ${workers.idleTimeout} s (max ${workers.max})`);
     if (APPLY) await api.req('PATCH', `/serverless/${ep.id}`, { workers });
   }
-  say(n ? (APPLY ? `changed ${n} endpoint(s)` : `(dry run: --apply changes ${n} endpoint(s))`) : 'every endpoint already keeps no warm or long-idle workers');
+  say(n ? (APPLY ? `idle rule: changed ${n} endpoint(s)` : `(dry run: --apply changes ${n} endpoint(s))`) : 'idle rule: every endpoint already keeps no warm or long-idle workers');
+}
+if (process.argv.includes('--idle')) {
+  const idleKey = secret('RUNPOD_API_KEY');
+  if (!idleKey) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env'); process.exit(1); }
+  await idleSweep(runpod(idleKey));
   process.exit(0);
 }
 
@@ -64,6 +68,8 @@ const update = arg('update');
 if (update) {
   if (!key) { console.error('RUNPOD_API_KEY is not in hawkesgen/.env'); process.exit(1); }
   const api = runpod(key);
+  header('Idle rule, every endpoint');
+  await idleSweep(api);
   const ep = await api.req('GET', `/serverless/${update}`);
   header(`Endpoint ${ep.name} (${ep.id})`);
   say(`image: ${ep.image ?? '(from its template)'}

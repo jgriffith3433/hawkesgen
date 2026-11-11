@@ -104,3 +104,12 @@ test('the RunPod setup scripts make every endpoint with the idle rule (no script
     assert.doesNotMatch(src, /Math\.min\((?:6[1-9]|[7-9]\d|\d{3,}), Number\(arg\('idle'/, f);
   }
 });
+
+test('every image update also puts the whole account on the idle rule, before it looks at the image', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../tools/gpu-providers/runpod.mjs', import.meta.url), 'utf8');
+  const upd = src.slice(src.indexOf('if (update) {'));
+  const sweep = upd.indexOf('await idleSweep(api)');
+  assert.ok(sweep > 0, '--update runs the idle sweep');
+  assert.ok(sweep < upd.indexOf("Already on this image"), 'the sweep runs even when the image is already on the endpoint');
+});
