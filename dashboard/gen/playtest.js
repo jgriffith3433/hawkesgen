@@ -397,6 +397,17 @@ installPlaytest({
         t.metric('paneAtMaxPx', Math.round(right?.getBoundingClientRect().height ?? 0));
         if (!wideNow()) { t.metric('aiWholeAtMaxTimeline', ok ? 1 : 0); if (!ok) t.problem('bug', 'with the timeline at its tallest the AI panel clips its heading or its box'); else t.event('ai-panel-whole-at-max'); }
       }
+      // And the stage's own text (its start box) stays inside the stage, with nothing over the transport or the tools.
+      {
+        const stage = document.querySelector('#stage'), empty = document.querySelector('#stageEmpty');
+        if (stage && empty && !empty.hidden && getComputedStyle(empty).display !== 'none') {
+          const q = stage.getBoundingClientRect();
+          const kids = [...empty.querySelectorAll('p, button')].filter((el) => el.getClientRects().length && getComputedStyle(el).display !== 'none');
+          const out = kids.filter((el) => { const r = el.getBoundingClientRect(); return r.top < q.top - 1 || r.bottom > q.bottom + 1 || r.left < q.left - 1 || r.right > q.right + 1; });
+          t.metric('stageTextOutsideAtMax', out.length);
+          if (out.length) t.problem('bug', 'with the timeline at its tallest the stage text is cut off or overflows the stage'); else t.event('stage-text-whole-at-max');
+        }
+      }
       await drag(3000);
       const hMin = H();
       t.metric('minTimelinePx', hMin);
