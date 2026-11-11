@@ -17,6 +17,13 @@ export function replay(ops, scene, serverVersion) {
   return mine.length ? mine[mine.length - 1] : null;
 }
 
+// A synchronous copy in localStorage, written before anything async: a reload straight after an edit can beat an
+// IndexedDB transaction, never this (one per scene, the newest op).
+const MIRROR = 'hawkes-gen-journal:';
+function mirrorSet(op) { try { localStorage.setItem(MIRROR + op.scene, JSON.stringify(op)); } catch { /* private window or full */ } }
+function mirrorGet(scene) { try { return JSON.parse(localStorage.getItem(MIRROR + scene) || 'null'); } catch { return null; } }
+function mirrorClear(scene, upTo) { try { const m = mirrorGet(scene); if (!m || m.seq <= upTo) localStorage.removeItem(MIRROR + scene); } catch { /* */ } }
+
 // A memory copy is the fallback when IndexedDB isn't there (private windows, blocked storage).
 const memory = new Map();
 let dbp = null;
@@ -49,6 +56,7 @@ async function run(mode, fn) {
 /** Writes one op (an edit not saved yet). Keeps only the newest per scene: each op holds the whole document. */
 export async function append(op) {
   memory.set(op.scene, op);
+  mirrorSet(op);
   await run('readwrite', (s) => {
     const all = s.getAll();
     all.onsuccess = () => { for (const o of all.result) if (o.scene === op.scene && o.seq < op.seq) s.delete(o.seq); };
@@ -61,11 +69,14 @@ export async function pending(scene) {
   const list = Array.isArray(rows) ? rows : [];
   const m = memory.get(scene);
   if (m && !list.some((o) => o.seq === m.seq)) list.push(m);
+  const mir = mirrorGet(scene);
+  if (mir && !list.some((o) => o.seq === mir.seq)) list.push(mir);
   return list.filter((o) => o.scene === scene);
 }
 /** Forgets a scene's ops up to seq: they are saved. */
 export async function clear(scene, upTo = Infinity) {
   if (memory.get(scene)?.seq <= upTo) memory.delete(scene);
+  mirrorClear(scene, upTo);
   await run('readwrite', (s) => {
     const all = s.getAll();
     all.onsuccess = () => { for (const o of all.result) if (o.scene === scene && o.seq <= upTo) s.delete(o.seq); };

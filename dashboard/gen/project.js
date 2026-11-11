@@ -440,6 +440,8 @@ addEventListener('offline', () => { if (P.dirty && P.active) bus.emit('save', 'o
 addEventListener('pagehide', () => { if (P.dirty && P.active) save(); });
 
 const recovered = new Set();
+/** Playtest hook: forget that this scene was recovered, so taking it again replays the journal like a fresh page load. */
+export const forgetRecovered = (id) => recovered.delete(id);
 /** On load: edits in the journal made on top of this version come back, then save. */
 async function recover(project) {
   if (recovered.has(project.id)) return;
