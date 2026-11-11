@@ -1369,3 +1369,9 @@ body:not(.app-on) #app { display: none; }
 .title-pv { width: 100%; aspect-ratio: 16 / 9; border-radius: var(--radius-sm); display: block; background: var(--panel-2); }
 .title-name { display: flex; flex-direction: column; gap: var(--space-0-5); }
 .title-name .muted { line-height: 1.25; }
+
+/* The timeline's top edge: a fingertip-sized hit area on touch screens, with a visible handle (J, 2026-11-11). */
+@media (pointer: coarse) {
+  .grip-tl { top: -14px; height: 28px; }
+  .grip-tl::after { top: 12px; left: calc(50% - 22px); right: auto; width: 44px; height: 4px; border-radius: var(--radius-2xs); background: var(--line-2); }
+}

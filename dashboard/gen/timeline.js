@@ -267,13 +267,21 @@ export function fit() {
 /** The empty timeline's hint stays in the middle of what's in view, however far it's scrolled. */
 function placeEmpty() { const el = $('#tlEmpty'); if (el && T.scroll) el.style.left = `${T.scroll.scrollLeft + T.scroll.clientWidth / 2}px`; }
 
+let scrollBox = null, scrollWidth = 0;
+const scrollRO = typeof ResizeObserver === 'function' ? new ResizeObserver((es) => { for (const e of es) scrollWidth = e.contentBoxSize?.[0]?.inlineSize ?? e.contentRect.width; }) : null;
+/** The scroller's width, cached: observed once, never read from layout inside the frame loop. */
+function scrollW(el) {
+  if (el !== scrollBox) { scrollBox = el; scrollWidth = el.clientWidth; scrollRO?.disconnect(); scrollRO?.observe(el); }
+  return scrollRO ? scrollWidth : el.clientWidth;
+}
 function movePlayhead() {
   const el = $('#tlPlayhead');
   if (!el) return;
   // Reads before the write, so the frame doesn't force a layout between them.
   const playing = lender ? lender.playing?.() : isPlaying();
   const x = xOf(ph());
-  const off = playing ? x - T.scroll.scrollLeft : 0, wide = playing ? T.scroll.clientWidth : 0;
+  // clientWidth is cached by a ResizeObserver (below), so resizing the timeline never costs a layout read per frame.
+  const off = playing ? x - T.scroll.scrollLeft : 0, wide = playing ? scrollW(T.scroll) : 0;
   el.style.transform = `translateX(${x}px)`;
   // Keep the playhead in view while playing.
   if (playing && (off > wide - 40 || off < 0)) T.scroll.scrollLeft = x - 60;
