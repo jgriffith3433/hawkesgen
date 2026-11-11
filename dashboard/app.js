@@ -3,6 +3,9 @@
 
 import { benchTab } from './bench.js';
 import { openStream } from '/gen/stream.js';
+import { installButtonVariants } from '/gen/lib.js';
+
+installButtonVariants();
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);

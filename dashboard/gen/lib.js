@@ -14,8 +14,59 @@ export const h = (tag, attrs = {}, ...kids) => {
     else el.setAttribute(k, v === true ? '' : v);
   }
   for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
+  if (tag === 'button' || (tag === 'a' && /\bbtn\b/.test(el.className))) applyButtonVariant(el);
   return el;
 };
+
+const BUTTON_VARIANTS = ['primary', 'secondary', 'ghost', 'danger'];
+
+/** Marks a button with one of the four shared variants and an aria-label when it is icon-only. */
+export function applyButtonVariant(btn) {
+  if (!(btn instanceof Element)) return btn;
+  if (!BUTTON_VARIANTS.some((v) => btn.classList.contains(v))) {
+    if (btn.classList.contains('play') || btn.classList.contains('send')) btn.classList.add('primary');
+    else if (
+      btn.classList.contains('icon-btn')
+      || btn.classList.contains('avatar')
+      || btn.classList.contains('link')
+      || btn.classList.contains('drawer-toggle')
+      || btn.classList.contains('tab')
+      || btn.closest?.('.seg')
+      || btn.closest?.('nav')
+      || (btn.matches?.('[data-pane], [data-m]') && !btn.classList.contains('chip'))
+    ) btn.classList.add('ghost');
+    else btn.classList.add('secondary');
+  }
+  if (!btn.getAttribute('aria-label')) {
+    const text = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) {
+      const title = btn.getAttribute('title');
+      if (title) btn.setAttribute('aria-label', title);
+    }
+  }
+  return btn;
+}
+
+/**
+ * Ensures every button / a.btn under `root` carries a primary|secondary|ghost|danger class and that icon-only
+ * buttons expose an aria-label (from title when needed). Watches the tree so Create forms and admin tabs stay covered.
+ */
+export function installButtonVariants(root = document.documentElement) {
+  const scan = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    if (node.matches?.('button, a.btn')) applyButtonVariant(node);
+    node.querySelectorAll?.('button, a.btn').forEach(applyButtonVariant);
+  };
+  scan(root);
+  const mo = new MutationObserver((muts) => {
+    for (const m of muts) {
+      if (m.type === 'childList') for (const n of m.addedNodes) scan(n);
+      else if (m.type === 'attributes' && m.target?.matches?.('button, a.btn')) applyButtonVariant(m.target);
+    }
+  });
+  mo.observe(root, { childList: true, subtree: true });
+  return mo;
+}
 /**
  * A library file's link. Given the file's hash (list rows carry `sha256`), the link names its bytes, so Gen serves it as
  * immutable and the browser never asks for it again (J, 2026-11-01: Media kept reloading its pictures and clips).
