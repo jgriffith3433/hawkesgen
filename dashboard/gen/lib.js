@@ -263,11 +263,11 @@ export async function uploadCanvas(canvas, name = 'mask.png') {
   return j.blob;
 }
 
-// Icons: small inline SVGs (stroke = currentColor).
-const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
+// Icons: one stroke icon family (viewBox 0 0 24 24, stroke = currentColor, fill = none, sized via CSS tokens).
+const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
 export const ICON = {
-  play: svg('<path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/>'),
-  pause: svg('<rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/>'),
+  play: svg('<polygon points="7 4.5 19 12 7 19.5 7 4.5"/>'),
+  pause: svg('<rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/>'),
   back: svg('<path d="M15 6l-6 6 6 6"/>'),
   fwd: svg('<path d="M9 6l6 6-6 6"/>'),
   undo: svg('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>'),
@@ -321,10 +321,10 @@ export const ICON = {
   up: svg('<path d="M12 19V5M6 11l6-6 6 6"/>'),
   down: svg('<path d="M12 5v14M6 13l6 6 6-6"/>'),
   copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/>'),
-  stop: svg('<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/>'),
+  stop: svg('<rect x="6" y="6" width="12" height="12" rx="1.5"/>'),
   fill: svg('<path d="M5 12l7-7 7 7-7 7z"/><path d="M20 15s2 2.5 2 4a2 2 0 01-4 0c0-1.5 2-4 2-4z"/>'),
   chevron: svg('<path d="M6 9l6 6 6-6"/>'),
-  more: svg('<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>'),
+  more: svg('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'),
 };
 export const icon = (name, cls = 'ico') => h('span', { class: cls, html: ICON[name] ?? '' });
 
