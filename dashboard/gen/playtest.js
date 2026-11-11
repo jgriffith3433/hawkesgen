@@ -1485,6 +1485,7 @@ installPlaytest({
     if (id === 'no-lost-work') {
       t.scene('No lost work');
       await until(() => activeScene(), 10000);
+      if (!state.user) { t.problem('bug', 'no-lost-work failed at "open editor": still on the landing page, the test session did not sign in'); t.event('step-failed', 'open editor'); t.finish('stuck'); return; }
       // Setup shortcut (named): a fresh video scene. Every edit after it is a tap on the timeline's own buttons, so it plays the same on a phone.
       made = await newScene('video', { title: `Playtest no-lost-work ${new Date().toISOString().slice(0, 16)}` });
       if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
@@ -1719,6 +1720,7 @@ installPlaytest({
       t.scene('Polished cut');
       const jobs = watchJobs();
       await until(() => activeScene(), 10000);
+      if (!state.user) { t.problem('bug', 'polished-cut failed at "open editor": still on the landing page, the test session did not sign in'); t.event('step-failed', 'open editor'); jobs.stop(); t.finish('stuck'); return; }
       const stamp = Date.now();
       const tone = (seconds, freq) => {
         const rate = 22050, n = Math.floor(seconds * rate);

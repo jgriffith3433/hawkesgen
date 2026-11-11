@@ -22,6 +22,22 @@ test('signed out: the web app skips the session probe without hg.in', () => {
   assert.match(account, /localStorage\.removeItem\('hg\.in'\)/, 'sign-out clears the hint before reload');
 });
 
+test('playtest runs set the session hint, except the signed-out scenarios', () => {
+  // Studio's bot signs in with a cookie but starts with empty storage: without hg.in the app never asked who it was
+  // and every editor scenario sat on the landing page (no-lost-work, editor-fit, polished-cut).
+  const html = readFileSync(new URL('../dashboard/gen/index.html', import.meta.url), 'utf8');
+  const set = html.indexOf("localStorage.setItem('hg.in', '1')");
+  assert.ok(set > 0 && set < html.indexOf('if (hinted)'), 'the playtest hint is set before the probe decision');
+  assert.match(html, /q\.has\('playtest'\)/, 'an empty ?playtest= (what Studio sends) counts');
+  assert.match(html, /hawkesgen\\\.ai/, 'never on the live host');
+  assert.match(html, /pt !== 'signedout' && pt !== 'first-paint'/);
+  // The scenarios that play the signed-out path are the ones left out.
+  const pt = readFileSync(new URL('../dashboard/gen/playtest.js', import.meta.url), 'utf8');
+  assert.match(pt, /id === 'signedout'/);
+  assert.match(pt, /id === 'first-paint'/);
+  assert.match(pt, /no-lost-work failed at "open editor"/);
+});
+
 test('signed out: /v1/users/me without a key still answers 401', async () => {
   process.env.HAWKESGEN_PUBLIC_SAAS = '1';
   process.env.HAWKESGEN_RATELIMIT = 'off';
