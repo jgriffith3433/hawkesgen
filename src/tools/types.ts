@@ -130,4 +130,7 @@ export type Tool = {
    *  `child` prices one child job; null falls back to the estimate. */
   quote?(params: Record<string, any>, q: { project: string; child: (tool: string, params: Record<string, any>) => number; getTool: (id: string) => Tool | null }): { credits: number; breakdown: { label: string; credits: number }[]; tool?: string } | null;
   run(ctx: RunContext): Promise<void>;
+  /** The job ended without its run finishing it (cancelled while no run in this process followed it, or failed after too
+   *  many restarts): releases what it started outside Gen (unity.build: its Cloud Run executions, so none stays queued). */
+  ended?(jobId: string): Promise<unknown>;
 };

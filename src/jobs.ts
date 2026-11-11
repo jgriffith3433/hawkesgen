@@ -533,6 +533,7 @@ export function cancel(jobId: string) {
       Object.assign(j, { status: 'cancelled', detail: 'cancelled', finished: Date.now() });
       save(j, ['status', 'detail', 'finished']);
       refundJob(j.id, 'Job cancelled');
+      releaseOutside(j);
     }
   }
   return getJob(jobId);
@@ -558,7 +559,16 @@ export function failJob(jobId: string, errorMessage = 'Job failed') {
   j.log.push(`error: ${errorMessage}`);
   save(j, ['status', 'error', 'detail', 'finished', 'log']);
   refundJob(j.id, `Job failed: ${errorMessage}`);
+  releaseOutside(j);
   return getJob(jobId);
+}
+
+/** What a job that ended outside its run started elsewhere is released (Tool.ended): a Unity build's queued execution
+ *  would otherwise wait in Cloud Run for a machine nobody wants (2026-11-11: 77 of them in us-west1). */
+function releaseOutside(j: { id: string; tool: string }) {
+  const t = getTool(j.tool);
+  if (!t?.ended) return;
+  void t.ended(j.id).catch((e: any) => console.warn(`[queue] couldn't release what ${j.id} started: ${e?.message ?? e}`));
 }
 
 /**
