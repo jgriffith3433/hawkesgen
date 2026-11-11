@@ -45,7 +45,11 @@ jobs:
           case "$SERVICE" in
             playtest-cpu)
               node tools/playtest-cloudrun/build.mjs --variant cpu --project "$PROJECT" --region "$REGION" --apply
-              node tools/playtest-cloudrun/deploy.mjs --variant cpu --project "$PROJECT" --region "$REGION" --max-instances 4 --tabs 1 --apply ;;
+              # One instance in the live region (gen, studio and the Studio cells share its CPU quota: 2026-11-11, four of
+              # these 4 vCPU browsers held 16 of us-east4's 20 vCPU and Studio's own server couldn't start); 4 elsewhere.
+              # Matches LIVE_REGION_CPU_INSTANCES in src/providers/playtester/cloudrun.ts.
+              if [ "$REGION" = "${{ vars.REGION_LIVE }}" ]; then MAX=1; else MAX=4; fi
+              node tools/playtest-cloudrun/deploy.mjs --variant cpu --project "$PROJECT" --region "$REGION" --max-instances "$MAX" --tabs 1 --apply ;;
             playtest-gpu)
               # The L4 playtest browser, scale to zero, one instance (one L4: the smallest GPU quota that plays). Cloud Run
               # grants a region's L4 quota on its first GPU deploy, or refuses it; either way the log says so.
