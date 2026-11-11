@@ -270,7 +270,9 @@ const AREAS = [
 ];
 /** What a phone area really shows (the CSS caps it), so a drag starts from what's on screen, not a stored number. */
 const shownSize = (a) => {
-  if (a.prop === '--tlm') return $('#timelinePane').getBoundingClientRect().height;
+  // The desktop timeline too: --tl is a min() expression until a drag writes pixels, and a custom property reads back as
+  // that text, never a number, so the drag must start from the pane's real height.
+  if (a.prop === '--tlm' || a.prop === '--tl') return $('#timelinePane').getBoundingClientRect().height; $('#timelinePane').getBoundingClientRect().height;
   return Math.max(...['#leftPane', '#rightPane'].map((s) => $(s).getBoundingClientRect().height));
 };
 const keep = (k, v) => { try { localStorage.setItem(k, v); } catch { /* */ } };
@@ -279,13 +281,17 @@ for (const a of AREAS) {
   const grip = a.sel === '#sheetGrip' ? $('#sheetGrip') : h('div', { class: `grip ${a.grip ?? `grip-${a.prop.slice(2)}`}`, title: 'Drag to size · double-click to fold or unfold' });
   if (a.sel !== '#sheetGrip') $(a.sel).append(grip);
   const app = $('#app');
-  const v = Number(kept(`hg.${a.prop}`));
-  if (v) {
-    // At most 70% of the window (the default, in CSS, keeps ~450px above the timeline at 720p).
+  // At most 70% of the window (the default, in CSS, keeps ~450px above the timeline at 720p).
+  const restore = (el) => {
+    const v = Number(kept(`hg.${a.prop}`));
+    if (!v) return null;
     const capped = a.maxShare ? Math.min(v, Math.max(a.min, Math.floor(window.innerHeight * a.maxShare))) : v;
-    app.style.setProperty(a.prop, `${capped}px`);
+    el.style.setProperty(a.prop, `${capped}px`);
     if (capped !== v) keep(`hg.${a.prop}`, String(capped));
-  }
+    return capped;
+  };
+  restore(app);
+  if (a.prop === '--tl') window.hgRestoreTimelineSize = restore; // the playtest runs the page's own restore on a fresh element
   if (a.fold && kept(`hg.${a.fold}`) === '1') app.classList.add(a.fold);
   const fold = (on) => {
     app.classList.toggle(a.fold, on);
@@ -302,7 +308,7 @@ for (const a of AREAS) {
     try { grip.setPointerCapture?.(e.pointerId); } catch { /* */ }
     const start = a.axis === 'y' ? e.clientY : e.clientX;
     const folded = a.fold && app.classList.contains(a.fold);
-    const v0 = folded ? (a.foldTo ?? 0) : a.phone ? shownSize(a) : parseFloat(getComputedStyle(app).getPropertyValue(a.prop)) || a.min;
+    const v0 = folded ? (a.foldTo ?? 0) : (a.phone || a.prop === '--tl') ? shownSize(a) : parseFloat(getComputedStyle(app).getPropertyValue(a.prop)) || a.min;
     app.classList.add('sizing');
     app.style.setProperty('--sizing-cursor', a.axis === 'y' ? 'row-resize' : 'col-resize');
     // One write per frame, from the last pointer position: the stage and timeline re-flow once, never per event.
@@ -323,6 +329,7 @@ for (const a of AREAS) {
       if (ev && ev.pointerId !== e.pointerId) return;
       removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up);
       cancelAnimationFrame(raf); apply(); app.classList.remove('sizing');
+      dispatchEvent(new Event('hg-sized')); // the stage redraws once, now
       if (lastVal != null) keep(`hg.${a.prop}`, String(lastVal)); // remembered once, when the drag ends
       // Keep what the screen shows, so the next drag has no dead zone past the cap.
       if (a.phone) { const shown = Math.round(shownSize(a)); if (shown > 0) { app.style.setProperty(a.prop, `${shown}px`); keep(`hg.${a.prop}`, String(shown)); } }

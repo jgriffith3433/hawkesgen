@@ -82,7 +82,9 @@ export function initPlayer() {
   bus.on('selection', () => drawHandles());
   bus.on('progressText', () => { S.dirty = true; });
   rebuildXf();
-  new ResizeObserver(fitStage).observe($('#viewer'));
+  // While an edge is being dragged (.sizing) the stage keeps its size and is refitted once when the drag ends.
+  new ResizeObserver(() => { if (!$('#app').classList.contains('sizing')) fitStage(); }).observe($('#viewer'));
+  addEventListener('hg-sized', fitStage);
   canvas.addEventListener('pointerdown', onCanvasDown);
   handles.addEventListener('pointerdown', onCanvasDown);
   stagePinch($('#viewer'));
