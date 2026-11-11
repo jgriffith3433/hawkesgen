@@ -17,23 +17,23 @@ function styles() {
   const s = document.createElement('style');
   s.id = 'benchCss';
   s.textContent = `
-    .bench-trend { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    .bench-trend { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
     .bench-trend svg { width: 100%; height: 70px; display: block; }
-    .bench-trend .now { font-size: 22px; font-weight: 700; }
-    .bench-brief { border-top: 1px solid var(--line); padding: 14px 0; }
-    .bench-row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); margin-top: 8px; }
-    .bench-out { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); display: flex; flex-direction: column; }
+    .bench-trend .now { font-size: var(--text-xl); font-weight: var(--weight-bold); }
+    .bench-brief { border-top: 1px solid var(--line); padding: var(--space-4) 0; }
+    .bench-row { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); margin-top: var(--space-2); }
+    .bench-out { border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; background: var(--panel); display: flex; flex-direction: column; }
     .bench-out.base { border-style: dashed; }
-    .bench-out .media { aspect-ratio: 16 / 10; background: var(--chip); display: grid; place-items: center; }
+    .bench-out .media { aspect-ratio: 16 / 10; background: var(--panel-2); display: grid; place-items: center; }
     .bench-out .media img, .bench-out .media video { max-width: 100%; max-height: 100%; object-fit: contain; }
     .bench-out .media model-viewer { width: 100%; height: 100%; }
-    .bench-out .body { padding: 8px 10px; font-size: 13px; display: grid; gap: 6px; }
-    .bench-out .chips { display: flex; flex-wrap: wrap; gap: 4px; }
-    .bench-out ul { margin: 0; padding-left: 16px; }
+    .bench-out .body { padding: var(--space-2) var(--space-3); font-size: var(--text-sm); display: grid; gap: var(--space-2); }
+    .bench-out .chips { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+    .bench-out ul { margin: 0; padding-left: var(--space-4); }
     .bench-out li { margin: 2px 0; }
-    .bench-out .rate { display: flex; gap: 4px; }
-    .bench-out .rate button { min-width: 30px; padding: 3px 6px; }
-    .bench-out .rate button.on { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+    .bench-out .rate { display: flex; gap: var(--space-1); }
+    .bench-out .rate button { min-width: 30px; padding: var(--space-1) var(--space-2); }
+    .bench-out .rate button.on { background: var(--accent); color: var(--on-primary); border-color: var(--accent); }
   `;
   document.head.append(s);
 }
