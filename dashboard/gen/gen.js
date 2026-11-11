@@ -297,7 +297,9 @@ for (const a of AREAS) {
   grip.addEventListener('dblclick', () => { if (a.fold) fold(!app.classList.contains(a.fold)); });
   grip.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    grip.setPointerCapture?.(e.pointerId);
+    // Capture keeps a drag going off the handle; a pointer that isn't live (a synthetic event, a pen that just left) makes
+    // it throw, and the window listeners below carry the drag anyway.
+    try { grip.setPointerCapture?.(e.pointerId); } catch { /* */ }
     const start = a.axis === 'y' ? e.clientY : e.clientX;
     const folded = a.fold && app.classList.contains(a.fold);
     const v0 = folded ? (a.foldTo ?? 0) : a.phone ? shownSize(a) : parseFloat(getComputedStyle(app).getPropertyValue(a.prop)) || a.min;
@@ -330,6 +332,13 @@ for (const a of AREAS) {
     addEventListener('pointerup', up);
     addEventListener('pointercancel', up);
   });
+}
+
+// The row above the timeline gets short when the timeline is tall: the AI pane then compacts (CSS, .panes-short). The
+// observer reports the pane's own height, so nothing reads layout while a drag or playback runs.
+if (typeof ResizeObserver === 'function') {
+  const app = $('#app');
+  new ResizeObserver((es) => { for (const e of es) { const h = e.contentRect.height; if (h > 0) app.classList.toggle('panes-short', h < 300); } }).observe($('#rightPane'));
 }
 
 // A shorter window can't leave the timeline taller than 70% of it: clamp the saved size when the window changes.

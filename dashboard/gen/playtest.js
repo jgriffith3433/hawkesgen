@@ -360,6 +360,7 @@ installPlaytest({
       const pane = document.querySelector('#timelinePane');
       const grip = pane?.querySelector('.grip-tl');
       const H = () => Math.round(pane.getBoundingClientRect().height);
+      const wideNow = () => matchMedia('(max-width: 1100px)').matches; // side panels are drawers: no AI pane in the row above
       const drag = async (dy) => {
         const r = grip.getBoundingClientRect();
         const x = r.left + r.width / 2, y0 = r.top + r.height / 2;
@@ -381,6 +382,13 @@ installPlaytest({
       const hMax = H();
       t.metric('maxTimelinePx', hMax);
       if (hMax > window.innerHeight * 0.7 + 2) t.problem('bug', 'the timeline grew past 70% of the window');
+      // At its tallest the panes above are at their shortest: the AI's heading and its box must still be whole in the pane.
+      {
+        const right = document.querySelector('#rightPane'), inside = (el) => { if (!el || !right) return false; const r = el.getBoundingClientRect(), q = right.getBoundingClientRect(); return r.height > 1 && r.top >= q.top - 1 && r.bottom <= q.bottom + 1; };
+        const ok = !wideNow() && inside(document.querySelector('.ai-head')) && inside(document.querySelector('#aiForm'));
+        t.metric('paneAtMaxPx', Math.round(right?.getBoundingClientRect().height ?? 0));
+        if (!wideNow()) { t.metric('aiWholeAtMaxTimeline', ok ? 1 : 0); if (!ok) t.problem('bug', 'with the timeline at its tallest the AI panel clips its heading or its box'); else t.event('ai-panel-whole-at-max'); }
+      }
       await drag(3000);
       const hMin = H();
       t.metric('minTimelinePx', hMin);
@@ -388,7 +396,12 @@ installPlaytest({
       let saved = null; try { saved = localStorage.getItem('hg.--tl'); } catch { /* */ }
       t.metric('savedPx', Number(saved) || 0);
       if (!saved) t.problem('bug', 'the timeline size is not kept in this browser');
-      else t.event('timeline-size-kept');
+      else {
+        // A reload reads this value back into --tl (gen.js, sizing the areas), so it must be what the screen shows.
+        const same = Math.abs(Number(saved) - H()) <= 1;
+        t.metric('keptMatchesShownPx', same ? 1 : 0);
+        if (same) t.event('timeline-size-kept'); else t.problem('bug', `the kept timeline size (${saved}px) is not the one on screen (${H()}px)`);
+      }
       const wide = matchMedia('(min-width: 901px) and (max-width: 1100px)').matches;
       t.metric('drawerWidth', wide ? 1 : 0);
       const tog = document.querySelector('#drawerLeft');

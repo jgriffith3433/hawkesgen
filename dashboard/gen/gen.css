@@ -1375,3 +1375,13 @@ body:not(.app-on) #app { display: none; }
   .grip-tl { top: -14px; height: 28px; }
   .grip-tl::after { top: 12px; left: calc(50% - 22px); right: auto; width: 44px; height: 4px; border-radius: var(--radius-2xs); background: var(--line-2); }
 }
+
+/* A short row above a tall timeline (up to 70% of the window): the AI pane drops what it can spare (ideas, the context
+   chip, a roomy heading) so its heading and its box stay whole. gen.js sets .panes-short from the pane's own height. */
+@media (min-width: 901px) {
+  .app.panes-short .ai-suggest, .app.panes-short .ai-context { display: none; }
+  .app.panes-short .ai-head { padding: var(--space-2) var(--space-3-5) var(--space-1-5); }
+  .app.panes-short .ai-form { padding: var(--space-1-5) var(--space-3-5) var(--space-2); }
+  .app.panes-short .ai-form textarea { min-height: 36px; max-height: 56px; padding: var(--space-1-5) var(--space-3); }
+  .app.panes-short .send { width: 36px; height: 36px; }
+}
