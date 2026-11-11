@@ -8,7 +8,8 @@
 import { needsGlb, toGlb, glbNote } from './model3d.js';
 import { $, $$, h, api, toast, fileUrl, bus, icon, plainError, ApiError } from './lib.js';
 import { trouble, troubleNote } from './trouble.js';
-import { P, trackOf, isMagnetic } from './project.js';
+import { P, trackOf, isMagnetic, addClip } from './project.js';
+import { TITLE_PRESETS, drawTitle, previewTime, clearTitleCache } from './titles.js';
 import { currentSource, showSource } from './player.js';
 import { runJob, quote, credits, showPane, assetKindLabel } from './media.js';
 import { state, needSignIn } from './account.js';
@@ -140,7 +141,7 @@ export function toolsTaking(kind) {
 function drawGroups() {
   const box = $('#createGroups');
   const chip = (id, label) => h('button', { type: 'button', class: `chip${S.group === id ? ' on' : ''}`, onclick: () => { S.group = id; drawGroups(); drawList(); } }, label);
-  box.replaceChildren(chip('', 'All'), ...GROUPS.map((g) => chip(g.id, g.label.split(' ')[0].replace(',', ''))), more().length ? chip('more', 'More') : '');
+  box.replaceChildren(chip('', 'All'), chip('titles', 'Titles'), ...GROUPS.map((g) => chip(g.id, g.label.split(' ')[0].replace(',', ''))), more().length ? chip('more', 'More') : '');
 }
 /** Tools Gen has that no group names: new ones show up here without a change to the app. */
 const more = () => [...S.tools.values()].filter((t) => !CURATED.has(t.id) && !HIDDEN.test(t.id));
@@ -148,17 +149,20 @@ const more = () => [...S.tools.values()].filter((t) => !CURATED.has(t.id) && !HI
 function drawList() {
   const list = $('#createList');
   if (S.open) return;
+  const titles = (!S.group || S.group === 'titles') && titleMatches() ? titlesSection() : null;
+  if (S.group === 'titles') { list.replaceChildren(titles ?? h('div', { class: 'empty-note' }, h('p', {}, 'No title matches.'))); return; }
   if (S.loaded === 'signedOut' || !state.user) {
-    list.replaceChildren(h('div', { class: 'empty-note' }, h('p', {}, 'Images, video, 3D models, rigs, voices, sound and music: every tool, here.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadCatalog, 'login') }, 'Sign in')));
+    list.replaceChildren(...(titles ? [titles] : []), h('div', { class: 'empty-note' }, h('p', {}, 'Images, video, 3D models, rigs, voices, sound and music: every tool, here.'), h('button', { class: 'primary small', onclick: () => needSignIn(loadCatalog, 'login') }, 'Sign in')));
     return;
   }
-  if (S.loaded === 'error') { list.replaceChildren(troubleNote(S.loadError, loadCatalog)); return; }
-  if (!S.loaded) { list.replaceChildren(h('div', { class: 'working' }, 'Loading tools')); return; }
+  if (S.loaded === 'error') { list.replaceChildren(...(titles ? [titles] : []), troubleNote(S.loadError, loadCatalog)); return; }
+  if (!S.loaded) { list.replaceChildren(...(titles ? [titles] : []), h('div', { class: 'working' }, 'Loading tools')); return; }
   const match = (label, t) => !S.q || `${label} ${t?.id ?? ''} ${t?.description ?? ''}`.toLowerCase().includes(S.q);
   const sections = [];
   // The director first: the way in on a phone (the bar's button is hidden there), and the most powerful thing here.
   if (!S.group && (!S.q || 'director direct shot scene 3d camera film dialogue'.includes(S.q))) sections.push(h('button', { type: 'button', class: 'cat-row director-row', onclick: () => import('./director.js').then((d) => d.openDirector()) },
     icon('film'), h('span', { class: 'cat-txt' }, h('b', {}, 'Direct a shot or a scene'), h('span', { class: 'muted' }, 'Stage it in 3D with the AI director: cast, camera, dialogue. Then film it.'))));
+  if (titles) sections.push(titles);
   for (const g of GROUPS) {
     if (S.group && S.group !== g.id) continue;
     const rows = g.chains
@@ -501,3 +505,64 @@ export const createTools = () => [...S.tools.values()].filter((t) => CURATED.has
 /** Whether this Gen has a tool and can run it now (false while its GPU servers are offline). */
 export const toolReady = (id) => Boolean(S.tools.get(id)?.ready);
 export const hasTool = (id) => S.tools.has(id);
+
+// ------------------------------------------------------------------ Titles
+// Styled, animated words (dashboard/gen/titles.js): each card plays its preset in and out on a small canvas; a tap puts
+// the title on the timeline at the playhead as a text clip, then the Inspector edits its words, color and font.
+const titleMatches = () => !S.q || `titles title lower third caption bar kinetic end card corner label ${TITLE_PRESETS.map((p) => `${p.label} ${p.about}`).join(' ')}`.toLowerCase().includes(S.q);
+const PV = { w: 640, h: 360, cards: new Set(), seen: new Set(), raf: 0 };
+const still = () => matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+function titlesSection() {
+  PV.cards.clear();
+  const reduce = still();
+  const cards = TITLE_PRESETS.map((p) => {
+    const cv = h('canvas', { class: 'title-pv', width: String(PV.w / 2), height: String(PV.h / 2), 'aria-label': `${p.label} preview` });
+    const clip = { id: `pv-${p.id}`, kind: 'text', title: p.id, text: p.sample.text, text2: p.sample.text2 || undefined, start: 0, in: 0, out: p.length };
+    const card = { cv, clip, p, reduce };
+    PV.cards.add(card);
+    io()?.observe(cv);
+    return h('button', { type: 'button', class: 'title-card', 'data-title': p.id, title: p.about, onclick: () => addTitle(p) }, cv,
+      h('span', { class: 'title-name' }, h('b', {}, p.label), h('span', { class: 'muted small' }, p.about)));
+  });
+  paintPreviews(performance.now());
+  return h('div', { class: 'cat titles' }, h('h3', {}, 'Titles'), h('p', { class: 'muted small tool-about' }, 'Animated words that come in and go out by themselves and stay inside the frame. Tap one to put it at the playhead, then change the words, color and font in the Inspector.'),
+    h('div', { class: 'title-grid' }, ...cards));
+}
+let IO = null;
+function io() {
+  if (IO || typeof IntersectionObserver === 'undefined') return IO;
+  IO = new IntersectionObserver((es) => { for (const e of es) (e.isIntersecting ? PV.seen.add(e.target) : PV.seen.delete(e.target)); if (PV.seen.size && !PV.raf) PV.raf = requestAnimationFrame(loop); });
+  return IO;
+}
+/** One shared animation frame loop (about 30 fps) for the cards in view; it stops when none is. No requests are made. */
+let lastPv = 0;
+function loop(now) {
+  PV.raf = 0;
+  const live = [...PV.cards].filter((c) => c.cv.isConnected && (PV.seen.has(c.cv) || !IO));
+  if (!live.length) return;
+  if (now - lastPv >= 33) { lastPv = now; paintPreviews(now, live); }
+  PV.raf = requestAnimationFrame(loop);
+}
+function paintPreviews(now, cards = [...PV.cards]) {
+  for (const c of cards) {
+    const g = c.cv.getContext('2d');
+    g.setTransform(0.5, 0, 0, 0.5, 0, 0);
+    const bg = g.createLinearGradient(0, 0, PV.w, PV.h); bg.addColorStop(0, '#2b3350'); bg.addColorStop(1, '#161a26');
+    g.globalAlpha = 1; g.fillStyle = bg; g.fillRect(0, 0, PV.w, PV.h);
+    const t = c.reduce ? c.p.length / 2 : previewTime(c.p, now / 1000);
+    drawTitle(g, c.clip, t, PV.w, PV.h);
+  }
+}
+if (typeof document !== 'undefined') document.fonts?.addEventListener?.('loadingdone', () => { clearTitleCache(); paintPreviews(performance.now()); });
+
+/** Puts a preset on the timeline at the playhead (a text clip with `title`) and selects it. */
+export function addTitle(p, { start } = {}) {
+  if (P.kind === 'audio') { toast('Titles go in a video or a picture. Open one first.'); return null; }
+  const place = { title: p.id, ...(p.sample.text2 ? { text2: p.sample.text2 } : {}) };
+  const c = addClip({ kind: 'text', text: p.sample.text, seconds: p.length, start, place });
+  P.selection.clips = new Set([c.id]);
+  bus.emit('selection');
+  toast(`${p.label} added at ${Math.round((c.start ?? 0) * 10) / 10} s. Edit it in the Inspector.`);
+  return c;
+}
