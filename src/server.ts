@@ -44,6 +44,12 @@ server.listen(PORT, HOST, () => {
   queue.start();
   // RunPod's balance, every 2 minutes: an empty one is skipped instead of waited on (providers/gpu/credit.ts).
   void import('./providers/gpu/credit.ts').then((m) => m.startCreditWatch()).catch((e) => console.warn(`[gpu] ${e.message}`));
+  // Once per start: every RunPod endpoint keeps no warm worker and none idle past 60 s (providers/gpu/runpodIdle.ts).
+  void import('./providers/gpu/runpodIdle.ts').then((m) => m.applyIdleRule()).then((r) => {
+    if (!r) return;
+    for (const c of r.changed) console.log(`[gpu] RunPod ${c.name}: min ${c.from.min ?? 0}, idle ${c.from.idleTimeout ?? '?'} s -> min 0, idle ${c.to.idleTimeout} s`);
+    if (r.error) console.warn(`[gpu] RunPod idle rule: ${r.error}`);
+  }).catch((e) => console.warn(`[gpu] ${e.message}`));
   // The RunPod playtest endpoint's workers.max, every 2 minutes: the playtest lane follows it (playtester/runpodcap.ts).
   void Promise.all([import('./providers/playtester/runpodcap.ts'), import('./config.ts')])
     .then(([m, c]) => m.startEndpointWatch(() => c.loadSettings().playtest.runpod.url)).catch((e) => console.warn(`[playtest] ${e.message}`));
