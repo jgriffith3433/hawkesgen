@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, liveRegionLast, SETTINGS_DEFAULTS, MODAL_ENDPOINT, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
+import { paths, SETTINGS_DEFAULTS, MODAL_ENDPOINT, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
 import { gcpTokens } from '../gcp/gcs.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { isDown } from '../gpu/health.ts';
@@ -103,9 +103,25 @@ export function cloudPlaytestsFor(project: string | null | undefined, settings: 
     // The CPU service's other regions: each has its own Cloud Run CPU quota (settings.playtest.cloudrunCpu.extra).
     const cpus = [one, ...(t.cloudrunCpu.extra ?? []).map((x) => ({ ...one, url: x.url, region: x.region, maxInstances: x.maxInstances }))];
     const live = settings.unityBuild?.gcp?.liveRegion ?? SETTINGS_DEFAULTS.unityBuild.gcp.liveRegion;
-    out.push(...liveRegionLast(cpus, live, (c) => c.region));
+    out.push(...spareLiveRegion(cpus, live));
   }
   return out;
+}
+
+/** CPU playtest browsers the live region may run at once when it is the only region the CPU service has. */
+export const LIVE_REGION_CPU_INSTANCES = 1;
+/**
+ * The CPU service's regions without starving the live one (settings.unityBuild.gcp.liveRegion), where live Gen and
+ * Studio run. Trying it last wasn't enough: under load every region's lane fills, so the live region's 4 instances of
+ * 4 vCPU took 16 of us-east4's 20 vCPU and Studio's own server couldn't start a new revision (2026-11-11, with RunPod
+ * out of credit sending every playtest here). With another region to play in, the live one isn't used at all; when it
+ * is the only one, it runs at most LIVE_REGION_CPU_INSTANCES browser instance.
+ */
+export function spareLiveRegion<T extends { region: string; maxInstances: number }>(cpus: T[], live: string | null | undefined): T[] {
+  if (!live) return cpus;
+  const others = cpus.filter((c) => c.region !== live);
+  if (others.length) return others;
+  return cpus.map((c) => ({ ...c, maxInstances: Math.min(c.maxInstances, LIVE_REGION_CPU_INSTANCES) }));
 }
 
 const VARIANT_OF: Record<PlaytestProvider, Variant> = { runpod: 'runpod', modal: 'modal', cloudrun: 'gpu', 'cloudrun-cpu': 'cpu' };
