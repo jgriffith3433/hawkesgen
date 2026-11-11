@@ -2678,7 +2678,7 @@ installPlaytest({
       const editorInput = document.querySelector('#aiInput');
       const editorInputRadius = editorInput ? getComputedStyle(editorInput).borderRadius : '';
 
-      // Check toolbar icons across .bar, .transport, #toolbar, .tl-bar.
+      // Check toolbar icons across .bar, .transport, #toolbar, .tl-bar: one stroke family at 16px or 20px only.
       const toolbarIcons = [...document.querySelectorAll('.bar .ico svg, .bar .ico-wrap svg, .transport .ico svg, .transport .ico-wrap svg, #toolbar .ico svg, #toolbar .ico-wrap svg, .tl-bar .ico svg, .tl-bar .ico-wrap svg')]
         .filter((svg) => visibleEl(svg));
       let badIcons = 0;
@@ -2689,7 +2689,8 @@ installPlaytest({
         const stroke = svg.getAttribute('stroke') === 'currentColor';
         const sw = svg.getAttribute('stroke-width') === '1.8';
         const noFill = (svg.getAttribute('fill') === 'none' || cs.fill === 'none') && !svg.querySelector('[fill="currentColor"]');
-        if (w !== 16 || h !== 16 || !stroke || !sw || !noFill) {
+        const sizeOk = (w === 16 || w === 20) && w === h;
+        if (!sizeOk || !stroke || !sw || !noFill) {
           badIcons++;
           t.problem('bug', `toolbar icon mismatch (${w}x${h}, stroke=${svg.getAttribute('stroke')}, sw=${svg.getAttribute('stroke-width')}): ${svg.closest('button')?.id || svg.closest('button')?.textContent?.trim() || 'icon'}`);
         }
@@ -2697,6 +2698,56 @@ installPlaytest({
       t.metric('toolbarIconsChecked', toolbarIcons.length);
       t.metric('toolbarIconsConsistent', toolbarIcons.length > 0 && badIcons === 0 ? 1 : 0);
       problems += badIcons;
+
+      // Every visible button carries one of the four variant classes; icon-only buttons need aria-label.
+      const variantRe = /\b(primary|secondary|ghost|danger)\b/;
+      const pageButtons = [...document.querySelectorAll('button, a.btn')].filter((b) => visibleEl(b));
+      let badVariant = 0, badAria = 0;
+      for (const b of pageButtons) {
+        if (!variantRe.test(b.className)) {
+          badVariant++;
+          t.problem('bug', `button missing variant class: ${b.id || b.className || b.textContent?.trim()?.slice(0, 40) || 'button'}`);
+        }
+        const labelText = (b.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!labelText && !b.getAttribute('aria-label')) {
+          badAria++;
+          t.problem('bug', `icon-only button missing aria-label: ${b.id || b.className || 'button'}`);
+        }
+      }
+      t.metric('buttonsChecked', pageButtons.length);
+      t.metric('buttonsMissingVariant', badVariant);
+      t.metric('iconButtonsMissingAria', badAria);
+      problems += badVariant + badAria;
+
+      // Focus ring: focus with focusVisible so :focus-visible rules apply (same path as Tab).
+      const focusables = [...document.querySelectorAll('button, a, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+        .filter((el) => visibleEl(el) && !el.disabled && el.tabIndex !== -1);
+      let focusOk = 0, focusBad = 0;
+      const prev = document.activeElement;
+      const expectRing = getComputedStyle(document.documentElement).getPropertyValue('--focus-ring').trim();
+      const expectBorder = getComputedStyle(document.documentElement).getPropertyValue('--focus-border').trim() || getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+      for (const el of focusables.slice(0, 12)) {
+        try { el.focus({ preventScroll: true, focusVisible: true }); } catch { try { el.focus({ preventScroll: true }); } catch { continue; } }
+        if (document.activeElement !== el) continue;
+        const cs = getComputedStyle(el);
+        const ring = (cs.boxShadow || '').replace(/\s+/g, ' ');
+        const border = (cs.borderColor || '').replace(/\s+/g, ' ');
+        const accentRgb = expectBorder.startsWith('#') ? '' : expectBorder;
+        const hasRing = ring && ring !== 'none' && (
+          (expectRing && ring.includes('rgb'))
+          || border.includes('139') || border.includes('123')
+          || (accentRgb && border.includes(accentRgb))
+        );
+        if (hasRing) focusOk++;
+        else {
+          focusBad++;
+          t.problem('bug', `no visible focus ring on ${el.id || el.tagName.toLowerCase()}.${(el.className || '').toString().split(/\s+/).slice(0, 2).join('.')}`);
+        }
+      }
+      try { prev?.focus?.({ preventScroll: true }); } catch { /* */ }
+      t.metric('focusRingOk', focusOk);
+      t.metric('focusRingMissing', focusBad);
+      problems += focusBad;
 
       // Verify button variants (primary, secondary, ghost, danger), input, chip and card share tokens.
       // Probe primary background is the cross-page colour check (emptyAsk hides once the stage has clips).

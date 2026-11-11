@@ -7,7 +7,7 @@
 // timeline stay on screen with a sheet below for Media, Create, the Inspector or the AI, and tiles drag onto the
 // timeline with a finger (dragdrop.js). Gen's own accounts (account.js). The admin dashboard is /admin.
 
-import { $, $$, h, toast, bus, ICON, icon } from './lib.js';
+import { $, $$, h, toast, bus, ICON, icon, installButtonVariants } from './lib.js';
 import { P, doUndo, doRedo, splitAt, deleteSelected, duplicateSelected, startSignedOut, startSync, remember, changed, save, takeLocal, copySelected, cutSelected, paste, stopClip } from './project.js';
 import { initPlayer, toggle, seek, closeSource, currentSource } from './player.js';
 import { initTimeline, popMenu, closeMenus, addText, fit, hoverAt, dropAt, checkAt } from './timeline.js';
@@ -35,6 +35,8 @@ import { initTrouble } from './trouble.js';
 
 // Icons in the markup: <span class="ico-wrap" data-icon="name">.
 for (const el of $$('.ico-wrap[data-icon]')) el.innerHTML = ICON[el.dataset.icon] ?? '';
+// Shared button variants + aria-labels for icon-only controls (acceptance: design tokens).
+installButtonVariants();
 
 initAccount();
 initTrouble();
