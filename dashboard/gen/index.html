@@ -26,6 +26,13 @@
     // With a hint, start the check now (parallel with the module graph); account.js loadMe() reuses it.
     (function () {
       var hinted = false;
+      // A playtest run (?playtest=<id>) arrives with the test-session cookie already set by Studio's bot but never with the
+      // hg.in hint (a fresh browser, empty storage), so without it the bot stayed on the landing page, "stuck" at t=0.
+      // Set the hint for it, except the scenarios that play the signed-out path themselves (they clear it and expect no probe).
+      try {
+        var pt = new URLSearchParams(location.search).get('playtest');
+        if (pt && pt !== 'signedout' && pt !== 'first-paint') localStorage.setItem('hg.in', '1');
+      } catch (e) {}
       try { hinted = localStorage.getItem('hg.in') === '1'; } catch (e) {}
       if (hinted) {
         window.__hgMe = fetch('/v1/users/me', { credentials: 'same-origin' }).then(function (r) {
