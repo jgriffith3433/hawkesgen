@@ -121,13 +121,14 @@ export const softwareWhy = (base: string, passedOver: string[]) => `no GPU brows
  * deployed (docs/playtest-cloudrun.md), else, or when Cloud Run can't be reached, the playtesters and GPU servers as
  * before (openPlaytestHost). Null when no GPU browser is ready.
  */
-export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, game = false, tabs = 1, project, job, onUsage, clouds: given, fallback = true, site, passedOver: before = [] }: {
+export async function openGpuHost(pageUrl: string, step: (s: string) => void = () => {}, { startPlaytester = false, game = false, tabs = 1, project, job, onUsage, clouds: given, fallback = true, site, passedOver: before = [], signal }: {
   startPlaytester?: boolean; tabs?: number; project?: string | null; job?: string; onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void;
   /** A game (not a site crawl): software WebGL tells nothing about it, so RunPod gets a longer cold start (GPU_COLD_START_MS). */ game?: boolean;
   /** Why the runner router already left GPU runners out (runners.ts skipped): said again when the run lands in software. */ passedOver?: string[];
   /** The browser services to try, in order (the runner router's choice); else this project's from settings.playtest. */ clouds?: CloudPlaytest[];
   /** false: when none of them has a browser, null instead of the playtesters (customers' runs, builds the service serves). */ fallback?: boolean;
   /** A build each service serves itself (cloudrun.ts siteHeader). */ site?: string;
+  /** The job's: once cancelled, no further service is tried and no worker is waited for. */ signal?: AbortSignal;
 } = {}): Promise<PlaytestHost | null> {
   const { cloudPlaytestsFor, openCloudPlaytestHost, localPortsOf, providerDown, providerHealthKey, refusedForMoney } = await import('../playtester/cloudrun.ts');
   const { loadSettings } = await import('../../config.ts');
@@ -170,13 +171,15 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
   const end = Date.now() + 6 * 60_000;
   for (let round = 1; clouds.length; round++) {
     for (const [i, cloud] of clouds.entries()) {
+      if (signal?.aborted) throw new Error('cancelled while opening the browser');
       try {
         // RunPod gets its full wait on the first round: its cold start pulls the image on a new machine (minutes), and
         // moving on to software WebGL would leave the worker it started idle.
         const wait = connectWaitMs(cloud, round, { many, game });
-        const host = await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, site, step, onUsage, ...(wait ? { connectTimeoutMs: wait } : {}) });
+        const host = await openCloudPlaytestHost(cloud, { pageUrl, tabs, job, site, step, onUsage, signal, ...(wait ? { connectTimeoutMs: wait } : {}) });
         return host.software && passedOver.length ? { ...host, software: softwareWhy(host.software, passedOver) } : host;
       } catch (e: any) {
+        if (signal?.aborted) throw e;
         const why = String(e?.message ?? e);
         if (cloud.variant !== 'cpu') passedOver.push(`${cloud.name}: ${why.split('\n')[0].slice(0, 160)}`);
         // A router's runner that refused us cools down (runners.ts), so the next runs go elsewhere first.
@@ -194,7 +197,7 @@ export async function openGpuHost(pageUrl: string, step: (s: string) => void = (
     }
     if (!many || Date.now() >= end) break;
   }
-  if (!fallback) return null;
+  if (!fallback || signal?.aborted) return null;
   return openPlaytestHost(localPortsOf(pageUrl), step, { startPlaytester, tabs });
 }
 

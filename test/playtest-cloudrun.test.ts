@@ -227,6 +227,77 @@ test('connectOne: waits out a full (429) or starting (503) service, gives up on 
   await assert.rejects(pc.connectOne(full, { url: URL_ }, { deps, timeoutMs: 20_000 }), /429/);
 });
 
+test('connectOne: a cancel ends a cold start at once, and a browser that connects after it is closed (the worker is let go)', async () => {
+  // A RunPod gateway holding the handshake while a worker cold-starts: connect resolves only when the test says.
+  let resolveConnect: (b: any) => void = () => {};
+  let closed = 0;
+  const browser = { close: async () => { closed++; } };
+  const slow = { connect: () => new Promise((r) => { resolveConnect = r; }) };
+  const ac = new AbortController();
+  const deps = { idToken: async () => 'tok', sleep: async () => {}, now: () => 0 };
+  const opening = pc.connectOne(slow, { url: URL_, variant: 'runpod' } as any, { deps, signal: ac.signal, env: {} } as any);
+  ac.abort();
+  await assert.rejects(opening, /cancelled/);
+  resolveConnect(browser);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(closed, 1, 'the late browser is closed, so its worker is released');
+  // Cancelled while waiting to try again after a 429: no further attempt.
+  let tries = 0;
+  const ac2 = new AbortController();
+  const full = { connect: async () => { tries++; throw new Error('429 Too Many Requests'); } };
+  const deps2 = { idToken: async () => 'tok', sleep: () => new Promise<void>(() => {}), now: () => 0 };
+  const waiting = pc.connectOne(full, { url: URL_ }, { deps: deps2, signal: ac2.signal });
+  await new Promise((r) => setImmediate(r));
+  ac2.abort();
+  await assert.rejects(waiting, /cancelled/);
+  assert.equal(tries, 1);
+  // Already cancelled: nothing is asked of the service.
+  let asked = 0;
+  await assert.rejects(pc.connectOne({ connect: async () => { asked++; return browser; } }, { url: URL_ }, { deps, signal: AbortSignal.abort() }), /cancelled/);
+  assert.equal(asked, 0);
+});
+
+test('random steps: every GPU browser a playtest connects is used by a live playtest or closed; nothing is asked after a cancel', async () => {
+  for (const first of [20261111, 7, 4242]) {
+    let seed = first;
+    const rand = () => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
+    const runs: { ac: AbortController; opened: any[]; result?: any; failed?: boolean; askedAfterCancel: number; cancelledAt?: number }[] = [];
+    const pending: Promise<void>[] = [];
+    for (let i = 0; i < 40; i++) {
+      const ac = new AbortController();
+      const run = { ac, opened: [] as any[], askedAfterCancel: 0 } as (typeof runs)[number];
+      runs.push(run);
+      const chromium = {
+        // Each try: refused (429 or 503) or a browser after a random cold start; a refusal of another kind ends it.
+        connect: () => {
+          if (ac.signal.aborted) run.askedAfterCancel++;
+          const r = rand();
+          return new Promise((resolve, reject) => setTimeout(() => {
+            if (r < 0.3) return reject(new Error('429 Too Many Requests'));
+            if (r < 0.4) return reject(new Error('Unexpected server response: 503'));
+            if (r < 0.45) return reject(new Error('Unexpected server response: 403'));
+            const b = { closed: false, close: async () => { b.closed = true; } };
+            run.opened.push(b);
+            resolve(b);
+          }, Math.floor(rand() * 8)));
+        },
+      };
+      const deps = { idToken: async () => 'tok', sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, Math.min(ms, 3))), now: () => 0 };
+      pending.push(pc.connectOne(chromium, { url: URL_ }, { deps, signal: ac.signal, timeoutMs: 10 ** 9 }).then((b) => { run.result = b; }, () => { run.failed = true; }));
+      // Cancel some of them at a random moment: before, during or after the cold start.
+      if (rand() < 0.5) setTimeout(() => { run.cancelledAt = Date.now(); ac.abort(); }, Math.floor(rand() * 12));
+    }
+    await Promise.all(pending);
+    await new Promise((r) => setTimeout(r, 30)); // late connects land
+    for (const [i, r] of runs.entries()) {
+      for (const b of r.opened) assert.ok(b === r.result || b.closed, `seed ${first} run ${i}: a connected browser was neither used nor closed`);
+      if (r.result && r.ac.signal.aborted) assert.ok(r.result.closed || r.cancelledAt !== undefined, `seed ${first} run ${i}`);
+      if (r.cancelledAt !== undefined && !r.result) assert.equal(r.opened.filter((b) => !b.closed).length, 0, `seed ${first} run ${i}: a cancelled playtest holds no browser`);
+      assert.ok(r.askedAfterCancel <= 0, `seed ${first} run ${i}: asked the service ${r.askedAfterCancel} time(s) after the cancel`);
+    }
+  }
+});
+
 test('BrowserPool: a browser per tab, a free one reused, all closed together; a failed open closes the rest', async () => {
   const made: any[] = [];
   const mk = () => {
