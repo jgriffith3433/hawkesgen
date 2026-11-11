@@ -7,10 +7,10 @@
 // With no runners set, web runs keep today's order (settings.playtest.backend: RunPod, the L4 service, the CPU service,
 // as cloudPlaytestsFor says) as implicit entries, and desktop targets have nowhere to play.
 import type { PlaytestProvider, PlaytestRunner, PlaytestTarget, Settings } from '../../config.ts';
-import { PLAYTEST_PROVIDERS, env } from '../../config.ts';
+import { PLAYTEST_PROVIDERS, SETTINGS_DEFAULTS, env } from '../../config.ts';
 import { isDown } from '../gpu/health.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
-import { cloudPlaytestsFor, gpuProvidersNotSetUp, runpodPlaytest, modalPlaytest, providerOfVariant, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
+import { cloudPlaytestsFor, LIVE_REGION_CPU_INSTANCES, gpuProvidersNotSetUp, runpodPlaytest, modalPlaytest, providerOfVariant, loadSpec, SPEC_FILE, specPricePerSecond, CPU_SOFTWARE_WHY, type CloudPlaytest, type ServiceSpec } from './cloudrun.ts';
 
 export type Lane = 'studio' | 'customer';
 export type RunnerChoice =
@@ -91,16 +91,31 @@ export function browserService(r: PlaytestRunner, settings: Pick<Settings, 'play
     if (!url) return null;
     let spec: ServiceSpec | null = specs[v] ?? null;
     try { spec ??= loadSpec(SPEC_FILE(v)); } catch { spec = null; }
-    base = { ...conf, url, pricePerSecond: spec ? specPricePerSecond(spec) : 0, region: spec?.region ?? '', name: spec?.name ?? r.id, variant: v,
+    // The region is the one the URL is deployed in: an extra region's own entry (settings.playtest.cloudrunCpu.extra), else the spec's.
+    const region = (v === 'cpu' ? t.cloudrunCpu.extra?.find((x) => x.url === url)?.region : undefined) ?? spec?.region ?? '';
+    base = { ...conf, url, pricePerSecond: spec ? specPricePerSecond(spec) : 0, region, name: spec?.name ?? r.id, variant: v,
       slow: v === 'cpu' ? Math.max(1, Number(spec?.slow) || 2) : 1, software: v === 'cpu' ? CPU_SOFTWARE_WHY : null };
   }
-  // The entry's own numbers win: its price is per run (a tab), its cap the tabs it plays at once.
+  // The entry's own numbers win: its price is per run (a tab), its cap the tabs it plays at once, except in the live region.
   const tabs = Math.max(1, base.tabsPerInstance);
   return {
     ...base, name: r.id,
     pricePerSecond: r.pricePerSecond > 0 ? r.pricePerSecond * tabs : base.pricePerSecond,
-    maxInstances: Math.max(1, Math.ceil(r.maxConcurrent / tabs)),
+    maxInstances: Math.max(1, Math.ceil(runnerCap(r, base, settings) / tabs)),
   };
+}
+
+/**
+ * The runs a runner may play at once: its own maxConcurrent, but a CPU browser runner in the live services' region
+ * (settings.unityBuild.gcp.liveRegion) plays at most LIVE_REGION_CPU_INSTANCES instances' worth, as the implicit lanes
+ * do (cloudrun.ts spareLiveRegion). 2026-11-11: runners listed in settings.playtest.runners skipped that cap, and CPU
+ * browsers held 16 of us-east4's 20 vCPU while Studio's own server couldn't start there.
+ */
+export function runnerCap(r: PlaytestRunner, svc: Pick<CloudPlaytest, 'variant' | 'region' | 'tabsPerInstance'> | null | undefined, settings: Pick<Settings, 'playtest'> & { unityBuild?: { gcp?: { liveRegion?: string } } }): number {
+  if (!svc || svc.variant !== 'cpu') return r.maxConcurrent;
+  const live = settings.unityBuild?.gcp?.liveRegion ?? SETTINGS_DEFAULTS.unityBuild.gcp.liveRegion;
+  if (!live || svc.region !== live) return r.maxConcurrent;
+  return Math.min(r.maxConcurrent, LIVE_REGION_CPU_INSTANCES * Math.max(1, svc.tabsPerInstance));
 }
 
 /** The runners ids this job already failed on (it moves on from them): labels.runnersTried. */
@@ -166,8 +181,9 @@ export function runnerCandidates(
       if (!svc) { skipped.push(`${r.id}: no URL (set it, or the ${r.provider} service in settings.playtest)`); continue; }
       choice = { kind: 'browser', runner: r, cloud: { ...svc, runner: r.id } };
     }
-    if (activeOn(r.id) >= r.maxConcurrent) {
-      skipped.push(`${r.id}: full (${activeOn(r.id)} of ${r.maxConcurrent} runs)`);
+    const cap = choice.kind === 'browser' ? runnerCap(r, choice.cloud, settings) : r.maxConcurrent;
+    if (activeOn(r.id) >= cap) {
+      skipped.push(`${r.id}: full (${activeOn(r.id)} of ${cap} runs)`);
       full.push(choice);
     } else room.push(choice);
   }
