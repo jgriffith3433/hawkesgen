@@ -739,6 +739,20 @@ class Queue {
   async drain(maxMs: number): Promise<number> {
     this.draining = true;
     const left = () => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'").get() as { n: number }).n;
+    // Mark what is running as cut off by a planned stop BEFORE waiting: Cloud Run kills the instance 10 s after SIGTERM (and
+    // a newer instance may read the database first), so a mark made only after the wait was often never written, and the
+    // next start counted the deploy as a crash (2026-11-10: a Unity build "interrupted 5 times"). A job that finishes
+    // during the wait is no longer running, so its mark is never read.
+    const mark = () => {
+      for (const j of listJobs({ status: 'running', limit: 500 })) {
+        if (j.labels?.drained) continue;
+        j.labels = { ...j.labels, drained: Date.now() };
+        j.log.push('Hawkes Gen is restarting: this job will be picked up again');
+        save(j, ['labels', 'log']);
+      }
+      flushLogs();
+    };
+    mark();
     if (left() > 0 && maxMs > 0) {
       await new Promise<void>((resolve) => {
         let t: NodeJS.Timeout;
@@ -749,14 +763,7 @@ class Queue {
       });
     }
     const n = left();
-    if (n) {
-      for (const j of listJobs({ status: 'running', limit: 500 })) {
-        j.labels = { ...j.labels, drained: Date.now() };
-        j.log.push('Hawkes Gen is restarting: this job will be picked up again');
-        save(j, ['labels', 'log']);
-      }
-      flushLogs();
-    }
+    if (n) mark();
     return n;
   }
 
