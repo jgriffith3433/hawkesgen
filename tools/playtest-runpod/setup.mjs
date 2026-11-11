@@ -24,7 +24,7 @@ const name = arg('name', 'hawkes-gen-playtest');
 const gpus = arg('gpu', 'AMPERE_16,AMPERE_24');
 const max = Math.max(1, Math.min(10, Number(arg('max', '2')) || 2));
 const tabs = Math.max(1, Math.min(8, Number(arg('tabs', '2')) || 2));
-const idle = Math.max(5, Math.min(3600, Number(arg('idle', '60')) || 60));
+const idle = Math.max(5, Math.min(60, Number(arg('idle', '60')) || 60)); // at most runpod-v2.mjs IDLE_SECONDS
 const key = secret('RUNPOD_API_KEY');
 const token = secret('PLAYTEST_RUNPOD_TOKEN') || secret('GPU_WORKER_TOKEN');
 

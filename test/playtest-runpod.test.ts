@@ -365,3 +365,8 @@ test('the RunPod lane follows the endpoint\'s own workers.max once read; setting
   assert.equal((await cap.checkRunpodEndpointMax(RP, (k) => (ENV as any)[k], huge))?.max, cap.MAX_WORKERS);
   cap.setRunpodEndpointMax(null);
 });
+
+test('a RunPod playtest idle setting above 60 s is held to 60 (no warm idle workers, J 2026-11-11)', () => {
+  const s = saveSettings({ playtest: { backend: 'runpod', runpod: { url: `${RP}/`, maxInstances: 2, tabsPerInstance: 2, gpu: 'RTX A4000', pricePerHour: 0.58, idleSeconds: 900 } } } as any);
+  assert.equal(s.playtest.runpod.idleSeconds, 60);
+});

@@ -455,7 +455,8 @@ function cleanPlaytest(t: Partial<Settings['playtest']> | undefined): Settings['
         url,
         gpu: typeof r.gpu === 'string' && /^[A-Za-z0-9 ._-]{1,60}$/.test(r.gpu) ? r.gpu : d.runpod.gpu,
         pricePerHour: Number.isFinite(price) && price >= 0 && price <= 20 ? price : d.runpod.pricePerHour,
-        idleSeconds: Math.max(5, Math.min(3600, Math.round(Number(r.idleSeconds)) || d.runpod.idleSeconds)),
+        // At most 60 s (tools/gpu-providers/runpod-v2.mjs IDLE_SECONDS): a RunPod worker bills until it runs out.
+        idleSeconds: Math.max(5, Math.min(60, Math.round(Number(r.idleSeconds)) || d.runpod.idleSeconds)),
         workerQuota: n(r.workerQuota, 1, 1000, d.runpod.workerQuota),
       };
     })(),

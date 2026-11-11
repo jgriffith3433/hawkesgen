@@ -2,7 +2,7 @@
 // (or this file directly). Prints the plan; --apply makes (or brings up to date) the template and the load-balancer
 // endpoint, and with --dc <data center> a 50 GB network volume there if none of that name exists.
 //
-//   --image ghcr.io/jgriffith3433/hawkes-gen-gpu:unity-render-latest   --max 10   --idle 300   --disk 50   --volume-gb 50
+//   --image ghcr.io/jgriffith3433/hawkes-gen-gpu:unity-render-latest   --max 10   --idle 60   --disk 50   --volume-gb 50
 //   --dc <RunPod data center id, e.g. US-KS-2>   --volume <existing volume id>   --endpoint <id> (print Gen's settings entry)
 //
 // GPUs: exact models with proven graphics on RunPod (the playtest endpoint's list: RTX A4000, RTX A4500, RTX 4000 Ada),
@@ -16,7 +16,7 @@ import { runpod, upsertTemplate, findEndpoint, lbEndpoint, readCatalog, gpuFor }
 const name = arg('name', 'hawkes-gen-unity-render');
 const image = arg('image', 'ghcr.io/jgriffith3433/hawkes-gen-gpu:unity-render-latest');
 const max = Number(arg('max', '10'));
-const idle = Number(arg('idle', '300'));
+const idle = Number(arg('idle', '60')); // at most runpod-v2.mjs IDLE_SECONDS (lbEndpoint)
 const disk = Number(arg('disk', '50'));
 const volumeGb = Number(arg('volume-gb', '50'));
 const dc = arg('dc');
