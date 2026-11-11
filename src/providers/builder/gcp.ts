@@ -209,8 +209,50 @@ export async function getExecution(name: string) {
   return executionState(await gapi(`https://run.googleapis.com/v2/${name}`));
 }
 
+/**
+ * Takes a queued execution (no machine yet) out of Cloud Run so it never starts: 'dropped' (deleted, or already gone),
+ * 'started' (it has a machine: left alone) or 'unknown' (Cloud Run couldn't be asked, or refused). Cloud Run refuses to
+ * cancel an execution that hasn't started ("not running"), so a queued one can only be deleted. 2026-11-11: Gen's
+ * cancel ignored that refusal, so every build moved away from a full region, cancelled or past its time left its old
+ * execution queued; 77 Unity builds sat waiting in us-west1 and took its quota from everything else.
+ */
+export async function dropQueued(name: string, api: typeof gapi = gapi): Promise<'dropped' | 'started' | 'unknown'> {
+  const url = `https://run.googleapis.com/v2/${name}`;
+  const e = await api(url, { missingOk: true }).catch(() => undefined);
+  if (e === null || e?.deleteTime) return 'dropped';
+  if (e === undefined) return 'unknown';
+  if (e.startTime || e.completionTime) return 'started';
+  try {
+    await api(url, { method: 'DELETE', missingOk: true });
+    return 'dropped';
+  } catch {
+    // It may have got a machine between the two calls (Cloud Run won't delete a running execution).
+    const after = await api(url, { missingOk: true }).catch(() => undefined);
+    if (after === null || after?.deleteTime) return 'dropped';
+    return after?.startTime || after?.completionTime ? 'started' : 'unknown';
+  }
+}
+
+/**
+ * Ends an execution whatever its state: a running one is cancelled, a queued one deleted (dropQueued), a finished or
+ * missing one is left as it is. True when it has ended or is on its way out, false when it is still there.
+ */
+export async function endExecution(name: string, api: typeof gapi = gapi): Promise<boolean> {
+  const url = `https://run.googleapis.com/v2/${name}`;
+  const e = await api(url, { missingOk: true }).catch(() => undefined);
+  if (e === null || e?.completionTime || e?.deleteTime) return true;
+  if (e && !e.startTime && (await dropQueued(name, api)) === 'dropped') return true;
+  try {
+    await api(`${url}:cancel`, { body: {} });
+    return true;
+  } catch {
+    return (await dropQueued(name, api)) === 'dropped';
+  }
+}
+
+/** Ends an execution (endExecution), never throwing: the end paths of a build call it on their way out. */
 export async function cancelExecution(name: string) {
-  await gapi(`https://run.googleapis.com/v2/${name}:cancel`, { body: {} }).catch(() => {});
+  return endExecution(name).catch(() => false);
 }
 
 // -------------------------------------------------------------- Cloud Logging

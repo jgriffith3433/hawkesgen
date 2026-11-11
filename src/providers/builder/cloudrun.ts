@@ -21,7 +21,7 @@ import {
   type BuildSpec, type BuildHooks, UNITY_EXCLUDE, SITE_EXCLUDE, standIn, unityVersionOf, localPackages, repoOf, walk, localGit,
   progressOf, LICENSE_RE, HARD_LICENSE_RE, applyPulledSite, proc, TAR, mb, localFile,
 } from './builder.ts';
-import { gcsWrite, gcsRead, gcsDownload, gcsList, gcsDelete, runJob, getExecution, cancelExecution, executionLogs, jobExists, regionOfExecution, type CloudRunTarget } from './gcp.ts';
+import { gcsWrite, gcsRead, gcsDownload, gcsList, gcsDelete, runJob, getExecution, cancelExecution, dropQueued, executionLogs, jobExists, regionOfExecution, type CloudRunTarget } from './gcp.ts';
 import {
   cacheKeys, cacheRepo, cacheStateOf, recordBuild, shouldRunClean, failureKind, parseCloudResult, forgetCache, stubFolderOf,
   siteInputKeep, STUB, type CloudResult,
@@ -141,7 +141,29 @@ type CloudJob = {
   execution: string; prefix: string; started: number; repo: string; saveKey: string | null; stateKey: string; clean: boolean;
   /** The machine it runs on (customer builds' sizes, sizes.ts): what it is priced at, also after a Gen restart. */
   machine?: { name: string; cpu: number; memoryGiB: number };
+  /** Executions this job started before the current one (it moved away from a full region): each was taken out when it
+   *  moved, and every way the build ends takes them out again, so a job never leaves one behind. */
+  earlier?: string[];
 };
+
+/** Every execution a job started, ended (running: cancelled; queued: deleted). */
+async function endAll(j: CloudJob) {
+  for (const e of [...(j.earlier ?? []), j.execution]) await cancelExecution(e);
+}
+
+/**
+ * A unity.build job that ended without its run finishing it (cancelled while no run in this process followed it, or
+ * failed after too many restarts): its executions are ended and its notes cleared, so nothing it started stays queued.
+ */
+export async function endCloudBuild(jobId: string) {
+  const bucket = cloudConfig().gcp.bucket;
+  const job = await loadJob(jobId, bucket);
+  if (!job) return false;
+  await endAll(job);
+  fs.rmSync(jobFile(jobId), { force: true });
+  await gcsDelete(bucket, jobKey(jobId)).catch(() => {});
+  return true;
+}
 const jobFile = (jobId: string) => path.join(paths.builder, 'cloud-jobs', `${jobId}.json`);
 // The running execution is noted here and next to the build's spec in the bucket: on Cloud Run this folder is the
 // instance's memory, so a replaced instance found no note, started the build again beside the one still running, and
@@ -477,9 +499,11 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
   const follow = progressFollower(hooks);
   let state: Awaited<ReturnType<typeof getExecution>> = finished ? ({ done: true, started: '', completed: '', message: finished.message ?? '', cancelled: false } as any) : await getExecution(job.execution);
   if (!finished) hooks.step('waiting for the cloud machine');
+  // When a build still waiting for a machine moves to the next region (CAPACITY_WAIT_MS after it started).
+  let moveAt = job.started + CAPACITY_WAIT_MS;
   while (!finished) {
     if (hooks.signal?.aborted) {
-      await cancelExecution(job.execution);
+      await endAll(job);
       fs.rmSync(jobFile(jobId), { force: true });
       fs.rmSync(tmp, { recursive: true, force: true });
       throw fail('cancelled', 'cancelled');
@@ -494,38 +518,49 @@ export async function runCloudBuild(jobId: string, spec: BuildSpec, hooks: Build
     if (state.done) break;
     // No machine free in this region: hand the build to the next region that has the job (only while this process has
     // the env it started with; a resumed follow just waits).
-    if (state.waitingForCapacity && startEnvs && Date.now() - job.started > CAPACITY_WAIT_MS) {
+    if (state.waitingForCapacity && startEnvs && Date.now() > moveAt) {
       const at = regions.indexOf(regionOfExecution(job.execution));
       if (at >= 0 && at < regions.length - 1) {
-        try {
-          // Cancelled first, and only moved when it really never started: a machine that came free meanwhile keeps the
-          // build here (two executions of one build would share its output and cache, and take two license seats).
-          await cancelExecution(job.execution);
-          const now = await getExecution(job.execution).catch(() => state);
-          if (now.started || now.running) { hooks.log(`${regionOfExecution(job.execution)} found a machine just as the build was moving; it stays there`); state = now; continue; }
-          const next = await startInRegion(regions, at + 1, baseTarget, startEnvs, cfg.timeoutMinutes, !!spec.customer, hooks);
-          hooks.log(`${regionOfExecution(job.execution)} had no machine free for ${Math.round((Date.now() - job.started) / 60_000)} min: moved the build to ${regionOfExecution(next.name)} (${next.name.split('/').pop()})`);
-          job = { ...job, execution: next.name, started: Date.now() };
-          await saveJob(jobId, job, cfg.gcp.bucket);
-          state = await getExecution(job.execution);
-          continue;
-        } catch (e: any) {
-          // The old execution was already cancelled: start it again where it was, so the build never just stops.
-          hooks.log(`(no other region could take the build: ${e.message}; starting it again in ${regions[at]})`);
+        const from = regionOfExecution(job.execution);
+        // Only a build whose execution is really gone moves: a queued one is deleted first (Cloud Run won't cancel it),
+        // one that got a machine meanwhile stays, and one that can't be taken out keeps waiting where it is rather than
+        // leave a second execution of the same build queued there (2026-11-11: 77 left in us-west1).
+        const out = await dropQueued(job.execution).catch(() => 'unknown' as const);
+        if (out === 'started') { hooks.log(`${from} found a machine just as the build was moving; it stays there`); state = await getExecution(job.execution).catch(() => state); continue; }
+        if (out !== 'dropped') {
+          hooks.log(`(couldn't take the waiting build out of ${from}, so it keeps waiting there instead of starting a second one)`);
+          moveAt = Date.now() + CAPACITY_WAIT_MS;
+        } else {
+          const earlier = [...(job.earlier ?? []), job.execution];
           try {
-            const again = await startInRegion(regions, at, baseTarget, startEnvs, cfg.timeoutMinutes, !!spec.customer, hooks);
-            job = { ...job, execution: again.name, started: Date.now() };
-            await saveJob(jobId, job, cfg.gcp.bucket);
-            state = await getExecution(job.execution);
-          } catch (e2: any) {
-            hooks.log(`(couldn't start it again: ${e2.message})`);
+            const next = await startInRegion(regions, at + 1, baseTarget, startEnvs, cfg.timeoutMinutes, !!spec.customer, hooks);
+            hooks.log(`${from} had no machine free for ${Math.round((Date.now() - job.started) / 60_000)} min: moved the build to ${regionOfExecution(next.name)} (${next.name.split('/').pop()})`);
+            job = { ...job, earlier, execution: next.name, started: Date.now() };
+          } catch (e: any) {
+            // The old execution is gone: start it again where it was, so the build never just stops.
+            hooks.log(`(no other region could take the build: ${e.message}; starting it again in ${regions[at]})`);
+            const envs = startEnvs;
+            // Started again here once only: a build that keeps waiting is not moved round in a loop.
+            startEnvs = null;
+            try {
+              const again = await startInRegion(regions, at, baseTarget, envs, cfg.timeoutMinutes, !!spec.customer, hooks);
+              job = { ...job, earlier, execution: again.name, started: Date.now() };
+            } catch (e2: any) {
+              fs.rmSync(jobFile(jobId), { force: true });
+              await gcsDelete(cfg.gcp.bucket, jobKey(jobId)).catch(() => {});
+              fs.rmSync(tmp, { recursive: true, force: true });
+              throw fail(`The build was waiting for a machine in ${from} and couldn't be started again anywhere: ${e2.message}`, 'builder');
+            }
           }
-          startEnvs = null;
+          await saveJob(jobId, job, cfg.gcp.bucket);
+          moveAt = job.started + CAPACITY_WAIT_MS;
+          state = await getExecution(job.execution).catch(() => state);
+          continue;
         }
       }
     }
     if (Date.now() > deadline) {
-      await cancelExecution(job.execution);
+      await endAll(job);
       fs.rmSync(jobFile(jobId), { force: true });
       recordBuild(job.repo, job.stateKey, { ok: false, failure: 'other', at: new Date().toISOString(), job: jobId, kind: 'timeout', clean: job.clean }, cfg.cleanAfterFailures);
       fs.rmSync(tmp, { recursive: true, force: true });
