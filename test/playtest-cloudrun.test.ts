@@ -448,7 +448,7 @@ test('CPU service settings: the cloudrun-cpu backend, its own URL and sizes, a l
   saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null } } } as any);
 });
 
-test('the CPU service in more regions: extra entries come in order, each with its region and size, the live region last; bad ones are dropped', () => {
+test('the CPU service in more regions: extra entries come in order, each with its region and size, the live region spared; bad ones are dropped', () => {
   const C2 = 'https://gen-playtest-cpu-388576319982.us-central1.run.app';
   try {
   const s = saveSettings({ playtest: { backend: 'cloudrun-cpu', cloudrunCpu: { url: CPU_URL, maxInstances: 4, tabsPerInstance: 1, extra: [
@@ -458,16 +458,19 @@ test('the CPU service in more regions: extra entries come in order, each with it
   ] } } } as any);
   assert.deepEqual(s.playtest.cloudrunCpu.extra, [{ url: C2, region: 'us-central1', maxInstances: 5 }]);
   const list = pc.cloudPlaytestsFor('x', s);
-  // us-east4 runs live Gen and Studio (settings.unityBuild.gcp.liveRegion): playtests take its CPU quota last.
-  assert.deepEqual(list.map((c) => [c.url, c.region, c.maxInstances]), [[C2, 'us-central1', 5], [CPU_URL, 'us-east4', 4]]);
+  // us-east4 runs live Gen and Studio (settings.unityBuild.gcp.liveRegion): with another region to play in, CPU
+  // playtests leave its CPU quota alone (2026-11-11: 16 of its 20 vCPU went to playtest browsers and Studio couldn't start).
+  assert.deepEqual(list.map((c) => [c.url, c.region, c.maxInstances]), [[C2, 'us-central1', 5]]);
   assert.ok(list.every((c) => c.variant === 'cpu' && c.slow === 2));
-  // The queue's lane is every region's tabs together: 4 + 5.
-  assert.equal(list.reduce((n, c) => n + pc.cloudLanes(c), 0), 9);
+  assert.equal(list.reduce((n, c) => n + pc.cloudLanes(c), 0), 5);
   // No live region: the first service, then the extra ones, as configured.
   assert.deepEqual(pc.cloudPlaytestsFor('x', { ...s, unityBuild: { ...s.unityBuild, gcp: { ...s.unityBuild.gcp, liveRegion: '' } } }).map((c) => c.region), ['us-east4', 'us-central1']);
   // The GPU services keep their place before software WebGL.
   const withL4 = pc.cloudPlaytestsFor('x', { ...s, playtest: { ...s.playtest, backend: 'cloudrun', cloudrun: { ...s.playtest.cloudrun, url: URL_ } } });
-  assert.deepEqual(withL4.map((c) => [c.name, c.region]), [['gen-playtest', withL4[0].region], ['gen-playtest-cpu', 'us-central1'], ['gen-playtest-cpu', 'us-east4']]);
+  assert.deepEqual(withL4.map((c) => [c.name, c.region]), [['gen-playtest', withL4[0].region], ['gen-playtest-cpu', 'us-central1']]);
+  // Only the live region: it plays, but with one browser instance at most, so live Gen and Studio keep room to start.
+  const onlyLive = pc.cloudPlaytestsFor('x', { ...s, playtest: { ...s.playtest, cloudrunCpu: { ...s.playtest.cloudrunCpu, extra: [] } } });
+  assert.deepEqual(onlyLive.map((c) => [c.region, c.maxInstances]), [['us-east4', pc.LIVE_REGION_CPU_INSTANCES]]);
   } finally {
     saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null, extra: [] } } } as any);
   }
@@ -485,7 +488,8 @@ test('cloudPlaytestsFor: cloudrun tries the L4 then the CPU service; cloudrun-cp
   assert.equal(cpu.url, CPU_URL);
   assert.equal(cpu.slow, 2);
   assert.match(cpu.software!, /SwiftShader/);
-  assert.equal(pc.cloudLanes(cpu), 4);
+  // The CPU service sits in the live region (us-east4) with no other region: one instance at most (spareLiveRegion).
+  assert.equal(pc.cloudLanes(cpu), pc.LIVE_REGION_CPU_INSTANCES);
   assert.equal(pc.cloudLaneKey(cpu), 'playtest-cloud-cpu');
   assert.equal(pc.cloudLaneKey(both[0]), 'playtest-cloud');
   assert.equal(both[0].software, null);
@@ -502,7 +506,7 @@ test('cloudPlaytestsFor: cloudrun tries the L4 then the CPU service; cloudrun-cp
 test('the queue: CPU service playtests take their own lane (playtest-cloud-cpu), counted apart from the L4', async () => {
   const { db } = await import('../src/db.ts');
   const { submit, queue } = await import('../src/jobs.ts');
-  saveSettings({ playtest: { backend: 'ec2', projects: { cpugame: 'cloudrun-cpu' }, cloudrunCpu: { url: CPU_URL, maxInstances: 2, tabsPerInstance: 1 } } } as any);
+  saveSettings({ playtest: { backend: 'ec2', projects: { cpugame: 'cloudrun-cpu' }, cloudrunCpu: { url: CPU_URL, maxInstances: 2, tabsPerInstance: 2 } } } as any);
   const q = queue as any;
   q.pump = () => {};
   const started: string[] = [];
@@ -517,7 +521,7 @@ test('the queue: CPU service playtests take their own lane (playtest-cloud-cpu),
   const b = play();
   const c = play();
   await q.fill();
-  assert.ok(started.includes(a.id) && started.includes(b.id), 'two instances, one tab each');
+  assert.ok(started.includes(a.id) && started.includes(b.id), 'one instance (the live region spares its CPU), two tabs');
   assert.ok(!started.includes(c.id), 'the third waits');
   assert.equal(q.lanes.get('playtest-cloud-cpu')?.size, 2);
   saveSettings({ playtest: { backend: 'ec2', projects: {}, cloudrunCpu: { url: null } } } as any);
