@@ -46,6 +46,11 @@ const TERMINAL = new Set(['won', 'lost', 'done', 'stuck', 'error']);
  * The page's cookies (the cookies param): at most 8, for https hosts, set Secure and HttpOnly before the page loads. Hawkes
  * Studio sends a short-lived beta-site pass (hawkes_pass / hawkes_pass_beta) so its playtests of beta sites get in.
  */
+export function tabCookies(p: { cookies?: unknown; [k: string]: unknown }) {
+  // The cookies param is access (a beta-site pass), not state, so a cold start (first-five, fresh) sets it too; the
+  // globals, storage and hints are what a cold start drops, so the page is still met as a stranger.
+  return pageCookies(p.cookies);
+}
 export function pageCookies(cookies: unknown): { name: string; value: string; domain: string; path: string; secure: true; httpOnly: true; sameSite: 'Lax' }[] {
   if (!Array.isArray(cookies)) return [];
   return cookies.filter((c: any) => c && /^[A-Za-z0-9_-]{1,64}$/.test(String(c.name)) && typeof c.value === 'string' && c.value.length <= 4096 && !/[;\s]/.test(c.value)
@@ -90,7 +95,7 @@ export const playtestRunTool: Tool = {
     exe: { type: 'string', description: 'Inside the build: the executable to launch (desktop targets; default: the runner finds the one executable) or the page to open (web; default index.html)', example: 'MyGame.exe' },
     args: { type: 'json', description: 'Command-line arguments for a desktop build: a list of strings (at most 32)', advanced: true, example: ['-screen-fullscreen', '0'] },
     scenario: { type: 'string', default: 'smoke', description: 'The contract scenario to play (the game lists them). "first-five" is built in and needs no contract: a cold player\'s first five minutes in any web game, played from what is on screen (terms, sign-in, menus, then the game); it reports milestones, taps, walls with the seconds they cost, developer panels and ftue.wordsMinuteOne.' },
-    fresh: { type: 'boolean', default: false, description: 'first-five: open the page cold (no cookies, globals, storage or hints; a scenario that is first-five always does)', advanced: true },
+    fresh: { type: 'boolean', default: false, description: 'first-five: open the page cold (no globals, storage or hints; a scenario that is first-five always does). The cookies param is still set: a beta-site pass is access, not state', advanced: true },
     milestones: { type: 'boolean', default: true, description: 'first-five: report milestone events (gameplay, first-input-accepted, first-success, tutorial-step:<x>)', advanced: true },
     seconds: { type: 'integer', default: 300, min: 30, max: 900, description: 'first-five: how long to play', advanced: true },
     mode: { type: 'enum', values: ['auto', 'contract', 'generic', 'site'], default: 'auto', description: 'auto: the contract if the page has it, else the generic smoke test' },
@@ -377,7 +382,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
         const pageGlobals = coldStart ? null : globalsScript(p.globals);
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
-        const jar = coldStart ? [] : pageCookies(p.cookies);
+        const jar = tabCookies(p);
         if (jar.length) await within(context.addCookies(jar), 15_000, 'preparing the tab');
         // The game pushes feel flags here the moment they happen (no polling); each worth it gets a screenshot.
         await within(context.exposeBinding(PUSH_BINDING, (_src: any, msg: any) => {
