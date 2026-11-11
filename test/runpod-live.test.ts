@@ -44,6 +44,10 @@ test('reads balance, spend per hour, workers and the last 24 hours', async () =>
   assert.equal(r?.last24h?.totalUsd, 5.7);
   assert.equal(r?.last24h?.endpoints[0].name, 'hawkes-gen-gpu');
   assert.equal(r?.error, null);
+  // 0 inProgress jobs on LOAD_BALANCER is normal while serving — never recycle for that; spendPerHour bills.
+  assert.match(r?.note ?? '', /LOAD_BALANCER/);
+  assert.match(r?.note ?? '', /do not recycle/i);
+  assert.match(r?.note ?? '', /spendPerHour/i);
 });
 
 test('a RunPod error comes back as error, without the key', async () => {

@@ -98,6 +98,8 @@ export const TRANSITIONS: Record<string, string> = {
   crossfade: 'fade', dissolve: 'dissolve', fadeblack: 'fadeblack', fadewhite: 'fadewhite',
   wipeleft: 'wipeleft', wiperight: 'wiperight', wipeup: 'wipeup', wipedown: 'wipedown',
   slideleft: 'slideleft', slideright: 'slideright', circleopen: 'circleopen', circleclose: 'circleclose',
+  // Push-left is drawn in the browser preview; compose approximates with slideleft when a plain cut still goes through ffmpeg.
+  push: 'slideleft',
 };
 
 const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);

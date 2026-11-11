@@ -487,8 +487,8 @@ print(json.dumps({"final": final, "steps": steps, "written": sorted(store.w), "e
 });
 
 test('cold: no headers is a worker still starting until the cold-start allowance, then capacity', async () => {
-  // Beta 2026-11-10: Pixal3D's worker on a cold hawkes-gen-gpu took longer than one LB hold. It was failing over at once
-  // as "zombies"; it is a start, waited out within the allowance, and only then handed on.
+  // Beta 2026-11-10: Pixal3D's worker on a cold hawkes-gen-gpu took longer than one LB hold. Failing over at the first
+  // hold aborted a real start; wait out the cold-start allowance (each POST still under the LB hold), then hand on.
   const { resetHealth, DEFAULT_COLD_WAIT_MS } = await import('../src/providers/gpu/health.ts');
   resetHealth();
   const fake = fakeCloud(succeed);

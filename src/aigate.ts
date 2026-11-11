@@ -5,6 +5,9 @@
 //   - a turn that has to wait is told its place in line (`onWait`, which the app shows: "In line, 2 ahead"),
 //   - and it gives up after `maxWaitMs` with a plain 503 that says where it stood. Nothing is charged for a turn that
 //     never ran (AI turns are billed from the answer, after the call).
+//   - A turn someone is waiting on (one with `who`) goes ahead of every waiting call of Gen's own (no `who`): a batch of
+//     background jobs (beta's starter remake queued 40) must not keep a player's Overseer answer silent for minutes
+//     (hawkesgenwebsite, 2026-11-10: "Add a red cube" sat 75 s with no word while those jobs held every slot).
 // Calls with no `who` (Gen's own jobs: reviews, judges, captions) keep the old rule: they wait their turn, with no bound.
 import { GenError } from './util.ts';
 
@@ -72,8 +75,10 @@ export function createGate(cap: () => number) {
         }, o.maxWaitMs);
         timer.unref?.();
       }
-      waiting.push(entry);
-      tell(entry, waiting.length - 1);
+      // People first: after the turns already waiting, ahead of Gen's own calls.
+      const at = who ? waiting.findIndex((e) => !e.who) : -1;
+      if (at >= 0) waiting.splice(at, 0, entry); else waiting.push(entry);
+      notify();
     });
   }
 

@@ -88,8 +88,16 @@ GPU", and 429/503 answers while it starts get the cold-start wait (`coldStartSec
 endpoint, RunPod's "failed to assign worker" and a headers/pre-worker timeout are the worker still starting too: each POST
 gives up before RunPod's ~5.5 minute load-balancer hold and the next goes in, until the cold-start wait runs out, then the
 endpoint cools as capacity. (2026-11-10: Pixal3D's worker took longer than one hold; failing over at the first one meant
-no 3D model could ever be made. RunPod's job counters stay 0 on LOAD_BALANCER endpoints, so "0 jobs" is not a stuck worker.) `waitForInstanceMs` is the short busy wait
-only when `lastOk` is fresh; true cold uses the longer cold-start wait. 401/403 fail over at once (auth cool).
+no 3D model could ever be made.) `waitForInstanceMs` is the short busy wait only when `lastOk` is fresh; true cold uses
+the longer cold-start wait. 401/403 fail over at once (auth cool).
+
+**RunPod LOAD_BALANCER job counters.** Gen's RunPod endpoints are load-balancer type: requests go straight to a worker,
+so RunPod's in-progress job counters stay **0 even while a worker is serving Gen**. That reading is normal, not a stuck
+or "zombie" worker, and it is **not a reason to recycle** (Jaycee, 2026-11-10: hawkes-gen-gpu showed idle/ready with
+0 jobs while `currentSpendPerHr` was 0). What bills is `currentSpendPerHr` / the fleet card's RunPod spend block
+(`GET /v1/fleet` → `runpod`, `src/providers/gpu/runpodLive.ts`). Leave idle workers alone; Gen's endpoint idle timeout
+and auto-prune handle them. `--recycle` below is only for warm workers still on an **old image** after an image swap
+(FlashBoot), not for 0-job counters.
 
 **Credit.** RunPod starts no worker for an account at or below $0, and its gateway doesn't say so: requests just wait
 (2026-11-01: four playtests sat at "opening a browser on RunPod"). Gen reads the balance every 2 minutes (`credit.ts`,
@@ -241,7 +249,8 @@ datacenter: pick one with L40S to spare.
 **A new image on RunPod** (2026-10-30): `node tools/gpu-providers/runpod.mjs --image ghcr.io/jgriffith3433/hawkes-gen-gpu:<tag>
 --update <endpoint id> --apply` swaps the image in the endpoint's own template (env, worker token and disk kept). New workers
 start on it, but **RunPod keeps reusing a warm worker on the old image** (FlashBoot): add `--recycle` to end those (a job
-running on one is cut off and retried). The tag is `<comfy tag>-<context hash>` (`image-context.mjs` prints it; line endings
+running on one is cut off and retried). That `--recycle` is only for the old-image case after a swap — not for idle
+workers whose LOAD_BALANCER job counters read 0 (see above). The tag is `<comfy tag>-<context hash>` (`image-context.mjs` prints it; line endings
 don't count, so a Windows checkout names the tag GitHub's build pushes). Check it exists before pointing an endpoint at it
 (`docker manifest inspect`): a missing tag leaves every new worker unhealthy and RunPod holds requests until they time out.
 The first start on a host pulls about 6 GB, minutes: true cold (429/503 while booting) gets the cold-start wait

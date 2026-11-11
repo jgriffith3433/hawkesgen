@@ -6,7 +6,7 @@ import { getAsset } from '../library.ts';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
-import { runCloudBuild, cloudConfig, cloudBuildStarted, forgetFinishedBuild, releaseFinishedBuild, regionsOf, type BuildOptions } from '../providers/builder/cloudrun.ts';
+import { runCloudBuild, cloudConfig, cloudBuildStarted, forgetFinishedBuild, releaseFinishedBuild, regionsOf, endCloudBuild, type BuildOptions } from '../providers/builder/cloudrun.ts';
 import { resolveMachine, nextBigger, customerJobForMachine, type Machine } from '../providers/builder/sizes.ts';
 import { isCustomerMode, admitCustomer, customerBuildOf, freshCustomerToken, dropCustomerSecrets, TOKEN_KIND, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
 import { refundOrgCharge } from '../orgcredits.ts';
@@ -89,6 +89,8 @@ export const unityBuild: Tool = {
     if (!['WebGL', 'StandaloneWindows64', 'Android'].includes(String(params.target ?? 'WebGL'))) throw new GenError('target must be one of WebGL, StandaloneWindows64, Android', { status: 400, kind: 'params' });
     return params;
   },
+  // A build cancelled or failed outside its run still had executions in Cloud Run: they are ended (none stays queued).
+  ended: (jobId: string) => endCloudBuild(jobId),
   async run(ctx) {
     const p = ctx.params;
     if (isCustomerMode(p)) return runCustomerBuild(ctx);

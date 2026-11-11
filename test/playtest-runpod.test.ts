@@ -175,6 +175,58 @@ test('the queue: RunPod playtests take their own lane (playtest-runpod) of max w
   saveSettings({ playtest: { backend: 'ec2', projects: {}, runpod: { url: null } } } as any);
 });
 
+test('the queue: Studio\'s provider order sends playtests to RunPod\'s lane while the default backend is ec2; a desktop-only runner leaves web runs there (2026-11-10)', async () => {
+  const { db } = await import('../src/db.ts');
+  const { submit, queue } = await import('../src/jobs.ts');
+  const q = queue as any;
+  q.pump = () => {};
+  const started: string[] = [];
+  q.runJob = (j: { id: string }) => {
+    started.push(j.id);
+    db.prepare("UPDATE jobs SET status = 'running' WHERE id = ?").run(j.id);
+    return new Promise(() => {});
+  };
+  const owner = { id: 'test', name: 'test', role: 'owner', projects: ['*'] } as any;
+  const reset = () => {
+    db.prepare("UPDATE jobs SET status = 'cancelled' WHERE status IN ('queued', 'running')").run();
+    for (const l of q.lanes.values()) l.clear();
+    q.tabs.clear();
+    q.laneProject.clear();
+    q.playtestLanes = new Map();
+    started.length = 0;
+  };
+  const play = (project: string) => submit(owner, { tool: 'playtest.run', project, params: { url: 'https://doseofdestruction.com/Game/' } });
+
+  // The backend is the default (ec2: the AWS playtesters, suspended) and no project has its own; Studio's capacity
+  // setting put RunPod first. Before the fix every playtest waited in the generic lane of one.
+  reset();
+  saveSettings({ playtest: { backend: 'ec2', projects: {}, order: ['runpod', 'cloudrun-cpu'], disabled: [], runners: [], runpod: { url: RP, maxInstances: 2, tabsPerInstance: 2 } } } as any);
+  const five = ['hawkes-games', 'sickofit', 'dose', 'yoobaland', 'hawkes-games'].map(play);
+  await q.fill();
+  assert.equal(started.length, 4, 'two workers, two browsers each');
+  assert.equal(q.lanes.get('playtest-runpod')?.size, 4);
+  assert.ok(!started.includes(five[4].id), 'the fifth waits for a browser');
+  assert.match(String(db.prepare('SELECT detail FROM jobs WHERE id = ?').get(five[4].id) && (db.prepare('SELECT detail FROM jobs WHERE id = ?').get(five[4].id) as any).detail), /4 of 4 playtest browser tabs/);
+  assert.deepEqual(q.tabsInUse(), { used: 4, limit: 4 }, 'what /v1/playtests/live reports is the lane they wait on');
+
+  // A runner that plays only desktop builds: web runs still play on the browser services (runnersFor), in their lane.
+  reset();
+  saveSettings({ playtest: { runners: [{ id: 'win', provider: 'native', url: 'https://runner.example.com', targets: ['windows'], maxConcurrent: 1 }] } } as any);
+  ['hawkes-games', 'sickofit', 'dose'].map(play);
+  await q.fill();
+  assert.equal(started.length, 3, 'web runs keep RunPod\'s four browsers');
+  assert.equal(q.lanes.get('playtest-runpod')?.size, 3);
+
+  // No browser service anywhere (no order, ec2): the generic lane, as before.
+  reset();
+  saveSettings({ playtest: { backend: 'ec2', projects: {}, order: [], runners: [], runpod: { url: null } } } as any);
+  q.gpuSeen = { at: Date.now(), ready: false, limit: 3 };
+  ['hawkes-games', 'sickofit'].map(play);
+  await q.fill();
+  assert.equal(started.length, 1, 'one at a time without playtesters');
+  reset();
+});
+
 // ------------------------------------------------------------------ the service, run here
 
 async function startService(env: Record<string, string>) {

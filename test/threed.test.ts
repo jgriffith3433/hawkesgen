@@ -221,3 +221,16 @@ test('image.viewsheet: exact camera words by default, the angles LoRA or one tur
   assert.match(viewPrompt('back', 'prop'), /^The back of the same object, seen from directly behind/);
   assert.equal(getTool('image.edit')!.params.angles.default, 0);
 });
+
+test('mesh.views3d: the shape resolution is a setting beside the face budget and texture size', async () => {
+  const { getWorkflow } = await import('../src/workflows/registry.ts');
+  const wf = getWorkflow('mesh.views3d')!;
+  const at = (name: string) => wf.manifest.params[name].targets.map(([n, f]) => [wf.graph[n].class_type, f]);
+  assert.deepEqual(at('faces'), [['DecimateMesh', 'target_face_count']]);
+  assert.deepEqual(at('resolution'), [['Trellis2UpsampleStage', 'target_resolution']]);
+  assert.deepEqual(at('texture_resolution'), [['PrimitiveInt', 'value']]);
+  // The defaults are what the graph always ran with: nothing changes unless a caller asks.
+  assert.equal(wf.manifest.params.faces.default, wf.graph['186'].inputs.target_face_count);
+  assert.equal(wf.manifest.params.resolution.default, wf.graph['94'].inputs.target_resolution);
+  assert.equal(wf.manifest.params.texture_resolution.default, wf.graph['288'].inputs.value);
+});

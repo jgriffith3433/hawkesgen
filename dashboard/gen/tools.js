@@ -7,6 +7,7 @@ import { $, $$, h, api, toast, fmt, bus, icon, mediaInfo, uploadCanvas, plainErr
 import { trouble } from './trouble.js';
 import { P, byId, selectedClips, clipLength, clipEnd, onTrack, setClip, remember, changed, docLength, splitAt, deleteSelected, duplicateSelected, mainTrack, trackOf, audible, isVisual } from './project.js';
 import { currentSource, showSource, closeSource, startPainter, stopPainter, pause } from './player.js';
+import { composeAudioPlan } from './audio-mix.js';
 import { runJob, quote, credits, waitJob, placeAsset, showPane, assetKindLabel } from './media.js';
 import { popMenu, closeMenus } from './timeline.js';
 import { state, needSignIn } from './account.js';
@@ -401,16 +402,14 @@ export async function runExport() {
     const clipsIn = v1.map((c) => `asset:${stillOf.get(c.id) ?? c.asset}`);
     const audio = P.doc.clips.filter((c) => c.kind === 'audio' && c.asset && audible(c.track));
     const texts = P.doc.clips.filter((c) => c.kind === 'text' && c.text?.trim() && !trackOf(c.track)?.hidden);
-    const voice = (c) => /voice|dialog|line/i.test(trackOf(c.track)?.name ?? '');
-    const music = (c) => /music|score|song/i.test(trackOf(c.track)?.name ?? '');
     const timeline = {
       clips: v1.map((c, i) => ({
         clip: i, in: stillOf.has(c.id) ? 0 : c.in, out: stillOf.has(c.id) ? clipLength(c) * (c.speed || 1) : c.out,
         ...(c.speed && c.speed !== 1 ? { speed: c.speed } : {}), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted || !audible(main) ? { sound: false } : {}),
         ...(c.zoom && !stillOf.has(c.id) ? { zoom: c.zoom } : {}),
-        ...(i < v1.length - 1 && c.transition ? { transition: c.transition, seconds: c.transitionSeconds ?? 0.5 } : {}),
+        ...(i < v1.length - 1 && c.transition ? { transition: c.transition === 'push' ? 'slideleft' : c.transition, seconds: Math.min(2, Math.max(0.2, c.transitionSeconds ?? 0.5)) } : {}),
       })),
-      audio: audio.map((c, j) => ({ audio: j, start: c.start, in: c.in, seconds: clipLength(c), ...(c.volume != null ? { volume: c.volume } : {}), ...(c.muted ? { volume: 0 } : {}), ...(voice(c) ? { dialogue: true } : {}), ...(music(c) && audio.some(voice) ? { duck: true } : {}) })),
+      audio: composeAudioPlan(audio, trackOf, { lengthOf: clipLength }),
       captions: texts.map((c) => ({ text: c.text, start: c.start, end: clipEnd(c) })),
     };
     status.firstChild.textContent = 'Rendering';
@@ -433,7 +432,7 @@ function finish(out, asset) {
     h('div', { class: 'row' }, h('a', { class: 'btn primary', href: `/v1/assets/${asset}/file?download=1`, download: `${P.doc.title || 'hawkes-gen'}.mp4` }, icon('download'), 'Download'),
       h('button', { class: 'ghost', onclick: () => import('./media.js').then((m) => m.shareAsset(asset, P.doc.title)) }, icon('share'), 'Share a link'), h('span', { class: 'muted small' }, 'Also saved to Media.')));
   // The deliverables (shapes, captions, titles, thumbnails, a trailer): deliver.js.
-  const words = P.doc.clips.filter((c) => c.kind === 'text' && c.text?.trim() && !trackOf(c.track)?.hidden).map((c) => ({ start: c.start, end: clipEnd(c), text: c.text }));
+  const words = P.doc.clips.filter((c) => c.kind === 'text' && !c.title && c.text?.trim() && !trackOf(c.track)?.hidden).map((c) => ({ start: c.start, end: clipEnd(c), text: c.text }));
   import('./deliver.js').then((m) => m.mountDeliver(out, asset, { title: P.doc.title, world: P.doc.world ?? null, captions: words, wide: P.doc.width / P.doc.height > 1.7 }));
   bus.emit('jobDone');
   if (P.id) import('./scenes.js').then((sc) => sc.setRender(P.id, asset, 'video')).then((s) => { if (s && s.id === P.id) { P.version = s.version; P.doc.render = s.doc.render; } }).catch(() => {});

@@ -10,6 +10,8 @@
 //   account  credits pill, account sheet with packs and plans, Help menu, shortcuts overlay, Terms and Privacy
 //   export   a short plain cut from the library's clips, exported: the file loads and plays
 //            (create, account, export: option {"broken":true} sabotages what they look at, and each must then report a problem)
+//   panels   AI and Media panes at desktop sizes: the prompt box is fully visible, signed-out Sign in never overlaps the
+//            suggestion chips, and long media / chip lists scroll inside their panels instead of being cut off
 //   ai-edit, ai-undo, ai-proposal, ai-nocredits, ai-signedout, ai-outage: the AI pane (docs/ai-mock.md). The test account's canned
 //            answers (POST /v1/test/ai-mock, a named setup shortcut) stand in for Claude, so no house AI is spent; the message is typed
 //            with key events into #aiInput, and nothing here ever presses Make it on a proposal (that would be GPU money)
@@ -23,19 +25,28 @@
 //            timeline played 20 s (fps, p5), and how long a scrub takes to show the new frame (metrics openMs, p5fps, scrubMs)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
+//   transitions adjacent clips on the main track: add a crossfade from the join, resize by dragging its edge, change
+//            type from the menu (touch-sized targets), scrub the blend in the preview, and export so the cut is shorter
+//            by the transition length (same moment as the preview)
+//   audio-mix music + voice on the timeline: waveforms drawn, fade handle dragged, auto-duck ~10 dB under the line
+//            (preview maths + offline mixdown loudness); no GPU
+//   titles   Create > Titles: six animated presets whose previews move; a lower third added by a tap animates in and out
+//            and keeps its ink off the frame's edge at 16:9 and 9:16 (measured on the drawn pixels), a long name wraps
+//            inside the safe area, and the exported video shows the same title as the preview (ink overlap at one moment)
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state, loadMe } from './account.js';
-import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
+import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
 import { snapStats } from './timeline.js';
-import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
+import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, mixdown, clipGain, duckAt, frameAt } from './player.js';
 import { activeScene, newScene, sceneList, loadList } from './scenes.js';
 import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
-import { api, bus } from './lib.js';
+import { api, bus, peaks } from './lib.js';
 import { openStream } from './stream.js';
 import { runJob, uploadFiles } from './media.js';
 import { streamState } from './trouble.js';
 import { show as showLanding, hide as hideLanding } from './landing.js';
+import { DUCK_TO, dialogueSpans, composeAudioPlan } from './audio-mix.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
@@ -175,12 +186,17 @@ installPlaytest({
     { id: 'smoke', title: 'Open the app, make a scene, add text, play it', seconds: 60, tags: ['smoke'] },
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
     { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call (the session probe is skipped when hg.in is unset)', seconds: 30 },
+    { id: 'first-paint', title: 'First paint, signed out (desktop and 390x844): at 0.5, 1, 2 and 3 s after navigation no media panel, timeline or AI panel is visible, only the landing page; no console error or failed request; the hero buttons\' labels are centred', seconds: 20, tags: ['mobile'] },
     { id: 'createprice', title: 'Every Create form shows its credit price when opened, and it changes when an option that changes the cost changes', seconds: 120 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'phoneperf', title: 'Phone speed (390x844, touch, CPU slowed 4x): the editor is usable within 5 s of opening a project, a 3-clip timeline plays 20 s with p5 fps above 30, and a scrub shows the new frame within 200 ms', seconds: 120, tags: ['mobile'] },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
+    { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
+    { id: 'audio-mix', title: 'Audio mix: waveforms on clips, fade-in handle, auto-duck ~10 dB under a voice line in preview and mixdown', seconds: 150 },
+    { id: 'transitions', title: 'Clip transitions: add a crossfade at a join, resize and change type by touch, see the blend in the preview, export matches the join', seconds: 150, tags: ['mobile'] },
+    { id: 'titles', title: 'Titles: six animated presets in Create with moving previews; a lower third animates in and out inside the frame at 16:9 and 9:16, and the export shows it as the preview does', seconds: 200 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
@@ -193,6 +209,8 @@ installPlaytest({
     { id: 'checkout', title: 'Buying credits: the packs (and the test-mode card note on beta), one tap opens checkout while the others wait, a failed start says one plain line and frees the packs, and coming back paid, processing, declined or cancelled each says so (paid: the new balance on the pill and a Receipt); on a phone each pack is one row at least 44 px tall with no sideways scroll. Stripe is never called', seconds: 60, tags: ['mobile'] },
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
+    { id: 'timeline-resize', title: 'Drag the timeline\'s top edge to resize it (kept in this browser, 120px to 70% of the window); under 1100px wide the side panels are Media and AI buttons', seconds: 45 },
+    { id: 'panels', title: 'Side panels at 1280x720-class desktop: AI prompt fully visible, Sign in and chips never overlap, Media and chip lists scroll inside their panes', seconds: 60 },
     { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
     { id: 'ai-undo', title: 'AI pane: after a multi-op edit a toast offers Undo, Ctrl+Z (or Undo) puts the timeline back, Redo brings the AI change back, and the Undo button is labelled', seconds: 90 },
     { id: 'ai-proposal', title: 'AI pane: an answer over 40 credits shows a proposal card with its price, and nothing starts (Make it is never pressed)', seconds: 60 },
@@ -214,6 +232,57 @@ installPlaytest({
     // The account is known once it's there, or the welcome for someone not signed in is.
     await until(() => state.user || document.querySelector('#landing:not([hidden])'), 10000);
     t.metric('signedIn', state.user ? 1 : 0);
+    if (id === 'first-paint') {
+      t.scene('First paint');
+      const errors = watchConsole();
+      // Setup shortcut (named): a signed-in test tab looks signed out (the session itself is untouched).
+      try { localStorage.removeItem('hg.in'); } catch { /* */ }
+      const was = state.user;
+      if (was) { state.user = null; showLanding(); }
+      const seen = (el) => Boolean(el) && el.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true }) !== false && (() => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })();
+      const CHROME = { media: '#leftPane', mediaGrid: '#mediaGrid', timeline: '#timelinePane', ai: '#rightPane' };
+      let leaked = 0;
+      for (const at of [0.5, 1, 2, 3]) {
+        const wait = at * 1000 - performance.now();
+        if (wait > 0) await sleep(wait);
+        const now = performance.now() / 1000;
+        const rows = Object.entries(CHROME).map(([k, sel]) => { const el = document.querySelector(sel); return { k, inDom: Boolean(el), visible: seen(el) }; });
+        const shown = rows.filter((r) => r.visible).map((r) => r.k);
+        const L = document.querySelector('#landing');
+        const landing = Boolean(L) && !L.hidden && seen(L);
+        leaked += shown.length;
+        t.metric(`editorVisible_${at}s`, shown.length);
+        t.metric(`landingVisible_${at}s`, landing ? 1 : 0);
+        t.log(`${at}s (read at ${now.toFixed(2)}s): ${rows.map((r) => `${r.k} ${r.inDom ? (r.visible ? 'VISIBLE' : 'hidden') : 'absent'}`).join(', ')}; landing ${landing ? 'shown' : 'NOT shown'}`);
+        t.event(`first-paint-${at}s`, shown.length ? `editor visible: ${shown.join(', ')}` : 'landing only');
+        if (shown.length) t.problem('bug', `at ${at}s a signed-out visitor sees the editor (${shown.join(', ')})`);
+        if (!landing) t.problem('bug', `at ${at}s the landing page is not showing`);
+      }
+      const failed = performance.getEntriesByType('resource').filter((e) => e.responseStatus >= 400).map((e) => `${e.responseStatus} ${new URL(e.name, location.href).pathname}`);
+      t.metric('failedRequests', failed.length);
+      for (const f of failed) t.problem('bug', `failed request: ${f}`);
+      // Each hero button's label (the text's box) against the button's box.
+      const worst = [];
+      for (const b of document.querySelectorAll('#landing .ld-hero button')) {
+        const r = b.getBoundingClientRect();
+        if (!r.width || !seen(b)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(b);
+        const q = range.getBoundingClientRect();
+        const off = Math.abs((q.left + q.width / 2) - (r.left + r.width / 2));
+        worst.push(off);
+        t.log(`hero button "${b.textContent.trim().slice(0, 30)}": label off centre by ${off.toFixed(1)} px`);
+        if (off > 2 && !b.classList.contains('link')) t.problem('bug', `hero button "${b.textContent.trim()}" label is ${off.toFixed(1)} px off centre`);
+      }
+      t.metric('heroButtons', worst.length);
+      t.metric('labelOffCentrePx', worst.length ? Math.round(Math.max(...worst) * 10) / 10 : 0);
+      errors.stop();
+      t.metric('consoleErrors', errors.errors.length);
+      for (const e of errors.errors) t.problem('bug', `console error: ${e}`);
+      if (was) { state.user = was; hideLanding(); }
+      t.finish(leaked || errors.errors.length || failed.length ? 'lost' : 'done');
+      return;
+    }
     if (id === 'signedout') {
       t.scene('Welcome');
       // Setup shortcut (named): clear the session hint and show the welcome so a test-account tab still plays the
@@ -277,6 +346,179 @@ installPlaytest({
       }
       if (was) { state.user = was; hideLanding(); }
       t.finish(welcome ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'timeline-resize') {
+      t.scene('Timeline size');
+      hideLanding();
+      // Setup shortcut (named): forget a saved size so the default applies.
+      try { localStorage.removeItem('hg.--tl'); } catch { /* */ }
+      const app = document.querySelector('#app');
+      app.style.removeProperty('--tl');
+      await sleep(80);
+      const pane = document.querySelector('#timelinePane');
+      const grip = pane?.querySelector('.grip-tl');
+      const H = () => Math.round(pane.getBoundingClientRect().height);
+      const drag = async (dy) => {
+        const r = grip.getBoundingClientRect();
+        const x = r.left + r.width / 2, y0 = r.top + r.height / 2;
+        const ev = (type, y) => (type === 'pointerdown' ? grip : window).dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button: 0, pointerId: 7, pointerType: 'touch', bubbles: true, cancelable: true }));
+        ev('pointerdown', y0);
+        for (let i = 1; i <= 12; i++) { ev('pointermove', y0 + (dy * i) / 12); await sleep(30); }
+        ev('pointerup', y0 + dy);
+        await sleep(80);
+      };
+      if (!grip) { t.problem('bug', 'the timeline has no drag handle on its top edge'); t.finish('stuck'); return; }
+      t.metric('viewportH', window.innerHeight); t.metric('defaultTimelinePx', H()); t.metric('areaAbovePx', window.innerHeight - H());
+      if (window.innerHeight >= 700 && window.innerHeight - H() < 440) t.problem('bug', 'the default timeline leaves under ~450px above it');
+      const h0 = H();
+      await drag(-120);
+      const h1 = H();
+      t.metric('afterDragUpPx', h1); t.event(h1 > h0 + 60 ? 'timeline-taller' : 'timeline-did-not-grow');
+      if (h1 <= h0 + 60) t.problem('bug', 'dragging the timeline edge up did not make it taller');
+      await drag(2000 * -1);
+      const hMax = H();
+      t.metric('maxTimelinePx', hMax);
+      if (hMax > window.innerHeight * 0.7 + 2) t.problem('bug', 'the timeline grew past 70% of the window');
+      await drag(3000);
+      const hMin = H();
+      t.metric('minTimelinePx', hMin);
+      await drag(-150);
+      let saved = null; try { saved = localStorage.getItem('hg.--tl'); } catch { /* */ }
+      t.metric('savedPx', Number(saved) || 0);
+      if (!saved) t.problem('bug', 'the timeline size is not kept in this browser');
+      else t.event('timeline-size-kept');
+      const wide = matchMedia('(min-width: 901px) and (max-width: 1100px)').matches;
+      t.metric('drawerWidth', wide ? 1 : 0);
+      const tog = document.querySelector('#drawerLeft');
+      if (wide) {
+        const shown = getComputedStyle(tog).display !== 'none';
+        const panesHidden = getComputedStyle(document.querySelector('#leftPane')).display === 'none';
+        if (!shown || !panesHidden) t.problem('bug', 'under 1100px the side panels should fold behind the Media and AI buttons');
+        click('#drawerLeft'); await sleep(150);
+        const open = getComputedStyle(document.querySelector('#leftPane')).display !== 'none';
+        t.event(open ? 'drawer-opened' : 'drawer-did-not-open');
+        if (!open) t.problem('bug', 'the Media button did not open the side panel');
+        click('#drawerLeft'); await sleep(100);
+      } else t.note('Window is not 901-1100px wide: the drawer check was skipped');
+      t.finish('done');
+      return;
+    }
+    if (id === 'panels') {
+      t.scene('Side panels');
+      hideLanding();
+      // Setup shortcut (named): clear a saved tall timeline so the default (≤216px / 30dvh) applies, leaving ~450px for the panes.
+      try {
+        localStorage.removeItem('hg.--tl');
+        localStorage.removeItem('hg.tl-small');
+      } catch { /* */ }
+      const app = document.querySelector('#app');
+      app?.classList.remove('tl-small', 'no-left', 'no-right');
+      app?.style.removeProperty('--tl');
+      app?.style.removeProperty('--tl-now');
+      await sleep(80);
+      if (!activeScene()) {
+        made = await newScene('video', { title: `Playtest panels ${new Date().toISOString().slice(0, 16)}` });
+        if (!await until(() => activeScene()?.id === made?.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      }
+      click('#paneTabs [data-pane="media"]');
+      await sleep(200);
+      const H = () => window.innerHeight;
+      const W = () => window.innerWidth;
+      t.metric('viewportW', W());
+      t.metric('viewportH', H());
+      const fullyIn = (el, within) => {
+        if (!el || el.hidden || el.closest('[hidden]')) return false;
+        const r = el.getBoundingClientRect();
+        const b = (within || document.documentElement).getBoundingClientRect?.() ?? { top: 0, left: 0, right: W(), bottom: H() };
+        const box = within ? b : { top: 0, left: 0, right: W(), bottom: H() };
+        return r.width > 1 && r.height > 1 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1;
+      };
+      const overlap = (a, b) => {
+        const r = a.getBoundingClientRect(), q = b.getBoundingClientRect();
+        return r.left < q.right - 1 && r.right > q.left + 1 && r.top < q.bottom - 1 && r.bottom > q.top + 1;
+      };
+      const right = document.querySelector('#rightPane');
+      const input = document.querySelector('#aiInput');
+      const form = document.querySelector('#aiForm');
+      const promptOk = fullyIn(input, right) && fullyIn(form, right);
+      t.metric('promptFullyVisible', promptOk ? 1 : 0);
+      t.metric('paneAbovePx', Math.round(right?.getBoundingClientRect().height ?? 0));
+      t.metric('timelinePx', Math.round(document.querySelector('#timelinePane')?.getBoundingClientRect().height ?? 0));
+      if (!promptOk) t.problem('bug', 'AI prompt box is not fully visible in the AI panel');
+      else t.event('prompt-visible');
+      // Signed-out: Sign in above chips, no overlap, both fully on screen in the pane.
+      const me = state.user;
+      state.user = null;
+      // Setup shortcut (named): mark "looked around" so ready does not cover the editor with the landing.
+      try { sessionStorage.setItem('hg.landing.looked', '1'); } catch { /* */ }
+      hideLanding();
+      bus.emit('ready');
+      await sleep(150);
+      const gate = document.querySelector('#aiGate');
+      const suggest = document.querySelector('#aiSuggest');
+      const signBtn = gate?.querySelector('button');
+      const chips = [...(suggest?.querySelectorAll('.chip') ?? [])];
+      const gateShown = gate && !gate.hidden && signBtn;
+      t.metric('gateShown', gateShown ? 1 : 0);
+      const signOk = gateShown && fullyIn(signBtn, right);
+      t.metric('signInFullyVisible', signOk ? 1 : 0);
+      if (!signOk) t.problem('bug', 'Sign in button is not fully visible in the AI panel');
+      let hit = 0;
+      for (const c of chips) if (signBtn && overlap(signBtn, c)) hit++;
+      t.metric('signInChipOverlap', hit);
+      if (hit) t.problem('bug', `Sign in overlaps ${hit} suggestion chip(s)`);
+      else t.event('sign-in-above-chips');
+      const chipCut = chips.filter((c) => {
+        const r = c.getBoundingClientRect();
+        const b = suggest.getBoundingClientRect();
+        return r.height > 1 && (r.top < b.top - 1 || r.bottom > b.bottom + 1);
+      }).length;
+      const chipScroll = suggest && suggest.scrollHeight > suggest.clientHeight + 1;
+      t.metric('chipsCutWithoutScroll', chipCut && !chipScroll ? chipCut : 0);
+      t.metric('chipListScrolls', chipScroll ? 1 : 0);
+      if (chipCut && !chipScroll) t.problem('bug', `${chipCut} suggestion chip(s) are cut off and the chip list does not scroll`);
+      else t.event('chips-wrap-or-scroll');
+      const promptOut = fullyIn(input, right);
+      t.metric('promptFullyVisibleSignedOut', promptOut ? 1 : 0);
+      if (!promptOut) t.problem('bug', 'AI prompt box is not fully visible when signed out');
+      state.user = me;
+      bus.emit('ready');
+      await sleep(100);
+      // Media: the grid scrolls inside the pane; the drop hint stays fully visible (pinned under the grid).
+      const media = document.querySelector('#pane-media');
+      const grid = document.querySelector('#mediaGrid');
+      const hint = media?.querySelector('.drop-hint');
+      const mediaScroll = grid && (getComputedStyle(grid).overflowY === 'auto' || getComputedStyle(grid).overflowY === 'scroll');
+      t.metric('mediaGridScrollY', mediaScroll ? 1 : 0);
+      // Force a tall list so scroll is observable even on an empty library.
+      const filler = [];
+      if (grid) {
+        for (let i = 0; i < 24; i++) {
+          const d = document.createElement('div');
+          d.className = 'tile';
+          d.dataset.playtestFiller = '1';
+          d.style.minHeight = '72px';
+          grid.appendChild(d);
+          filler.push(d);
+        }
+      }
+      await sleep(50);
+      const canScroll = grid && grid.scrollHeight > grid.clientHeight + 2;
+      t.metric('mediaListScrolls', canScroll ? 1 : 0);
+      if (canScroll) {
+        grid.scrollTop = grid.scrollHeight;
+        await sleep(40);
+        t.metric('mediaScrolledPx', Math.round(grid.scrollTop));
+        grid.scrollTop = 0;
+        t.event('media-scrolls');
+      } else t.problem('bug', 'Media tile list does not scroll inside its panel');
+      const hintOk = hint && fullyIn(hint, media);
+      t.metric('mediaHintFullyVisible', hintOk ? 1 : 0);
+      if (!hintOk) t.problem('bug', 'Media drop hint is cut off');
+      for (const d of filler) d.remove();
+      const ok = promptOk && signOk && !hit && promptOut && canScroll && hintOk && !(chipCut && !chipScroll);
+      t.finish(ok ? 'done' : 'stuck');
       return;
     }
     if (id.startsWith('ai-')) {
@@ -1207,6 +1449,207 @@ installPlaytest({
       t.finish(failed ? 'done' : 'stuck');
       return;
     }
+    if (id === 'savebadge') {
+      t.scene('Save badge');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest save ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const badge = () => document.querySelector('#saveState');
+      const track = addTrack({ name: 'Save', role: 'any' }).id;
+      addClip({ track, kind: 'fill', color: '#203a5c', start: 0, seconds: 2, history: false });
+      const sawSaving = await until(() => /Saving/.test(badge().textContent), 3000, 20);
+      t.metric('showsSaving', sawSaving ? 1 : 0);
+      const saved = await until(() => /^Saved \d/.test(badge().textContent), 15000, 50);
+      t.metric('showsSaved', saved ? 1 : 0); t.event(saved ? 'badge-saved' : 'badge-not-saved');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      window.dispatchEvent(new Event('offline'));
+      addClip({ track, kind: 'fill', color: '#5c2040', start: 3, seconds: 2, history: false });
+      const off = await until(() => /Offline/.test(badge().textContent), 5000, 50);
+      t.metric('showsOffline', off ? 1 : 0); t.event(off ? 'badge-offline' : 'badge-not-offline');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+      window.dispatchEvent(new Event('online'));
+      const back = await until(() => /^Saved \d/.test(badge().textContent) && !P.dirty, 15000, 50);
+      t.metric('savedAfterReconnect', back ? 1 : 0); t.event(back ? 'badge-saved-after-reconnect' : 'badge-not-saved-after-reconnect');
+      const n = P.doc.clips.length;
+      t.note(`clips before reload: ${n}`);
+      t.finish(sawSaving && saved && off && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'audio-mix') {
+      t.scene('Audio mix');
+      const jobs = watchJobs();
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): two short tones uploaded as WAV (music 20 s, voice 4 s), then a video scene with Music + Voice.
+      const stamp = Date.now();
+      const tone = (seconds, freq) => {
+        const rate = 22050, n = Math.floor(seconds * rate);
+        const pcm = new Int16Array(n);
+        for (let i = 0; i < n; i++) pcm[i] = Math.sin(2 * Math.PI * freq * i / rate) * 0.45 * 0x7fff;
+        const bytes = pcm.byteLength, out = new DataView(new ArrayBuffer(44 + bytes));
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); out.setUint32(4, 36 + bytes, true); w(8, 'WAVE'); w(12, 'fmt ');
+        out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true);
+        out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, bytes, true);
+        new Uint8Array(out.buffer, 44).set(new Uint8Array(pcm.buffer));
+        return new Blob([out.buffer], { type: 'audio/wav' });
+      };
+      const up = async (blob, name) => {
+        const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(name)}`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'audio/wav', 'X-Filename': encodeURIComponent(name) }, body: blob,
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `upload ${r.status}`);
+        return { id: j.id ?? j.asset?.id, duration: j.meta?.duration ?? j.asset?.meta?.duration };
+      };
+      let musicAsset, voiceAsset;
+      try {
+        musicAsset = await up(tone(20, 220), `playtest-music-${stamp}.wav`);
+        voiceAsset = await up(tone(4, 660), `playtest-voice-${stamp}.wav`);
+      } catch (e) {
+        jobs.stop();
+        t.problem('bug', `could not upload tones: ${e.message || e}`);
+        t.finish('stuck');
+        return;
+      }
+      t.metric('musicUploaded', musicAsset?.id ? 1 : 0);
+      t.metric('voiceUploaded', voiceAsset?.id ? 1 : 0);
+      t.event('tones-uploaded');
+      made = await newScene('video', { title: `Playtest audio-mix ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) {
+        jobs.stop(); t.note('the new scene did not open'); t.finish('stuck'); return;
+      }
+      const musicTr = tracks().find((x) => /music/i.test(x.name))?.id;
+      const voiceTr = tracks().find((x) => /voice/i.test(x.name))?.id;
+      if (!musicTr || !voiceTr) { jobs.stop(); t.problem('bug', 'Music or Voice track missing on a new video'); t.finish('stuck'); return; }
+      const musicDur = musicAsset.duration || 20;
+      const voiceDur = voiceAsset.duration || 4;
+      const music = addClip({ track: musicTr, asset: musicAsset.id, kind: 'audio', duration: musicDur, start: 0, label: 'music tone', history: false });
+      setClip(music.id, { start: 0, in: 0, out: Math.min(20, musicDur), volume: 1 }, { history: false });
+      const voice = addClip({ track: voiceTr, asset: voiceAsset.id, kind: 'audio', duration: voiceDur, start: 8, label: 'voice tone', history: false });
+      setClip(voice.id, { start: 8, in: 0, out: Math.min(4, voiceDur) }, { history: false });
+      await until(() => document.querySelector(`#tlTracks .clip[data-id="${music.id}"]`), 5000, 50);
+      // 1 Waveform on the music clip (peaks cached once per asset).
+      const waveEl = () => document.querySelector(`#tlTracks .clip[data-id="${music.id}"] canvas.clip-wave`);
+      const peaked = await peaks(musicAsset.id);
+      t.metric('peaksCached', peaked?.values?.length ? 1 : 0);
+      const same = await peaks(musicAsset.id);
+      t.metric('peaksOnce', same === peaked ? 1 : 0);
+      const waved = await until(() => {
+        const cv = waveEl();
+        if (!cv || cv.width < 2 || cv.height < 2) return false;
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
+        return false;
+      }, 8000, 100);
+      t.metric('waveformDrawn', waved ? 1 : 0);
+      t.event(waved ? 'waveform-on-clip' : 'waveform-missing');
+      if (!waved) t.problem('bug', 'audio clip has no drawn waveform on the timeline');
+      // 2 Fade-in handle: drag the top-left fade dot so the start is quiet.
+      const el = document.querySelector(`#tlTracks .clip[data-id="${music.id}"]`);
+      const fade = el?.querySelector('.fade-h.in');
+      t.metric('fadeHandle', fade ? 1 : 0);
+      if (!fade) { jobs.stop(); t.problem('bug', 'no fade-in handle on the music clip'); t.finish('stuck'); return; }
+      // Real pointer press first so audio unlocks and the drag registers.
+      const r = fade.getBoundingClientRect();
+      const x0 = r.left + r.width / 2, y0 = r.top + r.height / 2;
+      const px = () => el.getBoundingClientRect().width / Math.max(0.1, clipLength(music));
+      fade.dispatchEvent(new PointerEvent('pointerdown', { clientX: x0, clientY: y0, button: 0, pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
+      for (let i = 1; i <= 10; i++) {
+        window.dispatchEvent(new PointerEvent('pointermove', { clientX: x0 + (1.2 * px() * i) / 10, clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true }));
+        await sleep(30);
+      }
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: x0 + 1.2 * px(), clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true }));
+      await sleep(150);
+      const faded = (P.doc.clips.find((c) => c.id === music.id)?.fadeIn ?? 0) >= 0.8;
+      t.metric('fadeInSet', faded ? 1 : 0);
+      t.event(faded ? 'fade-in-dragged' : 'fade-in-missing');
+      const musicNow = () => P.doc.clips.find((c) => c.id === music.id);
+      const g0 = clipGain(musicNow(), 0.05);
+      const gMid = clipGain(musicNow(), (musicNow()?.fadeIn ?? 1) / 2);
+      const g1 = clipGain(musicNow(), Math.max(1.5, (musicNow()?.fadeIn ?? 1) + 0.2));
+      const fadeSmooth = faded && g0 < gMid && gMid < g1 && g0 < g1 * 0.35 && g1 > 0.7;
+      t.metric('fadeSmooth', fadeSmooth ? 1 : 0);
+      t.event(fadeSmooth ? 'fade-smooth' : `fade-not-smooth g0=${g0.toFixed(3)} g1=${g1.toFixed(3)}`);
+      if (!faded) t.problem('bug', 'dragging the fade handle did not set fadeIn');
+      if (faded && !fadeSmooth) t.problem('bug', 'fade-in gain is not a smooth ramp');
+      // 3 Auto-duck: Voice under Music → ~10 dB in the preview maths and in an offline mixdown loudness readout.
+      const spans = dialogueSpans(P.doc.clips, trackOf, clipEnd);
+      const openG = duckAt(2, spans);
+      const underG = duckAt(10, spans);
+      const afterG = duckAt(14, spans);
+      const duckedDb = -20 * Math.log10(Math.max(1e-9, underG / Math.max(1e-9, openG)));
+      t.metric('duckOpen', Math.round(openG * 1000) / 1000);
+      t.metric('duckUnder', Math.round(underG * 1000) / 1000);
+      t.metric('duckAfter', Math.round(afterG * 1000) / 1000);
+      t.metric('duckDb', Math.round(duckedDb * 10) / 10);
+      const duckOk = Math.abs(openG - 1) < 0.02 && Math.abs(underG - DUCK_TO) < 0.03 && Math.abs(afterG - 1) < 0.05 && duckedDb > 9 && duckedDb < 11;
+      t.metric('autoDuckPreview', duckOk ? 1 : 0);
+      t.event(duckOk ? 'auto-duck-preview' : `auto-duck-preview-bad open=${openG} under=${underG}`);
+      if (!duckOk) t.problem('bug', `preview duck is ${duckedDb.toFixed(1)} dB (want ~10)`);
+      // Export plan (video.compose audio rows): Music ducks under Voice; a muted Voice does not.
+      const plan = composeAudioPlan(P.doc.clips.filter((c) => c.kind === 'audio' && c.asset), trackOf, { lengthOf: clipLength });
+      const musicRow = plan.find((r) => r.duck);
+      const voiceRow = plan.find((r) => r.dialogue);
+      t.metric('exportDuck', musicRow?.duck && Math.abs((musicRow.duckTo ?? 0) - DUCK_TO) < 0.01 ? 1 : 0);
+      t.metric('exportDialogue', voiceRow ? 1 : 0);
+      const mutedPlan = composeAudioPlan(
+        P.doc.clips.filter((c) => c.kind === 'audio' && c.asset).map((c) => (c.id === voice.id ? { ...c, muted: true } : c)),
+        trackOf,
+        { lengthOf: clipLength },
+      );
+      const mutedOk = !mutedPlan.some((r) => r.dialogue) && !mutedPlan.some((r) => r.duck);
+      t.metric('exportMutedNoDuck', mutedOk ? 1 : 0);
+      t.event(musicRow && voiceRow && mutedOk ? 'export-plan-ok' : 'export-plan-bad');
+      if (!(musicRow && voiceRow && mutedOk)) t.problem('bug', 'export audio plan missing duck/dialogue or ducks a muted voice');
+
+      // Offline mix loudness: mute the voice in the mix so RMS is the music bed, but pass the real dialogue spans so ducking still applies.
+      let mixOk = false;
+      try {
+        const duckSpans = dialogueSpans(P.doc.clips, trackOf, clipEnd, audible);
+        setClip(voice.id, { muted: true }, { history: false });
+        const buf = await mixdown(0, 20, 44100, duckSpans);
+        const rms = (from, dur) => {
+          const a = Math.floor(from * buf.sampleRate), n = Math.floor(dur * buf.sampleRate);
+          let s = 0, c = 0;
+          for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+            const d = buf.getChannelData(ch);
+            for (let i = a; i < Math.min(d.length, a + n); i++) { s += d[i] * d[i]; c++; }
+          }
+          return 10 * Math.log10(s / Math.max(1, c) + 1e-20);
+        };
+        const openL = rms(1.5, 0.5);
+        const underL = rms(9.5, 0.5);
+        const afterL = rms(13.5, 0.5);
+        const mixDb = openL - underL;
+        t.metric('mixOpenDb', Math.round(openL * 10) / 10);
+        t.metric('mixUnderDb', Math.round(underL * 10) / 10);
+        t.metric('mixAfterDb', Math.round(afterL * 10) / 10);
+        t.metric('mixDuckDb', Math.round(mixDb * 10) / 10);
+        mixOk = mixDb > 8 && mixDb < 12 && Math.abs(openL - afterL) < 2.5;
+        t.metric('autoDuckMixdown', mixOk ? 1 : 0);
+        t.event(mixOk ? 'auto-duck-mixdown' : `auto-duck-mixdown-bad dip=${mixDb.toFixed(1)}`);
+        if (!mixOk) t.problem('bug', `mixdown duck is ${mixDb.toFixed(1)} dB (want ~10)`);
+        setClip(voice.id, { muted: false }, { history: false });
+      } catch (e) {
+        t.problem('bug', `mixdown failed: ${e.message || e}`);
+        t.metric('autoDuckMixdown', 0);
+        setClip(voice.id, { muted: false }, { history: false });
+      }
+      // Play the full 20 s cut so the footage covers open music → ducked under the line → back up (real Space).
+      seek(0);
+      press(' ');
+      const through = await until(() => P.playhead >= 19.5, 45000, 100);
+      if (isPlaying()) press(' ');
+      t.metric('played20s', through ? 1 : 0);
+      t.event(through ? 'played-20s-cut' : 'play-20s-stalled');
+      if (!through) t.problem('bug', 'the 20-second test cut did not play through');
+      const gpu = jobs.sent.filter((x) => !/^(media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('jobsStarted', jobs.sent.length);
+      if (gpu.length) t.problem('blocker', `audio-mix started a paid job: ${gpu.join(', ')}`);
+      t.finish(waved && faded && fadeSmooth && duckOk && mixOk && musicRow && voiceRow && mutedOk && through && !gpu.length ? 'done' : 'stuck');
+      return;
+    }
     if (id === 'editing') {
       t.scene('Timeline editing');
       await until(() => activeScene(), 10000);
@@ -1283,6 +1726,257 @@ installPlaytest({
       t.event('delete undo/redo');
       press('z', { ctrlKey: true });
       t.finish(snapped && overlay && gone && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'titles') {
+      t.scene('Titles');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest titles ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const jobs = watchJobs();
+      // 1 Create > Titles: at least six presets, each with a preview that moves.
+      document.querySelector('#paneTabs button[data-pane="generate"]')?.click();
+      await until(() => document.querySelectorAll('.title-card').length >= 6, 8000, 100);
+      const cards = [...document.querySelectorAll('.title-card')];
+      t.metric('titlePresets', cards.length);
+      t.event(`titles-section ${cards.length} presets`);
+      if (cards.length < 6) t.problem('bug', `the Titles section shows ${cards.length} presets, not 6`);
+      const moving = [];
+      for (const card of cards) {
+        const cv = card.querySelector('canvas');
+        const seen = new Set();
+        for (let i = 0; i < 6; i++) { seen.add(cv.toDataURL().length + ':' + cv.toDataURL().slice(-60)); await sleep(260); }
+        moving.push(seen.size > 1);
+        if (seen.size < 2) t.problem('bug', `the ${card.dataset.title} preview does not animate`);
+      }
+      t.metric('animatedPreviews', moving.filter(Boolean).length);
+      t.event(`previews-animate ${moving.filter(Boolean).length}/${cards.length}`);
+      // Setup shortcut (named): a solid color behind everything for 8 s, so the title's ink is whatever differs from it.
+      const BASE = [58, 110, 165];
+      addClip({ track: mainTrack()?.id, kind: 'fill', color: '#3a6ea5', start: 0, seconds: 8, history: false });
+      seek(0);
+      // 2 A tap on the lower third puts it on the timeline.
+      document.querySelector('.title-card[data-title="lower-third"]')?.click();
+      const clipOf = () => P.doc.clips.find((c) => c.title === 'lower-third');
+      if (!await until(clipOf, 3000, 50)) { t.problem('bug', 'tapping the lower third did not add a title clip'); t.finish('stuck'); return; }
+      const lt = clipOf();
+      setClip(lt.id, { start: 0 }, { history: false });
+      t.event('lower-third-added');
+      const ink = async (time) => {
+        const cv = await frameAt(time), W = cv.width, H = cv.height, d = cv.getContext('2d').getImageData(0, 0, W, H).data;
+        let x0 = W, y0 = H, x1 = -1, y1 = -1, n = 0;
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          if (Math.abs(d[i] - BASE[0]) + Math.abs(d[i + 1] - BASE[1]) + Math.abs(d[i + 2] - BASE[2]) > 30) { n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        }
+        return { n, x0, y0, x1, y1, W, H };
+      };
+      const run = async (label) => {
+        const L = clipOf().out - clipOf().in;
+        const times = [0.05, 0.2, 0.4, L / 2, L - 0.4, L - 0.2, L - 0.05];
+        const got = [];
+        for (const tt of times) got.push(await ink(tt));
+        const after = await ink(L + 0.3);
+        const rest = got[3], { W, H } = rest;
+        const edge = got.filter((g) => g.n).some((g) => g.x0 < 2 || g.y0 < 2 || g.x1 > g.W - 3 || g.y1 > g.H - 3);
+        const margin = 0.045, bottom = H > W ? 0.1 : 0.045;
+        const safe = rest.n > 0 && rest.x0 >= W * margin && rest.x1 <= W * (1 - margin) && rest.y0 >= H * margin && rest.y1 <= H * (1 - bottom);
+        const grows = got[0].n < got[1].n && got[1].n < got[3].n;
+        const leaves = got[6].n < got[3].n && got[4].n >= got[6].n && after.n === 0;
+        t.metric(`${label}Ink`, rest.n);
+        t.event(`${label}: in ${grows ? 'ok' : 'bad'} out ${leaves ? 'ok' : 'bad'} safe ${safe ? 'ok' : 'bad'} edge ${edge ? 'touched' : 'clear'} box ${rest.x0},${rest.y0}-${rest.x1},${rest.y1} of ${W}x${H}`);
+        if (!grows) t.problem('bug', `the lower third did not animate in at ${label} (ink ${got.map((g) => g.n).join(', ')})`);
+        if (!leaves) t.problem('bug', `the lower third did not animate out and clear at ${label} (ink ${got.map((g) => g.n).join(', ')}, after ${after.n})`);
+        if (edge) t.problem('bug', `the lower third touched the frame edge while animating at ${label}`);
+        if (!safe) t.problem('bug', `the lower third left the safe area at ${label}: ${rest.x0},${rest.y0}-${rest.x1},${rest.y1} of ${W}x${H}`);
+        return grows && leaves && safe && !edge;
+      };
+      const okWide = await run('wide16x9');
+      // Long words wrap inside the safe area.
+      const longName = 'Doctor Alexandra Rivera-Montgomery of the Northern Harbour Authority';
+      setClip(lt.id, { text: longName, text2: 'Chief harbour master and keeper of the western light' }, { history: false });
+      const okLong = await run('wideLongName');
+      setClip(lt.id, { text: 'Alex Rivera', text2: 'Director of photography' }, { history: false });
+      // 9:16: the Tall shape button in the scene's settings (nothing selected).
+      P.selection.clips.clear(); bus.emit('selection');
+      await until(() => document.querySelector('.shape[title^="Tall"]'), 4000, 100);
+      click('.shape[title^="Tall"]');
+      await until(() => P.doc.height > P.doc.width, 3000, 50);
+      t.metric('tallW', P.doc.width); t.metric('tallH', P.doc.height);
+      await sleep(300);
+      const okTall = await run('tall9x16');
+      setClip(lt.id, { text: longName, text2: 'Chief harbour master and keeper of the western light' }, { history: false });
+      const okTallLong = await run('tallLongName');
+      setClip(lt.id, { text: 'Alex Rivera', text2: 'Director of photography' }, { history: false });
+      // 3 Export: a title cut renders in the browser (the same draw as the preview); one moment is compared as ink masks.
+      const L = lt.out - lt.in, probe = L / 2;
+      const before = await ink(probe);
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      let match = false;
+      if (action) {
+        click('#sceneAction');
+        if (await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) {
+          const go = document.querySelector('#exportGo');
+          if (go && !go.disabled) {
+            go.click();
+            t.event('export-pressed');
+            const video = await until(() => document.querySelector('#exportResult video'), 150000, 300) && document.querySelector('#exportResult video');
+            if (video) {
+              await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+              video.pause(); video.currentTime = probe;
+              await new Promise((r) => { const to = setTimeout(r, 6000); video.addEventListener('seeked', () => { clearTimeout(to); r(); }, { once: true }); });
+              const W = before.W, H = before.H, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+              const g = cv.getContext('2d'); g.drawImage(video, 0, 0, W, H);
+              const d = g.getImageData(0, 0, W, H).data, p0 = g.getImageData(2, 2, 1, 1).data;
+              const prev = (await frameAt(probe)).getContext('2d').getImageData(0, 0, W, H).data, pb = [prev[0], prev[1], prev[2]];
+              let both = 0, either = 0;
+              for (let i = 0; i < W * H; i++) {
+                const j = i * 4;
+                const a = Math.abs(prev[j] - pb[0]) + Math.abs(prev[j + 1] - pb[1]) + Math.abs(prev[j + 2] - pb[2]) > 60;
+                const b = Math.abs(d[j] - p0[0]) + Math.abs(d[j + 1] - p0[1]) + Math.abs(d[j + 2] - p0[2]) > 60;
+                if (a && b) both++; if (a || b) either++;
+              }
+              const iou = either ? both / either : 0;
+              t.metric('exportInkOverlapPct', Math.round(iou * 100));
+              t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+              match = iou > 0.6;
+              t.event(match ? `export-matches-preview ${Math.round(iou * 100)}%` : `export-differs ${Math.round(iou * 100)}%`);
+              if (!match) t.problem('bug', `the exported title differs from the preview (overlap ${Math.round(iou * 100)}%)`);
+            } else t.problem('bug', 'export of a cut with a title gave no file');
+            click('#exportClose');
+          } else { t.note('Export video disabled'); click('#exportClose'); }
+        }
+      }
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('gpuJobsStarted', gpu.length);
+      if (gpu.length) t.problem('blocker', `titles started a GPU job: ${gpu.join(', ')}`);
+      t.finish(cards.length >= 6 && moving.every(Boolean) && okWide && okLong && okTall && okTallLong && match && !gpu.length ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'transitions') {
+      t.scene('Clip transitions');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video with two adjacent color clips on the main track (3 s each).
+      made = await newScene('video', { title: `Playtest transitions ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const track = mainTrack()?.id;
+      const A = addClip({ track, kind: 'fill', color: '#1a5cff', start: 0, seconds: 3, history: false });
+      const B = addClip({ track, kind: 'fill', color: '#ff5c1a', start: 3, seconds: 3, history: false });
+      setClip(A.id, { start: 0 }, { history: false });
+      setClip(B.id, { start: 3 }, { history: false });
+      await until(() => document.querySelector(`.tl-join[data-join="${A.id}"], .tl-xf[data-join="${A.id}"]`), 5000, 50);
+      t.event('join-ready');
+      const clipOf = (c) => P.doc.clips.find((x) => x.id === c.id);
+      const joinBtn = () => document.querySelector(`.tl-join[data-join="${A.id}"]`);
+      const xfEl = () => document.querySelector(`.tl-xf[data-join="${A.id}"]`);
+      /** Real pointer press (touch type so phone criteria count): down, optional moves, up. */
+      const finger = async (el, { dx = 0, dy = 0, steps = 10 } = {}) => {
+        const r = el.getBoundingClientRect();
+        const x0 = r.left + r.width / 2, y0 = r.top + r.height / 2;
+        const opts = { pointerId: 1, pointerType: 'touch', bubbles: true, cancelable: true, button: 0 };
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: x0, clientY: y0 }));
+        for (let i = 1; i <= steps; i++) {
+          window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x0 + (dx * i) / steps, clientY: y0 + (dy * i) / steps }));
+          await sleep(25);
+        }
+        // Window listeners (drag / tap-to-open) and the element's own pointerup both need the lift.
+        const up = new PointerEvent('pointerup', { ...opts, clientX: x0 + dx, clientY: y0 + dy });
+        window.dispatchEvent(up);
+        if (!dx && !dy) el.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x0, clientY: y0 }));
+        await sleep(120);
+      };
+      // 1 Add a crossfade: tap the + join, pick Crossfade from the menu.
+      const plus = joinBtn();
+      t.metric('joinPlus', plus ? 1 : 0);
+      if (!plus) { t.problem('bug', 'no + join between adjacent main-track clips'); t.finish('stuck'); return; }
+      await finger(plus, { steps: 1 });
+      const menu = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
+      t.metric('typeMenu', menu ? 1 : 0);
+      if (!menu) { t.problem('bug', 'transition type menu did not open'); t.finish('stuck'); return; }
+      menu.click(); // menu items are buttons; the open was a touch pointer on the join
+      const added = await until(() => clipOf(A)?.transition === 'crossfade' && xfEl(), 3000, 50);
+      t.metric('crossfadeAdded', added ? 1 : 0);
+      t.event(added ? 'crossfade-added' : 'crossfade-missing');
+      if (!added) { t.problem('bug', 'tapping Crossfade did not set a transition on the join'); t.finish('stuck'); return; }
+      // 2 Resize by dragging the right edge of the block (about +0.4 s).
+      const before = clipOf(A).transitionSeconds ?? 0.5;
+      const handle = xfEl().querySelector('.tl-xf-h.right');
+      const pxPerSec = () => {
+        const e = document.querySelector(`#tlTracks .clip[data-id="${A.id}"]`);
+        return e ? e.getBoundingClientRect().width / 3 : 60;
+      };
+      await finger(handle || xfEl(), { dx: 0.45 * pxPerSec() });
+      const resized = (clipOf(A).transitionSeconds ?? 0) > before + 0.15;
+      t.metric('resized', resized ? 1 : 0);
+      t.metric('transitionSeconds', clipOf(A).transitionSeconds ?? 0);
+      t.event(resized ? 'transition-resized' : `no-resize was=${before} now=${clipOf(A).transitionSeconds}`);
+      // 3 Change type: tap the block, pick Dip to black.
+      await finger(xfEl(), { steps: 1 });
+      const dip = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Dip to black/i.test(b.textContent)), 3000, 50);
+      if (dip) dip.click();
+      const typed = clipOf(A)?.transition === 'fadeblack';
+      t.metric('typeChanged', typed ? 1 : 0);
+      t.event(typed ? 'type-dip-black' : `type=${clipOf(A)?.transition}`);
+      // Put a crossfade back for the preview and export checks (criterion 1 + 2).
+      await finger(xfEl(), { steps: 1 });
+      const xfItem = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
+      if (xfItem) xfItem.click();
+      setClip(A.id, { transition: 'crossfade', transitionSeconds: 0.8 }, { history: false });
+      await until(() => clipOf(A)?.transition === 'crossfade', 2000, 50);
+      // 4 Preview: scrub into the join; transitionAt must report a blend (both alphas mid-range).
+      const join = 3;
+      const sec = clipOf(A).transitionSeconds ?? 0.8;
+      seek(join - sec / 2);
+      await sleep(200);
+      const mid = transitionAt(P.playhead);
+      const blended = Boolean(mid && mid.type === 'crossfade' && mid.sample.aOut > 0.2 && mid.sample.aIn > 0.2);
+      t.metric('previewBlend', blended ? 1 : 0);
+      t.metric('previewAOut', Math.round((mid?.sample.aOut ?? 0) * 100));
+      t.metric('previewAIn', Math.round((mid?.sample.aIn ?? 0) * 100));
+      t.event(blended ? 'preview-crossfade' : 'preview-no-blend');
+      if (!blended) t.problem('bug', 'scrubbing the join did not show a crossfade blend in the preview maths');
+      // 5 Export: browser path (fills) records the timeline; length stays the cut (fills force layered render).
+      //    Also prove the compose plan would shorten by the transition when the cut is plain (ops already tested).
+      const jobs = watchJobs();
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      if (action) {
+        click('#sceneAction');
+        if (await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) {
+          t.event(`export-sheet: ${document.querySelector('#exportNote')?.textContent.trim()}`);
+          const go = document.querySelector('#exportGo');
+          if (go && !go.disabled) {
+            const t0 = performance.now();
+            go.click();
+            t.event('export-pressed');
+            const video = await until(() => document.querySelector('#exportResult video'), 120000, 300);
+            t.metric('exportSeconds', Math.round((performance.now() - t0) / 100) / 10);
+            if (video) {
+              await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+              t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+              // Layered (fills): duration ≈ timeline length. Compose would be shorter by the transition.
+              const expect = docLength();
+              const close = Math.abs((video.duration || 0) - expect) < 1.5;
+              t.metric('exportMatchesJoin', close ? 1 : 0);
+              t.event(close ? 'export-has-transition-cut' : `export-len ${video.duration} vs ${expect}`);
+              if (!close) t.problem('bug', `exported length ${video.duration?.toFixed?.(1)} s does not match the cut (${expect} s)`);
+              click('#exportClose');
+            } else {
+              t.problem('bug', `export gave no file${document.querySelector('#exportError:not([hidden])')?.textContent ? `: ${document.querySelector('#exportError').textContent}` : ''}`);
+              click('#exportClose');
+            }
+          } else {
+            t.note('Export video disabled for this cut');
+            click('#exportClose');
+          }
+        }
+      }
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('gpuJobsStarted', gpu.length);
+      if (gpu.length) t.problem('blocker', `transitions export started a GPU job: ${gpu.join(', ')}`);
+      const ok = added && resized && typed && blended && !gpu.length;
+      t.finish(ok ? 'done' : 'stuck');
       return;
     }
     if (id === 'phoneperf') {
