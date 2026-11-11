@@ -11,6 +11,7 @@ import { $, h, fileUrl, fmt, bus, icon, peaks } from './lib.js';
 import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack, PROGRESS } from './project.js';
 import { keep, nearest, warm, onFrames, setBusy } from './frames.js';
 import { clampTransitionSeconds, precomputeTransition, sampleAt } from './transitions.js';
+import { dialogueSpans, duckFactorAt, shouldDuckClip, DUCK_TO } from './audio-mix.js';
 import { drawTitle, titleBox } from './titles.js';
 
 const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, lead: null, drawn: false, keepSince: 0 };
@@ -395,13 +396,22 @@ function route(m) {
   if (!AU.ctx || m.src) return;
   try { m.src = AU.ctx.createMediaElementSource(m.el); m.gain = AU.ctx.createGain(); m.src.connect(m.gain); } catch { /* not routable: plays on its own */ }
 }
-/** A clip's loudness at time t: its volume, its fades, mute. */
-function clipGain(c, t) {
+/** Dialogue spans for the current document (only audible, sounding Voice clips). */
+function spansNow() {
+  return dialogueSpans(P.doc.clips, trackOf, clipEnd, audible);
+}
+/** Auto-duck factor for a music clip at t (1 when clear, ~0.316 under a voice line). */
+export function duckAt(t, spans = spansNow()) {
+  return duckFactorAt(t, spans, { to: DUCK_TO });
+}
+/** A clip's loudness at time t: its volume, its fades, mute, and auto-duck under dialogue. */
+export function clipGain(c, t, spans = spansNow()) {
   if (c.muted) return 0;
   let v = c.volume ?? 1;
   const into = t - c.start, left = clipEnd(c) - t;
   if (c.fadeIn && into < c.fadeIn) v *= Math.max(0, into / c.fadeIn);
   if (c.fadeOut && left < c.fadeOut) v *= Math.max(0, left / c.fadeOut);
+  if (shouldDuckClip(c, trackOf)) v *= duckFactorAt(t, spans, { to: DUCK_TO });
   return v;
 }
 const local = (c, t) => c.in + (Math.min(t, clipEnd(c) - 0.001) - c.start) * (c.speed || 1);
@@ -414,6 +424,7 @@ const local = (c, t) => c.in + (Math.min(t, clipEnd(c) - 0.001) - c.start) * (c.
  */
 function syncMedia(t, playing, hard = false, park = false) {
   const want = new Set();
+  const duckSpans = spansNow();
   for (const c of P.doc.clips) {
     if (!c.asset || (c.kind !== 'video' && c.kind !== 'audio')) continue;
     const on = t >= c.start && t < clipEnd(c);
@@ -459,12 +470,24 @@ function syncMedia(t, playing, hard = false, park = false) {
     if (m.gain && AU.ctx) {
       const tn = trackNode(c.track);
       if (!m.wired) { m.gain.connect(tn.gain); m.wired = true; }
-      m.gain.gain.value = sounding && !m.priming ? clipGain(c, t) : 0;
+      // Ramp over ~one frame so fades and ducks don't click when the envelope moves.
+      const wantG = sounding && !m.priming ? clipGain(c, t, duckSpans) : 0;
+      const now = AU.ctx.currentTime;
+      const param = m.gain.gain;
+      try {
+        const cur = param.value;
+        if (Math.abs(cur - wantG) < 0.001) param.value = wantG;
+        else {
+          param.cancelScheduledValues(now);
+          param.setValueAtTime(cur, now);
+          param.linearRampToValueAtTime(wantG, now + 1 / 60);
+        }
+      } catch { param.value = wantG; }
       tn.gain.gain.value = tr?.volume ?? 1;
       tn.pan.pan.value = tr?.pan ?? 0;
     } else {
       m.el.muted = m.priming || !sounding || Boolean(c.muted);
-      m.el.volume = Math.min(1, clipGain(c, t) * (tr?.volume ?? 1));
+      m.el.volume = Math.min(1, clipGain(c, t, duckSpans) * (tr?.volume ?? 1));
     }
     const speed = c.speed || 1;
     // Not yet under the playhead: paused on its first frame, loading, moved there once (not every frame).
@@ -1022,8 +1045,27 @@ export async function frameAt(t = P.playhead) {
   return out;
 }
 
-/** Every sound on the timeline mixed offline (WebAudio): an audio scene's export, and the sound of a browser render. */
-export async function mixdown(from = 0, to = docLength(), rate = 44100) {
+/**
+ * Schedule a clip's gain over [s, e] (timeline seconds), including fades and auto-duck under dialogue.
+ * Uses linear ramps so fades and ducks have no clicks. `from` is the mixdown's start (gain times are relative to it).
+ */
+function scheduleClipGain(param, c, s, e, from, spans) {
+  const step = 0.05;
+  let t = s;
+  param.setValueAtTime(clipGain(c, s, spans), s - from);
+  while (t < e - 0.001) {
+    const n = Math.min(e, t + step);
+    param.linearRampToValueAtTime(clipGain(c, n, spans), n - from);
+    t = n;
+  }
+  if (t < e) param.linearRampToValueAtTime(clipGain(c, e, spans), e - from);
+}
+
+/**
+ * Every sound on the timeline mixed offline (WebAudio): an audio scene's export, and the sound of a browser render.
+ * `spans` overrides the auto-duck dialogue windows (playtests pass spans while muting the voice so RMS is music-only).
+ */
+export async function mixdown(from = 0, to = docLength(), rate = 44100, spans = spansNow()) {
   const len = Math.max(0.1, to - from);
   const off = new OfflineAudioContext(2, Math.ceil(len * rate), rate);
   const bufs = new Map();
@@ -1041,10 +1083,8 @@ export async function mixdown(from = 0, to = docLength(), rate = 44100) {
       if (!b) continue;
       const src = off.createBufferSource(); src.buffer = b; src.playbackRate.value = c.speed || 1;
       const gn = off.createGain();
-      const at = s - from, dur = e - s, gain = c.volume ?? 1;
-      gn.gain.setValueAtTime(clipGain(c, s), at);
-      if (c.fadeIn && s < c.start + c.fadeIn) gn.gain.linearRampToValueAtTime(gain, c.start + c.fadeIn - from);
-      if (c.fadeOut) { const fs = Math.max(at, clipEnd(c) - c.fadeOut - from); gn.gain.setValueAtTime(clipGain(c, fs + from), fs); gn.gain.linearRampToValueAtTime(0, clipEnd(c) - from); }
+      const at = s - from, dur = e - s;
+      scheduleClipGain(gn.gain, c, s, e, from, spans);
       src.connect(gn).connect(vol);
       src.start(at, local(c, s), dur * (c.speed || 1));
     }

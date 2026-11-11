@@ -28,22 +28,25 @@
 //   transitions adjacent clips on the main track: add a crossfade from the join, resize by dragging its edge, change
 //            type from the menu (touch-sized targets), scrub the blend in the preview, and export so the cut is shorter
 //            by the transition length (same moment as the preview)
+//   audio-mix music + voice on the timeline: waveforms drawn, fade handle dragged, auto-duck ~10 dB under the line
+//            (preview maths + offline mixdown loudness); no GPU
 //   titles   Create > Titles: six animated presets whose previews move; a lower third added by a tap animates in and out
 //            and keeps its ink off the frame's edge at 16:9 and 9:16 (measured on the drawn pixels), a long name wraps
 //            inside the safe area, and the exported video shows the same title as the preview (ink overlap at one moment)
 import { installPlaytest } from './playtest/hawkes-playtest.js';
 import { state, loadMe } from './account.js';
-import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
+import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
 import { snapStats } from './timeline.js';
-import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, frameAt } from './player.js';
+import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, mixdown, clipGain, duckAt, frameAt } from './player.js';
 import { activeScene, newScene, sceneList, loadList } from './scenes.js';
 import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
-import { api, bus } from './lib.js';
+import { api, bus, peaks } from './lib.js';
 import { openStream } from './stream.js';
 import { runJob, uploadFiles } from './media.js';
 import { streamState } from './trouble.js';
 import { show as showLanding, hide as hideLanding } from './landing.js';
+import { DUCK_TO, dialogueSpans, composeAudioPlan } from './audio-mix.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
@@ -191,6 +194,7 @@ installPlaytest({
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
     { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there', seconds: 90 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
+    { id: 'audio-mix', title: 'Audio mix: waveforms on clips, fade-in handle, auto-duck ~10 dB under a voice line in preview and mixdown', seconds: 150 },
     { id: 'transitions', title: 'Clip transitions: add a crossfade at a join, resize and change type by touch, see the blend in the preview, export matches the join', seconds: 150, tags: ['mobile'] },
     { id: 'titles', title: 'Titles: six animated presets in Create with moving previews; a lower third animates in and out inside the frame at 16:9 and 9:16, and the export shows it as the preview does', seconds: 200 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
@@ -1468,6 +1472,181 @@ installPlaytest({
       const n = P.doc.clips.length;
       t.note(`clips before reload: ${n}`);
       t.finish(sawSaving && saved && off && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'audio-mix') {
+      t.scene('Audio mix');
+      const jobs = watchJobs();
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): two short tones uploaded as WAV (music 20 s, voice 4 s), then a video scene with Music + Voice.
+      const stamp = Date.now();
+      const tone = (seconds, freq) => {
+        const rate = 22050, n = Math.floor(seconds * rate);
+        const pcm = new Int16Array(n);
+        for (let i = 0; i < n; i++) pcm[i] = Math.sin(2 * Math.PI * freq * i / rate) * 0.45 * 0x7fff;
+        const bytes = pcm.byteLength, out = new DataView(new ArrayBuffer(44 + bytes));
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); out.setUint32(4, 36 + bytes, true); w(8, 'WAVE'); w(12, 'fmt ');
+        out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true);
+        out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, bytes, true);
+        new Uint8Array(out.buffer, 44).set(new Uint8Array(pcm.buffer));
+        return new Blob([out.buffer], { type: 'audio/wav' });
+      };
+      const up = async (blob, name) => {
+        const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(name)}`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'audio/wav', 'X-Filename': encodeURIComponent(name) }, body: blob,
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `upload ${r.status}`);
+        return { id: j.id ?? j.asset?.id, duration: j.meta?.duration ?? j.asset?.meta?.duration };
+      };
+      let musicAsset, voiceAsset;
+      try {
+        musicAsset = await up(tone(20, 220), `playtest-music-${stamp}.wav`);
+        voiceAsset = await up(tone(4, 660), `playtest-voice-${stamp}.wav`);
+      } catch (e) {
+        jobs.stop();
+        t.problem('bug', `could not upload tones: ${e.message || e}`);
+        t.finish('stuck');
+        return;
+      }
+      t.metric('musicUploaded', musicAsset?.id ? 1 : 0);
+      t.metric('voiceUploaded', voiceAsset?.id ? 1 : 0);
+      t.event('tones-uploaded');
+      made = await newScene('video', { title: `Playtest audio-mix ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) {
+        jobs.stop(); t.note('the new scene did not open'); t.finish('stuck'); return;
+      }
+      const musicTr = tracks().find((x) => /music/i.test(x.name))?.id;
+      const voiceTr = tracks().find((x) => /voice/i.test(x.name))?.id;
+      if (!musicTr || !voiceTr) { jobs.stop(); t.problem('bug', 'Music or Voice track missing on a new video'); t.finish('stuck'); return; }
+      const musicDur = musicAsset.duration || 20;
+      const voiceDur = voiceAsset.duration || 4;
+      const music = addClip({ track: musicTr, asset: musicAsset.id, kind: 'audio', duration: musicDur, start: 0, label: 'music tone', history: false });
+      setClip(music.id, { start: 0, in: 0, out: Math.min(20, musicDur), volume: 1 }, { history: false });
+      const voice = addClip({ track: voiceTr, asset: voiceAsset.id, kind: 'audio', duration: voiceDur, start: 8, label: 'voice tone', history: false });
+      setClip(voice.id, { start: 8, in: 0, out: Math.min(4, voiceDur) }, { history: false });
+      await until(() => document.querySelector(`#tlTracks .clip[data-id="${music.id}"]`), 5000, 50);
+      // 1 Waveform on the music clip (peaks cached once per asset).
+      const waveEl = () => document.querySelector(`#tlTracks .clip[data-id="${music.id}"] canvas.clip-wave`);
+      const peaked = await peaks(musicAsset.id);
+      t.metric('peaksCached', peaked?.values?.length ? 1 : 0);
+      const same = await peaks(musicAsset.id);
+      t.metric('peaksOnce', same === peaked ? 1 : 0);
+      const waved = await until(() => {
+        const cv = waveEl();
+        if (!cv || cv.width < 2 || cv.height < 2) return false;
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
+        return false;
+      }, 8000, 100);
+      t.metric('waveformDrawn', waved ? 1 : 0);
+      t.event(waved ? 'waveform-on-clip' : 'waveform-missing');
+      if (!waved) t.problem('bug', 'audio clip has no drawn waveform on the timeline');
+      // 2 Fade-in handle: drag the top-left fade dot so the start is quiet.
+      const el = document.querySelector(`#tlTracks .clip[data-id="${music.id}"]`);
+      const fade = el?.querySelector('.fade-h.in');
+      t.metric('fadeHandle', fade ? 1 : 0);
+      if (!fade) { jobs.stop(); t.problem('bug', 'no fade-in handle on the music clip'); t.finish('stuck'); return; }
+      // Real pointer press first so audio unlocks and the drag registers.
+      const r = fade.getBoundingClientRect();
+      const x0 = r.left + r.width / 2, y0 = r.top + r.height / 2;
+      const px = () => el.getBoundingClientRect().width / Math.max(0.1, clipLength(music));
+      fade.dispatchEvent(new PointerEvent('pointerdown', { clientX: x0, clientY: y0, button: 0, pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
+      for (let i = 1; i <= 10; i++) {
+        window.dispatchEvent(new PointerEvent('pointermove', { clientX: x0 + (1.2 * px() * i) / 10, clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true }));
+        await sleep(30);
+      }
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: x0 + 1.2 * px(), clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true }));
+      await sleep(150);
+      const faded = (P.doc.clips.find((c) => c.id === music.id)?.fadeIn ?? 0) >= 0.8;
+      t.metric('fadeInSet', faded ? 1 : 0);
+      t.event(faded ? 'fade-in-dragged' : 'fade-in-missing');
+      const musicNow = () => P.doc.clips.find((c) => c.id === music.id);
+      const g0 = clipGain(musicNow(), 0.05);
+      const gMid = clipGain(musicNow(), (musicNow()?.fadeIn ?? 1) / 2);
+      const g1 = clipGain(musicNow(), Math.max(1.5, (musicNow()?.fadeIn ?? 1) + 0.2));
+      const fadeSmooth = faded && g0 < gMid && gMid < g1 && g0 < g1 * 0.35 && g1 > 0.7;
+      t.metric('fadeSmooth', fadeSmooth ? 1 : 0);
+      t.event(fadeSmooth ? 'fade-smooth' : `fade-not-smooth g0=${g0.toFixed(3)} g1=${g1.toFixed(3)}`);
+      if (!faded) t.problem('bug', 'dragging the fade handle did not set fadeIn');
+      if (faded && !fadeSmooth) t.problem('bug', 'fade-in gain is not a smooth ramp');
+      // 3 Auto-duck: Voice under Music → ~10 dB in the preview maths and in an offline mixdown loudness readout.
+      const spans = dialogueSpans(P.doc.clips, trackOf, clipEnd);
+      const openG = duckAt(2, spans);
+      const underG = duckAt(10, spans);
+      const afterG = duckAt(14, spans);
+      const duckedDb = -20 * Math.log10(Math.max(1e-9, underG / Math.max(1e-9, openG)));
+      t.metric('duckOpen', Math.round(openG * 1000) / 1000);
+      t.metric('duckUnder', Math.round(underG * 1000) / 1000);
+      t.metric('duckAfter', Math.round(afterG * 1000) / 1000);
+      t.metric('duckDb', Math.round(duckedDb * 10) / 10);
+      const duckOk = Math.abs(openG - 1) < 0.02 && Math.abs(underG - DUCK_TO) < 0.03 && Math.abs(afterG - 1) < 0.05 && duckedDb > 9 && duckedDb < 11;
+      t.metric('autoDuckPreview', duckOk ? 1 : 0);
+      t.event(duckOk ? 'auto-duck-preview' : `auto-duck-preview-bad open=${openG} under=${underG}`);
+      if (!duckOk) t.problem('bug', `preview duck is ${duckedDb.toFixed(1)} dB (want ~10)`);
+      // Export plan (video.compose audio rows): Music ducks under Voice; a muted Voice does not.
+      const plan = composeAudioPlan(P.doc.clips.filter((c) => c.kind === 'audio' && c.asset), trackOf, { lengthOf: clipLength });
+      const musicRow = plan.find((r) => r.duck);
+      const voiceRow = plan.find((r) => r.dialogue);
+      t.metric('exportDuck', musicRow?.duck && Math.abs((musicRow.duckTo ?? 0) - DUCK_TO) < 0.01 ? 1 : 0);
+      t.metric('exportDialogue', voiceRow ? 1 : 0);
+      const mutedPlan = composeAudioPlan(
+        P.doc.clips.filter((c) => c.kind === 'audio' && c.asset).map((c) => (c.id === voice.id ? { ...c, muted: true } : c)),
+        trackOf,
+        { lengthOf: clipLength },
+      );
+      const mutedOk = !mutedPlan.some((r) => r.dialogue) && !mutedPlan.some((r) => r.duck);
+      t.metric('exportMutedNoDuck', mutedOk ? 1 : 0);
+      t.event(musicRow && voiceRow && mutedOk ? 'export-plan-ok' : 'export-plan-bad');
+      if (!(musicRow && voiceRow && mutedOk)) t.problem('bug', 'export audio plan missing duck/dialogue or ducks a muted voice');
+
+      // Offline mix loudness: mute the voice in the mix so RMS is the music bed, but pass the real dialogue spans so ducking still applies.
+      let mixOk = false;
+      try {
+        const duckSpans = dialogueSpans(P.doc.clips, trackOf, clipEnd, audible);
+        setClip(voice.id, { muted: true }, { history: false });
+        const buf = await mixdown(0, 20, 44100, duckSpans);
+        const rms = (from, dur) => {
+          const a = Math.floor(from * buf.sampleRate), n = Math.floor(dur * buf.sampleRate);
+          let s = 0, c = 0;
+          for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+            const d = buf.getChannelData(ch);
+            for (let i = a; i < Math.min(d.length, a + n); i++) { s += d[i] * d[i]; c++; }
+          }
+          return 10 * Math.log10(s / Math.max(1, c) + 1e-20);
+        };
+        const openL = rms(1.5, 0.5);
+        const underL = rms(9.5, 0.5);
+        const afterL = rms(13.5, 0.5);
+        const mixDb = openL - underL;
+        t.metric('mixOpenDb', Math.round(openL * 10) / 10);
+        t.metric('mixUnderDb', Math.round(underL * 10) / 10);
+        t.metric('mixAfterDb', Math.round(afterL * 10) / 10);
+        t.metric('mixDuckDb', Math.round(mixDb * 10) / 10);
+        mixOk = mixDb > 8 && mixDb < 12 && Math.abs(openL - afterL) < 2.5;
+        t.metric('autoDuckMixdown', mixOk ? 1 : 0);
+        t.event(mixOk ? 'auto-duck-mixdown' : `auto-duck-mixdown-bad dip=${mixDb.toFixed(1)}`);
+        if (!mixOk) t.problem('bug', `mixdown duck is ${mixDb.toFixed(1)} dB (want ~10)`);
+        setClip(voice.id, { muted: false }, { history: false });
+      } catch (e) {
+        t.problem('bug', `mixdown failed: ${e.message || e}`);
+        t.metric('autoDuckMixdown', 0);
+        setClip(voice.id, { muted: false }, { history: false });
+      }
+      // Play the full 20 s cut so the footage covers open music → ducked under the line → back up (real Space).
+      seek(0);
+      press(' ');
+      const through = await until(() => P.playhead >= 19.5, 45000, 100);
+      if (isPlaying()) press(' ');
+      t.metric('played20s', through ? 1 : 0);
+      t.event(through ? 'played-20s-cut' : 'play-20s-stalled');
+      if (!through) t.problem('bug', 'the 20-second test cut did not play through');
+      const gpu = jobs.sent.filter((x) => !/^(media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('jobsStarted', jobs.sent.length);
+      if (gpu.length) t.problem('blocker', `audio-mix started a paid job: ${gpu.join(', ')}`);
+      t.finish(waved && faded && fadeSmooth && duckOk && mixOk && musicRow && voiceRow && mutedOk && through && !gpu.length ? 'done' : 'stuck');
       return;
     }
     if (id === 'editing') {
