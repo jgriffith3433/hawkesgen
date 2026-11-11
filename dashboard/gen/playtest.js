@@ -1899,7 +1899,7 @@ installPlaytest({
       const tokenNames = [
         '--bg', '--panel', '--panel-2', '--panel-3', '--line', '--line-2', '--text', '--muted',
         '--accent', '--accent-2', '--accent-soft', '--danger', '--danger-soft', '--warn', '--ok',
-        '--font-sans', '--font-mono', '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl',
+        '--font-sans', '--font-mono', '--text-2xs', '--text-label', '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl',
         '--space-1', '--space-2', '--space-3', '--space-4', '--space-5', '--space-6',
         '--radius-sm', '--radius-md', '--radius', '--radius-lg', '--radius-xl', '--radius-full',
         '--shadow-sm', '--shadow', '--focus-border', '--focus-ring', '--icon-md', '--icon-stroke',
@@ -1954,8 +1954,6 @@ installPlaytest({
       await until(() => P.doc.clips.length > 0 && document.querySelectorAll('#toolbar .tb').length > 0, 5000, 100);
       await sleep(300);
 
-      const editorPrimary = document.querySelector('#sceneAction:not([hidden]), #emptyAsk, button.primary');
-      const editorPrimaryBg = editorPrimary ? getComputedStyle(editorPrimary).backgroundColor : '';
       const editorInput = document.querySelector('#aiInput');
       const editorInputRadius = editorInput ? getComputedStyle(editorInput).borderRadius : '';
 
@@ -1980,12 +1978,14 @@ installPlaytest({
       problems += badIcons;
 
       // Verify button variants (primary, secondary, ghost, danger), input, chip and card share tokens.
+      // Probe primary background is the cross-page colour check (emptyAsk hides once the stage has clips).
       const probe = document.createElement('div');
       probe.style.cssText = 'position:fixed;left:-9999px;top:0;display:flex;gap:8px';
       probe.innerHTML = '<button class="primary">P</button><button class="secondary">S</button><button class="ghost">G</button><button class="danger">D</button><input value="x"><span class="chip">C</span><div class="card">Card</div>';
       document.body.appendChild(probe);
       const [bP, bS, bG, bD, inEl, chipEl, cardEl] = probe.children;
-      const variantsDistinct = getComputedStyle(bP).backgroundColor !== getComputedStyle(bS).backgroundColor
+      const editorPrimaryBg = getComputedStyle(bP).backgroundColor;
+      const variantsDistinct = editorPrimaryBg !== getComputedStyle(bS).backgroundColor
         && getComputedStyle(bG).backgroundColor === 'rgba(0, 0, 0, 0)'
         && getComputedStyle(bD).color !== getComputedStyle(bS).color
         && getComputedStyle(bP).borderRadius === getComputedStyle(bS).borderRadius
@@ -2020,13 +2020,14 @@ installPlaytest({
       await sleep(600);
 
       // 4. Admin page: load /admin in a full-viewport frame so screenshots and computed styles see it at this viewport.
+      // Probe a primary button on the admin document: the overview tab has none when signed in, and nav buttons are not primary.
       t.scene('Admin');
       const frame = document.createElement('iframe');
       frame.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;border:0;z-index:260;background:var(--bg)';
       frame.src = '/admin';
       document.body.appendChild(frame);
       const adminLoaded = await until(() => frame.contentDocument?.body && frame.contentDocument.readyState === 'complete', 8000, 100);
-      let adminMatches = false, adminOverflow = false;
+      let adminMatches = false, adminOverflow = false, adminPrimaryBg = '';
       if (adminLoaded) {
         await sleep(400);
         const aDoc = frame.contentDocument;
@@ -2034,9 +2035,23 @@ installPlaytest({
         const aBody = aDoc.body;
         const aCs = aWin.getComputedStyle(aBody);
         const aFont = aCs.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
-        const aBtn = aDoc.querySelector('button.primary, #kb, button');
-        const aBtnBg = aBtn ? aWin.getComputedStyle(aBtn).backgroundColor : '';
-        adminMatches = aCs.backgroundColor === expectBg && aCs.color === expectText && aFont === expectFont && (!landingPrimaryBg || aBtnBg === landingPrimaryBg);
+        const aRoot = aWin.getComputedStyle(aDoc.documentElement);
+        const aTokensOk = ['--bg', '--text', '--accent', '--font-sans', '--radius-md', '--focus-ring', '--icon-md']
+          .every((k) => aRoot.getPropertyValue(k).trim());
+        const aProbe = aDoc.createElement('div');
+        aProbe.style.cssText = 'position:fixed;left:-9999px;top:0';
+        aProbe.innerHTML = '<button class="primary">P</button><button class="ghost">G</button><input value="x"><span class="chip">C</span><div class="card">Card</div>';
+        aBody.appendChild(aProbe);
+        const [aPrimary, aGhost, aInput, aChip, aCard] = aProbe.children;
+        adminPrimaryBg = aWin.getComputedStyle(aPrimary).backgroundColor;
+        const aComponentsOk = aWin.getComputedStyle(aGhost).backgroundColor === 'rgba(0, 0, 0, 0)'
+          && aWin.getComputedStyle(aInput).borderRadius === aWin.getComputedStyle(aPrimary).borderRadius
+          && aWin.getComputedStyle(aChip).borderRadius === '999px'
+          && aWin.getComputedStyle(aCard).borderRadius === '12px';
+        aProbe.remove();
+        adminMatches = aTokensOk && aComponentsOk
+          && aCs.backgroundColor === expectBg && aCs.color === expectText && aFont === expectFont
+          && (!landingPrimaryBg || adminPrimaryBg === landingPrimaryBg);
         adminOverflow = aDoc.documentElement.scrollWidth > aWin.innerWidth + 1;
       }
       t.metric('adminTokensMatch', adminMatches ? 1 : 0);
@@ -2047,7 +2062,8 @@ installPlaytest({
       await sleep(700);
       frame.remove();
 
-      const sameAll = Boolean(landingPrimaryBg && editorPrimaryBg && landingPrimaryBg === editorPrimaryBg && adminMatches);
+      const sameAll = Boolean(landingPrimaryBg && editorPrimaryBg && adminPrimaryBg
+        && landingPrimaryBg === editorPrimaryBg && landingPrimaryBg === adminPrimaryBg && adminMatches);
       t.metric('samePaletteAndButtonsAcrossPages', sameAll ? 1 : 0);
       t.metric('tokenProblems', problems);
       const started = jobs.sent.length;

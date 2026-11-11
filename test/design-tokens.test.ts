@@ -19,7 +19,7 @@ test('design tokens: gen.css and style.css define custom properties for colours,
     '--danger', '--danger-soft', '--bad', '--warn', '--warn-soft', '--ok', '--ok-soft', '--chip',
     // Type scale
     '--font-sans', '--font-mono',
-    '--text-2xs', '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl', '--text-2xl', '--text-3xl',
+    '--text-2xs', '--text-label', '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl', '--text-2xl', '--text-3xl',
     '--leading-tight', '--leading-snug', '--leading-base', '--leading-relaxed',
     '--weight-normal', '--weight-medium', '--weight-semibold', '--weight-bold',
     // Spacing
