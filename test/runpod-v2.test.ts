@@ -95,7 +95,7 @@ test('an endpoint wastes idle time when it keeps a warm worker or idles past IDL
 
 test('the RunPod setup scripts make every endpoint with the idle rule (no script keeps its own longer idle)', async () => {
   const fs = await import('node:fs');
-  const files = ['../tools/gpu-providers/runpod.mjs', '../tools/gpu-providers/runpod-unity.mjs', '../tools/playtest-runpod/setup.mjs', '../tools/play-native/setup.mjs'];
+  const files = ['../tools/gpu-providers/runpod.mjs', '../tools/gpu-providers/runpod-unity.mjs', '../tools/playtest-runpod/setup.mjs', '../tools/play-native/setup.mjs', '../tools/playtest-runpod/capacity.mjs'];
   for (const f of files) {
     const src = fs.readFileSync(new URL(f, import.meta.url), 'utf8');
     // An idle above 60 s written into a script (a literal like idle: 900 or a 300 s default) is the waste this rule ended.
