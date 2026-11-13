@@ -165,10 +165,14 @@ function withLods<T extends { items: any[] }>(list: T): T {
  *  ("Response size was too large", 2026-10-31: a 41 MB Unity build couldn't be downloaded), but streams chunked ones. */
 const CHUNK_OVER = 30 * 1024 * 1024;
 const onCloudRun = () => Boolean(process.env.K_SERVICE);
+/** Content-Length for a response of n bytes, or nothing (so Node sends it chunked) when Cloud Run would refuse it. Every route
+ *  that streams a file uses this: the CDN's origin route once sent the bucket's length for a 70 MB build, Cloud Run dropped
+ *  the response, and cdn.hawkesgen.ai answered 502 to every download (2026-11-13). */
+const lengthHeader = (n: number): Record<string, number> => (onCloudRun() && n > CHUNK_OVER ? {} : { 'Content-Length': n });
 
 function serveFile(req: IncomingMessage, res: ServerResponse, file: string, mime = mimeOf(file), extra: Record<string, string> = {}) {
   const stat = fs.statSync(file);
-  const length = (n: number) => (onCloudRun() && n > CHUNK_OVER ? {} : { 'Content-Length': n });
+  const length = lengthHeader;
   const range = /bytes=(\d*)-(\d*)/.exec(String(req.headers.range ?? ''));
   if (range) {
     const start = range[1] ? Number(range[1]) : 0;
@@ -508,12 +512,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (!r) return send(res, 404, { error: 'Not found' });
       res.writeHead(200, {
         'Content-Type': st.safeMime(r.headers.get('content-type')),
-        ...(r.headers.get('content-length') ? { 'Content-Length': r.headers.get('content-length')! } : {}),
+        ...(Number(r.headers.get('content-length')) > 0 ? lengthHeader(Number(r.headers.get('content-length'))) : {}),
         'Cache-Control': 'public, max-age=31536000, immutable', 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff',
       });
       if (method === 'HEAD' || !r.body) { await r.body?.cancel().catch(() => {}); return res.end(); }
       const { Readable } = await import('node:stream');
-      Readable.fromWeb(r.body as any).pipe(res);
+      // pipeline: a bucket read that fails part way ends the response instead of leaving it open.
+      const { pipeline } = await import('node:stream/promises');
+      await pipeline(Readable.fromWeb(r.body as any), res).catch(() => {});
       return;
     }
     if (route === '/v1/health') {
