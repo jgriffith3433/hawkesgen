@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>html{color-scheme:light dark}body{margin:0}</style>
+<title>The Hawkes H</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: the exploded diagram is the page. A wide figure that scrolls sideways on small screens, then the numbered path through it. */
+:root {
+  --bg: #f5f7f9; --panel: #ffffff; --fg: #16202a; --muted: #5b6978; --line: #cdd6de;
+  --left: #0b6e8f; --left-soft: #e6f3f7;   /* Studio: decides */
+  --right: #b0521c; --right-soft: #fcf0e6; /* Gen: makes */
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f161d; --panel: #17212b; --fg: #e4ebf1; --muted: #98a7b5; --line: #3a4856;
+  --left: #62c6e2; --left-soft: #132a33; --right: #f0a56e; --right-soft: #32231a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0f161d; --panel: #17212b; --fg: #e4ebf1; --muted: #98a7b5; --line: #3a4856;
+  --left: #62c6e2; --left-soft: #132a33; --right: #f0a56e; --right-soft: #32231a; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--body); padding-block: 32px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+main { max-width: 1500px; margin: 0 auto; display: flex; flex-direction: column; gap: 36px; }
+header { display: flex; flex-direction: column; gap: 10px; }
+h1 { font: 700 clamp(32px, 5vw, 48px)/1.05 var(--display); margin: 0; letter-spacing: -0.01em; }
+.lede { font-size: 18px; max-width: 72ch; margin: 0; }
+.lede b.l { color: var(--left); } .lede b.r { color: var(--right); }
+h2 { font: 600 22px/1.2 var(--display); margin: 0; }
+section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+p { margin: 0; max-width: 72ch; }
+figure { margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.scroll { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+svg { display: block; width: 100%; min-width: 1320px; height: auto; color: var(--fg); font-family: var(--body); }
+figcaption { font-size: 14px; color: var(--muted); max-width: 80ch; }
+.cl { fill: var(--left-soft); stroke: var(--left); stroke-width: 2; }
+.cr { fill: var(--right-soft); stroke: var(--right); stroke-width: 2; }
+.cn { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 6 5; }
+.bx { fill: var(--panel); stroke: var(--line); stroke-width: 1.3; }
+.bl { fill: var(--panel); stroke: var(--left); stroke-width: 1.5; }
+.br { fill: var(--panel); stroke: var(--right); stroke-width: 1.5; }
+.ed { fill: var(--bg); stroke: var(--muted); stroke-width: 1.2; }
+.zt { fill: var(--muted); font: 500 11.5px var(--mono); letter-spacing: .07em; }
+.ztl { fill: var(--left); font: 600 12.5px var(--mono); letter-spacing: .07em; }
+.ztr { fill: var(--right); font: 600 12.5px var(--mono); letter-spacing: .07em; }
+.t { fill: currentColor; font: 600 14px var(--display); }
+.s { fill: var(--muted); font-size: 12px; }
+.p { fill: currentColor; font-size: 12px; }
+.fl { fill: var(--muted); font-size: 12px; }
+.xl { fill: currentColor; font: 600 13px var(--display); }
+.ln { stroke: currentColor; stroke-width: 1.6; fill: none; }
+.nkl { stroke: var(--left); stroke-width: 8; fill: none; }
+.nkr { stroke: var(--right); stroke-width: 8; fill: none; }
+.xb { stroke: currentColor; stroke-width: 4; fill: none; }
+.bd { fill: var(--fg); }
+.bn { fill: var(--bg); font: 600 11.5px var(--mono); }
+.steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px 28px; counter-reset: st; }
+.steps li { counter-increment: st; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; font-size: 15px; border-top: 1px solid var(--line); padding-top: 10px; }
+.steps li::before { content: counter(st); font: 600 12px var(--mono); background: var(--fg); color: var(--bg); width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; margin-top: 2px; }
+.steps b { font: 600 15.5px var(--display); }
+.steps em { display: block; font: 500 12px var(--mono); font-style: normal; color: var(--muted); margin-top: 2px; }
+.aside { font-size: 14.5px; color: var(--muted); border-left: 3px solid var(--line); padding-left: 14px; }
+</style>
+</head>
+<body>
+
+<main>
+<header>
+  <h1>The Hawkes H</h1>
+  <p class="lede">Two strokes and a bar. <b class="l">Studio</b> turns what people want into code that ships, using AI agents. <b class="r">Gen</b> turns requests into files, using rented machines. They exchange jobs and evidence across one bar. Below is the H with every part opened, and one change traced through it in twelve steps.</p>
+</header>
+
+<section>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1600 1080" role="img" aria-label="Exploded view. Left: the code host with change branches, beta and main, a push hook and CI, and the beta and live sites. Centre left: Studio, containing Talk, a ledger, judges, a gate, a publisher, a planning loop and a harness router that fans out to six AI harnesses. Centre right: Gen, containing a front door, admission, a ledger with an event stream, a queue, a broker, tools and a provider router that fans out to rented workers. Right: stores for run folders, the library, database replicas and published files. Jobs cross from Studio to Gen and evidence crosses back. Twelve numbered steps trace one change.">
+      <defs><marker id="m" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+
+      <!-- who asks -->
+      <text class="zt" x="545" y="40" text-anchor="middle">WHO ASKS STUDIO</text><text class="zt" x="1110" y="40" text-anchor="middle">WHO ASKS GEN</text>
+      <rect class="bx" x="365" y="60" width="110" height="40" rx="20"/><text class="p" x="420" y="84" text-anchor="middle">the owner</text>
+      <rect class="bx" x="490" y="60" width="110" height="40" rx="20"/><text class="p" x="545" y="84" text-anchor="middle">beta testers</text>
+      <rect class="bx" x="615" y="60" width="110" height="40" rx="20"/><text class="p" x="670" y="84" text-anchor="middle">nightly clock</text>
+      <rect class="bx" x="923" y="60" width="124" height="40" rx="20"/><text class="p" x="985" y="84" text-anchor="middle">editors, AI sessions</text>
+      <rect class="bx" x="1048" y="60" width="124" height="40" rx="20"/><text class="p" x="1110" y="84" text-anchor="middle">game tools</text>
+      <rect class="bx" x="1173" y="60" width="124" height="40" rx="20"/><text class="p" x="1235" y="84" text-anchor="middle">the player portal</text>
+      <path class="ln" d="M420 100 V128 M545 100 V128 M670 100 V128 M985 100 V128 M1110 100 V128 M1235 100 V128"/>
+      <line class="ln" x1="420" y1="166" x2="420" y2="198" marker-end="url(#m)"/><line class="ln" x1="545" y1="166" x2="545" y2="198" marker-end="url(#m)"/><line class="ln" x1="670" y1="166" x2="670" y2="198" marker-end="url(#m)"/>
+      <line class="ln" x1="985" y1="166" x2="985" y2="198" marker-end="url(#m)"/><line class="ln" x1="1110" y1="166" x2="1110" y2="198" marker-end="url(#m)"/><line class="ln" x1="1235" y1="166" x2="1235" y2="198" marker-end="url(#m)"/>
+      <rect class="ed" x="330" y="128" width="990" height="38" rx="6"/><text class="s" x="825" y="152" text-anchor="middle">EDGE · sign-in · routing by address · passes for private beta sites · cached files</text>
+
+      <!-- code host -->
+      <rect class="cn" x="20" y="200" width="250" height="420" rx="10"/><text class="zt" x="36" y="224">CODE HOST · one repo per project</text>
+      <rect class="bx" x="40" y="240" width="210" height="62" rx="6"/><text class="t" x="52" y="265">Change branch</text><text class="s" x="52" y="285">one per agent change</text>
+      <rect class="bx" x="40" y="316" width="210" height="62" rx="6"/><text class="t" x="52" y="341">beta</text><text class="s" x="52" y="361">testable; agents' work lands here</text>
+      <rect class="bx" x="40" y="392" width="210" height="62" rx="6"/><text class="t" x="52" y="417">main</text><text class="s" x="52" y="437">live; moves only at the gate</text>
+      <rect class="bx" x="40" y="468" width="210" height="62" rx="6"/><text class="t" x="52" y="493">Push hook</text><text class="s" x="52" y="513">a signed note: this repo moved</text>
+      <rect class="bx" x="40" y="544" width="210" height="62" rx="6"/><text class="t" x="52" y="569">CI</text><text class="s" x="52" y="589">deploys Studio and Gen themselves</text>
+      <rect class="cn" x="20" y="636" width="250" height="158" rx="10"/><text class="zt" x="36" y="656">SITES</text>
+      <rect class="bx" x="40" y="666" width="210" height="50" rx="6"/><text class="t" x="52" y="687">Beta site</text><text class="s" x="52" y="705">private, behind a pass</text>
+      <rect class="bx" x="40" y="730" width="210" height="50" rx="6"/><text class="t" x="52" y="751">Live site</text><text class="s" x="52" y="769">what players open</text>
+
+      <!-- studio -->
+      <rect class="cl" x="330" y="200" width="430" height="580" rx="12"/><text class="ztl" x="350" y="224">STUDIO · decides</text>
+      <rect class="bl" x="350" y="240" width="390" height="62" rx="6"/><text class="t" x="364" y="265">Talk</text><text class="s" x="364" y="285">turns words into roadmap items, tasks and criteria</text>
+      <rect class="bl" x="350" y="316" width="390" height="62" rx="6"/><text class="t" x="364" y="341">Ledger · one database, one writer</text><text class="s" x="364" y="361">tasks · criteria · changes · findings · approvals · memory</text>
+      <rect class="bl" x="350" y="392" width="390" height="62" rx="6"/><text class="t" x="364" y="417">Judges</text><text class="s" x="364" y="437">checks, then two judges score every criterion on evidence</text>
+      <rect class="bl" x="350" y="468" width="390" height="62" rx="6"/><text class="t" x="364" y="493">Gate</text><text class="s" x="364" y="513">merges into beta when it passes; live only on the owner's word</text>
+      <rect class="bl" x="350" y="544" width="390" height="62" rx="6"/><text class="t" x="364" y="569">Publisher</text><text class="s" x="364" y="589">rebuilds the beta site from what was pushed</text>
+      <rect class="bl" x="350" y="620" width="390" height="62" rx="6"/><text class="t" x="364" y="645">Planning loop · every 60 seconds</text><text class="s" x="364" y="665">starts tasks and the worst bugs, within caps; 3 tries each</text>
+      <rect class="bl" x="350" y="696" width="390" height="62" rx="6"/><text class="t" x="364" y="721">Harness router</text><text class="s" x="364" y="741">kind of work → tier → model; holds a harness that runs out</text>
+      <line class="ln" x1="545" y1="302" x2="545" y2="314" marker-end="url(#m)"/><line class="ln" x1="545" y1="454" x2="545" y2="466" marker-end="url(#m)"/><line class="ln" x1="545" y1="682" x2="545" y2="694" marker-end="url(#m)"/>
+
+      <!-- gen -->
+      <rect class="cr" x="900" y="200" width="420" height="580" rx="12"/><text class="ztr" x="920" y="224">GEN · makes</text>
+      <rect class="br" x="920" y="240" width="380" height="62" rx="6"/><text class="t" x="934" y="265">Front door</text><text class="s" x="934" y="285">one API for every caller; keys, sign-in, rate limits</text>
+      <rect class="br" x="920" y="316" width="380" height="62" rx="6"/><text class="t" x="934" y="341">Admit</text><text class="s" x="934" y="361">art direction, inputs, reuse, credits, the daily ceiling</text>
+      <rect class="br" x="920" y="392" width="380" height="62" rx="6"/><text class="t" x="934" y="417">Ledger · one database, one writer</text><text class="s" x="934" y="437">jobs · assets · usage · credits; announces every change</text>
+      <rect class="br" x="920" y="468" width="380" height="62" rx="6"/><text class="t" x="934" y="493">Queue</text><text class="s" x="934" y="513">fair turns per project; batches jobs by model family</text>
+      <rect class="br" x="920" y="544" width="380" height="62" rx="6"/><text class="t" x="934" y="569">Broker</text><text class="s" x="934" y="589">hands a worker signed links to one run folder, nothing else</text>
+      <rect class="br" x="920" y="620" width="380" height="62" rx="6"/><text class="t" x="934" y="645">Tools · about 100</text><text class="s" x="934" y="665">image, video, 3D, audio, build, playtest, review; recipes</text>
+      <rect class="br" x="920" y="696" width="380" height="62" rx="6"/><text class="t" x="934" y="721">Provider router</text><text class="s" x="934" y="741">provider order per kind of job; cools one down, tries the next</text>
+      <line class="ln" x1="1110" y1="302" x2="1110" y2="314" marker-end="url(#m)"/><line class="ln" x1="1110" y1="378" x2="1110" y2="390" marker-end="url(#m)"/><line class="ln" x1="1110" y1="454" x2="1110" y2="466" marker-end="url(#m)"/><line class="ln" x1="1110" y1="682" x2="1110" y2="694" marker-end="url(#m)"/>
+      <path class="ln" d="M920 510 H910 V651 H918" marker-end="url(#m)"/>
+
+      <!-- stores -->
+      <rect class="cn" x="1380" y="200" width="200" height="344" rx="10"/><text class="zt" x="1396" y="224">STORES</text>
+      <rect class="bx" x="1396" y="240" width="168" height="62" rx="6"/><text class="t" x="1408" y="265">Run folders</text><text class="s" x="1408" y="285">outputs, a manifest</text>
+      <rect class="bx" x="1396" y="316" width="168" height="62" rx="6"/><text class="t" x="1408" y="341">Library</text><text class="s" x="1408" y="361">files by hash + recipe</text>
+      <rect class="bx" x="1396" y="392" width="168" height="62" rx="6"/><text class="t" x="1408" y="417">Replicas</text><text class="s" x="1408" y="437">both ledgers, each second</text>
+      <rect class="bx" x="1396" y="468" width="168" height="62" rx="6"/><text class="t" x="1408" y="493">Published files</text><text class="s" x="1408" y="513">beta sites, game builds</text>
+
+      <!-- necks and providers -->
+      <line class="nkl" x1="545" y1="760" x2="545" y2="868"/><text class="fl" x="530" y="826" text-anchor="end">one command in</text><text class="fl" x="560" y="826">events and commits out</text>
+      <line class="nkr" x1="1110" y1="760" x2="1110" y2="868"/><text class="fl" x="1095" y="826" text-anchor="end">one job in</text><text class="fl" x="1125" y="826">progress lines out</text>
+      <rect class="cl" x="330" y="870" width="430" height="96" rx="12"/><text class="ztl" x="346" y="892">AGENT PASS · one disposable job, one harness</text>
+      <rect class="bl" x="342" y="906" width="62" height="30" rx="15"/><text class="p" x="373" y="925" text-anchor="middle">Claude</text>
+      <rect class="bl" x="410" y="906" width="62" height="30" rx="15"/><text class="p" x="441" y="925" text-anchor="middle">Codex</text>
+      <rect class="bl" x="478" y="906" width="62" height="30" rx="15"/><text class="p" x="509" y="925" text-anchor="middle">Cursor</text>
+      <rect class="bl" x="546" y="906" width="62" height="30" rx="15"/><text class="p" x="577" y="925" text-anchor="middle">Copilot</text>
+      <rect class="bl" x="614" y="906" width="62" height="30" rx="15"/><text class="p" x="645" y="925" text-anchor="middle">Gemini</text>
+      <rect class="bl" x="682" y="906" width="70" height="30" rx="15"/><text class="p" x="717" y="925" text-anchor="middle">Antigravity</text>
+      <rect class="cr" x="900" y="870" width="420" height="96" rx="12"/><text class="ztr" x="916" y="892">WORKERS · disposable, interchangeable</text>
+      <rect class="br" x="912" y="906" width="72" height="30" rx="15"/><text class="p" x="948" y="925" text-anchor="middle">RunPod</text>
+      <rect class="br" x="992" y="906" width="72" height="30" rx="15"/><text class="p" x="1028" y="925" text-anchor="middle">Modal</text>
+      <rect class="br" x="1072" y="906" width="72" height="30" rx="15"/><text class="p" x="1108" y="925" text-anchor="middle">CPU</text>
+      <rect class="br" x="1152" y="906" width="72" height="30" rx="15"/><text class="p" x="1188" y="925" text-anchor="middle">build box</text>
+      <rect class="br" x="1232" y="906" width="76" height="30" rx="15"/><text class="p" x="1270" y="925" text-anchor="middle">browsers</text>
+
+      <!-- the bar -->
+      <line class="xb" x1="760" y1="271" x2="916" y2="271" marker-end="url(#m)"/><text class="xl" x="800" y="256" text-anchor="middle">jobs</text>
+      <line class="xb" x1="920" y1="423" x2="744" y2="423" marker-end="url(#m)"/><text class="xl" x="800" y="408" text-anchor="middle">evidence</text>
+
+      <!-- studio to code host and sites -->
+      <path class="ln" d="M350 489 H318 V347 H253" marker-end="url(#m)"/>
+      <path class="ln" d="M350 509 H308 V423 H253" marker-end="url(#m)"/>
+      <path class="ln" d="M250 499 H296 V565 H347" marker-end="url(#m)"/>
+      <path class="ln" d="M350 590 H284 V691 H253" marker-end="url(#m)"/>
+      <path class="ln" d="M40 423 H30 V755 H37" marker-end="url(#m)"/>
+
+      <!-- gen to stores -->
+      <path class="ln" d="M1300 575 H1350 V271 H1393" marker-end="url(#m)"/>
+      <path class="ln" d="M1300 651 H1362 V347 H1393" marker-end="url(#m)"/>
+      <path class="ln" d="M1320 918 H1572 V271 H1567" marker-end="url(#m)"/><text class="fl" x="1446" y="910" text-anchor="middle">outputs</text>
+
+      <!-- step badges -->
+      <g>
+        <circle class="bd" cx="440" cy="114" r="11"/><text class="bn" x="440" y="118" text-anchor="middle">1</text>
+        <circle class="bd" cx="566" cy="308" r="11"/><text class="bn" x="566" y="312" text-anchor="middle">2</text>
+        <circle class="bd" cx="545" cy="790" r="11"/><text class="bn" x="545" y="794" text-anchor="middle">3</text>
+        <circle class="bd" cx="545" cy="850" r="11"/><text class="bn" x="545" y="854" text-anchor="middle">4</text>
+        <circle class="bd" cx="286" cy="347" r="11"/><text class="bn" x="286" y="351" text-anchor="middle">5</text>
+        <circle class="bd" cx="273" cy="499" r="11"/><text class="bn" x="273" y="503" text-anchor="middle">6</text>
+        <circle class="bd" cx="284" cy="640" r="11"/><text class="bn" x="284" y="644" text-anchor="middle">7</text>
+        <circle class="bd" cx="850" cy="271" r="11"/><text class="bn" x="850" y="275" text-anchor="middle">8</text>
+        <circle class="bd" cx="1110" cy="790" r="11"/><text class="bn" x="1110" y="794" text-anchor="middle">9</text>
+        <circle class="bd" cx="850" cy="423" r="11"/><text class="bn" x="850" y="427" text-anchor="middle">10</text>
+        <circle class="bd" cx="281" cy="423" r="11"/><text class="bn" x="281" y="427" text-anchor="middle">11</text>
+        <circle class="bd" cx="30" cy="610" r="11"/><text class="bn" x="30" y="614" text-anchor="middle">12</text>
+      </g>
+
+      <!-- solid forms -->
+      <text class="zt" x="20" y="1006">WHAT STAYS SOLID · everything else can be lost and redone</text>
+      <rect class="bx" x="20" y="1018" width="296" height="50" rx="6"/><text class="t" x="34" y="1039">Criterion</text><text class="s" x="34" y="1057">a row in Studio's ledger</text>
+      <rect class="bx" x="336" y="1018" width="296" height="50" rx="6"/><text class="t" x="350" y="1039">Commit</text><text class="s" x="350" y="1057">git, on a lane: change, beta, main</text>
+      <rect class="bx" x="652" y="1018" width="296" height="50" rx="6"/><text class="t" x="666" y="1039">Job spec</text><text class="s" x="666" y="1057">JSON: tool, inputs, settings, a stable key</text>
+      <rect class="bx" x="968" y="1018" width="296" height="50" rx="6"/><text class="t" x="982" y="1039">Asset</text><text class="s" x="982" y="1057">a file named by its content hash</text>
+      <rect class="bx" x="1284" y="1018" width="296" height="50" rx="6"/><text class="t" x="1298" y="1039">Evidence</text><text class="s" x="1298" y="1057">a report and a verdict, as JSON</text>
+    </svg>
+    </div>
+    <figcaption>The two filled columns are the strokes of the H; the two heavy arrows between them are the bar. Each stroke narrows to a ledger in the middle and widens to interchangeable providers at the bottom. Not drawn: multiplayer (Hawkes Net), payments, and phone notifications, which hang off the same two ledgers.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>One change, twelve steps</h2>
+  <ol class="steps">
+    <li><div><b>The owner says what they want.</b> It goes through the edge to Talk.<em>in: words</em></div></li>
+    <li><div><b>Talk writes it down.</b> A roadmap item, tasks, and what "done" means for each.<em>solid: criterion rows</em></div></li>
+    <li><div><b>The loop starts an agent.</b> The router picks a tier and a harness and launches one disposable job.<em>out: one command line</em></div></li>
+    <li><div><b>The agent returns its work.</b> A stream of events while it runs, then its commits.<em>back: event stream + commit bundle</em></div></li>
+    <li><div><b>Studio opens the pull request and merges.</b> After the project's checks pass, the change lands on beta.<em>solid: commits on beta</em></div></li>
+    <li><div><b>The hook reports the push.</b> The code host tells Studio which repo and branch moved.<em>in: a signed token</em></div></li>
+    <li><div><b>The publisher rebuilds the beta site.</b> Only changed files are sent.<em>solid: files named by git id + a manifest</em></div></li>
+    <li><div><b>Studio asks Gen to build and play it.</b> When a milestone's tasks are all merged, or on a go-live request.<em>across: job specs</em></div></li>
+    <li><div><b>Gen runs the jobs on workers.</b> A build machine builds; a browser plays the game's own bot; a model reviews the footage.<em>solid: assets in the library</em></div></li>
+    <li><div><b>Evidence comes back.</b> Outcome, footage, scores and a yes or no per criterion. Studio keeps ids, not files.<em>across: report + verdict JSON</em></div></li>
+    <li><div><b>The gate moves main.</b> Only for the exact commit that was played, and only on the owner's word.<em>solid: main fast-forwarded</em></div></li>
+    <li><div><b>The live site updates.</b> The code host serves whatever main points at.<em>out: the published site</em></div></li>
+  </ol>
+  <p class="aside">A failed step loops back instead of forward: a failed check or a "no" from the judges sends the task back to step 3, up to three tries, and then to the owner.</p>
+</section>
+</main>
+</body>
+</html>

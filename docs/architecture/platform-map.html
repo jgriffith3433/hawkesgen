@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>html{color-scheme:light dark}body{margin:0}</style>
+<title>Hawkes Platform Map</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: one reading column (max 860px) with a sticky section index on wide screens; diagrams and tables scroll in their own boxes. */
+:root {
+  --bg: #f6f8fa; --surface: #ffffff; --fg: #17212b; --muted: #5a6877; --line: #cfd8e0;
+  --accent: #0b6e8f; --accent-soft: #e0f0f5; --warn: #9a5b00; --warn-soft: #fbefd9; --ok: #1f7a4d; --ok-soft: #e1f3e9; --bad: #a8322a; --bad-soft: #f9e4e1;
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #10171e; --surface: #18222c; --fg: #e3eaf0; --muted: #97a6b4; --line: #33414e;
+  --accent: #5fc3e0; --accent-soft: #16323c; --warn: #e6b05a; --warn-soft: #3a2c12; --ok: #6fd09c; --ok-soft: #153325; --bad: #f08a80; --bad-soft: #3d1c19; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #10171e; --surface: #18222c; --fg: #e3eaf0; --muted: #97a6b4; --line: #33414e;
+  --accent: #5fc3e0; --accent-soft: #16323c; --warn: #e6b05a; --warn-soft: #3a2c12; --ok: #6fd09c; --ok-soft: #153325; --bad: #f08a80; --bad-soft: #3d1c19; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--body); padding-block: 32px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.page { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }
+@media (min-width: 1000px) { .page { grid-template-columns: 200px minmax(0, 860px); } }
+nav { font-size: 14px; }
+@media (min-width: 1000px) { nav { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; } }
+nav ol { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+@media (min-width: 1000px) { nav ol { flex-direction: column; gap: 6px; } }
+nav a { color: var(--muted); text-decoration: none; }
+nav a:hover, nav a:focus-visible { color: var(--accent); text-decoration: underline; }
+main { display: flex; flex-direction: column; gap: 44px; min-width: 0; }
+header h1 { font: 600 clamp(30px, 5vw, 42px)/1.1 var(--display); margin: 0 0 10px; text-wrap: balance; }
+.asof { font: 500 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 0 0 14px; }
+.lede { font-size: 18px; max-width: 65ch; margin: 0; }
+section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+h2 { font: 600 24px/1.2 var(--display); margin: 0; text-wrap: balance; padding-top: 14px; border-top: 1px solid var(--line); }
+h3 { font: 600 17px/1.3 var(--display); margin: 8px 0 0; }
+p, ul, ol { margin: 0; max-width: 70ch; }
+ul, ol.steps { padding-left: 22px; display: flex; flex-direction: column; gap: 6px; }
+code { font: 0.88em var(--mono); background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font: 500 12px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td:first-child { font-weight: 500; }
+figure { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+figure .scroll { padding: 12px; }
+figure svg { display: block; width: 100%; min-width: 720px; height: auto; color: var(--fg); font-family: var(--body); }
+figcaption { font-size: 14px; color: var(--muted); max-width: 70ch; }
+.b { fill: var(--bg); stroke: var(--line); stroke-width: 1.3; }
+.ba { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+.ln { stroke: currentColor; stroke-width: 1.2; fill: none; }
+.t { fill: currentColor; font-size: 13px; font-weight: 600; }
+.ts { fill: var(--muted); font-size: 11.5px; }
+.tl { fill: var(--muted); font-size: 11px; font-style: italic; }
+figure svg.wide { min-width: 1180px; }
+.z { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 4; }
+.zt { fill: var(--muted); font: 500 11.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+.bd { fill: var(--accent); }
+.bt { fill: var(--bg); font-size: 11px; font-weight: 600; }
+.pill { display: inline-block; font: 500 12px var(--mono); padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+.ok { background: var(--ok-soft); color: var(--ok); } .warn { background: var(--warn-soft); color: var(--warn); } .bad { background: var(--bad-soft); color: var(--bad); }
+.note { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 15px; max-width: 70ch; }
+</style>
+</head>
+<body>
+
+<div class="page">
+<nav aria-label="Sections">
+  <ol>
+    <li><a href="#blueprint">Blueprint</a></li>
+    <li><a href="#wiring">Wiring list</a></li>
+    <li><a href="#build">Build sheet</a></li>
+    <li><a href="#inventory">Resource inventory</a></li>
+    <li><a href="#bringup">Bring-up order</a></li>
+    <li><a href="#picture">Zoomed out</a></li>
+    <li><a href="#parts">The parts</a></li>
+    <li><a href="#flow">How work flows</a></li>
+    <li><a href="#studio">Studio</a></li>
+    <li><a href="#gen">Gen and its job queue</a></li>
+    <li><a href="#providers">GPU providers</a></li>
+    <li><a href="#harness">AI harnesses</a></li>
+    <li><a href="#io">Inputs and outputs</a></li>
+    <li><a href="#github">GitHub and deploys</a></li>
+    <li><a href="#projects">How a project plugs in</a></li>
+    <li><a href="#drift">Where docs lag code</a></li>
+    <li><a href="#unknown">Not verified</a></li>
+  </ol>
+</nav>
+
+<main>
+<header>
+  <p class="asof">Read from code and live services · 14 Nov 2026</p>
+  <h1>Hawkes Platform Map</h1>
+  <p class="lede">Two services run every Hawkes project. Studio manages the work: it hears pushes, runs AI agents, judges playtests and moves code toward live. Gen does the heavy compute: one job queue in front of GPU providers, build machines and playtest browsers. GitHub is the source of truth for code, and Cloudflare fronts everything.</p>
+</header>
+
+<section id="blueprint">
+  <h2>Blueprint</h2>
+  <p>Every running piece, grouped by where it lives. Each box has an id (A1, C5…) that the wiring list and build sheet below refer to. Numbered arrows are the main paths; the wiring list has all of them.</p>
+  <figure>
+    <div class="scroll">
+    <svg class="wide" viewBox="0 0 1400 840" role="img" aria-label="Seven zones: people and clients, the Cloudflare edge, the Google Cloud project hawkes-staging holding Studio and Gen, the project hawkes-prod holding the portal and Hawkes Net, rented GPU compute, GitHub, and third parties, with the main paths between them.">
+      <defs><marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+
+      <rect class="z" x="20" y="16" width="1360" height="84" rx="8"/><text class="zt" x="32" y="32">A · People and clients</text>
+      <rect class="b" x="40" y="42" width="200" height="46" rx="5"/><text class="t" x="52" y="61">A1 · Owner</text><text class="ts" x="52" y="78">Talk, dashboard, phone</text>
+      <rect class="b" x="260" y="42" width="200" height="46" rx="5"/><text class="t" x="272" y="61">A2 · Editors</text><text class="ts" x="272" y="78">Claude sessions over MCP</text>
+      <rect class="b" x="480" y="42" width="220" height="46" rx="5"/><text class="t" x="492" y="61">A3 · PC tools</text><text class="ts" x="492" y="78">CLIs, devtools, Unity editor</text>
+      <rect class="b" x="720" y="42" width="200" height="46" rx="5"/><text class="t" x="732" y="61">A4 · Beta testers</text><text class="ts" x="732" y="78">bug button on beta pages</text>
+      <rect class="b" x="940" y="42" width="200" height="46" rx="5"/><text class="t" x="952" y="61">A5 · Players</text><text class="ts" x="952" y="78">live sites, multiplayer</text>
+      <rect class="b" x="1160" y="42" width="200" height="46" rx="5"/><text class="t" x="1172" y="61">A6 · Outside developers</text><text class="ts" x="1172" y="78">Net SDK, Gen accounts</text>
+
+      <rect class="z" x="20" y="122" width="1360" height="112" rx="8"/><text class="zt" x="32" y="138">B · Cloudflare edge (Workers on zone routes)</text>
+      <rect class="b" x="40" y="148" width="250" height="72" rx="5"/><text class="t" x="52" y="168">B1 · hawkes-studio-edge</text><text class="ts" x="52" y="187">studio.hawkesgen.ai, studio-beta.</text><text class="ts" x="52" y="204">routes /o/&lt;org&gt;/ to its cell</text>
+      <rect class="b" x="310" y="148" width="270" height="72" rx="5"/><text class="t" x="322" y="168">B2 · hawkes-beta-sites + R2</text><text class="ts" x="322" y="187">&lt;sub&gt;.hawkesgen.ai, sites.hawkesgen.ai</text><text class="ts" x="322" y="204">checks the pass cookie at the edge</text>
+      <rect class="b" x="600" y="148" width="250" height="72" rx="5"/><text class="t" x="612" y="168">B3 · hawkes-gen-edge</text><text class="ts" x="612" y="187">hawkesgen.ai, beta.hawkesgen.ai</text><text class="ts" x="612" y="204">Gen first, else the portal</text>
+      <rect class="b" x="870" y="148" width="220" height="72" rx="5"/><text class="t" x="882" y="168">B4 · hawkes-gen-cdn</text><text class="ts" x="882" y="187">cdn.hawkesgen.ai/sha256/&lt;hash&gt;</text><text class="ts" x="882" y="204">cached library files</text>
+      <rect class="b" x="1110" y="148" width="250" height="72" rx="5"/><text class="t" x="1122" y="168">B5 · DNS zones</text><text class="ts" x="1122" y="187">hawkesgen.ai · hawkesgames.com</text><text class="ts" x="1122" y="204">each host: proxied AAAA 100::</text>
+
+      <rect class="z" x="20" y="256" width="880" height="390" rx="8"/><text class="zt" x="32" y="272">C · Google Cloud project hawkes-staging (runs live and beta)</text>
+      <rect class="ba" x="40" y="284" width="400" height="66" rx="5"/><text class="t" x="52" y="304">C1 · studio (beta: studio-beta)</text><text class="ts" x="52" y="322">Cloud Run service · us-east4 · 2 vCPU, 4 GiB, 1 instance</text><text class="ts" x="52" y="338">control plane: API, Talk, PM loop, /mcp, cells admin</text>
+      <rect class="b" x="40" y="360" width="400" height="52" rx="5"/><text class="t" x="52" y="380">C2 · studio-o-&lt;org&gt; (customer cells)</text><text class="ts" x="52" y="398">one Cloud Run service each · own data prefix, cookie, Gen key</text>
+      <rect class="b" x="40" y="422" width="400" height="52" rx="5"/><text class="t" x="52" y="442">C3 · studio-agent (Cloud Run job)</text><text class="ts" x="52" y="460">one execution per agent, scout or Talk pass · harness CLIs</text>
+      <rect class="b" x="40" y="484" width="400" height="52" rx="5"/><text class="t" x="52" y="504">C4 · bucket hawkes-staging-studio-state</text><text class="ts" x="52" y="522">db/ (Litestream + lease) · state/ · jobs/&lt;unit&gt;/ · o/&lt;org&gt;/</text>
+
+      <rect class="ba" x="480" y="284" width="400" height="66" rx="5"/><text class="t" x="492" y="304">C5 · gen (beta: gen-beta, us-central1)</text><text class="ts" x="492" y="322">Cloud Run service · us-east4 · 1 instance, scales to zero</text><text class="ts" x="492" y="338">queue, tools, library, /mcp, /oauth, billing, GPU broker</text>
+      <rect class="b" x="480" y="360" width="400" height="52" rx="5"/><text class="t" x="492" y="380">C6 · gen-cpu · gen-cpu-heavy · gen-playtest-cpu</text><text class="ts" x="492" y="398">Cloud Run services: /tool, /exec; software-WebGL playtests</text>
+      <rect class="b" x="480" y="422" width="400" height="52" rx="5"/><text class="t" x="492" y="442">C7 · hawkes-unity-build (+ -customer)</text><text class="ts" x="492" y="460">Cloud Run job: builds a commit → R2 + website repo beta</text>
+      <rect class="b" x="480" y="484" width="400" height="52" rx="5"/><text class="t" x="492" y="504">C8 · Gen buckets</text><text class="ts" x="492" y="522">-gen-state · -gen-library (sha256/) · -gen-backups · work</text>
+
+      <rect class="b" x="40" y="556" width="270" height="72" rx="5"/><text class="t" x="52" y="576">C9 · Secret Manager</text><text class="ts" x="52" y="595">GitHub tokens, Stripe keys,</text><text class="ts" x="52" y="612">provider keys</text>
+      <rect class="b" x="325" y="556" width="270" height="72" rx="5"/><text class="t" x="337" y="576">C10 · Cloud Scheduler</text><text class="ts" x="337" y="595">studio-daily 05:00 PT · cells-cron</text><text class="ts" x="337" y="612">gen-backup 03:15 UTC</text>
+      <rect class="b" x="610" y="556" width="270" height="72" rx="5"/><text class="t" x="622" y="576">C11 · Workload Identity</text><text class="ts" x="622" y="595">pool github, one provider per repo</text><text class="ts" x="622" y="612">→ deployer service accounts</text>
+
+      <rect class="z" x="920" y="256" width="460" height="176" rx="8"/><text class="zt" x="932" y="272">D · Google Cloud project hawkes-prod</text>
+      <rect class="b" x="940" y="284" width="420" height="66" rx="5"/><text class="t" x="952" y="304">D1 · Portal: Hawkes Games (Firebase)</text><text class="ts" x="952" y="322">Hosting + Functions api (us-east4) + Firestore</text><text class="ts" x="952" y="338">hawkesgames.com · its beta is in hawkes-staging</text>
+      <rect class="b" x="940" y="358" width="420" height="66" rx="5"/><text class="t" x="952" y="378">D2 · Hawkes Net (two Compute Engine VMs)</text><text class="ts" x="952" y="396">hawkes-net: main, e2-small · hawkes-net-beta: beta, e2-micro</text><text class="ts" x="952" y="412">Caddy in front · pulls its branch every 2 min</text>
+
+      <rect class="z" x="920" y="452" width="460" height="194" rx="8"/><text class="zt" x="932" y="468">E · Rented compute</text>
+      <rect class="b" x="940" y="480" width="420" height="46" rx="5"/><text class="t" x="952" y="499">E1 · RunPod GPU endpoints</text><text class="ts" x="952" y="516">runpod (all families) · runpod-3d (rig, motion, Blender)</text>
+      <rect class="b" x="940" y="534" width="420" height="46" rx="5"/><text class="t" x="952" y="553">E2 · RunPod playtest endpoint</text><text class="ts" x="952" y="570">real-GPU browsers on named GPU models</text>
+      <rect class="b" x="940" y="588" width="420" height="46" rx="5"/><text class="t" x="952" y="607">E3 · Modal apps</text><text class="ts" x="952" y="624">GPU worker · playtest browsers</text>
+
+      <rect class="z" x="20" y="672" width="880" height="152" rx="8"/><text class="zt" x="32" y="688">F · GitHub (one account, lanes dev → beta → main)</text>
+      <rect class="b" x="40" y="698" width="270" height="112" rx="5"/><text class="t" x="52" y="718">F1 · Repos</text><text class="ts" x="52" y="737">platform: hawkesstudio, hawkesgen,</text><text class="ts" x="52" y="753">hawkesnet, hawkesgenwebsite</text><text class="ts" x="52" y="769">products: a source repo, and a website</text><text class="ts" x="52" y="785">repo where the engine is Unity</text>
+      <rect class="b" x="325" y="698" width="270" height="112" rx="5"/><text class="t" x="337" y="718">F2 · Actions</text><text class="ts" x="337" y="737">hawkes-studio.yml: the push hook</text><text class="ts" x="337" y="753">ci.yml: deploy to Cloud Run</text><text class="ts" x="337" y="769">pages.yml · firebase.yml</text><text class="ts" x="337" y="785">image builds on tags · ops-*</text>
+      <rect class="b" x="610" y="698" width="270" height="112" rx="5"/><text class="t" x="622" y="718">F3 · Pages and Packages</text><text class="ts" x="622" y="737">live product sites, a CNAME each</text><text class="ts" x="622" y="753">ghcr.io: hawkes-gen-gpu (+ 3d),</text><text class="ts" x="622" y="769">hawkes-gen-playtest</text><text class="ts" x="622" y="785">SDK repos: hawkesnet-js, -unity</text>
+
+      <rect class="z" x="920" y="672" width="460" height="152" rx="8"/><text class="zt" x="932" y="688">G · Third parties</text>
+      <rect class="b" x="940" y="698" width="200" height="112" rx="5"/><text class="t" x="952" y="718">G1 · AI vendors</text><text class="ts" x="952" y="737">Claude (Max plan, API)</text><text class="ts" x="952" y="753">Codex · Cursor · Copilot</text><text class="ts" x="952" y="769">Gemini · Antigravity</text><text class="ts" x="952" y="785">ElevenLabs</text>
+      <rect class="b" x="1160" y="698" width="200" height="112" rx="5"/><text class="t" x="1172" y="718">G2 · Services</text><text class="ts" x="1172" y="737">Stripe (one account)</text><text class="ts" x="1172" y="753">ntfy.sh (phone pushes)</text><text class="ts" x="1172" y="769">Google sign-in</text><text class="ts" x="1172" y="785">Hugging Face (models)</text>
+
+      <line class="ln" x1="140" y1="88" x2="140" y2="146" marker-end="url(#a4)"/><circle class="bd" cx="140" cy="111" r="10"/><text class="bt" x="140" y="115" text-anchor="middle">1</text>
+      <line class="ln" x1="660" y1="88" x2="660" y2="146" marker-end="url(#a4)"/><circle class="bd" cx="660" cy="111" r="10"/><text class="bt" x="660" y="115" text-anchor="middle">2</text>
+      <path class="ln" d="M820 88 V111 H500 V146" marker-end="url(#a4)"/><circle class="bd" cx="580" cy="111" r="10"/><text class="bt" x="580" y="115" text-anchor="middle">3</text>
+      <line class="ln" x1="140" y1="220" x2="140" y2="282" marker-end="url(#a4)"/><circle class="bd" cx="140" cy="245" r="10"/><text class="bt" x="140" y="249" text-anchor="middle">4</text>
+      <line class="ln" x1="400" y1="282" x2="400" y2="222" marker-end="url(#a4)"/><circle class="bd" cx="400" cy="245" r="10"/><text class="bt" x="400" y="249" text-anchor="middle">5</text>
+      <line class="ln" x1="700" y1="220" x2="700" y2="282" marker-end="url(#a4)"/><circle class="bd" cx="700" cy="245" r="10"/><text class="bt" x="700" y="249" text-anchor="middle">6</text>
+      <line class="ln" x1="440" y1="317" x2="478" y2="317" marker-end="url(#a4)" marker-start="url(#a4)"/><circle class="bd" cx="460" cy="298" r="10"/><text class="bt" x="460" y="302" text-anchor="middle">7</text>
+      <path class="ln" d="M880 330 H910 V557 H938" marker-end="url(#a4)"/><circle class="bd" cx="910" cy="445" r="10"/><text class="bt" x="910" y="449" text-anchor="middle">8</text>
+      <line class="ln" x1="175" y1="672" x2="175" y2="648" marker-end="url(#a4)"/><circle class="bd" cx="196" cy="660" r="10"/><text class="bt" x="196" y="664" text-anchor="middle">9</text>
+      <line class="ln" x1="460" y1="672" x2="460" y2="648" marker-end="url(#a4)"/><circle class="bd" cx="482" cy="660" r="10"/><text class="bt" x="482" y="664" text-anchor="middle">10</text>
+      <line class="ln" x1="745" y1="648" x2="745" y2="672" marker-end="url(#a4)"/><circle class="bd" cx="767" cy="660" r="10"/><text class="bt" x="767" y="664" text-anchor="middle">11</text>
+      <line class="ln" x1="1235" y1="220" x2="1235" y2="282" marker-end="url(#a4)"/><circle class="bd" cx="1235" cy="245" r="10"/><text class="bt" x="1235" y="249" text-anchor="middle">12</text>
+    </svg>
+    </div>
+    <figcaption>1 people sign in · 2 clients call Gen · 3 testers open beta sites · 4 the edge routes to Studio or a cell · 5 Studio publishes beta sites · 6 the edge routes to Gen · 7 Studio submits jobs, Gen sends events · 8 Gen dispatches to rented compute · 9 the push hook · 10 CI deploys Studio and Gen · 11 Studio opens, merges and ships code · 12 DNS sends the portal's hosts to Firebase.</figcaption>
+  </figure>
+  <p class="note">What this page carries: the shape, every resource by name, every connection, and the order to bring it up. What it cannot carry: the code (it is in the repos named in F1), secret values, and the data in the databases and buckets. With the repos and fresh credentials, this is enough to rebuild the platform empty; restoring it with its data also needs the bucket backups.</p>
+</section>
+
+<section id="wiring">
+  <h2>Wiring list</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>#</th><th>From → to</th><th>Transport and auth</th><th>Carries</th></tr></thead>
+    <tbody>
+      <tr><td>W1</td><td>A1 → B1 → C1, C2</td><td>HTTPS; Google sign-in, a session cookie per lane and per cell</td><td>Dashboard, Talk, approvals; one event stream <code>/api/stream</code></td></tr>
+      <tr><td>W2</td><td>A2 → C1 <code>/mcp</code>, C5 <code>/mcp</code></td><td>Streamable HTTP MCP; OAuth 2.1 with PKCE, 1-hour tokens, 90-day refresh</td><td>Tool calls; files as signed <code>/dl</code> and <code>/up</code> links</td></tr>
+      <tr><td>W3</td><td>A3 → B3 → C5</td><td>HTTPS <code>/v1</code>; Bearer key read from <code>~/.hawkes/client.json</code></td><td>Job specs, blobs, library reads</td></tr>
+      <tr><td>W4</td><td>A4 → B2</td><td>HTTPS; pass cookie signed by Studio (Ed25519, 12 hours), checked in the Worker</td><td>Beta sites; bug reports posted to <code>/dev/__studio/report</code>, forwarded to Studio</td></tr>
+      <tr><td>W5</td><td>A5 → F3, D1, D2</td><td>HTTPS to Pages and Firebase; WebSocket to Net with a ticket</td><td>Live games; multiplayer rooms and relay</td></tr>
+      <tr><td>W6</td><td>B1 → C1, C2</td><td>Proxy with an edge key; path <code>/o/&lt;org&gt;/</code> picks the cell</td><td>All Studio traffic; a "waking" page for hibernated cells</td></tr>
+      <tr><td>W7</td><td>B3 → C5, else D1</td><td>Proxy; <code>/mcp</code>, <code>/oauth</code>, <code>/dl</code>, <code>/up</code> always stay on Gen</td><td>Gen's app and API; what Gen lacks falls to the portal</td></tr>
+      <tr><td>W8</td><td>B4 → C5 → C8</td><td>Gen's <code>/cdn/sha256/&lt;hash&gt;</code>, Cloudflare addresses only</td><td>Library files, cached for a year</td></tr>
+      <tr><td>W9</td><td>C1, C2 → C3</td><td>Cloud Run job execution; work passed through <code>jobs/&lt;unit&gt;/</code> in C4</td><td>In: spec, git bundle, file pack. Out: logs, commit bundle, exit file. A nudge call signals each upload.</td></tr>
+      <tr><td>W10</td><td>C3 → C1, C5, F1, G1</td><td>Studio MCP with the agents' key; Gen with a user-role key; a one-repo clone token; the harness's own login</td><td>Tool calls, generation, source, model calls</td></tr>
+      <tr><td>W11</td><td>C1, C2 → C5</td><td>HTTPS <code>/v1</code>; Bearer key; cells prefix projects <code>org_&lt;hex&gt;.</code></td><td>Jobs out; job events back over <code>/v1/events</code>; estimates; files by id</td></tr>
+      <tr><td>W12</td><td>C5 → C1</td><td>Direct Cloud Run address; an org-credits key</td><td>Charge and refund of a cell's credits before a job exists</td></tr>
+      <tr><td>W13</td><td>C5 → E1, E3</td><td><code>POST /run</code>, streamed progress lines; provider key plus a worker token</td><td>Graph, input links, model list, output folder</td></tr>
+      <tr><td>W14</td><td>E1, E3 → C5 broker → C8</td><td><code>/v1/gpu/broker</code>; a run token valid 6 hours, scoped to one run folder</td><td>Signed links to read inputs and models and to write outputs</td></tr>
+      <tr><td>W15</td><td>C5 → E2, E3, C6</td><td>HTTPS in provider order; a one-hour site pass in the job</td><td>Playtest runs; video, screenshots and report back</td></tr>
+      <tr><td>W16</td><td>C5 → C6</td><td><code>POST /tool</code>, <code>/exec</code>; Google identity token</td><td>CPU tools, with a local fallback</td></tr>
+      <tr><td>W17</td><td>C5 → C7 → F1, B2</td><td>Job execution; spec in the bucket; a fresh GitHub token for the fetch</td><td>Build files to R2 <code>builds/&lt;game&gt;/v&lt;n&gt;/</code>; a loader commit on the website repo's <code>beta</code></td></tr>
+      <tr><td>W18</td><td>C1, C2, C5 ↔ C4, C8</td><td>Litestream every second; small files every 30 seconds; a lease file</td><td>Databases, settings, harness logins</td></tr>
+      <tr><td>W19</td><td>F2 → C2</td><td><code>POST /api/hooks/github</code>; GitHub's signed identity token, audience = the Studio's address</td><td>Repo and ref of each push to <code>beta</code>, <code>main</code> and <code>build-*</code> tags</td></tr>
+      <tr><td>W20</td><td>F2 → C1, C5 (via C11)</td><td>Workload Identity, no stored key</td><td>Image build, service update, health check, traffic rollback</td></tr>
+      <tr><td>W21</td><td>C1, C2 → F1</td><td>GitHub API; a token from C9 for the owner's repos, a GitHub App for customers</td><td>Branches, pull requests, merges into <code>beta</code>, fast-forward of <code>main</code>, rollback commits</td></tr>
+      <tr><td>W22</td><td>C1, C2 → B2</td><td>R2's S3 API for the owner; a signed publish through the Worker for cells</td><td>Site files named by git blob id plus a manifest</td></tr>
+      <tr><td>W23</td><td>F1 <code>main</code> → F3</td><td>GitHub Pages, from the branch or <code>pages.yml</code></td><td>Live sites</td></tr>
+      <tr><td>W24</td><td>F2 tags → F3 images → E</td><td>Tags <code>gpu-image-*</code>, <code>gpu3d-image-*</code>, <code>playtest-image-*</code></td><td>Worker images the endpoints pull</td></tr>
+      <tr><td>W25</td><td>C10 → C1, C5</td><td>Scheduler's signed token</td><td>Nightly run, cells' nightly runs, Gen backup</td></tr>
+      <tr><td>W26</td><td>G2 → C1, C5, D1</td><td>Stripe webhooks, one endpoint per product and lane</td><td>Each acts only on its own <code>metadata[product]</code></td></tr>
+      <tr><td>W27</td><td>C1 → G2</td><td>HTTPS post to a private ntfy topic</td><td>Phone pushes for failures and milestones</td></tr>
+      <tr><td>W28</td><td>C5, C3 → G1</td><td>Claude Code CLI on the Max-plan login; vendor keys</td><td>Model calls, voice, video review</td></tr>
+      <tr><td>W29</td><td>D1 → C5, C1</td><td>One Gen key scoped <code>usr_*</code>; a signed platform token</td><td>Players' generation; portal accounts as Gen and Studio users</td></tr>
+      <tr><td>W30</td><td>D2 ↔ C5</td><td>Gen's net bridge: key check and usage rows</td><td>Who a key belongs to; relay usage</td></tr>
+      <tr><td>W31</td><td>F1 hawkesnet → D2</td><td>A timer on the VM fetches its branch, tests, restarts, health-checks</td><td>Net's own deploys, with reset on failure</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="build">
+  <h2>Build sheet</h2>
+  <p>What each box is built from and how it starts. Paths are inside the repo named.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Box</th><th>Source</th><th>How it starts</th><th>Configuration it needs (names only)</th></tr></thead>
+    <tbody>
+      <tr><td>C1 Studio</td><td><code>hawkesstudio</code>, image <code>server/studio-cloudrun/Dockerfile</code>: Node 24, git, git-lfs, ffmpeg, Litestream, the six harness CLIs</td><td><code>entrypoint.sh</code>: claim the lease, restore the database, then Litestream runs <code>node src/cloudrun-main.ts</code></td><td><code>STUDIO_PUBLIC_URL</code>, <code>STUDIO_STATE_BUCKET</code>, <code>STUDIO_STATE_PREFIX</code>, <code>STUDIO_OWNER_KEY</code>, <code>STUDIO_AGENT_KEY</code>, <code>STUDIO_MCP_KEY</code>, <code>STUDIO_GOOGLE_CLIENT_ID</code>, <code>STUDIO_GOOGLE_EMAILS</code>, <code>STUDIO_CELLS</code>, <code>STUDIO_SECRETS_KEY</code>, <code>STUDIO_SITES_SEED</code>, <code>HAWKESGEN_URL</code>, <code>HAWKESGEN_KEY</code>, <code>GITHUB_TOKEN</code>, <code>CLAUDE_CONFIG_DIR</code></td></tr>
+      <tr><td>C2 Cell</td><td>The same image</td><td>Created by the control plane on a customer's first project or plan</td><td><code>STUDIO_ORG</code>, <code>STUDIO_SIGNUP=owner</code>, <code>STUDIO_OWNER_SUB</code>, <code>STUDIO_LANE</code>, <code>STUDIO_STATE_PREFIX=o/&lt;org&gt;/</code>, <code>STUDIO_CONTROL_URL</code>, <code>HAWKESGEN_PROJECT_PREFIX</code>, its own Gen key and derived cell keys. 2 CPU, 4 GiB, 10 GiB work disk.</td></tr>
+      <tr><td>C3 Agent job</td><td>The same image</td><td>With <code>STUDIO_JOB_UNIT</code> set, the entrypoint runs <code>src/cloudjob-run.ts</code> as a non-root user</td><td>The job's spec from the bucket; no Studio keys</td></tr>
+      <tr><td>C5 Gen</td><td><code>hawkesgen</code>, image <code>server/gen-cloudrun/Dockerfile</code>: Node 24, ffmpeg, a Python environment, the Claude Code CLI, Litestream</td><td>Restore two databases, then <code>src/cloudrun-main.ts</code>; an older revision answers "restarting"</td><td><code>HAWKESGEN_OWNER_KEY</code>, <code>HAWKESGEN_PUBLIC_URL</code>, <code>RUNPOD_API_KEY</code>, <code>MODAL_PROXY_KEY</code>, <code>MODAL_PROXY_SECRET</code>, <code>GPU_WORKER_TOKEN</code>, <code>HAWKESGEN_ORG_CREDITS_KEY</code>, <code>PLAYTEST_MODAL_URL</code>, plus <code>settings.json</code> (see the live settings below)</td></tr>
+      <tr><td>C6 CPU and software playtest</td><td><code>hawkesgen/server/cpu-cloudrun</code>, <code>server/playtest-cloudrun</code></td><td>Deployed by the <code>ops-service-deploy</code> workflow</td><td>Light: 2 vCPU, 4 GiB, 4 at once. Heavy: 4 vCPU, 8 GiB, 1 at once.</td></tr>
+      <tr><td>C7 Unity build</td><td><code>hawkesgen/server/unity-cloudrun</code> (<code>github.sh</code>)</td><td>Gen starts an execution with the spec's location</td><td>Sizes s, m, l, xl; a build cache per repo in the bucket</td></tr>
+      <tr><td>E1, E3 GPU workers</td><td><code>hawkesgen/server/cloudrun</code> (<code>worker.py</code> + ComfyUI); the 3D image from <code>server/gpu3d</code></td><td>The endpoint pulls <code>ghcr.io/…/hawkes-gen-gpu</code>; Modal's app is generated by <code>tools/gpu-providers/modal.mjs</code></td><td>Registered in Gen's <code>settings.gpu.providers</code> with families and price per hour</td></tr>
+      <tr><td>E2 Playtest</td><td><code>hawkesgen/server/playtest-cloudrun</code>, image <code>hawkes-gen-playtest</code></td><td><code>tools/playtest-runpod/setup.mjs</code>, naming exact GPU models</td><td><code>settings.playtest.backend</code> and its provider order</td></tr>
+      <tr><td>B1, B2</td><td><code>hawkesstudio/server/studio-edge</code>, <code>server/beta-sites</code></td><td>Wrangler, by the <code>ops-workers-deploy</code> workflow</td><td>Zone routes in each <code>wrangler.jsonc</code>; an edge key; the R2 binding</td></tr>
+      <tr><td>B3, B4</td><td><code>hawkesgen/server/gen-edge</code>, <code>server/gen-cdn</code></td><td>Wrangler, by Gen's <code>ops-workers-deploy</code> workflow</td><td>Gen's origin address; the portal's origin</td></tr>
+      <tr><td>D1 Portal</td><td><code>hawkesgenwebsite</code>: <code>firebase.json</code>, <code>cloud/functions</code></td><td><code>firebase.yml</code> deploys hosting, functions and Firestore rules</td><td>A Gen key, Stripe keys, in the project's secrets</td></tr>
+      <tr><td>D2 Net</td><td><code>hawkesnet</code>: <code>deploy/provision-gce.mjs</code>, <code>setup.mjs</code>, <code>pull.mjs</code>, <code>lane.mjs</code></td><td>A service on port 8800 behind Caddy; a 2-minute pull timer</td><td>Its branch, its Gen address, a GitHub token on the VM</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Live settings on Gen today</h3>
+  <div class="scroll"><table>
+    <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td>GPU order</td><td>runpod, modal, fleet. For rig, motion, mocap and Blender: runpod-3d, then fleet.</td></tr>
+      <tr><td>GPU providers</td><td>runpod (all families, $1.75/h), modal (all families, $2.40/h), runpod-3d (four families, $1.75/h)</td></tr>
+      <tr><td>Unity build backend</td><td>cloudrun</td></tr>
+      <tr><td>Playtest backend</td><td>runpod, then modal, then software rendering; 8 browsers, 2 per worker</td></tr>
+      <tr><td>Storage</td><td>Google Cloud Storage</td></tr>
+      <tr><td>CPU tools</td><td>local, inside the Gen service</td></tr>
+      <tr><td>Claude inside Gen</td><td>the Claude Code CLI on the Max plan</td></tr>
+      <tr><td>Queue</td><td>2 GPU jobs and 2 per lane per customer project, 20 waiting, 15-minute GPU wait, $200 daily ceiling</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="inventory">
+  <h2>Resource inventory</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Kind</th><th>Names</th></tr></thead>
+    <tbody>
+      <tr><td>Google Cloud projects</td><td><code>hawkes-staging</code> (Studio and Gen, live and beta; the portal's beta) · <code>hawkes-prod</code> (the live portal, both Net VMs)</td></tr>
+      <tr><td>Cloud Run services</td><td><code>studio</code>, <code>studio-beta</code>, <code>studio-o-&lt;org&gt;</code>, <code>gen</code>, <code>gen-beta</code>, <code>gen-cpu</code>, <code>gen-cpu-heavy</code>, <code>gen-playtest-cpu</code></td></tr>
+      <tr><td>Cloud Run jobs</td><td><code>studio-agent</code>, <code>studio-agent-beta</code>, <code>hawkes-unity-build</code>, <code>hawkes-unity-build-customer</code></td></tr>
+      <tr><td>Buckets</td><td><code>hawkes-staging-studio-state</code> · <code>hawkes-staging-gen-state</code>, <code>-gen-library</code>, <code>-gen-backups</code> and their <code>gen-beta</code> twins · <code>hawkes-assets-library</code> · Gen's work bucket for runs, inputs, models and builds</td></tr>
+      <tr><td>Service accounts</td><td><code>studio-deployer</code>, <code>gen-deployer</code>, <code>deployer</code> (Firebase), <code>studio-cells</code>, <code>studio-scheduler</code>, <code>studio-agent</code>, <code>gen-playtest</code>, <code>gen-cpu</code>, <code>ops-reader</code>, <code>ops-secrets</code>, <code>ops-admin</code>, <code>ops-net</code>, <code>ops-assets</code></td></tr>
+      <tr><td>Workload Identity</td><td>Pool <code>github</code> with providers <code>github-studio</code>, <code>github-gen</code>, <code>github</code>, <code>github-net</code>, <code>github-assets</code> · pool <code>github-ops-admin</code></td></tr>
+      <tr><td>Scheduler jobs</td><td><code>studio-daily</code> (05:00 Pacific) · the cells' nightly cron (04:00 Pacific) · <code>gen-backup</code>, <code>gen-beta-backup</code> (03:15 UTC)</td></tr>
+      <tr><td>Secrets</td><td><code>studio-github-token</code>, <code>studio-beta-github-token</code>, and the Stripe and provider keys</td></tr>
+      <tr><td>Compute Engine</td><td><code>hawkes-net</code> (us-east4-c, e2-small) · <code>hawkes-net-beta</code> (us-east1-b, e2-micro)</td></tr>
+      <tr><td>Firebase</td><td>Hosting, a Functions codebase <code>portal</code> (function <code>api</code>, us-east4), Firestore</td></tr>
+      <tr><td>Cloudflare Workers</td><td><code>hawkes-studio-edge</code>, <code>hawkes-beta-sites</code>, <code>hawkes-gen-edge</code>, <code>hawkes-gen-cdn</code></td></tr>
+      <tr><td>Cloudflare storage and zones</td><td>R2 bucket <code>hawkes-beta-sites</code> · zones <code>hawkesgen.ai</code>, <code>hawkesgames.com</code>, <code>hawkesgen.com</code>, <code>sickofitgame.com</code></td></tr>
+      <tr><td>Hosts</td><td><code>hawkesgen.ai</code>, <code>beta.</code>, <code>cdn.</code>, <code>studio.</code>, <code>studio-beta.</code>, <code>sites.</code>, <code>net.</code>, <code>hawkesnet.</code>, one <code>&lt;sub&gt;.</code> and <code>sb-&lt;sub&gt;.</code> per product · <code>hawkesgames.com</code>, <code>beta.</code>, <code>net.</code>, <code>net-beta.</code> · one domain per product site on Pages</td></tr>
+      <tr><td>Container images</td><td><code>ghcr.io/jgriffith3433/hawkes-gen-gpu</code> (ComfyUI, and <code>3d-latest</code>) · <code>hawkes-gen-playtest</code> · <code>hawkes-play-native</code></td></tr>
+      <tr><td>Rented endpoints</td><td>RunPod: <code>runpod</code>, <code>runpod-3d</code>, the playtest endpoint · Modal: the GPU worker app, <code>hawkes-gen-playtest-browser</code></td></tr>
+      <tr><td>Workflows in every repo</td><td><code>hawkes-studio.yml</code>. Platform repos add <code>ci.yml</code>, image builds and <code>ops-*</code>; built web products add <code>pages.yml</code>; the portal adds <code>firebase.yml</code>.</td></tr>
+      <tr><td>Local client config</td><td><code>~/.hawkes/client.json</code>: Gen and Studio addresses and keys, with beta pairs</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="bringup">
+  <h2>Bring-up order</h2>
+  <p>From nothing to the running platform. Each step depends only on the ones before it.</p>
+  <ol class="steps">
+    <li><strong>Accounts.</strong> A Google Cloud project for Studio and Gen and one for the portal and Net; a Cloudflare account with the zones; the GitHub account with the repos; RunPod and Modal; Stripe; a Google sign-in client.</li>
+    <li><strong>Identity for deploys.</strong> The Workload Identity pool, a provider per repo and the deployer service accounts, from each repo's CI setup script.</li>
+    <li><strong>Buckets and secrets.</strong> The state, library and backup buckets; the secrets in the secret manager.</li>
+    <li><strong>Gen.</strong> Push Gen's <code>main</code>: CI builds the image and creates the service. Set its owner key, then its settings: storage, Unity build backend, playtest backend.</li>
+    <li><strong>Gen's helpers.</strong> Deploy the CPU services, the software-playtest service and the Unity build job.</li>
+    <li><strong>Worker images.</strong> Push the image tags so the GPU, 3D and playtest images build.</li>
+    <li><strong>Rented compute.</strong> Create the RunPod endpoints and the Modal apps from those images; register them in Gen's provider list and order; run the playtest self-test.</li>
+    <li><strong>Gen's edge.</strong> Deploy the gen-edge and gen-cdn Workers with their routes and DNS records.</li>
+    <li><strong>Studio.</strong> Push Studio's <code>main</code>. Give it its keys, its Gen key, its GitHub token and the Google client; turn on cells for the control plane.</li>
+    <li><strong>Studio's edge and beta sites.</strong> Deploy studio-edge and beta-sites, create the R2 bucket, add a route per product host.</li>
+    <li><strong>Schedules.</strong> Create the nightly run, the cells' cron and the Gen backup.</li>
+    <li><strong>Harness logins.</strong> Sign in to Claude from Studio's settings; add any other harness.</li>
+    <li><strong>Portal and Net.</strong> Deploy the portal to Firebase; provision the two Net VMs and let them pull their branches.</li>
+    <li><strong>Projects.</strong> Create a studio (a cell), connect GitHub, and add each project: the hook workflow, the three branches, the playtest bot, its builds and scenarios, its Gen preset.</li>
+    <li><strong>Prove it.</strong> Push to a project's <code>beta</code> and watch the beta site republish; run one playtest; go live once.</li>
+  </ol>
+</section>
+
+<section id="picture">
+  <h2>Zoomed out</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 920 500" role="img" aria-label="People direct Studio; Studio exchanges code with GitHub and sends jobs to Gen; Gen dispatches to compute providers; Studio publishes beta sites that players reach.">
+      <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+      <rect class="b" x="60" y="20" width="150" height="56" rx="6"/><text class="t" x="135" y="44" text-anchor="middle">You, in Talk</text><text class="ts" x="135" y="62" text-anchor="middle">dashboard, phone</text>
+      <rect class="b" x="230" y="20" width="150" height="56" rx="6"/><text class="t" x="305" y="44" text-anchor="middle">Editors</text><text class="ts" x="305" y="62" text-anchor="middle">MCP over OAuth</text>
+      <rect class="b" x="520" y="20" width="200" height="56" rx="6"/><text class="t" x="620" y="44" text-anchor="middle">Sites</text><text class="ts" x="620" y="62" text-anchor="middle">beta on R2 · live on Pages</text>
+      <rect class="b" x="760" y="20" width="120" height="56" rx="6"/><text class="t" x="820" y="52" text-anchor="middle">Players</text>
+      <line class="ln" x1="760" y1="48" x2="722" y2="48" marker-end="url(#a1)"/>
+
+      <rect class="ba" x="60" y="170" width="320" height="140" rx="8"/>
+      <text class="t" x="80" y="196">Hawkes Studio</text>
+      <text class="ts" x="80" y="216">Talk · PM loop · roadmap · backlog · memory</text>
+      <text class="ts" x="80" y="234">one Cloud Run service per studio (a cell)</text>
+      <rect class="b" x="80" y="250" width="280" height="44" rx="5"/><text class="ts" x="220" y="268" text-anchor="middle">each agent pass = one Cloud Run job</text><text class="ts" x="220" y="284" text-anchor="middle">running one of six AI harnesses</text>
+
+      <rect class="ba" x="520" y="170" width="360" height="140" rx="8"/>
+      <text class="t" x="540" y="196">Hawkes Gen</text>
+      <text class="ts" x="540" y="216">one job queue · about 100 tools · presets</text>
+      <text class="ts" x="540" y="234">library keyed by content hash</text>
+      <text class="ts" x="540" y="252">usage and credits per project and key</text>
+      <text class="ts" x="540" y="270">Cloud Run, one writer, scales to zero</text>
+
+      <line class="ln" x1="135" y1="76" x2="135" y2="168" marker-end="url(#a1)"/><text class="tl" x="143" y="126">direction, approvals</text>
+      <line class="ln" x1="305" y1="76" x2="305" y2="168" marker-end="url(#a1)"/>
+      <line class="ln" x1="380" y1="170" x2="538" y2="78" marker-end="url(#a1)"/><text class="tl" x="392" y="112">publishes beta</text>
+
+      <line class="ln" x1="380" y1="215" x2="518" y2="215" marker-end="url(#a1)"/><text class="tl" x="450" y="207" text-anchor="middle">jobs</text>
+      <line class="ln" x1="520" y1="265" x2="382" y2="265" marker-end="url(#a1)"/><text class="tl" x="450" y="283" text-anchor="middle">events, results</text>
+
+      <rect class="b" x="60" y="400" width="320" height="80" rx="6"/><text class="t" x="80" y="426">GitHub</text><text class="ts" x="80" y="446">repos · dev → beta → main · Actions · Pages</text><text class="ts" x="80" y="464">CI deploys Studio and Gen to Cloud Run</text>
+      <line class="ln" x1="150" y1="312" x2="150" y2="398" marker-end="url(#a1)"/><text class="tl" x="158" y="352">pull requests, merges,</text><text class="tl" x="158" y="366">go-live</text>
+      <line class="ln" x1="300" y1="400" x2="300" y2="314" marker-end="url(#a1)"/><text class="tl" x="308" y="352">push hook</text><text class="tl" x="308" y="366">(signed token)</text>
+
+      <rect class="b" x="520" y="400" width="360" height="80" rx="6"/><text class="t" x="540" y="426">Compute providers</text><text class="ts" x="540" y="446">RunPod · Modal · Cloud Run CPU services</text><text class="ts" x="540" y="464">Unity build job · playtest browsers</text>
+      <line class="ln" x1="700" y1="312" x2="700" y2="398" marker-end="url(#a1)"/><text class="tl" x="708" y="352">POST /run,</text><text class="tl" x="708" y="366">streamed progress</text>
+    </svg>
+    </div>
+    <figcaption>Studio never does heavy compute and Gen never touches code. Everything Studio needs built, played, reviewed or generated becomes a Gen job; everything that changes code goes through GitHub.</figcaption>
+  </figure>
+</section>
+
+<section id="parts">
+  <h2>The parts</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Part</th><th>What it does</th><th>Where it runs</th><th>Where its state lives</th></tr></thead>
+    <tbody>
+      <tr><td>Studio</td><td>Talk, the PM loop, agents, acceptance checks, beta publishing, go-live</td><td>Cloud Run service <code>studio</code>, plus one service per customer studio (<code>studio-o-&lt;org&gt;</code>)</td><td>SQLite, replicated every second to a bucket by Litestream</td></tr>
+      <tr><td>Agent passes</td><td>One agent, scout or Talk turn each</td><td>Cloud Run job <code>studio-agent</code>, one execution per pass</td><td>A folder in the bucket: work goes in, commits come out</td></tr>
+      <tr><td>Gen</td><td>Job queue, tools, library, credits, MCP</td><td>Cloud Run service <code>gen</code> (beta: <code>gen-beta</code>)</td><td>SQLite on Litestream; library files in a bucket by hash</td></tr>
+      <tr><td>GPU workers</td><td>ComfyUI graphs, audio models, 3D and Blender scripts</td><td>RunPod and Modal endpoints, one shared worker image</td><td>None; they read and write a run folder in Gen's bucket</td></tr>
+      <tr><td>CPU services</td><td>Cutouts, transforms, video fit, level-of-detail</td><td>Cloud Run <code>gen-cpu</code>, <code>gen-cpu-heavy</code></td><td>None</td></tr>
+      <tr><td>Unity builds</td><td>WebGL builds of a commit, straight from GitHub</td><td>Cloud Run job <code>hawkes-unity-build</code></td><td>Build cache and results in a bucket; files to R2 and the website repo's beta</td></tr>
+      <tr><td>Playtests</td><td>A real browser plays the game's own bot</td><td>RunPod, then Modal, then software rendering on Cloud Run</td><td>Video, screenshots and report in Gen's library</td></tr>
+      <tr><td>Hawkes Net</td><td>Multiplayer: tickets, rooms, relay</td><td>Two Google Cloud VMs that pull their own branch every 2 minutes</td><td>On the VM</td></tr>
+      <tr><td>Portal (Hawkes Games)</td><td>The player-facing game; a customer of Gen</td><td>Firebase Hosting, Functions and Firestore</td><td>Firestore</td></tr>
+      <tr><td>Edge</td><td>Routing, beta-site passes, the CDN</td><td>Four Cloudflare Workers on zone routes</td><td>R2 bucket for beta sites and builds</td></tr>
+    </tbody>
+  </table></div>
+  <p>Studio and Gen share one shape: a single Node process, no build step, one SQLite file, one writer at a time. A lease in the bucket hands the database from an old revision to a new one, so a deploy never has two writers.</p>
+</section>
+
+<section id="flow">
+  <h2>How work flows</h2>
+  <p>A change travels the same path whether it starts from you, a bug report or the backlog.</p>
+  <ol class="steps">
+    <li><strong>Direction.</strong> You say what you want in Talk. Talk proposes a roadmap item with tasks and acceptance criteria and adds them on your yes.</li>
+    <li><strong>Start.</strong> Every 60 seconds the PM loop picks startable tasks and the worst open bugs, within its caps (2 at once, 3 tries per task).</li>
+    <li><strong>Agent pass.</strong> Studio packs the repo state into a bucket folder and starts a Cloud Run job. The agent works on a branch cut from <code>beta</code> with no Studio secrets.</li>
+    <li><strong>Pull request.</strong> Studio unpacks the commits, pushes the branch and opens the pull request into <code>beta</code> itself.</li>
+    <li><strong>Checks.</strong> The project's checks run. Unity changes pass a compile gate instead of a full build.</li>
+    <li><strong>Merge into beta.</strong> Product changes that pass merge by themselves. Changes to Studio or Gen need green CI and merge under walk-away mode or your tap.</li>
+    <li><strong>Beta site.</strong> The push to <code>beta</code> fires the hook, and Studio republishes the beta site to R2, sending only changed files.</li>
+    <li><strong>Milestone play.</strong> When every task in a milestone is merged, Studio has Gen build and playtest beta, then two judges score each criterion. "Unclear" never passes.</li>
+    <li><strong>Go live.</strong> On your word (or a project's auto policy) Studio fast-forwards <code>main</code> to the playtested beta commit. GitHub Pages publishes it and Studio checks the live site.</li>
+  </ol>
+</section>
+
+<section id="studio">
+  <h2>Studio</h2>
+  <h3>Platform Studio and cells</h3>
+  <p>The Studio at <code>studio.hawkesgen.ai</code> is now the control plane. It holds no projects of its own, only Studio and Gen as infrastructure targets. Each customer studio is a separate Cloud Run service with its own database prefix, cookie, Gen key and project prefix. Yours is the cell <code>j-studio-4f12</code>, where every game moved on 2 Nov 2026. An edge Worker routes <code>/o/&lt;org&gt;/</code> to the right cell and wakes hibernated ones.</p>
+  <h3>The loops inside it</h3>
+  <ul>
+    <li><strong>PM loop:</strong> a 60-second tick that syncs tasks, settles questions, prices GPU budgets and starts work.</li>
+    <li><strong>Nightly run:</strong> triggered at 05:00 Pacific. It now checks git state, runs checks, the story map and asset status, then writes the morning brief. It no longer builds or playtests.</li>
+    <li><strong>Milestone check:</strong> the only automatic trigger for a build and playtest, besides a go-live request.</li>
+    <li><strong>Holds:</strong> a 60-second review of any AI harness that is out of usage, billing or sign-in.</li>
+  </ul>
+  <h3>What it stores</h3>
+  <p>Everything is in one SQLite file: runs and steps, findings (the backlog and ideas are both rows here), roadmap items, tasks and milestones, changes (one row per agent pass or pull request), approvals, deploys, the pass ledger, and the shared memory with full-text search.</p>
+  <h3>Guards</h3>
+  <ul>
+    <li>Agents reach Studio only through a restricted tool set, with a key that Studio treats as the sandbox user.</li>
+    <li>Going live needs your own words or a project's auto policy; a message that arrived through MCP never counts as your words.</li>
+    <li>Merging a change to Studio or Gen still needs the exact phrase <code>MERGE &lt;id&gt;</code> or walk-away mode.</li>
+    <li>GPU budgets under $5 are approved automatically; walk-away mode allows $25 a day.</li>
+  </ul>
+</section>
+
+<section id="gen">
+  <h2>Gen and its job queue</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 920 280" role="img" aria-label="A Gen job is submitted, prepared and admitted, queued in a lane, routed to a provider, run on a worker that writes to a bucket folder, filed in the library, and announced on the event stream.">
+      <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+      <rect class="b" x="20" y="30" width="140" height="70" rx="6"/><text class="t" x="90" y="58" text-anchor="middle">Submit</text><text class="ts" x="90" y="78" text-anchor="middle">POST /v1/jobs</text>
+      <rect class="b" x="200" y="30" width="170" height="70" rx="6"/><text class="t" x="285" y="52" text-anchor="middle">Prepare and admit</text><text class="ts" x="285" y="70" text-anchor="middle">preset, inputs, reuse,</text><text class="ts" x="285" y="86" text-anchor="middle">credits, daily ceiling</text>
+      <rect class="ba" x="410" y="30" width="150" height="70" rx="6"/><text class="t" x="485" y="52" text-anchor="middle">Queue</text><text class="ts" x="485" y="70" text-anchor="middle">lanes, fair share,</text><text class="ts" x="485" y="86" text-anchor="middle">batch by model family</text>
+      <rect class="b" x="600" y="30" width="140" height="70" rx="6"/><text class="t" x="670" y="52" text-anchor="middle">Route</text><text class="ts" x="670" y="70" text-anchor="middle">provider order,</text><text class="ts" x="670" y="86" text-anchor="middle">cooldowns, fallback</text>
+      <rect class="b" x="780" y="30" width="120" height="70" rx="6"/><text class="t" x="840" y="58" text-anchor="middle">Worker</text><text class="ts" x="840" y="78" text-anchor="middle">POST /run</text>
+      <line class="ln" x1="160" y1="65" x2="198" y2="65" marker-end="url(#a2)"/>
+      <line class="ln" x1="370" y1="65" x2="408" y2="65" marker-end="url(#a2)"/>
+      <line class="ln" x1="560" y1="65" x2="598" y2="65" marker-end="url(#a2)"/>
+      <line class="ln" x1="740" y1="65" x2="778" y2="65" marker-end="url(#a2)"/>
+      <rect class="b" x="600" y="180" width="300" height="70" rx="6"/><text class="t" x="750" y="208" text-anchor="middle">Run folder in the bucket</text><text class="ts" x="750" y="228" text-anchor="middle">outputs · manifest · heartbeat · cancel</text>
+      <rect class="b" x="300" y="180" width="250" height="70" rx="6"/><text class="t" x="425" y="208" text-anchor="middle">Library</text><text class="ts" x="425" y="228" text-anchor="middle">file by hash + the recipe that made it</text>
+      <rect class="b" x="20" y="180" width="230" height="70" rx="6"/><text class="t" x="135" y="208" text-anchor="middle">Event stream</text><text class="ts" x="135" y="228" text-anchor="middle">job done, failed or cancelled</text>
+      <line class="ln" x1="840" y1="100" x2="840" y2="178" marker-end="url(#a2)"/><text class="tl" x="832" y="144" text-anchor="end">writes results</text>
+      <line class="ln" x1="600" y1="215" x2="552" y2="215" marker-end="url(#a2)"/>
+      <line class="ln" x1="300" y1="215" x2="252" y2="215" marker-end="url(#a2)"/>
+    </svg>
+    </div>
+    <figcaption>The run folder is what makes a job survive restarts. Its name is a hash of the job and the graph, so a restarted Gen reads the manifest or follows the heartbeat instead of running the work again.</figcaption>
+  </figure>
+  <h3>Rules of the queue</h3>
+  <ul>
+    <li><strong>States:</strong> queued, running, done, failed, cancelled. A job with the same key returns the existing job; <code>reuse</code> returns a finished job with the same recipe.</li>
+    <li><strong>Lanes:</strong> each non-GPU provider has its own concurrency (voice 3, Claude 4, local 2). GPU jobs wait for a provider with room.</li>
+    <li><strong>Fair share:</strong> customer projects take turns, 2 GPU jobs and 2 per lane each, at most 20 waiting. Studio's own projects are exempt.</li>
+    <li><strong>Batching:</strong> a free GPU takes the next job of the model family it already has loaded, so models are not swapped between every job.</li>
+    <li><strong>Ceilings:</strong> new jobs are refused once the day's spend reaches $200.</li>
+    <li><strong>Retries:</strong> there is no general retry. Specific failures requeue: provider unavailable, a planned restart, a crashed graph.</li>
+  </ul>
+  <h3>Tools</h3>
+  <p>A tool is either code or a ComfyUI workflow folder. Importing a workflow drafts its inputs and settings and makes it a tool with no code. <code>asset.make</code> chains tools into a recipe, queues candidates together and has Claude pick the best one against the project's art direction.</p>
+</section>
+
+<section id="providers">
+  <h2>GPU providers</h2>
+  <p>Every provider speaks one protocol: Gen posts a graph to <code>/run</code> and reads progress lines until a final "done" or "error". Workers outside Google get no cloud identity; they fetch inputs and store outputs through signed links from Gen's broker, scoped to their own run folder.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Provider</th><th>Used for</th><th>Live status today</th></tr></thead>
+    <tbody>
+      <tr><td>RunPod</td><td>First choice for all GPU families; a second endpoint for rigging, motion, mocap and Blender</td><td><span class="pill ok">serving</span> about $9.96 credit left</td></tr>
+      <tr><td>Modal</td><td>Second choice for all families</td><td><span class="pill bad">refusing</span> its workspace is disabled</td></tr>
+      <tr><td>AWS fleet</td><td>Last in the order</td><td><span class="pill bad">skipped</span> account suspended since 28 Oct</td></tr>
+      <tr><td>Cloud Run GPU</td><td>Supported in code</td><td><span class="pill warn">not deployed</span> Google refused GPU quota</td></tr>
+      <tr><td>Playtests</td><td>RunPod, then Modal, then software rendering</td><td><span class="pill ok">ok</span> 8 browsers at once</td></tr>
+      <tr><td>Unity builds</td><td>Cloud Run job</td><td><span class="pill ok">ok</span></td></tr>
+      <tr><td>Claude calls inside Gen</td><td>Reviews, JSON, picking candidates</td><td><span class="pill ok">ok</span> on your Max plan</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">With Modal refusing and the fleet gone, RunPod is the only GPU provider actually running jobs. When a provider fails, Gen cools it down for 5 to 30 minutes and tries the next; with none left, the job waits up to 15 minutes and then fails.</p>
+</section>
+
+<section id="harness">
+  <h2>AI harnesses</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 920 324" role="img" aria-label="Studio builds one Claude Code command; Claude runs it directly and five adapters translate it for other tools; all six answer in Claude's streaming format.">
+      <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker></defs>
+      <rect class="b" x="20" y="112" width="210" height="100" rx="6"/><text class="t" x="125" y="140" text-anchor="middle">Studio pass</text><text class="ts" x="125" y="160" text-anchor="middle">kind of work → tier → model</text><text class="ts" x="125" y="178" text-anchor="middle">one Claude Code command line</text><text class="ts" x="125" y="196" text-anchor="middle">prompt, tools, MCP, resume</text>
+      <rect class="ba" x="340" y="20" width="230" height="34" rx="5"/><text class="t" x="455" y="42" text-anchor="middle">Claude Code (direct)</text>
+      <rect class="b" x="340" y="70" width="230" height="34" rx="5"/><text class="ts" x="455" y="91" text-anchor="middle">adapter → Codex</text>
+      <rect class="b" x="340" y="120" width="230" height="34" rx="5"/><text class="ts" x="455" y="141" text-anchor="middle">adapter → Cursor</text>
+      <rect class="b" x="340" y="170" width="230" height="34" rx="5"/><text class="ts" x="455" y="191" text-anchor="middle">adapter → Copilot</text>
+      <rect class="b" x="340" y="220" width="230" height="34" rx="5"/><text class="ts" x="455" y="241" text-anchor="middle">adapter → Gemini</text>
+      <rect class="b" x="340" y="270" width="230" height="34" rx="5"/><text class="ts" x="455" y="291" text-anchor="middle">adapter → Antigravity</text>
+      <path class="ln" d="M230 162 L338 37" marker-end="url(#a3)"/><path class="ln" d="M230 162 L338 87" marker-end="url(#a3)"/><path class="ln" d="M230 162 L338 137" marker-end="url(#a3)"/><path class="ln" d="M230 162 L338 187" marker-end="url(#a3)"/><path class="ln" d="M230 162 L338 237" marker-end="url(#a3)"/><path class="ln" d="M230 162 L338 287" marker-end="url(#a3)"/>
+      <rect class="b" x="680" y="112" width="220" height="100" rx="6"/><text class="t" x="790" y="140" text-anchor="middle">One output format</text><text class="ts" x="790" y="160" text-anchor="middle">start · text · tool use · result</text><text class="ts" x="790" y="178" text-anchor="middle">→ ledger, holds, commits</text>
+      <path class="ln" d="M570 37 L678 162" marker-end="url(#a3)"/><path class="ln" d="M570 87 L678 162"/><path class="ln" d="M570 137 L678 162"/><path class="ln" d="M570 187 L678 162"/><path class="ln" d="M570 237 L678 162"/><path class="ln" d="M570 287 L678 162"/>
+    </svg>
+    </div>
+    <figcaption>There is no harness interface in the code. The contract is Claude Code's own command line going in and its streaming JSON coming out; each adapter translates both directions. Only Claude is signed in today.</figcaption>
+  </figure>
+  <h3>Two separate choices</h3>
+  <p><strong>Tier</strong> comes from the kind of work. A small edit starts fast, a scoped feature standard, netcode or build-pipeline work deep. Each failed attempt climbs one tier, at most twice and never past deep. The max tier is granted only when you ask for it by name.</p>
+  <p><strong>Harness</strong> comes from who holds the session, any role pin, your order, and each harness's cap. A session cannot move between harnesses; the pass restarts with a handoff note.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Harness</th><th>Fast</th><th>Standard</th><th>Deep</th><th>Max</th></tr></thead>
+    <tbody>
+      <tr><td>Claude</td><td>Haiku 5.5</td><td>Sonnet 5.5</td><td>Opus 5.5</td><td>Fable 5.1</td></tr>
+      <tr><td>Copilot</td><td>Haiku 5.5</td><td>Sonnet 5.5</td><td>Opus 5.5</td><td>Opus 5.5</td></tr>
+      <tr><td>Cursor</td><td>composer-2.5</td><td>auto</td><td>auto</td><td>auto</td></tr>
+      <tr><td>Codex</td><td>low effort</td><td>medium</td><td>high</td><td>xhigh</td></tr>
+      <tr><td>Gemini</td><td>flash</td><td>auto</td><td>pro</td><td>pro</td></tr>
+      <tr><td>Antigravity</td><td>gemini-3.8-flash</td><td>gemini-4-argon medium</td><td>gemini-4-argon high</td><td>gemini-4-argon high</td></tr>
+    </tbody>
+  </table></div>
+  <h3>When a harness runs out</h3>
+  <ul>
+    <li>Studio reads the result for usage, billing, sign-in or transient errors and ignores lines about third parties or its own cloud.</li>
+    <li>The pass is parked with its worktree, session and a handoff note. Parking never counts as a failed try.</li>
+    <li>The harness is held until its stated reset time, and probed every 30 minutes.</li>
+    <li>Other ready harnesses take the parked work. For 6 hours after a usage hold, that harness stays on cheaper tiers.</li>
+  </ul>
+  <h3>Known gaps</h3>
+  <ul>
+    <li>The five non-Claude harnesses ignore the allowed-tools list and run in bypass mode.</li>
+    <li>Skills and subagents are emulated for them as prompt text.</li>
+    <li>They report zero cost, so the ledger prices only Claude passes.</li>
+    <li>Gen's own Claude calls can follow Studio onto Claude, Cursor or Copilot only, and only Claude can read images there.</li>
+  </ul>
+</section>
+
+<section id="io">
+  <h2>Inputs and outputs</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Crossing</th><th>What goes in</th><th>What comes out</th><th>How "done" is signalled</th></tr></thead>
+    <tbody>
+      <tr><td>Caller → Gen</td><td>A job spec: tool, project, inputs, settings, preset, key. Files as uploaded blobs or library ids.</td><td>Library assets, a result object, a log</td><td>Event stream, or a held <code>/v1/run</code> call</td></tr>
+      <tr><td>Gen → GPU worker</td><td>The graph, input links, model list, an output folder</td><td>Files in the run folder, peak memory, timings</td><td>Final progress line, then the manifest file</td></tr>
+      <tr><td>Gen → Unity build</td><td>Repo and exact commit, method, target, machine size</td><td>Build files on R2, a loader commit on the website's <code>beta</code>, the Unity log</td><td>A result file plus the job's status</td></tr>
+      <tr><td>Gen → playtest</td><td>Address, scenario, device, peers, a one-hour pass cookie</td><td>Video, screenshots, outcome, frame rate, console errors, the bot's metrics</td><td>Job event</td></tr>
+      <tr><td>Playtest → review</td><td>The run, the story, known findings, the criteria</td><td>Verdict, five scores, findings with evidence, a yes or no per criterion</td><td>Job event</td></tr>
+      <tr><td>Studio → agent job</td><td>A spec, a git bundle of unpushed commits, a pack of dirty files and the session</td><td>Log chunks, a commit bundle, a file pack, an exit file</td><td>A nudge call after each upload, with a timer as backstop</td></tr>
+      <tr><td>GitHub → Studio</td><td>A signed token naming the repo and ref</td><td>A beta rebuild, a tag build or a go-live record</td><td>The hook itself</td></tr>
+      <tr><td>Studio → GitHub</td><td>Branches, pull requests, merges, a fast-forward of <code>main</code></td><td>Published sites</td><td>Studio waits for Pages, then plays live</td></tr>
+      <tr><td>Studio → beta site</td><td>Files named by git blob id, a manifest per site</td><td>A site behind a 12-hour pass cookie</td><td>Manifest written</td></tr>
+      <tr><td>Beta page → Studio</td><td>Bug text, screenshot, last console errors, the game's state</td><td>A finding in the backlog</td><td>Immediate</td></tr>
+      <tr><td>Studio → you</td><td>Dashboard topics over one stream; phone pushes for failures and milestones</td><td>The morning brief as a Talk conversation</td><td>Stream events</td></tr>
+    </tbody>
+  </table></div>
+  <h3>Where things are stored</h3>
+  <ul>
+    <li><strong>Studio's database</strong> holds every decision and record; it keeps only the ids of Gen's files, never the files.</li>
+    <li><strong>Gen's library bucket</strong> is the one home of every generated file, written once by content hash.</li>
+    <li><strong>Work buckets</strong> hold run folders, build folders and agent job folders, all disposable.</li>
+    <li><strong>R2</strong> holds beta sites and Unity build files.</li>
+    <li><strong>GitHub</strong> holds code, the asset lock files, and the shared memory as Markdown on a branch.</li>
+  </ul>
+  <p>On a crash, each service loses at most about a second of database writes and up to 30 seconds of small settings files. Running jobs resume from their run folders.</p>
+</section>
+
+<section id="github">
+  <h2>GitHub and deploys</h2>
+  <ul>
+    <li><strong>The hook.</strong> Every repo has a small workflow that fires on pushes to <code>beta</code> and <code>main</code> (and <code>build-*</code> tags). It asks GitHub for a signed identity token and posts it to Studio. No secret is stored in the repo.</li>
+    <li><strong>What Studio checks.</strong> The token's signature, issuer, audience and repo owner. Then: a beta push republishes the beta site, a build tag starts a Unity build of that commit, a main push records the deploy.</li>
+    <li><strong>Where it points.</strong> On GitHub, every repo's hook now posts to your cell. The platform Studio does not forward; it only answers that the project is managed elsewhere.</li>
+    <li><strong>Studio's own credentials.</strong> A token from the secret manager for your repos, and a GitHub App with per-repo tokens for customers.</li>
+    <li><strong>Going live.</strong> A fast-forward of <code>main</code> with force off. If branch rules block it, Studio opens and merges a pull request. Rollback is a new commit with the old contents, never a force push.</li>
+    <li><strong>Deploying Studio and Gen.</strong> A push to <code>beta</code> or <code>main</code> builds the image, updates Cloud Run with no stored key, health-checks it and moves traffic back if it fails. No tests run in that workflow.</li>
+    <li><strong>Worker images.</strong> Tags such as <code>gpu-image-*</code> and <code>playtest-image-*</code> build the GPU and playtest images.</li>
+    <li><strong>Local lanes.</strong> Each repo has the same six batch files; <code>deploy-beta</code> tags a beta version and <code>deploy-prod</code> asks you to type DEPLOY.</li>
+  </ul>
+</section>
+
+<section id="projects">
+  <h2>How a project plugs in</h2>
+  <p>A project is a GitHub repo plus a short list of pieces. Studio can survey a repo, list what is missing and open a card for the GitHub steps.</p>
+  <ul>
+    <li><strong>The hook workflow</strong> and the <code>dev</code>, <code>beta</code>, <code>main</code> branches.</li>
+    <li><strong>A playtest bot</strong> behind <code>window.hawkesPlaytest</code>, always with a <code>smoke</code> scenario under 60 seconds, using real input.</li>
+    <li><strong>A project record</strong> in Studio: engine, repo, live address, how it builds, its scenarios, its quality bar and its story.</li>
+    <li><strong>Generation through Gen</strong>: a preset for its art direction, and optionally an asset manifest whose lock file records what made each file.</li>
+    <li><strong>Agent guidance</strong>: an <code>AGENTS.md</code>, content skills, and the Gen and Studio MCP servers.</li>
+    <li><strong>Optional:</strong> Hawkes Net for multiplayer, analytics, the bug-report button.</li>
+  </ul>
+  <div class="scroll"><table>
+    <thead><tr><th>Project</th><th>Engine</th><th>Playtest bot</th><th>Gen client</th><th>Asset manifest</th><th>Net</th><th>Content skills</th></tr></thead>
+    <tbody>
+      <tr><td>Dose Of Destruction</td><td>Babylon 9</td><td>yes</td><td>JS</td><td>yes, with lock</td><td>JS 1.3.0</td><td>3</td></tr>
+      <tr><td>PH Origins</td><td>Babylon 7</td><td>yes</td><td>JS</td><td>no</td><td>no</td><td>1</td></tr>
+      <tr><td>Sick Of It</td><td>Unity</td><td>yes (package 0.2.0, master is 0.6.0)</td><td>Unity + JS</td><td>own art tool</td><td>Unity 0.6.0</td><td>3</td></tr>
+      <tr><td>Yooba Land</td><td>Unity</td><td>yes</td><td>Unity</td><td>yes, no lock</td><td>Unity 0.6.0</td><td>1</td></tr>
+      <tr><td>The Place Department</td><td>Unity</td><td>yes</td><td>Unity</td><td>no</td><td>no</td><td>0</td></tr>
+      <tr><td>I Can Be</td><td>Babylon</td><td>yes</td><td>no</td><td>yes, with lock</td><td>no</td><td>0</td></tr>
+      <tr><td>Imagine Live TV</td><td>static</td><td>yes</td><td>no</td><td>yes, with lock</td><td>no</td><td>1</td></tr>
+      <tr><td>Corporate site</td><td>static</td><td>site check</td><td>no</td><td>no</td><td>no</td><td>0</td></tr>
+    </tbody>
+  </table></div>
+  <p>New games can start from two starters, a 3D web game and a 2D web game, each already carrying the bot, the hook and the lanes. There is no Unity starter.</p>
+</section>
+
+<section id="drift">
+  <h2>Where docs lag code</h2>
+  <ul>
+    <li><strong>The daily loop.</strong> Docs describe a daily build, play and review of every product. The code plays only at milestones and go-live.</li>
+    <li><strong>The product registry.</strong> Docs call Studio's <code>products.json</code> the registry. It is empty; projects live in the cell's data.</li>
+    <li><strong>Gen's defaults.</strong> The code still defaults to the AWS fleet, AWS build box and S3. Only the live settings point at RunPod, Cloud Run and Google storage, so a fresh install would aim at AWS.</li>
+    <li><strong>Pricing.</strong> Estimates and customer credit quotes are computed from the AWS GPU price whichever provider runs the job.</li>
+    <li><strong>CI.</strong> Docs say CI runs typecheck and tests. The workflows deploy without running them.</li>
+    <li><strong>Unity build help.</strong> The debugging skill still describes the AWS Windows build server.</li>
+    <li><strong>Unity packages.</strong> Yooba Land and Breaking Through reference Hawkes packages by a path on your PC, which a cloud build cannot see.</li>
+    <li><strong>Leftovers.</strong> AWS deploy scripts in Studio, Gen, the portal and Net; a dead Grok adapter; pasted log files tracked in Studio's repo root.</li>
+  </ul>
+</section>
+
+<section id="unknown">
+  <h2>Not verified</h2>
+  <ul>
+    <li><strong>Your cell from the inside.</strong> The Studio connections used here reach only the platform Studio, so the cell's project list, settings and GitHub connection were not read.</li>
+    <li><strong>Recent Gen work.</strong> Gen's code was read 13 commits behind. Large uploads straight to the bucket, a per-family fallback endpoint, Unity renders on RunPod and the motion-aware playtest review are known from commit titles only.</li>
+    <li><strong>Net.</strong> Read 41 commits behind, and only at the level of its design doc.</li>
+    <li><strong>GitHub Pages source per repo</strong> and the contents of GitHub and Cloudflare secrets.</li>
+    <li><strong>Tests.</strong> Neither repo's test suite was run.</li>
+  </ul>
+</section>
+</main>
+</div>
+</body>
+</html>
