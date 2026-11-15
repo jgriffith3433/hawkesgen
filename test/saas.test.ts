@@ -537,7 +537,7 @@ test('runtime Stripe config (GET/POST /v1/billing/config and GET /v1/billing/pac
   });
 
   // 4. / is the Gen app (dashboard/gen/) either way; the old Hawkes Play landing page stays at /home
-  const root = await reqJson('/', { headers: { 'X-Hawkes-Public-Saas': '1' } });
+  const root = await reqJson('/?app', { headers: { 'X-Hawkes-Public-Saas': '1' } });
   assert.equal(root.status, 200);
   assert.equal(typeof root.body, 'string');
   assert.ok(root.body.includes('Make anything.'));

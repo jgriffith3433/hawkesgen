@@ -97,9 +97,14 @@ test('/ is the Gen app; the operator console is /admin (its files beside it); th
   for (const saas of [undefined, '1']) {
     if (saas) process.env.HAWKESGEN_PUBLIC_SAAS = saas; else delete process.env.HAWKESGEN_PUBLIC_SAAS;
     try {
-      const root = await fetchRoute('/');
+      const root = await fetchRoute('/?app');
       assert.equal(root.status, 200);
       assert.match(root.text, /Make anything\./);
+      // The bare address with no session is the front page: the visualization, nothing to click, bots sent to the app.
+      const front = await fetchRoute('/');
+      assert.equal(front.status, 200);
+      assert.match(front.text, /location\.replace\('\/\?app'/);
+      assert.doesNotMatch(front.text, /<a |<button|setInterval|setTimeout|fetch\(/);
       for (const r of ['/admin', '/admin/']) {
         const admin = await fetchRoute(r);
         assert.equal(admin.status, 200);
@@ -115,7 +120,7 @@ test('/ is the Gen app; the operator console is /admin (its files beside it); th
 });
 
 test('the Gen app: every element its modules look up by id is on the page, and the editor tools are wired', async () => {
-  const page = (await fetchRoute('/')).text;
+  const page = (await fetchRoute('/?app')).text;
   const mods = ['gen', 'lib', 'project', 'player', 'timeline', 'media', 'tools', 'ai', 'account', 'studio', 'director', 'scenes', 'editor', 'dragdrop', 'character', 'scenedoc', 'landing', 'tour', 'guide', 'palette', 'starters', 'world', 'place', 'prop', 'story', 'worldbits'];
   let js = '';
   for (const m of mods) {

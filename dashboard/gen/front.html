@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0a0f">
+<meta name="description" content="Hearts = GPU + Text + Credits. Three signals add into one, which drives release. A receptor follows the release and suppresses it: the more that arrives, the harder it says no, and that refusal is the beat.">
+<title>Hawkes Gen</title>
+<style>html,body{margin:0;height:100%;background:#0d0a0f;overflow:hidden}canvas{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
+<script>(function(){var h=location.hash;if(navigator.webdriver||h.length>1){location.replace('/?app'+h);}})();</script>
+<link rel="icon" href="/favicon.svg">
+</head>
+<body>
+<canvas id="v" aria-hidden="true"></canvas>
+<main class="sr"><h1>Hawkes Gen</h1><p>Hearts = GPU + Text + Credits. Three signals add into one, which drives release. A receptor follows the release and suppresses it: the more that arrives, the harder it says no, and that refusal is the beat.</p></main>
+<script>
+(function runtime(P, F, make) {
+  var c = document.getElementById('v'), x = c.getContext('2d'), S = make(P, F), M = { x: .5, y: .5, in: false, down: false }, Wd = 0, Ht = 0, last = 0, T = 0;
+  var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function size() { var D = Math.min(2, window.devicePixelRatio || 1); Wd = window.innerWidth; Ht = window.innerHeight; c.width = Math.round(Wd * D); c.height = Math.round(Ht * D); x.setTransform(D, 0, 0, D, 0, 0); S.resize(Wd, Ht); if (still) for (var i = 0; i < 240; i++) S.frame(x, Wd, Ht, i / 30, 1 / 30, M); }
+  function frame(ms) { var dt = Math.min(.05, (ms - last) / 1000 || .016); last = ms; T += dt; S.frame(x, Wd, Ht, T, dt, M); window.requestAnimationFrame(frame); }
+  function pt(e) { M.x = e.clientX / Wd; M.y = e.clientY / Ht; M.in = true; }
+  c.addEventListener('pointermove', pt); c.addEventListener('pointerdown', function (e) { pt(e); M.down = true; });
+  window.addEventListener('pointerup', function () { M.down = false; }); c.addEventListener('pointerleave', function () { M.in = false; M.down = false; });
+  window.addEventListener('resize', size); size(); if (!still) window.requestAnimationFrame(frame);
+})({"bg":"#0d0a0f","fg":"#f4edf3","dim":"#877b88","rule":"#30272f","a":"#ff4f7b","b":"#7fd4ff","a3":[255,79,123],"b3":[127,212,255],"bg3":[13,10,15]}, {"mono":"ui-monospace,SFMono-Regular,Menlo,Consolas,monospace","serif":"Georgia,\"Times New Roman\",serif","sans":"system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif"}, function heart(P, F) {
+  let W = 0, H = 0, s = 0.2, r = 0.1, hs = [[], [], [], []], ph = [], spent = [0, 0, 0];
+  const TAU = Math.PI * 2;
+  return {
+    resize(w, h) { W = w; H = h; hs = [[], [], [], []]; ph = []; },
+    frame(x, w, h, T, dt, M) {
+      x.fillStyle = P.bg; x.fillRect(0, 0, W, H);
+      const boost = M.down ? 1.8 : 1;
+      const g = (Math.sin(T * 1.7) > 0.2 ? 1 : 0.08) * boost, tx = (0.5 + 0.28 * Math.sin(T * 3.1) + 0.22 * Math.sin(T * 7.3 + 1)) * boost, c = (1 - (T * 0.19 % 1)) * boost, sum = (g + tx + c) / 3;
+      spent[0] += g * dt; spent[1] += tx * dt; spent[2] += c * dt;
+      s += (sum * 2.6 * (1 - s) - 6 * s * r) * dt; r += ((s > 0.55 ? 1 : 0) - r) * dt * (s > 0.55 ? 6 : 0.9); s = Math.max(0, Math.min(1.2, s));
+      [g, tx, c, s].forEach((v, i) => { hs[i].push(v); if (hs[i].length > 200) hs[i].shift(); }); ph.push([s, r]); if (ph.length > 420) ph.shift();
+      const wide = W > 860, pad = Math.max(22, W * 0.04), big = Math.max(22, Math.min(46, W / 22));
+      x.fillStyle = P.fg; x.textAlign = 'left'; x.font = '600 12px ' + F.mono; x.fillText('HAWKES GEN', pad, 30);
+      // the equation, with each term's own signal under it
+      const terms = [['♥', P.fg, 3], ['GPU', P.b, 0], ['Text', P.fg, 1], ['Credits', P.a, 2]], ey = 40 + big, tw = (W - pad * 2) / 4, th = Math.max(30, H * 0.08);
+      terms.forEach((t, i) => { const x0 = pad + i * tw; x.fillStyle = t[1]; x.font = '700 ' + big + 'px ' + F.sans; x.textAlign = 'left'; x.fillText(t[0], x0 + (i ? big * 0.9 : 0), ey); if (i) { x.fillStyle = P.dim; x.fillText(i === 1 ? '=' : '+', x0, ey); } x.strokeStyle = t[1]; x.lineWidth = 1.5; x.beginPath(); hs[t[2]].forEach((v, q) => { const px = x0 + (i ? big * 0.9 : 0) + q / 200 * (tw - big * 1.4), py = ey + 14 + th - Math.min(1.9, v) / 1.9 * th; q ? x.lineTo(px, py) : x.moveTo(px, py); }); x.stroke(); });
+      x.font = '11px ' + F.mono; x.fillStyle = P.dim; ['the beat', 'seconds on a rented chip', 'the words asked for', 'what it is paid in'].forEach((l, i) => x.fillText(l, pad + i * tw + (i ? big * 0.9 : 0), ey + 14 + th + 16));
+      // the heart: x = 16 sin^3 t, y = 13 cos t - 5 cos 2t - 2 cos 3t - cos 4t, inflated by s
+      const hx = wide ? W * 0.34 : W / 2, hy = wide ? H * 0.64 : H * 0.56, k = Math.min(W * (wide ? 0.012 : 0.02), H * 0.014) * (0.78 + s * 0.42);
+      for (let ring = 0; ring < 5; ring++) { const kk = k * (1 - ring * 0.17); x.strokeStyle = ring % 3 === 0 ? P.a : ring % 3 === 1 ? P.fg : P.b; x.globalAlpha = 0.9 - ring * 0.15; x.lineWidth = ring === 0 ? 2.2 : 1.1; x.beginPath(); for (let i = 0; i <= 120; i++) { const t = i / 120 * TAU, X = 16 * Math.pow(Math.sin(t), 3), Y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t); i ? x.lineTo(hx + X * kk, hy - Y * kk) : x.moveTo(hx + X * kk, hy - Y * kk); } x.stroke(); }
+      x.globalAlpha = 1;
+      // the receptor: the phase plane of (s, r)
+      const pw = Math.min(wide ? W * 0.3 : W - pad * 2, H * 0.34), pxo = wide ? W * 0.62 : pad, pyo = wide ? H * 0.42 : H * 0.76, phh = wide ? pw : Math.min(pw, H * 0.16);
+      x.strokeStyle = P.dim; x.lineWidth = 1; x.strokeRect(pxo, pyo, pw, phh);
+      x.strokeStyle = P.a; x.lineWidth = 1.6; x.beginPath(); ph.forEach((v, q) => { const X = pxo + Math.min(1, v[0]) * pw, Y = pyo + phh - Math.min(1, v[1]) * phh; q ? x.lineTo(X, Y) : x.moveTo(X, Y); }); x.stroke();
+      x.fillStyle = P.fg; x.beginPath(); x.arc(pxo + Math.min(1, s) * pw, pyo + phh - Math.min(1, r) * phh, 4, 0, TAU); x.fill();
+      x.font = '11px ' + F.mono; x.fillStyle = P.dim; x.textAlign = 'left'; x.fillText('s  signal released →', pxo, pyo + phh + 16); x.save(); x.translate(pxo - 8, pyo + phh); x.rotate(-Math.PI / 2); x.fillText('r  receptor →', 0, 0); x.restore();
+      const eq = Math.max(14, Math.min(20, W / 62)); x.fillStyle = P.fg; x.font = 'italic ' + eq + 'px ' + F.serif; x.fillText('ṡ = I(1 − s) − κsr', pxo, pyo - 30); x.fillText('ṙ = (H(s) − r)/τ', pxo, pyo - 8);
+      x.textAlign = 'left'; x.font = '11px ' + F.mono; x.fillStyle = P.dim; x.fillText('the more that arrives, the harder the receptor says no. that refusal is the beat.', pad, H - 20);
+      x.textAlign = 'right'; x.fillText('GPU ' + spent[0].toFixed(0) + '  Text ' + spent[1].toFixed(0) + '  Credits ' + spent[2].toFixed(0), W - pad, 30); x.textAlign = 'left';
+    }
+  };
+});
+</script>
+</body>
+</html>
