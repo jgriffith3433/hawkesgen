@@ -14,8 +14,62 @@ export const h = (tag, attrs = {}, ...kids) => {
     else el.setAttribute(k, v === true ? '' : v);
   }
   for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : document.createTextNode(String(k)));
+  if (tag === 'button' || (tag === 'a' && /\bbtn\b/.test(el.className))) applyButtonVariant(el);
   return el;
 };
+
+const BUTTON_VARIANTS = ['primary', 'secondary', 'ghost', 'danger'];
+
+/** Marks a button with one of the four shared variants and an aria-label when it is icon-only. */
+export function applyButtonVariant(btn) {
+  if (!(btn instanceof Element)) return btn;
+  if (!BUTTON_VARIANTS.some((v) => btn.classList.contains(v))) {
+    if (btn.classList.contains('play') || btn.classList.contains('send')) btn.classList.add('primary');
+    else if (
+      btn.classList.contains('icon-btn')
+      || btn.classList.contains('avatar')
+      || btn.classList.contains('link')
+      || btn.classList.contains('drawer-toggle')
+      || btn.classList.contains('tab')
+      || btn.closest?.('.seg')
+      || btn.closest?.('nav')
+      || (btn.matches?.('[data-pane], [data-m]') && !btn.classList.contains('chip'))
+    ) btn.classList.add('ghost');
+    else btn.classList.add('secondary');
+  }
+  if (!btn.getAttribute('aria-label')) {
+    const text = (btn.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) {
+      const title = btn.getAttribute('title');
+      // No words and no title: the icon's own name is the last resort ("close" -> "Close"), so a screen reader never hears "button".
+      const ico = btn.querySelector('[data-icon]')?.getAttribute('data-icon');
+      const name = title || (ico ? ico.replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase()) : '');
+      if (name) btn.setAttribute('aria-label', name);
+    }
+  }
+  return btn;
+}
+
+/**
+ * Ensures every button / a.btn under `root` carries a primary|secondary|ghost|danger class and that icon-only
+ * buttons expose an aria-label (from title when needed). Watches the tree so Create forms and admin tabs stay covered.
+ */
+export function installButtonVariants(root = document.documentElement) {
+  const scan = (node) => {
+    if (!node || node.nodeType !== 1) return;
+    if (node.matches?.('button, a.btn')) applyButtonVariant(node);
+    node.querySelectorAll?.('button, a.btn').forEach(applyButtonVariant);
+  };
+  scan(root);
+  const mo = new MutationObserver((muts) => {
+    for (const m of muts) {
+      if (m.type === 'childList') for (const n of m.addedNodes) scan(n);
+      else if (m.type === 'attributes' && m.target?.matches?.('button, a.btn')) applyButtonVariant(m.target);
+    }
+  });
+  mo.observe(root, { childList: true, subtree: true });
+  return mo;
+}
 /**
  * A library file's link. Given the file's hash (list rows carry `sha256`), the link names its bytes, so Gen serves it as
  * immutable and the browser never asks for it again (J, 2026-11-01: Media kept reloading its pictures and clips).
@@ -263,11 +317,11 @@ export async function uploadCanvas(canvas, name = 'mask.png') {
   return j.blob;
 }
 
-// Icons: small inline SVGs (stroke = currentColor).
-const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
+// Icons: one stroke icon family (viewBox 0 0 24 24, stroke = currentColor, fill = none, sized via CSS tokens).
+const svg = (d, extra = '') => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${d}</svg>`;
 export const ICON = {
-  play: svg('<path d="M7 4.5v15l12-7.5z" fill="currentColor" stroke="none"/>'),
-  pause: svg('<rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none"/>'),
+  play: svg('<polygon points="7 4.5 19 12 7 19.5 7 4.5"/>'),
+  pause: svg('<rect x="6" y="4.5" width="4" height="15" rx="1"/><rect x="14" y="4.5" width="4" height="15" rx="1"/>'),
   back: svg('<path d="M15 6l-6 6 6 6"/>'),
   fwd: svg('<path d="M9 6l6 6-6 6"/>'),
   undo: svg('<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>'),
@@ -321,12 +375,12 @@ export const ICON = {
   up: svg('<path d="M12 19V5M6 11l6-6 6 6"/>'),
   down: svg('<path d="M12 5v14M6 13l6 6 6-6"/>'),
   copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/>'),
-  stop: svg('<rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/>'),
+  stop: svg('<rect x="6" y="6" width="12" height="12" rx="1.5"/>'),
   fill: svg('<path d="M5 12l7-7 7 7-7 7z"/><path d="M20 15s2 2.5 2 4a2 2 0 01-4 0c0-1.5 2-4 2-4z"/>'),
   chevron: svg('<path d="M6 9l6 6 6-6"/>'),
-  more: svg('<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>'),
+  more: svg('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>'),
 };
-export const icon = (name, cls = 'ico') => h('span', { class: cls, html: ICON[name] ?? '' });
+export const icon = (name, cls = 'ico') => h('span', { class: cls, 'data-icon': name, 'aria-hidden': 'true', html: ICON[name] ?? '' });
 
 /** A tiny event hub the modules talk through. */
 const subs = new Map();

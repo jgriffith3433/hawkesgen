@@ -21,7 +21,7 @@ import { getTool } from './tools/index.ts';
 import { validateParams } from './tools/validate.ts';
 import type { RunContext, Tool, Output } from './tools/types.ts';
 import { afterJob } from './lod.ts';
-import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, type Recipe } from './library.ts';
+import { putAsset, putAssetFile, getAsset, blobPath, canUseBlob, findAllByRecipe, recipeKey, libraryShaOf, type Recipe } from './library.ts';
 import { callScope } from './providers/anthropic.ts';
 import { checkSubmit } from './platform.ts';
 import { orgOfProject, isHouseProject } from './orgsecrets.ts';
@@ -30,18 +30,18 @@ import { applyPreset } from './presets.ts';
 import { canProject, fixedProject, projectScopeSql, type Client } from './auth.ts';
 import { expandSlotRefs, fileJobOutputs } from './entities.ts';
 import { expandMotionRequest, motionFile } from './motions.ts';
-import { ensureInputs } from './storage.ts';
+import { ensureInputs, ensureLocal } from './storage.ts';
 import { autoStartRound, offRound, ROUND_MS, BOOT_SECONDS, type AutoStartRound, type Backoff } from './autostart.ts';
 import { comfyEndpoints, fleetStatus, startServer, launchServer, imageAvailable, syncServer, installModels, markModelsUsed, serverFreeDisk, markDiskFull, type Endpoint } from './providers/comfy/fleet.ts';
 import type { ModelRef } from './workflows/convert.ts';
 import { Comfy } from './providers/comfy/client.ts';
 import { cloudEnabled, loadServiceMap, type CloudService } from './providers/cloudrun/services.ts';
-import { gpuCandidates, triedOf, orderFor } from './providers/gpu/route.ts';
+import { gpuCandidates, triedOf, orderFor, fleetCredentialProblem } from './providers/gpu/route.ts';
 import { markDown, markUp, isDown, awsRefused, COOLDOWN, lastingDown } from './providers/gpu/health.ts';
 import { noGpuVerdict, waitSinceOf, type NoGpuVerdict } from './providers/gpu/nogpu.ts';
 import { fleetBlocked } from './providers/gpu/egress.ts';
 import { cpuRoute, cpuCloudEnabled, runCpuRemote, type CpuService } from './providers/cloudrun/cpu.ts';
-import { cloudPlaytestsFor, cloudLanes, cloudLaneKey, providerDown } from './providers/playtester/cloudrun.ts';
+import { cloudPlaytestsFor, cloudLanes, cloudLaneKey, providerDown, playtestVariantsFor } from './providers/playtester/cloudrun.ts';
 import { runpodCreditProblem } from './providers/gpu/credit.ts';
 import { isNativeTarget } from './providers/playtester/runners.ts';
 import { cloudComfyRun, jobSeed } from './providers/cloudrun/run.ts';
@@ -239,8 +239,23 @@ export function submit(client: Client, spec0: JobSpec): Job {
   return 'id' in p ? p : createJob(client, p.tool, p.s);
 }
 
+const RATE_TRIES = 6;
+
+/** An `asset:` input whose library file isn't on this disk (a scale-to-zero restart) comes back from storage before the
+ * job is checked, the way a download restores it; otherwise the submit's own reads fail with ENOENT. */
+export async function restoreAssetInputs(inputs: Record<string, unknown> | undefined) {
+  for (const v of Object.values(inputs ?? {})) {
+    for (const ref of Array.isArray(v) ? v : [v]) {
+      if (typeof ref !== 'string' || !ref.startsWith('asset:')) continue;
+      const a = getAsset(ref.slice(6));
+      if (a && !fs.existsSync(a.path) && !(await ensureLocal(a))) throw new GenError(`${ref}'s file is missing here and not in the library's storage`, { status: 404 });
+    }
+  }
+}
+
 /** submit, charging a customer Studio's balance first when its key's jobs are billed there (every HTTP route). */
 export async function submitJob(client: Client, spec0: JobSpec): Promise<Job> {
+  await restoreAssetInputs(spec0.inputs);
   const p = prepareSubmit(client, spec0);
   return 'id' in p ? p : createJobCharged(client, p.tool, p.s);
 }
@@ -323,7 +338,10 @@ function prepareSubmit(client: Client, spec0: JobSpec): Job | Pending {
   return { tool, s: { project, params, inputs, labels: spec.labels, key: spec.key, priority: spec.priority } };
 }
 
-const sha256Sync = (file: string) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+// A library file's hash comes from its row (or a blob's name), not its bytes: on Cloud Run the file may not be on this
+// instance yet (made by another instance, or before a restart), and checking the library for a take must not need it.
+// The file itself comes back from storage before the job runs (ensureInputs). Other files are hashed as they are.
+const sha256Sync = (file: string) => libraryShaOf(file) ?? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 /** The recipe key a job with these params and inputs would give its outputs (as runJob computes it). */
 export function jobRecipeKey(tool: Tool, params: Record<string, any>, inputs: Record<string, string | string[]>) {
@@ -458,6 +476,9 @@ function createJob(client: Client, tool: Tool, s: JobInit, charged?: { id: strin
   // No priority asked for: a boost on one of its labels sets it (boostLabel). Customers' keys (role user) can lower
   // their own jobs but never raise them or ride an admin's boost: priority is the scheduler's business.
   const spec = { ...s, priority: client.role === 'user' ? Math.min(0, Number(s.priority) || 0) : s.priority ?? boostFor(s.labels) };
+  // A Claude answer someone is watching for (labels `waiting`: the portal's Overseer) goes ahead of background work in
+  // its lane, a step up and no more (tools/api.ts waitedOn gives its call the same place at Claude's gate).
+  if (s.labels?.waiting && (tool.id === 'llm.text' || tool.id === 'llm.json')) spec.priority = Math.max(1, Number(spec.priority) || 0);
   const family = tool.provider === 'comfy' ? (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null : null;
   const job: Job = {
     id: charged?.id ?? newId('j', 6), key: spec.key ? String(spec.key) : null, client: client.id, project, tool: tool.id, params, inputs,
@@ -527,6 +548,7 @@ export function cancel(jobId: string) {
       Object.assign(j, { status: 'cancelled', detail: 'cancelled', finished: Date.now() });
       save(j, ['status', 'detail', 'finished']);
       refundJob(j.id, 'Job cancelled');
+      releaseOutside(j);
     }
   }
   return getJob(jobId);
@@ -552,7 +574,16 @@ export function failJob(jobId: string, errorMessage = 'Job failed') {
   j.log.push(`error: ${errorMessage}`);
   save(j, ['status', 'error', 'detail', 'finished', 'log']);
   refundJob(j.id, `Job failed: ${errorMessage}`);
+  releaseOutside(j);
   return getJob(jobId);
+}
+
+/** What a job that ended outside its run started elsewhere is released (Tool.ended): a Unity build's queued execution
+ *  would otherwise wait in Cloud Run for a machine nobody wants (2026-11-11: 77 of them in us-west1). */
+function releaseOutside(j: { id: string; tool: string }) {
+  const t = getTool(j.tool);
+  if (!t?.ended) return;
+  void t.ended(j.id).catch((e: any) => console.warn(`[queue] couldn't release what ${j.id} started: ${e?.message ?? e}`));
 }
 
 /**
@@ -679,6 +710,8 @@ class Queue {
   autoRound: AutoStartRound | null = null;
   autoBackoff: Backoff = new Map();
   waitReason = '';
+  /** The last error working out the playtest lanes (logged once). */
+  laneError = '';
   /** Whether a GPU server was ready for playtest browsers, checked at most every 30 s. */
   gpuSeen = { at: 0, ready: false, limit: 3 };
   /** Running playtests' browser tabs (their players), for the playtest lane. */
@@ -686,8 +719,13 @@ class Queue {
   /** Running API and local jobs' projects, for fair sharing of those lanes between customers. */
   laneProject = new Map<string, string>();
   /** Browser tabs the running playtests use, and the most the lane admits now. */
+  /** The playtest lanes the last fill used (key -> tabs it admits): the Cloud Run, RunPod, Modal or runner lanes. */
+  playtestLanes = new Map<string, number>();
   tabsInUse() {
-    return { used: [...this.tabs.values()].reduce((a, n) => a + n, 0), limit: this.gpuSeen.ready ? this.gpuSeen.limit : 1 };
+    // The lanes playtests really wait on when the last fill used any (2026-11-10: this said "1 of 1" from the AWS
+    // playtesters while the runs played on RunPod's 8 browsers), else the playtesters' or fleet's.
+    const cloud = [...this.playtestLanes.values()].reduce((a, n) => a + n, 0);
+    return { used: [...this.tabs.values()].reduce((a, n) => a + n, 0), limit: cloud > 0 ? cloud : this.gpuSeen.ready ? this.gpuSeen.limit : 1 };
   }
 
   /** Set while Hawkes Gen is stopping: nothing new starts, the jobs running finish (drain). */
@@ -701,6 +739,20 @@ class Queue {
   async drain(maxMs: number): Promise<number> {
     this.draining = true;
     const left = () => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'running'").get() as { n: number }).n;
+    // Mark what is running as cut off by a planned stop BEFORE waiting: Cloud Run kills the instance 10 s after SIGTERM (and
+    // a newer instance may read the database first), so a mark made only after the wait was often never written, and the
+    // next start counted the deploy as a crash (2026-11-10: a Unity build "interrupted 5 times"). A job that finishes
+    // during the wait is no longer running, so its mark is never read.
+    const mark = () => {
+      for (const j of listJobs({ status: 'running', limit: 500 })) {
+        if (j.labels?.drained) continue;
+        j.labels = { ...j.labels, drained: Date.now() };
+        j.log.push('Hawkes Gen is restarting: this job will be picked up again');
+        save(j, ['labels', 'log']);
+      }
+      flushLogs();
+    };
+    mark();
     if (left() > 0 && maxMs > 0) {
       await new Promise<void>((resolve) => {
         let t: NodeJS.Timeout;
@@ -711,14 +763,7 @@ class Queue {
       });
     }
     const n = left();
-    if (n) {
-      for (const j of listJobs({ status: 'running', limit: 500 })) {
-        j.labels = { ...j.labels, drained: Date.now() };
-        j.log.push('Hawkes Gen is restarting: this job will be picked up again');
-        save(j, ['labels', 'log']);
-      }
-      flushLogs();
-    }
+    if (n) mark();
     return n;
   }
 
@@ -827,15 +872,22 @@ class Queue {
     const cloudPlaytestLanes = (j: Job, s: typeof settings) => {
       // Runners from settings.playtest.runners (src/providers/playtester/runners.ts), and every desktop target: one lane per
       // kind (browser, native) of the runs those runners play at once.
+      // As runnersFor (runners.ts) routes them: a web run uses the listed runners only when one of them plays web pages;
+      // otherwise today's browser services play it (a desktop-only runner never takes websites' lane down to one).
       const target = (j.params.target ?? 'web') as PlaytestTarget;
-      if (s.playtest.runners.length || isNativeTarget(target)) {
+      const runners = s.playtest.runners ?? [];
+      if (isNativeTarget(target) || runners.some((r) => r.targets.includes(target))) {
         const native = isNativeTarget(target);
         const limit = s.playtest.runners.filter((r) => r.enabled && r.targets.includes(target)).reduce((n, r) => n + r.maxConcurrent, 0);
         return { key: native ? 'playtest-native' : 'playtest-runners', limit: Math.max(1, limit) };
       }
       // The same rule playtest.run follows for a GPU browser: gpu require, or auto anywhere but this PC (Windows).
       const gpuHost = j.params.gpu === 'require' || (j.params.gpu !== 'off' && process.platform !== 'win32');
-      if (!gpuHost || (s.playtest.backend === 'ec2' && !Object.values(s.playtest.projects).some((b) => b !== 'ec2'))) return null;
+      // No browser service for this project: the order the run itself follows (playtestVariantsFor: a project's own
+      // backend, else settings.playtest.order, Studio's provider order, else the default backend). Checking only the
+      // backend left runs that Studio's order sends to RunPod in the generic lane of one while the default backend was
+      // ec2 and the AWS playtesters were gone: one playtest at a time on an endpoint with 8 browsers (2026-11-10).
+      if (!gpuHost || !playtestVariantsFor(j.project, s.playtest).length) return null;
       try {
         // The lane holds the tabs of every region of the first service's kind (the CPU service may run in several).
         // A GPU provider the run will skip (RunPod out of credit, a provider cooling down after a refusal) doesn't set
@@ -845,7 +897,11 @@ class Queue {
         const all = usable.length ? usable : listed;
         const c = all[0];
         return c ? { key: cloudLaneKey(c), limit: all.filter((x) => x.variant === c.variant).reduce((n, x) => n + cloudLanes(x), 0) } : null;
-      } catch {
+      } catch (e: any) {
+        // The generic lane (one at a time without playtesters) until this is fixed: say so, once per message.
+        const msg = String(e?.message ?? e);
+        if (msg !== this.laneError) console.warn(`[queue] playtest lanes: ${msg}; playtests wait in the generic lane`);
+        this.laneError = msg;
         return null;
       }
     };
@@ -858,6 +914,7 @@ class Queue {
     const runningBy = new Map<string, number>();
     for (const p of this.laneProject.values()) runningBy.set(p, (runningBy.get(p) ?? 0) + 1);
     const lanesOrder = fairOrder(waiting.filter((x) => toolOf(x).provider !== 'comfy').map((x) => ({ ...x, exempt: laneExempt(x) })), runningBy, Infinity);
+    const seenLanes = new Map<string, number>();
     for (const j of lanesOrder) {
       const provider = toolOf(j).provider as 'elevenlabs' | 'anthropic' | 'local' | 'builder' | 'playtest' | 'pipeline';
       // A pipeline that is a step of another job (asset.make's image.viewsheet) runs in its own lane, never behind the
@@ -877,6 +934,7 @@ class Queue {
       const cloudBuild = unityBackend === 'cloudrun';
       // So do playtests on Cloud Run (settings.playtest, docs/playtest-cloudrun.md): max instances x tabs per instance.
       const cloudPlay = provider === 'playtest' ? cloudPlaytestLanes(j, settings) : null;
+      if (cloudPlay) seenLanes.set(cloudPlay.key, cloudPlay.limit);
       // So does the CPU suite on Cloud Run (settings.cpu, docs/cpu-cloudrun.md): this machine's CPU isn't what limits it.
       const cpuCloud = provider === 'local' && !own && cpuCloudEnabled(settings) ? cpuRoute(j.tool, settings).service : null;
       const key = own ? own.name : nested ? 'pipeline-step' : cloudBuild ? 'builder-cloud' : unityBackend === 'vm' ? 'builder-vm' : cloudPlay ? cloudPlay.key : cpuCloud ? 'local-cloud' : provider;
@@ -915,6 +973,8 @@ class Queue {
         this.pump();
       });
     }
+
+    if (seenLanes.size) this.playtestLanes = seenLanes;
 
     // The GPU lane (docs/gpu-providers.md). Each job's providers come in order (settings.gpu.order / familyOrder; with
     // none set, the old rule: its family's Cloud Run service when settings send it there, else the fleet). It takes the
@@ -1349,8 +1409,29 @@ class Queue {
         save(job, ['labels']);
         return;
       }
+      // A provider's 429 (too many requests, e.g. several jobs behind one 3D worker): back in the line after a wait that
+      // grows, never failed or charged for it. A run that keeps being refused fails after RATE_TRIES.
+      if (cloud && e.rateLimited && !cancelled) {
+        const tries = Number(job.labels.rateLimitTries ?? 0) + 1;
+        if (tries <= RATE_TRIES) {
+          const wait = Math.min(300, 15 * 2 ** (tries - 1));
+          job.log.push(`error: ${e.message}`, `rate limited; trying again in ${wait} s (${tries} of ${RATE_TRIES})`);
+          Object.assign(job, { detail: `the GPU provider asked us to slow down; trying again in ${wait} s` });
+          save(job, ['detail', 'log']);
+          await new Promise<void>((done) => {
+            const t = setTimeout(done, wait * 1000);
+            abort.signal.addEventListener('abort', () => { clearTimeout(t); done(); }, { once: true });
+          });
+          if (!abort.signal.aborted) {
+            Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: 'back in the line after a rate limit', labels: { ...job.labels, rateLimitTries: tries } });
+            save(job, ['labels']);
+            return;
+          }
+        }
+      }
       // A graph that ran past Cloud Run's request limit goes back in the line once, for the fleet (no time limit there).
-      if (cloud && e.overLimit && !cancelled && job.labels.gpuBackend !== 'fleet') {
+      // Not when the fleet can't start (no AWS credentials): the job would only fail later as "no GPU" (beta 2026-11-10).
+      if (cloud && e.overLimit && !cancelled && job.labels.gpuBackend !== 'fleet' && !fleetCredentialProblem()) {
         Object.assign(job, { status: 'queued', started: null, server: null, error: null, detail: `${e.message}; running it on the fleet instead`, labels: { ...job.labels, gpuBackend: 'fleet' } });
         job.log.push(`error: ${e.message}`, job.detail);
         save(job, ['labels']);

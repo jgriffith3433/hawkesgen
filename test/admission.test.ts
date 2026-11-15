@@ -93,3 +93,18 @@ test('the AI gate: a place in line, a per-account cap, a bounded wait, and slots
   got();
   assert.deepEqual(gate.load(), { running: 0, waiting: 0, cap: 1 });
 });
+
+test('the AI gate: a turn someone waits on goes ahead of Gen\'s own waiting calls, after other people\'s turns', async () => {
+  const gate = createGate(() => 1);
+  const order: string[] = [];
+  const holder = await gate.acquire();
+  const take = (name: string, o: any) => gate.acquire(o).then((release) => { order.push(name); release(); });
+  const bg1 = take('bg1', {});
+  const bg2 = take('bg2', {});
+  const p1 = take('player1', { who: 'u_a', maxPerUser: 2, maxWaitMs: 5000 });
+  const p2 = take('player2', { who: 'u_b', maxPerUser: 2, maxWaitMs: 5000 });
+  holder();
+  await Promise.all([bg1, bg2, p1, p2]);
+  assert.deepEqual(order, ['player1', 'player2', 'bg1', 'bg2']);
+  assert.deepEqual(gate.load(), { running: 0, waiting: 0, cap: 1 });
+});

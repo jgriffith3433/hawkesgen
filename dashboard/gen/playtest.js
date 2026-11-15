@@ -3,13 +3,15 @@
 // Studio's beta playtests it's signed in as the project's test account (src/testsignin.ts).
 //   smoke    the page opens; signed in, a new video scene, text added with T, played with Space, then removed
 //   media    the Media pane lists the library and a tile can be picked (the AI's chip shows it)
-//   signedout what someone who isn't signed in sees: the welcome, and Start free
+//   signedout what someone who isn't signed in sees: the welcome, Sign in with Google, no /v1 probe without hg.in
 //   playback two or three of the library's clips cut together, played through the cuts and scrubbed back over them:
 //            how often and how long the clock waited for data, seeks while playing, frames with no picture
 //   create   one form from each Create group (images, video, 3D, animation, audio, chains): fields, price and Make button; Make is never pressed
 //   account  credits pill, account sheet with packs and plans, Help menu, shortcuts overlay, Terms and Privacy
 //   export   a short plain cut from the library's clips, exported: the file loads and plays
 //            (create, account, export: option {"broken":true} sabotages what they look at, and each must then report a problem)
+//   panels   AI and Media panes at desktop sizes: the prompt box is fully visible, signed-out Sign in never overlaps the
+//            suggestion chips, and long media / chip lists scroll inside their panels instead of being cut off
 //   ai-edit, ai-undo, ai-proposal, ai-nocredits, ai-signedout, ai-outage: the AI pane (docs/ai-mock.md). The test account's canned
 //            answers (POST /v1/test/ai-mock, a named setup shortcut) stand in for Claude, so no house AI is spent; the message is typed
 //            with key events into #aiInput, and nothing here ever presses Make it on a proposal (that would be GPU money)
@@ -23,18 +25,35 @@
 //            timeline played 20 s (fps, p5), and how long a scrub takes to show the new frame (metrics openMs, p5fps, scrubMs)
 //   playback4 a 4-track timeline (video, picture or color, words, sound) played for 30 s, then seeked while playing:
 //            fps and its 5th percentile (p5), the slowest frame, and how long each seek took to get the playhead moving
+//   transitions adjacent clips on the main track: add a crossfade from the join, resize by dragging its edge, change
+//            type from the menu (touch-sized targets), scrub the blend in the preview, and export so the cut is shorter
+//            by the transition length (same moment as the preview)
+//   no-lost-work an edit, offline and another edit, a reload keeps both, the Saving / Saved / Offline badges, an AI op undone and redone by tap
+//   editor-fit   1280x720, 1920x1080, 390x844, 844x390 (the editor in frames of those sizes): prompt box, Media header, timeline
+//            tracks, play button and panel toggles in view and not overlapping; each fault names the control and the size
+//   polished-cut a crossfade, a lower third and music under a voice line: longest frame gap (ms, fails over 50) and the music's dB
+//            under and outside the voice line (metrics longestFrameGapMs, musicUnderVoiceDb, musicOutsideVoiceDb)
+//   audio-mix music + voice on the timeline: waveforms drawn, fade handle dragged, auto-duck ~10 dB under the line
+//            (preview maths + offline mixdown loudness); no GPU
+//   a11y     axe-core (pinned, loaded only in this scenario) on landing, editor and library, focus rings, Escape on the drawer, 44 px taps on a phone; {"seed":true} must fail it
+//   titles   Create > Titles: six animated presets whose previews move; a lower third added by a tap animates in and out
+//            and keeps its ink off the frame's edge at 16:9 and 9:16 (measured on the drawn pixels), a long name wraps
+//            inside the safe area, and the exported video shows the same title as the preview (ink overlap at one moment)
 import { installPlaytest } from './playtest/hawkes-playtest.js';
-import { state } from './account.js';
-import { P, addClip, setClip, mainTrack, docLength, addTrack, tracks } from './project.js';
+import { state, loadMe } from './account.js';
+import { take, forgetRecovered, audible, P, addClip, setClip, mainTrack, docLength, addTrack, tracks, trackOf, clipEnd, clipLength } from './project.js';
+import * as journal from './journal.js';
 import { snapStats } from './timeline.js';
-import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats } from './player.js';
+import { isPlaying, seek, playbackStats, resetPlaybackStats, pacingStats, transitionAt, mixdown, clipGain, duckAt, frameAt } from './player.js';
 import { activeScene, newScene, sceneList, loadList } from './scenes.js';
 import { currentShot } from './director.js';
 import { startGuide, guideOpen } from './guide.js';
-import { api, bus } from './lib.js';
+import { api, bus, peaks } from './lib.js';
 import { openStream } from './stream.js';
 import { runJob, uploadFiles } from './media.js';
 import { streamState } from './trouble.js';
+import { show as showLanding, hide as hideLanding } from './landing.js';
+import { DUCK_TO, dialogueSpans, composeAudioPlan } from './audio-mix.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** A key press on the page, as the keyboard sends it (the app's shortcuts listen on window). */
@@ -173,13 +192,21 @@ installPlaytest({
   scenarios: [
     { id: 'smoke', title: 'Open the app, make a scene, add text, play it', seconds: 60, tags: ['smoke'] },
     { id: 'media', title: 'The Media pane lists the library and picks a tile for the AI', seconds: 40 },
-    { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call but /v1/users/me', seconds: 30 },
+    { id: 'signedout', title: 'Someone not signed in sees what Gen does, a Sign in with Google button and examples, with no /v1 call (the session probe is skipped when hg.in is unset)', seconds: 30 },
+    { id: 'first-paint', title: 'First paint, signed out (desktop and 390x844): at 0.5, 1, 2 and 3 s after navigation no media panel, timeline or AI panel is visible, only the landing page; no console error or failed request; the hero buttons\' labels are centred', seconds: 20, tags: ['mobile'] },
     { id: 'createprice', title: 'Every Create form shows its credit price when opened, and it changes when an option that changes the cost changes', seconds: 120 },
     { id: 'guide', title: 'The guided first project: pick an idea, a picture, the timeline, play, and dismiss it', seconds: 90 },
     { id: 'playback4', title: 'A 4-track timeline plays 30 s smoothly (p5 fps) and playback resumes fast after a seek', seconds: 120 },
     { id: 'phoneperf', title: 'Phone speed (390x844, touch, CPU slowed 4x): the editor is usable within 5 s of opening a project, a 3-clip timeline plays 20 s with p5 fps above 30, and a scrub shows the new frame within 200 ms', seconds: 120, tags: ['mobile'] },
     { id: 'progress', title: 'A job that fails shows its plain cause and Retry; Retry shows the estimate and Stop while it runs', seconds: 90 },
+    { id: 'savebadge', title: 'The save badge says Saving, then Saved with the time; with the network off an edit shows Offline - changes kept, and after going online and reloading the edit is still there; a reload under a second after an offline edit keeps it; the badge is visible at 390x844 touch', seconds: 90, tags: ['mobile'] },
+    { id: 'no-lost-work', title: 'No lost work: an edit, then offline and another edit, then a reload keeps both; the badge shows Saving, Saved and Offline; an AI op is undone and redone by tap (390x844 touch too); a failure names the step', seconds: 120, tags: ['mobile'] },
+    { id: 'editor-fit', title: 'Editor fit at 1280x720, 1920x1080, 390x844 and 844x390: the prompt box, Media header, timeline tracks, play button and panel toggles are fully in view and overlap nothing; a failure names the control and the size', seconds: 150, tags: ['mobile'] },
+    { id: 'polished-cut', title: 'Polished cut: a fixture with a crossfade, a lower-third title and music under a voice line plays; logs the longest frame gap in ms (fails over 50) and the music level in dB under the voice (fails unless lower than outside it)', seconds: 120 },
     { id: 'editing', title: 'Timeline editing: clips snap to neighbours and the playhead, ? shows the shortcuts, undo and redo move, trim and delete', seconds: 90 },
+    { id: 'audio-mix', title: 'Audio mix: waveforms on clips, fade-in handle, auto-duck ~10 dB under a voice line in preview and mixdown', seconds: 150 },
+    { id: 'transitions', title: 'Clip transitions: add a crossfade at a join, resize and change type by touch, see the blend in the preview, export matches the join', seconds: 150, tags: ['mobile'] },
+    { id: 'titles', title: 'Titles: six animated presets in Create with moving previews; a lower third animates in and out inside the frame at 16:9 and 9:16, and the export shows it as the preview does', seconds: 200 },
     { id: 'library', title: 'Library: thumbnails, video plays on hover, filter by image, video, audio and 3D, open an asset to see its prompt and Use in timeline', seconds: 90 },
     { id: 'trouble', title: 'Offline, a dropped stream, 401, 402, 429 and 503 each say one plain sentence and a next step on Create, the library, the timeline and the AI pane, with no raw JSON, trace or key', seconds: 150 },
     { id: 'aimock', title: 'The AI editor answers from a canned answer (test account only): a title appears from a typed message, with no Claude call', seconds: 60 },
@@ -192,8 +219,10 @@ installPlaytest({
     { id: 'checkout', title: 'Buying credits: the packs (and the test-mode card note on beta), one tap opens checkout while the others wait, a failed start says one plain line and frees the packs, and coming back paid, processing, declined or cancelled each says so (paid: the new balance on the pill and a Receipt); on a phone each pack is one row at least 44 px tall with no sideways scroll. Stripe is never called', seconds: 60, tags: ['mobile'] },
     { id: 'account', title: 'Account: the credits pill opens the sheet with packs and plans, the Help menu and the shortcuts overlay open, Terms and Privacy are there; no job starts', seconds: 60 },
     { id: 'export', title: 'Export: a short plain cut of the library\'s clips is exported and the file loads and plays; only the cut\'s own CPU render runs', seconds: 150 },
+    { id: 'timeline-resize', title: 'Drag the timeline\'s top edge to resize it (kept in this browser, 120px to 70% of the window); under 1100px wide the side panels are Media and AI buttons', seconds: 45 },
+    { id: 'panels', title: 'Side panels at 1280x720-class desktop: AI prompt fully visible, Sign in and chips never overlap, Media and chip lists scroll inside their panes', seconds: 60 },
     { id: 'ai-edit', title: 'AI pane: "add a title that says Hello" adds a text clip, the reply lists it, and credits drop by at least 1 (canned answer, no Claude)', seconds: 60 },
-    { id: 'ai-undo', title: 'AI pane: Undo this removes what the AI added, and Ctrl+Z brings it back', seconds: 60 },
+    { id: 'ai-undo', title: 'AI pane: after a multi-op edit a toast offers Undo, Ctrl+Z (or Undo) puts the timeline back, Redo brings the AI change back, and the Undo button is labelled', seconds: 90 },
     { id: 'ai-proposal', title: 'AI pane: an answer over 40 credits shows a proposal card with its price, and nothing starts (Make it is never pressed)', seconds: 60 },
     { id: 'ai-nocredits', title: 'AI pane: with no credits left the answer is a plain 402 line with Add credits, and the timeline is unchanged', seconds: 60 },
     { id: 'ai-signedout', title: 'AI pane signed out: the sign-in gate shows, a typed message opens Sign in and nothing is sent', seconds: 40 },
@@ -205,6 +234,8 @@ installPlaytest({
     { id: 'media-upload', title: 'Media: a small picture is uploaded with the file button and shows as a tile and in its details; no job starts but the CPU conversion, if any', seconds: 60 },
     { id: 'uploads', title: 'Uploads: three big files go up together with a percentage each and the server stays up; a fourth at once is refused with a plain "uploads at once" message; options {"mb":500}', seconds: 240 },
     { id: 'playback', title: 'Clips cut together play through the cuts and scrub back without hitching', seconds: 90 },
+    { id: 'a11y', title: 'Accessibility: axe-core (pinned 4.10.2, loaded only here) on the landing, the editor and the library; any serious or critical issue fails the run and names its rule and screen; the first 20 tab stops show a focus ring; Escape closes the library drawer and focus returns to its opener; at 390x844 every tap target is at least 44x44 px; option {"seed":true} adds a deliberate violation that must fail the run', seconds: 90, tags: ['mobile', 'menus'] },
+    { id: 'tokens', title: 'Design tokens and shared UI: landing, editor, library and admin share the same custom properties, buttons, inputs, chips, cards, typography and 16px stroke icons across toolbars, with clean layout at desktop (1440x900) and phone (390x844)', seconds: 90, tags: ['mobile'] },
   ],
   // Ready once the account is known (signed in or not) and the app has drawn.
   isReady: () => Boolean(document.querySelector('#app')) && performance.now() > 1500,
@@ -212,25 +243,345 @@ installPlaytest({
     // The account is known once it's there, or the welcome for someone not signed in is.
     await until(() => state.user || document.querySelector('#landing:not([hidden])'), 10000);
     t.metric('signedIn', state.user ? 1 : 0);
+    if (id === 'first-paint') {
+      t.scene('First paint');
+      const errors = watchConsole();
+      // Setup shortcut (named): a signed-in test tab looks signed out (the session itself is untouched).
+      try { localStorage.removeItem('hg.in'); } catch { /* */ }
+      const was = state.user;
+      if (was) { state.user = null; showLanding(); }
+      const seen = (el) => Boolean(el) && el.checkVisibility?.({ checkOpacity: true, checkVisibilityCSS: true }) !== false && (() => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; })();
+      const CHROME = { media: '#leftPane', mediaGrid: '#mediaGrid', timeline: '#timelinePane', ai: '#rightPane' };
+      let leaked = 0;
+      for (const at of [0.5, 1, 2, 3]) {
+        const wait = at * 1000 - performance.now();
+        if (wait > 0) await sleep(wait);
+        const now = performance.now() / 1000;
+        const rows = Object.entries(CHROME).map(([k, sel]) => { const el = document.querySelector(sel); return { k, inDom: Boolean(el), visible: seen(el) }; });
+        const shown = rows.filter((r) => r.visible).map((r) => r.k);
+        const L = document.querySelector('#landing');
+        const landing = Boolean(L) && !L.hidden && seen(L);
+        leaked += shown.length;
+        t.metric(`editorVisible_${at}s`, shown.length);
+        t.metric(`landingVisible_${at}s`, landing ? 1 : 0);
+        t.log(`${at}s (read at ${now.toFixed(2)}s): ${rows.map((r) => `${r.k} ${r.inDom ? (r.visible ? 'VISIBLE' : 'hidden') : 'absent'}`).join(', ')}; landing ${landing ? 'shown' : 'NOT shown'}`);
+        t.event(`first-paint-${at}s`, shown.length ? `editor visible: ${shown.join(', ')}` : 'landing only');
+        if (shown.length) t.problem('bug', `at ${at}s a signed-out visitor sees the editor (${shown.join(', ')})`);
+        if (!landing) t.problem('bug', `at ${at}s the landing page is not showing`);
+      }
+      const failed = performance.getEntriesByType('resource').filter((e) => e.responseStatus >= 400).map((e) => `${e.responseStatus} ${new URL(e.name, location.href).pathname}`);
+      t.metric('failedRequests', failed.length);
+      for (const f of failed) t.problem('bug', `failed request: ${f}`);
+      // Each hero button's label (the text's box) against the button's box.
+      const worst = [];
+      for (const b of document.querySelectorAll('#landing .ld-hero button')) {
+        const r = b.getBoundingClientRect();
+        if (!r.width || !seen(b)) continue;
+        const range = document.createRange();
+        range.selectNodeContents(b);
+        const q = range.getBoundingClientRect();
+        const off = Math.abs((q.left + q.width / 2) - (r.left + r.width / 2));
+        worst.push(off);
+        t.log(`hero button "${b.textContent.trim().slice(0, 30)}": label off centre by ${off.toFixed(1)} px`);
+        if (off > 2 && !b.classList.contains('link')) t.problem('bug', `hero button "${b.textContent.trim()}" label is ${off.toFixed(1)} px off centre`);
+      }
+      t.metric('heroButtons', worst.length);
+      t.metric('labelOffCentrePx', worst.length ? Math.round(Math.max(...worst) * 10) / 10 : 0);
+      errors.stop();
+      t.metric('consoleErrors', errors.errors.length);
+      for (const e of errors.errors) t.problem('bug', `console error: ${e}`);
+      if (was) { state.user = was; hideLanding(); }
+      t.finish(leaked || errors.errors.length || failed.length ? 'lost' : 'done');
+      return;
+    }
     if (id === 'signedout') {
       t.scene('Welcome');
+      // Setup shortcut (named): clear the session hint and show the welcome so a test-account tab still plays the
+      // anonymous landing path (the real cookie is untouched; Sign in from the landing still works afterwards).
+      try { localStorage.removeItem('hg.in'); } catch { /* */ }
+      const was = state.user;
+      if (was) state.user = null;
+      showLanding();
       const welcome = await until(() => document.querySelector('#landing:not([hidden]), .landing:not([hidden])'), 8000);
       t.metric('welcome', welcome ? 1 : 0);
-      if (welcome && !state.user) {
-        // What the first screen must say and show, and that it asked Gen for nothing but who's signed in.
+      if (welcome) {
         const L = document.querySelector('#landing');
         t.metric('signInWithGoogle', /Sign in with Google/.test(L.textContent) ? 1 : 0);
         t.metric('examples', L.querySelectorAll('.ld-ex').length);
-        const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/') && p !== '/v1/users/me');
-        t.metric('v1CallsSignedOut', v1.length);
-        for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
-        // The "who am I?" check answers a signed-out visit with nobody, not a 401 the console shows as an error.
-        const me = await window.__hgMe;
-        t.metric('meStatus', me?.status ?? 0);
-        if (me && me.status !== 200) t.problem('bug', `signed-out load: /v1/users/me answered ${me.status} (a console error)`);
+        // A first visit (no test session) must not have probed /v1/users/me at boot.
+        if (!was) {
+          const me = window.__hgMe ? await window.__hgMe : null;
+          t.metric('meProbedAtBoot', me ? 1 : 0);
+          if (me) t.problem('bug', 'signed-out first visit probed /v1/users/me (expected skip when hg.in is unset)');
+          if (me && me.status === 401) t.problem('bug', 'signed-out load: /v1/users/me answered 401 (a console error)');
+          const v1 = performance.getEntriesByType('resource').map((e) => new URL(e.name, location.href).pathname).filter((p) => p.startsWith('/v1/'));
+          t.metric('v1CallsSignedOut', v1.length);
+          for (const p of v1) t.problem('bug', `signed-out load called ${p}`);
+        }
+        // Prove the skip on this tab too: with hg.in cleared, loadMe must not fetch any /v1 route.
+        const probed = [];
+        const real = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+          try {
+            const path = new URL(typeof input === 'string' ? input : input.url, location.href).pathname;
+            if (path.startsWith('/v1/')) probed.push(path);
+          } catch { /* */ }
+          return real(input, init);
+        };
+        window.__hgMe = null;
+        await loadMe();
+        window.fetch = real;
+        t.metric('meProbed', probed.includes('/v1/users/me') ? 1 : 0);
+        t.metric('v1DuringSkipLoad', probed.length);
+        if (probed.length) for (const p of probed) t.problem('bug', `signed-out loadMe called ${p}`);
+        else t.event('session-probe-skipped');
+        // Labels centred in their buttons, and the "Look around first" link on the text's left margin.
+        const btns = [...L.querySelectorAll('.ld-hero .ld-cta button, .ld-nav .ld-signin')].filter((x) => x.offsetWidth);
+        const off = btns.map((x) => { const r = document.createRange(); r.selectNodeContents(x); const a = r.getBoundingClientRect(), c = x.getBoundingClientRect(); return Math.abs((a.left + a.right) / 2 - (c.left + c.right) / 2); });
+        t.metric('buttonLabelOffCentrePx', Math.round(Math.max(0, ...off)));
+        const look = L.querySelector('.ld-look'), sub = L.querySelector('.ld-sub');
+        if (look && sub) t.metric('lookLinkOffsetPx', Math.round(Math.abs(look.getBoundingClientRect().left - sub.getBoundingClientRect().left)));
+        // Sign in from the landing opens the sheet (Google completes the rest; playtests can't finish OAuth).
+        const signIn = L.querySelector('.ld-hero .ld-google, .ld-nav .ld-signin, button.ld-google');
+        t.metric('signInReady', signIn ? 1 : 0);
+        if (!signIn) t.problem('bug', 'landing has no Sign in with Google control');
+        else {
+          signIn.click();
+          const dlg = await until(() => document.querySelector('#authDialog')?.open, 4000, 100);
+          t.metric('signInSheet', dlg ? 1 : 0);
+          t.event(dlg ? 'sign-in-opened' : 'sign-in-missing');
+          if (!dlg) t.problem('bug', 'Sign in from the landing did not open the sign-in sheet');
+          else document.querySelector('#authDialog')?.close?.();
+        }
         t.event('welcome-checked');
       }
-      t.finish(state.user ? 'done' : welcome ? 'done' : 'stuck');
+      if (was) { state.user = was; hideLanding(); }
+      t.finish(welcome ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'timeline-resize') {
+      t.scene('Timeline size');
+      hideLanding();
+      // Setup shortcut (named): forget a saved size so the default applies.
+      try { localStorage.removeItem('hg.--tl'); } catch { /* */ }
+      const app = document.querySelector('#app');
+      app.style.removeProperty('--tl');
+      await sleep(80);
+      const pane = document.querySelector('#timelinePane');
+      const grip = pane?.querySelector('.grip-tl');
+      const H = () => Math.round(pane.getBoundingClientRect().height);
+      const wideNow = () => matchMedia('(max-width: 1100px)').matches; // side panels are drawers: no AI pane in the row above
+      // The longest gap between animation frames while the drags run: reported on its own, never as proof of smoothness
+      // (the drag is synthetic: 12 moves 30 ms apart, and a software-rendered browser is slow on any layout).
+      let gapWorst = 0, gapLast = performance.now(), gapOn = true;
+      const gapLoop = (n) => { gapWorst = Math.max(gapWorst, n - gapLast); gapLast = n; if (gapOn) requestAnimationFrame(gapLoop); };
+      requestAnimationFrame(gapLoop);
+      const drag = async (dy) => {
+        const r = grip.getBoundingClientRect();
+        const x = r.left + r.width / 2, y0 = r.top + r.height / 2;
+        const ev = (type, y) => (type === 'pointerdown' ? grip : window).dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button: 0, pointerId: 7, pointerType: 'touch', bubbles: true, cancelable: true }));
+        ev('pointerdown', y0);
+        for (let i = 1; i <= 12; i++) { ev('pointermove', y0 + (dy * i) / 12); await sleep(30); }
+        ev('pointerup', y0 + dy);
+        await sleep(80);
+      };
+      if (!grip) { t.problem('bug', 'the timeline has no drag handle on its top edge'); t.finish('stuck'); return; }
+      t.metric('viewportH', window.innerHeight); t.metric('defaultTimelinePx', H()); t.metric('areaAbovePx', window.innerHeight - H());
+      if (window.innerHeight >= 700 && window.innerHeight - H() < 440) t.problem('bug', 'the default timeline leaves under ~450px above it');
+      const h0 = H();
+      await drag(-120);
+      const h1 = H();
+      t.metric('afterDragUpPx', h1); t.event(h1 > h0 + 60 ? 'timeline-taller' : 'timeline-did-not-grow');
+      if (h1 <= h0 + 60) t.problem('bug', 'dragging the timeline edge up did not make it taller');
+      await drag(2000 * -1);
+      const hMax = H();
+      t.metric('maxTimelinePx', hMax);
+      if (hMax > window.innerHeight * 0.7 + 2) t.problem('bug', 'the timeline grew past 70% of the window');
+      // At its tallest the panes above are at their shortest: the AI's heading and its box must still be whole in the pane.
+      {
+        const right = document.querySelector('#rightPane'), inside = (el) => { if (!el || !right) return false; const r = el.getBoundingClientRect(), q = right.getBoundingClientRect(); return r.height > 1 && r.top >= q.top - 1 && r.bottom <= q.bottom + 1; };
+        const ok = !wideNow() && inside(document.querySelector('.ai-head')) && inside(document.querySelector('#aiForm'));
+        t.metric('paneAtMaxPx', Math.round(right?.getBoundingClientRect().height ?? 0));
+        if (!wideNow()) { t.metric('aiWholeAtMaxTimeline', ok ? 1 : 0); if (!ok) t.problem('bug', 'with the timeline at its tallest the AI panel clips its heading or its box'); else t.event('ai-panel-whole-at-max'); }
+      }
+      // And the stage's own text (its start box) stays inside the stage, with nothing over the transport or the tools.
+      {
+        const stage = document.querySelector('#stage'), empty = document.querySelector('#stageEmpty');
+        if (stage && empty && !empty.hidden && getComputedStyle(empty).display !== 'none') {
+          const q = stage.getBoundingClientRect();
+          const kids = [...empty.querySelectorAll('p, button')].filter((el) => el.getClientRects().length && getComputedStyle(el).display !== 'none');
+          const out = kids.filter((el) => { const r = el.getBoundingClientRect(); return r.top < q.top - 1 || r.bottom > q.bottom + 1 || r.left < q.left - 1 || r.right > q.right + 1; });
+          t.metric('stageTextOutsideAtMax', out.length);
+          if (out.length) t.problem('bug', 'with the timeline at its tallest the stage text is cut off or overflows the stage'); else t.event('stage-text-whole-at-max');
+        }
+      }
+      await drag(3000);
+      const hMin = H();
+      t.metric('minTimelinePx', hMin);
+      await drag(-150);
+      gapOn = false;
+      t.metric('dragWorstFrameGapMs', Math.round(gapWorst));
+      t.note(`Longest frame gap during the synthetic drags: ${Math.round(gapWorst)} ms (reported separately; not proof of smoothness)`);
+      let saved = null; try { saved = localStorage.getItem('hg.--tl'); } catch { /* */ }
+      t.metric('savedPx', Number(saved) || 0);
+      if (!saved) t.problem('bug', 'the timeline size is not kept in this browser');
+      else {
+        // A reload reads this value back into --tl (gen.js, sizing the areas), so it must be what the screen shows.
+        const same = Math.abs(Number(saved) - H()) <= 1;
+        t.metric('keptMatchesShownPx', same ? 1 : 0);
+        // The bot can't reload the page it runs in, so the page is loaded a second time: a same-origin frame the size of the
+        // window runs gen.js from the top against the same localStorage, which is what a reload does. Its timeline's height
+        // is read once it has laid out. (Not the same tab, but the real restore code and CSS, not a copy of them.)
+        const frame = document.createElement('iframe');
+        frame.setAttribute('aria-hidden', 'true'); frame.tabIndex = -1;
+        frame.style.cssText = `position:fixed;left:0;top:0;width:${window.innerWidth}px;height:${window.innerHeight}px;border:0;opacity:0;pointer-events:none;z-index:-1`;
+        frame.src = location.pathname;
+        document.body.append(frame);
+        const shownAfter = async () => {
+          await until(() => { try { return !!frame.contentDocument?.querySelector('#timelinePane .grip-tl'); } catch { return false; } }, 15000, 100);
+          await sleep(300);
+          try { return Math.round(frame.contentDocument.querySelector('#timelinePane').getBoundingClientRect().height); } catch { return 0; }
+        };
+        const reloaded = await shownAfter();
+        frame.remove();
+        t.metric('reloadedPx', reloaded);
+        const restoredOk = reloaded > 0 && Math.abs(reloaded - H()) <= 1;
+        t.metric('restoredMatchesShown', restoredOk ? 1 : 0);
+        if (!restoredOk) t.problem('bug', `a fresh load of the page shows the timeline at ${reloaded}px, not the ${H()}px it was dragged to`);
+        else t.event(`timeline-size-after-fresh-load ${reloaded}px (page loaded again in a frame, not a reload of this tab)`);
+        if (same) t.event('timeline-size-kept'); else t.problem('bug', `the kept timeline size (${saved}px) is not the one on screen (${H()}px)`);
+      }
+      const wide = matchMedia('(min-width: 901px) and (max-width: 1100px)').matches;
+      t.metric('drawerWidth', wide ? 1 : 0);
+      const tog = document.querySelector('#drawerLeft');
+      if (wide) {
+        const shown = getComputedStyle(tog).display !== 'none';
+        const panesHidden = getComputedStyle(document.querySelector('#leftPane')).display === 'none';
+        if (!shown || !panesHidden) t.problem('bug', 'under 1100px the side panels should fold behind the Media and AI buttons');
+        click('#drawerLeft'); await sleep(150);
+        const open = getComputedStyle(document.querySelector('#leftPane')).display !== 'none';
+        t.event(open ? 'drawer-opened' : 'drawer-did-not-open');
+        if (!open) t.problem('bug', 'the Media button did not open the side panel');
+        click('#drawerLeft'); await sleep(100);
+      } else t.note('Window is not 901-1100px wide: the drawer check was skipped');
+      t.finish('done');
+      return;
+    }
+    if (id === 'panels') {
+      t.scene('Side panels');
+      hideLanding();
+      // Setup shortcut (named): clear a saved tall timeline so the default (≤216px / 30dvh) applies, leaving ~450px for the panes.
+      try {
+        localStorage.removeItem('hg.--tl');
+        localStorage.removeItem('hg.tl-small');
+      } catch { /* */ }
+      const app = document.querySelector('#app');
+      app?.classList.remove('tl-small', 'no-left', 'no-right');
+      app?.style.removeProperty('--tl');
+      app?.style.removeProperty('--tl-now');
+      await sleep(80);
+      if (!activeScene()) {
+        made = await newScene('video', { title: `Playtest panels ${new Date().toISOString().slice(0, 16)}` });
+        if (!await until(() => activeScene()?.id === made?.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      }
+      click('#paneTabs [data-pane="media"]');
+      await sleep(200);
+      const H = () => window.innerHeight;
+      const W = () => window.innerWidth;
+      t.metric('viewportW', W());
+      t.metric('viewportH', H());
+      const fullyIn = (el, within) => {
+        if (!el || el.hidden || el.closest('[hidden]')) return false;
+        const r = el.getBoundingClientRect();
+        const b = (within || document.documentElement).getBoundingClientRect?.() ?? { top: 0, left: 0, right: W(), bottom: H() };
+        const box = within ? b : { top: 0, left: 0, right: W(), bottom: H() };
+        return r.width > 1 && r.height > 1 && r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1;
+      };
+      const overlap = (a, b) => {
+        const r = a.getBoundingClientRect(), q = b.getBoundingClientRect();
+        return r.left < q.right - 1 && r.right > q.left + 1 && r.top < q.bottom - 1 && r.bottom > q.top + 1;
+      };
+      const right = document.querySelector('#rightPane');
+      const input = document.querySelector('#aiInput');
+      const form = document.querySelector('#aiForm');
+      const promptOk = fullyIn(input, right) && fullyIn(form, right);
+      t.metric('promptFullyVisible', promptOk ? 1 : 0);
+      t.metric('paneAbovePx', Math.round(right?.getBoundingClientRect().height ?? 0));
+      t.metric('timelinePx', Math.round(document.querySelector('#timelinePane')?.getBoundingClientRect().height ?? 0));
+      if (!promptOk) t.problem('bug', 'AI prompt box is not fully visible in the AI panel');
+      else t.event('prompt-visible');
+      // Signed-out: Sign in above chips, no overlap, both fully on screen in the pane.
+      const me = state.user;
+      state.user = null;
+      // Setup shortcut (named): mark "looked around" so ready does not cover the editor with the landing.
+      try { sessionStorage.setItem('hg.landing.looked', '1'); } catch { /* */ }
+      hideLanding();
+      bus.emit('ready');
+      await sleep(150);
+      const gate = document.querySelector('#aiGate');
+      const suggest = document.querySelector('#aiSuggest');
+      const signBtn = gate?.querySelector('button');
+      const chips = [...(suggest?.querySelectorAll('.chip') ?? [])];
+      const gateShown = gate && !gate.hidden && signBtn;
+      t.metric('gateShown', gateShown ? 1 : 0);
+      const signOk = gateShown && fullyIn(signBtn, right);
+      t.metric('signInFullyVisible', signOk ? 1 : 0);
+      if (!signOk) t.problem('bug', 'Sign in button is not fully visible in the AI panel');
+      let hit = 0;
+      for (const c of chips) if (signBtn && overlap(signBtn, c)) hit++;
+      t.metric('signInChipOverlap', hit);
+      if (hit) t.problem('bug', `Sign in overlaps ${hit} suggestion chip(s)`);
+      else t.event('sign-in-above-chips');
+      const chipCut = chips.filter((c) => {
+        const r = c.getBoundingClientRect();
+        const b = suggest.getBoundingClientRect();
+        return r.height > 1 && (r.top < b.top - 1 || r.bottom > b.bottom + 1);
+      }).length;
+      const chipScroll = suggest && suggest.scrollHeight > suggest.clientHeight + 1;
+      t.metric('chipsCutWithoutScroll', chipCut && !chipScroll ? chipCut : 0);
+      t.metric('chipListScrolls', chipScroll ? 1 : 0);
+      if (chipCut && !chipScroll) t.problem('bug', `${chipCut} suggestion chip(s) are cut off and the chip list does not scroll`);
+      else t.event('chips-wrap-or-scroll');
+      const promptOut = fullyIn(input, right);
+      t.metric('promptFullyVisibleSignedOut', promptOut ? 1 : 0);
+      if (!promptOut) t.problem('bug', 'AI prompt box is not fully visible when signed out');
+      state.user = me;
+      bus.emit('ready');
+      await sleep(100);
+      // Media: the grid scrolls inside the pane; the drop hint stays fully visible (pinned under the grid).
+      const media = document.querySelector('#pane-media');
+      const grid = document.querySelector('#mediaGrid');
+      const hint = media?.querySelector('.drop-hint');
+      const mediaScroll = grid && (getComputedStyle(grid).overflowY === 'auto' || getComputedStyle(grid).overflowY === 'scroll');
+      t.metric('mediaGridScrollY', mediaScroll ? 1 : 0);
+      // Force a tall list so scroll is observable even on an empty library.
+      const filler = [];
+      if (grid) {
+        for (let i = 0; i < 24; i++) {
+          const d = document.createElement('div');
+          d.className = 'tile';
+          d.dataset.playtestFiller = '1';
+          d.style.minHeight = '72px';
+          grid.appendChild(d);
+          filler.push(d);
+        }
+      }
+      await sleep(50);
+      const canScroll = grid && grid.scrollHeight > grid.clientHeight + 2;
+      t.metric('mediaListScrolls', canScroll ? 1 : 0);
+      if (canScroll) {
+        grid.scrollTop = grid.scrollHeight;
+        await sleep(40);
+        t.metric('mediaScrolledPx', Math.round(grid.scrollTop));
+        grid.scrollTop = 0;
+        t.event('media-scrolls');
+      } else t.problem('bug', 'Media tile list does not scroll inside its panel');
+      const hintOk = hint && fullyIn(hint, media);
+      t.metric('mediaHintFullyVisible', hintOk ? 1 : 0);
+      if (!hintOk) t.problem('bug', 'Media drop hint is cut off');
+      for (const d of filler) d.remove();
+      const ok = promptOk && signOk && !hit && promptOut && canScroll && hintOk && !(chipCut && !chipScroll);
+      t.finish(ok ? 'done' : 'stuck');
       return;
     }
     if (id.startsWith('ai-')) {
@@ -270,37 +621,69 @@ installPlaytest({
       const titles = () => (P.doc?.clips ?? []).filter((c) => c.kind === 'text').length;
       const mockOff = () => { t.note('The AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in session: nothing to play'); t.event('mock-off'); t.finish('done'); };
       const HELLO = { match: 'says Hello', cost: 0.01, json: { say: 'Added a title that says Hello.', ops: [TITLE_OP('Hello')] } };
+      // Three text adds in one turn: the undo label is "AI added 3 clips" and one Ctrl+Z reverses all three.
+      const THREE = {
+        match: 'three titles',
+        cost: 0.01,
+        json: { say: 'Added three titles.', ops: [TITLE_OP('One'), TITLE_OP('Two'), TITLE_OP('Three')] },
+      };
       if (id === 'ai-edit' || id === 'ai-undo') {
-        if (!await mockAi([HELLO])) return mockOff();
-        if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
-        const before = { clips: clips(), titles: titles(), credits: credits() };
-        await typeAi('add a title that says Hello');
+        if (id === 'ai-edit') {
+          if (!await mockAi([HELLO])) return mockOff();
+          if (!await aiScene('Playtest AI')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+          const before = { clips: clips(), titles: titles(), credits: credits() };
+          await typeAi('add a title that says Hello');
+          t.event('asked');
+          const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
+          const added = await until(() => titles() > before.titles, 5000, 100);
+          t.metric('clipsAdded', clips() - before.clips);
+          t.event(added ? 'title-added' : 'no-title');
+          const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
+          t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
+          if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
+          const paid = await until(() => credits() < before.credits, 8000, 150);
+          t.metric('creditsDelta', before.credits - credits());
+          t.event(paid ? 'credits-dropped' : 'credits-unchanged');
+          if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
+          t.finish(reply && added && paid ? 'done' : 'stuck');
+          return;
+        }
+        if (!await mockAi([THREE])) return mockOff();
+        if (!await aiScene('Playtest AI undo')) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+        const before = { clips: clips(), titles: titles() };
+        await typeAi('add three titles please');
         t.event('asked');
-        const reply = await until(() => /Added a title that says Hello/.test(document.querySelector('#aiMessages')?.textContent ?? ''), 20000, 100);
-        const added = await until(() => titles() > before.titles, 5000, 100);
+        const added = await until(() => titles() >= before.titles + 3, 20000, 100);
         t.metric('clipsAdded', clips() - before.clips);
-        t.event(added ? 'title-added' : 'no-title');
-        const ops = document.querySelector('#aiMessages .msg-ops')?.textContent ?? '';
-        t.metric('replyListsIt', reply && /✓/.test(ops) && /text|title|Hello/i.test(ops) ? 1 : 0);
-        if (reply && !/✓/.test(ops)) t.problem('bug', `the reply lists no change: "${ops}"`);
-        const paid = await until(() => credits() < before.credits, 8000, 150);
-        t.metric('creditsDelta', before.credits - credits());
-        t.event(paid ? 'credits-dropped' : 'credits-unchanged');
-        if (!paid) t.problem('bug', 'the AI turn did not change the credits shown');
-        if (id === 'ai-edit') { t.finish(reply && added && paid ? 'done' : 'stuck'); return; }
-        // Undo this: a click on the reply's own button, then Ctrl+Z.
-        const undo = [...document.querySelectorAll('#aiMessages button')].find((b) => /Undo this/.test(b.textContent));
-        t.metric('undoOffered', undo ? 1 : 0);
-        if (!undo || !added) { t.finish('stuck'); return; }
-        undo.click();
-        const gone = await until(() => titles() === before.titles, 5000, 100);
-        t.metric('undoRemoved', gone ? 1 : 0);
-        t.event(gone ? 'undone' : 'undo-failed');
+        t.event(added ? 'three-added' : 'no-titles');
+        if (!added) { t.finish('stuck'); return; }
+        // Toast after the AI edit offers Undo in one tap (criteria 3).
+        const toastEl = () => { const el = document.querySelector('#toast'); return el && !el.hidden ? el : null; };
+        const toastOk = await until(() => {
+          const el = toastEl();
+          if (!el) return false;
+          const words = el.textContent ?? '';
+          const btn = [...el.querySelectorAll('button')].find((b) => /^Undo$/i.test(b.textContent.trim()));
+          return /AI added 3 clips/i.test(words) && btn ? btn : false;
+        }, 5000, 100);
+        t.metric('toastUndo', toastOk ? 1 : 0);
+        t.event(toastOk ? 'toast-undo' : 'no-toast-undo');
+        if (!toastOk) t.problem('bug', `no Undo toast after the AI edit: "${toastEl()?.textContent ?? ''}"`);
+        const tip = document.querySelector('#undoBtn')?.title ?? '';
+        t.metric('undoLabelled', /Undo:\s*AI added 3 clips/i.test(tip) ? 1 : 0);
+        t.event(/Undo:\s*AI added 3 clips/i.test(tip) ? 'undo-labelled' : 'undo-unlabelled');
+        // One Ctrl+Z puts the timeline back exactly (criteria 1); the bar's Undo is the same path.
         press('z', { ctrlKey: true });
-        const back = await until(() => titles() > before.titles, 5000, 100);
-        t.metric('undoRestored', back ? 1 : 0);
-        t.event(back ? 'ctrl-z-restored' : 'ctrl-z-failed');
-        t.finish(gone && back ? 'done' : 'stuck');
+        const gone = await until(() => titles() === before.titles && clips() === before.clips, 5000, 100);
+        t.metric('undoRemoved', gone ? 1 : 0);
+        t.event(gone ? 'ctrl-z-undone' : 'ctrl-z-failed');
+        if (!gone) { t.finish('stuck'); return; }
+        // Redo brings the AI change back (criteria 2).
+        press('z', { ctrlKey: true, shiftKey: true });
+        const back = await until(() => titles() >= before.titles + 3, 5000, 100);
+        t.metric('redoRestored', back ? 1 : 0);
+        t.event(back ? 'redo-restored' : 'redo-failed');
+        t.finish(toastOk && gone && back ? 'done' : 'stuck');
         return;
       }
       if (id === 'ai-proposal') {
@@ -1129,6 +1512,584 @@ installPlaytest({
       t.finish(failed ? 'done' : 'stuck');
       return;
     }
+    if (id === 'no-lost-work') {
+      t.scene('No lost work');
+      await until(() => activeScene(), 10000);
+      if (!state.user) { t.problem('bug', 'no-lost-work failed at "open editor": still on the landing page, the test session did not sign in'); t.event('step-failed', 'open editor'); t.finish('stuck'); return; }
+      // Setup shortcut (named): a fresh video scene. Every edit after it is a tap on the timeline's own buttons, so it plays the same on a phone.
+      made = await newScene('video', { title: `Playtest no-lost-work ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const failed = [];
+      const fail = (step, why) => { failed.push(step); t.problem('bug', `no-lost-work failed at "${step}": ${why}`); t.event('step-failed', step); };
+      const badge = () => document.querySelector('#saveState');
+      const badgeText = () => badge()?.textContent ?? '';
+      const phone = window.innerWidth <= 900;
+      t.metric('viewportW', window.innerWidth); t.metric('touch', phone ? 1 : 0);
+      /** A real tap (pointer down and up, touch type) on a control; falls back to nothing: the control must be there. */
+      const tap = async (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+        const o = { pointerId: 7, pointerType: phone ? 'touch' : 'mouse', bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y };
+        el.dispatchEvent(new PointerEvent('pointerdown', o));
+        el.dispatchEvent(new PointerEvent('pointerup', o));
+        el.click();
+        await sleep(60);
+        return true;
+      };
+      const texts = () => (P.doc?.clips ?? []).filter((c) => c.kind === 'text').map((c) => c.id);
+      const setOnline = (on) => { Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => on }); window.dispatchEvent(new Event(on ? 'online' : 'offline')); };
+      // Step 1: an edit made online. The badge says Saving, then Saved with the time.
+      if (!await tap(document.querySelector('#textBtn'))) { fail('edit 1: tap Add text', 'the timeline has no Add text button on screen'); t.finish('stuck'); return; }
+      const edit1 = texts();
+      if (edit1.length !== 1) { fail('edit 1: tap Add text', `expected 1 text clip, found ${edit1.length}`); t.finish('stuck'); return; }
+      const sawSaving = await until(() => /Saving/.test(badgeText()), 3000, 20);
+      t.metric('badgeSaving', sawSaving ? 1 : 0); t.event(sawSaving ? 'badge-saving' : 'badge-saving-missing', badgeText());
+      if (sawSaving) await sleep(500); // the screenshot at this event shows the Saving badge
+      if (!sawSaving) fail('badge: Saving', `after an edit the badge says "${badgeText()}"`);
+      const saved = await until(() => /^Saved \d/.test(badgeText()) && !P.dirty, 15000, 50);
+      t.metric('badgeSaved', saved ? 1 : 0); t.event(saved ? 'badge-saved' : 'badge-saved-missing', badgeText());
+      if (saved) await sleep(500);
+      if (!saved) fail('badge: Saved', `the badge says "${badgeText()}" 15 s after the edit`);
+      // Step 2: go offline, edit again. The badge says Offline and the edit is kept in the journal.
+      setOnline(false);
+      seek(Math.min(P.playhead + 1.5, 60));
+      if (!await tap(document.querySelector('#textBtn'))) fail('edit 2: tap Add text', 'the Add text button is not on screen');
+      const both = texts();
+      const edit2 = both.filter((x) => !edit1.includes(x));
+      if (edit2.length !== 1) fail('edit 2 (offline): tap Add text', `expected 1 new text clip, found ${edit2.length}`);
+      const off = await until(() => /Offline/.test(badgeText()), 5000, 50);
+      t.metric('badgeOffline', off ? 1 : 0); t.event(off ? 'badge-offline' : 'badge-offline-missing', badgeText());
+      if (off) await sleep(500);
+      if (!off) fail('badge: Offline', `with the network off the badge says "${badgeText()}"`);
+      const br = badge()?.getBoundingClientRect();
+      const showing = !!br && br.width > 20 && br.height > 10 && br.left >= 0 && br.right <= window.innerWidth;
+      t.metric('badgeVisible', showing ? 1 : 0);
+      if (!showing) fail('badge: visible', `the badge is not fully on screen at ${window.innerWidth}px (${br ? `${Math.round(br.left)}-${Math.round(br.right)}` : 'absent'})`);
+      await sleep(400);
+      const kept = (await journal.pending(P.id)).some((o) => edit2.every((id2) => o.doc.clips.some((c) => c.id === id2)));
+      t.metric('journalHasOfflineEdit', kept ? 1 : 0);
+      if (!kept) fail('edit 2 kept offline', 'the offline edit is not in the local journal');
+      // Step 3: reload. The page can't be reloaded under the bot, so (a named shortcut, as in savebadge) the server's older copy
+      // is taken again as on a fresh load: the offline edit must come back from the journal, the earlier one from the server.
+      const stale = await api(`/v1/editor/projects/${P.id}`);
+      t.metric('serverHasOfflineEdit', (stale?.doc?.clips ?? []).some((c) => edit2.includes(c.id)) ? 1 : 0);
+      forgetRecovered(P.id);
+      take(stale);
+      const back = await until(() => { const now = texts(); return edit1.every((x) => now.includes(x)) && edit2.every((x) => now.includes(x)); }, 4000, 50);
+      t.metric('bothEditsAfterReload', back ? 1 : 0); t.event(back ? 'both-edits-after-reload' : 'edit-lost-on-reload');
+      if (!back) fail('reload: both edits present', `after the reload the timeline has ${texts().length} text clip(s); wanted the one made online and the one made offline`);
+      setOnline(true);
+      const resaved = await until(() => /^Saved \d/.test(badgeText()) && !P.dirty, 15000, 50);
+      t.metric('savedAfterReconnect', resaved ? 1 : 0); t.event(resaved ? 'badge-saved-after-reconnect' : 'badge-saved-after-reconnect-missing', badgeText());
+      if (!resaved) fail('badge: Saved after going online', `the badge says "${badgeText()}"`);
+      // Step 4: an AI op, undone and redone with taps only (a phone has no keyboard; its bar hides Undo and Redo, so the toast and the search sheet carry them).
+      const THREE_AI = { match: 'three titles', cost: 0.01, json: { say: 'Added three titles.', ops: [TITLE_OP('One'), TITLE_OP('Two'), TITLE_OP('Three')] } };
+      if (!await mockAi([THREE_AI])) { fail('AI op', 'the AI mock is off on this Gen (HAWKESGEN_AI_MOCK) or this is not a test sign-in: no AI op to undo'); t.finish('stuck'); return; }
+      if (phone) { await tap(document.querySelector('#mobileTabs [data-m="ai"]')); await sleep(300); }
+      const n0 = texts().length;
+      await typeAi('add three titles please');
+      t.event('asked-ai');
+      const added = await until(() => texts().length >= n0 + 3, 20000, 100);
+      if (!added) { fail('AI op: add three titles', `the AI's answer did not add titles (${texts().length - n0} of 3)`); t.finish('stuck'); return; }
+      t.event('ai-op-applied');
+      const viaPalette = async (label) => {
+        await tap(document.querySelector('#paletteBtn'));
+        const row = await until(() => withText(document, '.pal-item', new RegExp(`^${label}`)), 3000, 50);
+        const el = withText(document, '.pal-item', new RegExp(`^${label}`));
+        if (!row || !el) return false;
+        await tap(el);
+        return true;
+      };
+      const btnUsable = (sel) => { const b = document.querySelector(sel); return b && !b.disabled && b.getBoundingClientRect().width > 0 && getComputedStyle(b).display !== 'none'; };
+      const toastUndo = [...document.querySelectorAll('#toast button')].find((b) => /^Undo$/i.test(b.textContent.trim()));
+      let undone = false;
+      if (toastUndo) undone = await tap(toastUndo) && await until(() => texts().length === n0, 4000, 100);
+      if (!undone && btnUsable('#undoBtn')) undone = await tap(document.querySelector('#undoBtn')) && await until(() => texts().length === n0, 4000, 100);
+      if (!undone) undone = await viaPalette('Undo') && await until(() => texts().length === n0, 4000, 100);
+      t.metric('aiOpUndone', undone ? 1 : 0); t.event(undone ? 'ai-op-undone' : 'ai-op-undo-failed');
+      if (!undone) fail('undo the AI op', `${texts().length - n0} of the AI's 3 titles are still there after Undo`);
+      let redone = false;
+      if (btnUsable('#redoBtn')) redone = await tap(document.querySelector('#redoBtn')) && await until(() => texts().length >= n0 + 3, 4000, 100);
+      if (!redone) redone = await viaPalette('Redo') && await until(() => texts().length >= n0 + 3, 4000, 100);
+      t.metric('aiOpRedone', redone ? 1 : 0); t.event(redone ? 'ai-op-redone' : 'ai-op-redo-failed');
+      if (!redone) fail('redo the AI op', `Redo did not bring the 3 titles back (${texts().length - n0} of 3)`);
+      t.metric('failedSteps', failed.length);
+      t.note(failed.length ? `FAIL: ${failed.join('; ')}` : 'PASS: both edits survived, badges Saving, Saved and Offline shown, AI op undone and redone');
+      t.finish(failed.length ? 'stuck' : 'done');
+      return;
+    }
+    if (id === 'editor-fit') {
+      t.scene('Editor fit');
+      hideLanding();
+      // Setup shortcut (named): clear a saved timeline size, so the default layout is what is measured.
+      try { localStorage.removeItem('hg.--tl'); localStorage.removeItem('hg.tl-small'); localStorage.removeItem('hg.--tlm'); sessionStorage.setItem('hg.landing.looked', '1'); } catch { /* */ }
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest editor-fit ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      // The new scene has its tracks; give them a clip so the rows have something to draw, and let it save so the frames below load it.
+      addClip({ track: mainTrack()?.id, kind: 'fill', color: '#203a5c', start: 0, seconds: 4, history: false });
+      await until(() => /^Saved \d/.test(document.querySelector('#saveState')?.textContent ?? '') && !P.dirty, 15000, 100);
+      const failed = [];
+      const name = (el) => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/)[0] : ''}`;
+      /** Measures one editor window (a document at a size). Every fault names the size and the control. */
+      const measure = async (win, doc, label) => {
+        const vw = win.innerWidth, vh = win.innerHeight;
+        const probs = [];
+        const $ = (sel) => doc.querySelector(sel);
+        const shown = (el) => Boolean(el) && !el.closest('[hidden]') && el.checkVisibility?.({ checkVisibilityCSS: true }) !== false && win.getComputedStyle(el).display !== 'none';
+        const box = (el) => el.getBoundingClientRect();
+        const rects = [];
+        /** el must be on screen, fully inside the window (and inside `within`), uncovered at its centre. */
+        const need = (what, el, { within, allowPartial = false, overlaps = true } = {}) => {
+          if (!shown(el) || box(el).width < 1 || box(el).height < 1) { probs.push(`${label}: ${what} is not on screen`); return; }
+          const r = box(el);
+          const cut = [];
+          if (r.left < -1) cut.push(`${Math.round(-r.left)}px past the left edge`);
+          if (r.top < -1) cut.push(`${Math.round(-r.top)}px past the top`);
+          if (r.right > vw + 1) cut.push(`${Math.round(r.right - vw)}px past the right edge`);
+          if (r.bottom > vh + 1) cut.push(`${Math.round(r.bottom - vh)}px past the bottom`);
+          if (within && shown(within)) { const w = box(within); if (r.left < w.left - 1 || r.right > w.right + 1 || r.top < w.top - 1 || r.bottom > w.bottom + 1) cut.push(`outside its panel (${Math.round(r.left)},${Math.round(r.top)}-${Math.round(r.right)},${Math.round(r.bottom)} in ${Math.round(w.left)},${Math.round(w.top)}-${Math.round(w.right)},${Math.round(w.bottom)})`); }
+          if (cut.length && !allowPartial) probs.push(`${label}: ${what} is cut off: ${cut.join(', ')}`);
+          if (!cut.length) {
+            const top = doc.elementFromPoint(Math.min(vw - 1, Math.max(0, r.left + r.width / 2)), Math.min(vh - 1, Math.max(0, r.top + r.height / 2)));
+            if (top && !el.contains(top) && !top.contains(el) && !top.closest('#toast')) probs.push(`${label}: ${what} is covered by ${name(top)}`);
+          }
+          if (overlaps) rects.push({ what, r });
+        };
+        const overlapCheck = () => {
+          for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+            const a = rects[i].r, b = rects[j].r;
+            if (a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1) probs.push(`${label}: ${rects[i].what} overlaps ${rects[j].what}`);
+          }
+          rects.length = 0;
+        };
+        const click2 = async (sel) => { const b = $(sel); if (b) { b.click(); await sleep(350); } return Boolean(b); };
+        const app = $('#app');
+        const phone = vw <= 900, drawer = vw > 900 && vw <= 1100;
+        await sleep(300);
+        const common = () => {
+          need('the play button (#playBtn)', $('#playBtn'));
+          const tr = $('#tlTracks');
+          need('the timeline tracks (#tlTracks)', tr, { overlaps: true });
+          const firstRow = tr?.querySelector('.tl-track:not(.tl-new)');
+          if (!firstRow) probs.push(`${label}: the timeline tracks have no track row`);
+          else need('the first timeline track row', firstRow, { within: $('#tlScroll'), overlaps: false });
+        };
+        const toggles = () => {
+          if (phone) { for (const b of doc.querySelectorAll('#mobileTabs button')) need(`the panel toggle "${b.textContent.trim()}" (#mobileTabs)`, b); }
+          else if (drawer) { for (const sel of ['#drawerLeft', '#drawerRight']) need(`the panel toggle (${sel})`, $(sel)); }
+          else {
+            for (const sel of ['.grip-left', '.grip-right']) {
+              const g = $(sel);
+              if (!shown(g)) { probs.push(`${label}: the panel toggle edge (${sel}) is not on screen`); continue; }
+              const r = box(g), cx = r.left + r.width / 2;
+              if (cx < 0 || cx > vw || r.bottom <= 0 || r.top >= vh) probs.push(`${label}: the panel toggle edge (${sel}) is cut off`);
+            }
+          }
+        };
+        const prompt = () => { const right = $('#rightPane'); need('the prompt box (#aiInput)', $('#aiInput'), { within: right }); need('the prompt form (#aiForm)', $('#aiForm'), { within: right, overlaps: false }); need('the prompt Send button (#aiSend)', $('#aiSend'), { within: right, overlaps: false }); };
+        const mediaHead = () => { const left = $('#leftPane'); need('the Media header: search (.media-top)', $('.media-top'), { within: left }); need('the Media header: filters (#mediaFilter)', $('#mediaFilter'), { within: left }); };
+        if (phone) {
+          for (const [m, fn] of [['edit', null], ['media', mediaHead], ['ai', prompt]]) {
+            await click2(`#mobileTabs button[data-m="${m}"]`);
+            if (m === 'media') await click2('#paneTabs [data-pane="media"]');
+            common(); toggles(); if (fn) fn();
+            if (m === 'edit') { for (const [what, sel] of [['the Media header: search (.media-top)', '.media-top'], ['the prompt box (#aiInput)', '#aiInput']]) if (shown($(sel))) { /* the sheet is closed on Edit: a hidden pane is fine */ } }
+            overlapCheck();
+          }
+          await click2('#mobileTabs button[data-m="edit"]');
+        } else if (drawer) {
+          await click2('#drawerLeft'); await click2('#paneTabs [data-pane="media"]'); common(); toggles(); mediaHead(); overlapCheck();
+          await click2('#drawerRight'); common(); toggles(); prompt(); overlapCheck();
+          app?.classList.remove('drawer-left', 'drawer-right');
+        } else {
+          app?.classList.remove('no-left', 'no-right', 'tl-small');
+          await click2('#paneTabs [data-pane="media"]');
+          common(); toggles(); mediaHead(); prompt(); overlapCheck();
+        }
+        return probs;
+      };
+      // Each size is the real editor in a frame of that size (the page itself can't be resized under the bot; named shortcut), plus the window as it is.
+      const SIZES = [[1280, 720], [1920, 1080], [390, 844], [844, 390]];
+      const listIds = async () => { const r = await api('/v1/scenes').catch(() => null); const l = Array.isArray(r) ? r : r?.items ?? r?.scenes ?? []; return new Set(l.map((x) => x.id)); };
+      const before = await listIds();
+      const results = [];
+      const own = await measure(window, document, `window ${window.innerWidth}x${window.innerHeight}`);
+      results.push([`window ${window.innerWidth}x${window.innerHeight}`, own]);
+      for (const [w, h] of SIZES) {
+        const label = `${w}x${h}`;
+        const fr = document.createElement('iframe');
+        fr.setAttribute('data-playtest', 'editor-fit');
+        Object.assign(fr.style, { position: 'fixed', left: '0', top: '0', width: `${w}px`, height: `${h}px`, border: '0', zIndex: '2147483000', background: '#000' });
+        fr.src = `${location.pathname}?fit=${w}x${h}`;
+        document.body.appendChild(fr);
+        const ready = await until(() => { try { const d = fr.contentDocument; return d && d.querySelector('#playBtn') && d.querySelector('#tlTracks .tl-track') && d.defaultView.innerWidth === w; } catch { return false; } }, 25000, 200);
+        if (!ready) { results.push([label, [`${label}: the editor did not open in a ${label} window (no play button or timeline track)`]]); fr.remove(); continue; }
+        const probs = await measure(fr.contentWindow, fr.contentDocument, label);
+        t.event(`fit-${label}`, probs.length ? `${probs.length} problem(s)` : 'all in view');
+        results.push([label, probs]);
+        await sleep(400); // the screenshot at this event shows this size
+        fr.remove();
+      }
+      for (const [label, probs] of results) {
+        t.metric(`fitProblems_${label.replace(/\s/g, '_')}`, probs.length);
+        for (const p of probs) { failed.push(p); t.problem('bug', `editor-fit: ${p}`); }
+      }
+      // The frames' own boot may have made an "Untitled" first scene for the account: it goes again.
+      try {
+        const now = await api('/v1/scenes');
+        const list = Array.isArray(now) ? now : now?.items ?? now?.scenes ?? [];
+        if (before.size) for (const s of list) if (!before.has(s.id) && s.id !== made?.id && s.title === 'Untitled') extra.push(s.id);
+      } catch { /* the list is only for tidying */ }
+      t.metric('fitProblems', failed.length);
+      t.note(failed.length ? `FAIL: ${failed[0]}${failed.length > 1 ? ` (+${failed.length - 1} more)` : ''}` : 'PASS: every control is in view and clear at 1280x720, 1920x1080, 390x844 and 844x390');
+      t.finish(failed.length ? 'stuck' : 'done');
+      return;
+    }
+    if (id === 'polished-cut') {
+      t.scene('Polished cut');
+      const jobs = watchJobs();
+      await until(() => activeScene(), 10000);
+      if (!state.user) { t.problem('bug', 'polished-cut failed at "open editor": still on the landing page, the test session did not sign in'); t.event('step-failed', 'open editor'); jobs.stop(); t.finish('stuck'); return; }
+      const stamp = Date.now();
+      const tone = (seconds, freq) => {
+        const rate = 22050, n = Math.floor(seconds * rate);
+        const pcm = new Int16Array(n);
+        for (let i = 0; i < n; i++) pcm[i] = Math.sin(2 * Math.PI * freq * i / rate) * 0.45 * 0x7fff;
+        const bytes = pcm.byteLength, out = new DataView(new ArrayBuffer(44 + bytes));
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); out.setUint32(4, 36 + bytes, true); w(8, 'WAVE'); w(12, 'fmt ');
+        out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true);
+        out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, bytes, true);
+        new Uint8Array(out.buffer, 44).set(new Uint8Array(pcm.buffer));
+        return new Blob([out.buffer], { type: 'audio/wav' });
+      };
+      const up = async (blob, title) => {
+        const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(title)}`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'audio/wav', 'X-Filename': encodeURIComponent(title) }, body: blob,
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `upload ${r.status}`);
+        return { id: j.id ?? j.asset?.id, duration: j.meta?.duration ?? j.asset?.meta?.duration };
+      };
+      const failed = [];
+      const fail = (step, why) => { failed.push(step); t.problem('bug', `polished-cut failed at "${step}": ${why}`); t.event('step-failed', step); };
+      // Setup shortcut (named): the fixture's two sounds (music 10 s, a voice line 3 s) are uploaded, then the project is built.
+      let musicA, voiceA;
+      try { musicA = await up(tone(10, 220), `playtest-cut-music-${stamp}.wav`); voiceA = await up(tone(3, 660), `playtest-cut-voice-${stamp}.wav`); }
+      catch (e) { jobs.stop(); fail('fixture sounds', `could not upload them: ${e.message || e}`); t.finish('stuck'); return; }
+      made = await newScene('video', { title: `Playtest polished-cut ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { jobs.stop(); t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const main = mainTrack()?.id;
+      const musicTr = tracks().find((x) => /music/i.test(x.name))?.id;
+      const voiceTr = tracks().find((x) => /voice/i.test(x.name))?.id;
+      if (!main || !musicTr || !voiceTr) { jobs.stop(); fail('fixture tracks', 'a new video has no main, Music or Voice track'); t.finish('stuck'); return; }
+      const A = addClip({ track: main, kind: 'fill', color: '#1a5cff', start: 0, seconds: 4, history: false });
+      const B = addClip({ track: main, kind: 'fill', color: '#ff5c1a', start: 4, seconds: 4, history: false });
+      setClip(A.id, { start: 0 }, { history: false }); setClip(B.id, { start: 4 }, { history: false });
+      setClip(A.id, { transition: 'crossfade', transitionSeconds: 0.8 }, { history: false });
+      const music = addClip({ track: musicTr, asset: musicA.id, kind: 'audio', duration: musicA.duration || 10, start: 0, label: 'music tone', history: false });
+      setClip(music.id, { start: 0, in: 0, out: Math.min(8, musicA.duration || 10), volume: 1 }, { history: false });
+      const VOICE_AT = 2.5, VOICE_LEN = Math.min(3, voiceA.duration || 3);
+      const voice = addClip({ track: voiceTr, asset: voiceA.id, kind: 'audio', duration: voiceA.duration || 3, start: VOICE_AT, label: 'voice line', history: false });
+      setClip(voice.id, { start: VOICE_AT, in: 0, out: VOICE_LEN }, { history: false });
+      // The lower third is added the way a person does it: a tap on its card in Create > Titles.
+      document.querySelector('#paneTabs button[data-pane="generate"]')?.click();
+      await until(() => document.querySelector('.title-card[data-title="lower-third"]'), 8000, 100);
+      seek(0.3);
+      document.querySelector('.title-card[data-title="lower-third"]')?.click();
+      const lt = await until(() => P.doc.clips.find((c) => c.title === 'lower-third'), 3000, 50) ? P.doc.clips.find((c) => c.title === 'lower-third') : null;
+      if (!lt) { jobs.stop(); fail('lower-third title', 'tapping the lower third did not add a title clip'); t.finish('stuck'); return; }
+      setClip(lt.id, { start: 0.3, out: (lt.in ?? 0) + 2.2 }, { history: false });
+      t.event('fixture-ready', `crossfade 0.8 s at 4 s, lower third 0.3-2.5 s, voice ${VOICE_AT}-${VOICE_AT + VOICE_LEN} s over music`);
+      await sleep(2500); // let the clips load: the measure is playback, not first load
+      const len = docLength();
+      // 1 The look: the crossfade blends the two colours, and the lower third leaves ink on the frame.
+      const px = async (time) => { const cv = await frameAt(time), d = cv.getContext('2d').getImageData(Math.floor(cv.width / 2), Math.floor(cv.height / 3), 1, 1).data; return [d[0], d[1], d[2]]; };
+      const near = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 60;
+      const CA = [26, 92, 255], CB = [255, 92, 26];
+      let blend = false;
+      for (const tt of [3.6, 3.8, 4.0, 4.2, 4.4]) { const p = await px(tt); if (!near(p, CA) && !near(p, CB)) blend = true; }
+      t.metric('crossfadeBlends', blend ? 1 : 0); t.event(blend ? 'crossfade-blends' : 'crossfade-missing');
+      if (!blend) fail('crossfade', 'no frame around the join at 4 s is a blend of the two clips');
+      const inkOf = async (time) => { const cv = await frameAt(time), W = cv.width, H = cv.height, d = cv.getContext('2d').getImageData(0, Math.floor(H / 2), W, H - Math.floor(H / 2)).data; return d; };
+      const withT = await inkOf(1.6), without = await inkOf(3.0);
+      let diff = 0;
+      for (let i = 0; i < withT.length; i += 4) if (Math.abs(withT[i] - without[i]) + Math.abs(withT[i + 1] - without[i + 1]) + Math.abs(withT[i + 2] - without[i + 2]) > 30) diff++;
+      t.metric('lowerThirdInkPx', diff); t.event(diff > 200 ? 'lower-third-drawn' : 'lower-third-missing');
+      if (diff <= 200) fail('lower-third title', `the frame at 1.6 s shows no title in the lower half (${diff} px differ from the frame without it)`);
+      // 2 Smoothness: play the whole cut with Space and take the longest gap between frames.
+      resetPlaybackStats();
+      seek(0);
+      press(' ');
+      t.event('play-cut');
+      const through = await until(() => P.playhead >= len - 0.15, Math.max(20000, len * 3000), 100);
+      if (isPlaying()) press(' ');
+      const run = pacingStats();
+      t.metric('longestFrameGapMs', run.worstMs); t.metric('fps', run.fps); t.metric('p5fps', run.p5fps); t.metric('frames', run.frames);
+      t.event(`longest-frame-gap ${run.worstMs}ms`, `fps ${run.fps}, p5 ${run.p5fps}`);
+      t.log(`longest frame gap ${run.worstMs} ms over ${run.frames} frames`);
+      if (!through) fail('play the cut', `the playhead stopped at ${P.playhead.toFixed(1)} s of ${len.toFixed(1)} s`);
+      if (!run.frames) fail('longest frame gap', 'no frames were drawn while playing');
+      else if (run.worstMs > 50) fail('longest frame gap', `${run.worstMs} ms is over the 50 ms limit (${run.fps} fps, p5 ${run.p5fps})`);
+      // 3 The music's level in dB: in a mixdown with the voice left out of the mix (the music bed on its own), under the line and outside it.
+      let underDb = null, outsideDb = null;
+      try {
+        const spans = dialogueSpans(P.doc.clips, trackOf, clipEnd, audible);
+        setClip(voice.id, { muted: true }, { history: false });
+        const buf = await mixdown(0, len, 44100, spans);
+        const rms = (from, dur) => {
+          const a = Math.floor(from * buf.sampleRate), n = Math.floor(dur * buf.sampleRate);
+          let s = 0, c = 0;
+          for (let ch = 0; ch < buf.numberOfChannels; ch++) { const d = buf.getChannelData(ch); for (let i = a; i < Math.min(d.length, a + n); i++) { s += d[i] * d[i]; c++; } }
+          return 10 * Math.log10(s / Math.max(1, c) + 1e-20);
+        };
+        underDb = rms(VOICE_AT + 0.6, 1.5);
+        outsideDb = (rms(0.6, 1) + rms(VOICE_AT + VOICE_LEN + 0.8, 1.2)) / 2;
+      } catch (e) { fail('music level', `the mixdown failed: ${e.message || e}`); }
+      setClip(voice.id, { muted: false }, { history: false });
+      if (underDb !== null) {
+        const r1 = (x) => Math.round(x * 10) / 10;
+        t.metric('musicUnderVoiceDb', r1(underDb)); t.metric('musicOutsideVoiceDb', r1(outsideDb)); t.metric('musicDipDb', r1(outsideDb - underDb));
+        t.event('music-level', `${r1(underDb)} dB under the voice line, ${r1(outsideDb)} dB outside it`);
+        t.log(`music level under the voice line ${r1(underDb)} dB, outside ${r1(outsideDb)} dB`);
+        if (!(underDb < outsideDb)) fail('music level under the voice', `${r1(underDb)} dB under the line is not lower than ${r1(outsideDb)} dB outside it`);
+      }
+      const paid = jobs.sent.filter((x) => !/^(media\.normalize)$/.test(x));
+      jobs.stop();
+      if (paid.length) t.problem('blocker', `polished-cut started a paid job: ${paid.join(', ')}`);
+      t.metric('failedSteps', failed.length);
+      t.note(failed.length ? `FAIL: ${failed.join('; ')}` : `PASS: longest frame gap ${run.worstMs} ms, music ${underDb !== null ? underDb.toFixed(1) : '?'} dB under the voice vs ${outsideDb !== null ? outsideDb.toFixed(1) : '?'} dB outside`);
+      t.finish(failed.length || paid.length ? 'stuck' : 'done');
+      return;
+    }
+    if (id === 'savebadge') {
+      t.scene('Save badge');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest save ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const badge = () => document.querySelector('#saveState');
+      const track = addTrack({ name: 'Save', role: 'any' }).id;
+      addClip({ track, kind: 'fill', color: '#203a5c', start: 0, seconds: 2, history: false });
+      const sawSaving = await until(() => /Saving/.test(badge().textContent), 3000, 20);
+      t.metric('showsSaving', sawSaving ? 1 : 0);
+      const saved = await until(() => /^Saved \d/.test(badge().textContent), 15000, 50);
+      t.metric('showsSaved', saved ? 1 : 0); t.event(saved ? 'badge-saved' : 'badge-not-saved');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      window.dispatchEvent(new Event('offline'));
+      addClip({ track, kind: 'fill', color: '#5c2040', start: 3, seconds: 2, history: false });
+      const off = await until(() => /Offline/.test(badge().textContent), 5000, 50);
+      t.metric('showsOffline', off ? 1 : 0); t.event(off ? 'badge-offline' : 'badge-not-offline');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+      window.dispatchEvent(new Event('online'));
+      const back = await until(() => /^Saved \d/.test(badge().textContent) && !P.dirty, 15000, 50);
+      t.metric('savedAfterReconnect', back ? 1 : 0); t.event(back ? 'badge-saved-after-reconnect' : 'badge-not-saved-after-reconnect');
+      const n = P.doc.clips.length;
+      t.note(`clips before reload: ${n}`);
+      // Reload: a fresh page load takes the server's copy and replays the journal. The page can't be reloaded under the
+      // bot, so this plays that same path (named shortcut): an edit with the network off, under a second, then the
+      // stale server copy is taken again as on load, and the edit must come back and later save.
+      const phone = window.innerWidth <= 900;
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => false });
+      window.dispatchEvent(new Event('offline'));
+      const tEdit = performance.now();
+      addClip({ track, kind: 'fill', color: '#2a5c20', start: 6, seconds: 2, history: false });
+      const mark = P.doc.clips.length;
+      await sleep(400);
+      const kept = (await journal.pending(P.id)).some((o) => o.doc.clips.length === mark);
+      t.metric('journalHasEdit', kept ? 1 : 0);
+      const stale = await api(`/v1/editor/projects/${P.id}`);
+      forgetRecovered(P.id);
+      take(stale);
+      const restored = await until(() => P.doc.clips.length === mark, 3000, 50);
+      t.metric('restoredAfterReload', restored ? 1 : 0); t.metric('reloadMs', Math.round(performance.now() - tEdit));
+      t.event(restored ? 'edit-survived-reload' : 'edit-lost-on-reload');
+      const bw = document.querySelector('#saveState')?.getBoundingClientRect();
+      const showing = !!bw && bw.width > 20 && bw.height > 10 && bw.right <= window.innerWidth && bw.left >= 0 && /Offline|Saving/.test(badge().textContent);
+      t.metric('badgeVisible', showing ? 1 : 0); t.metric('badgeHeight', Math.round(bw?.height ?? 0));
+      t.event(showing ? (phone ? 'badge-visible-on-phone' : 'badge-visible') : 'badge-not-visible');
+      Object.defineProperty(navigator, 'onLine', { configurable: true, get: () => true });
+      window.dispatchEvent(new Event('online'));
+      const final = await until(() => /^Saved \d/.test(badge().textContent) && !P.dirty, 15000, 50);
+      t.metric('savedAfterRestore', final ? 1 : 0);
+      t.finish(sawSaving && saved && off && back && kept && restored && showing && final ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'audio-mix') {
+      t.scene('Audio mix');
+      const jobs = watchJobs();
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): two short tones uploaded as WAV (music 20 s, voice 4 s), then a video scene with Music + Voice.
+      const stamp = Date.now();
+      const tone = (seconds, freq) => {
+        const rate = 22050, n = Math.floor(seconds * rate);
+        const pcm = new Int16Array(n);
+        for (let i = 0; i < n; i++) pcm[i] = Math.sin(2 * Math.PI * freq * i / rate) * 0.45 * 0x7fff;
+        const bytes = pcm.byteLength, out = new DataView(new ArrayBuffer(44 + bytes));
+        const w = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+        w(0, 'RIFF'); out.setUint32(4, 36 + bytes, true); w(8, 'WAVE'); w(12, 'fmt ');
+        out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, rate, true);
+        out.setUint32(28, rate * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); w(36, 'data'); out.setUint32(40, bytes, true);
+        new Uint8Array(out.buffer, 44).set(new Uint8Array(pcm.buffer));
+        return new Blob([out.buffer], { type: 'audio/wav' });
+      };
+      const up = async (blob, name) => {
+        const r = await fetch(`/v1/assets?project=${encodeURIComponent(state.user.project)}&title=${encodeURIComponent(name)}`, {
+          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'audio/wav', 'X-Filename': encodeURIComponent(name) }, body: blob,
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || `upload ${r.status}`);
+        return { id: j.id ?? j.asset?.id, duration: j.meta?.duration ?? j.asset?.meta?.duration };
+      };
+      let musicAsset, voiceAsset;
+      try {
+        musicAsset = await up(tone(20, 220), `playtest-music-${stamp}.wav`);
+        voiceAsset = await up(tone(4, 660), `playtest-voice-${stamp}.wav`);
+      } catch (e) {
+        jobs.stop();
+        t.problem('bug', `could not upload tones: ${e.message || e}`);
+        t.finish('stuck');
+        return;
+      }
+      t.metric('musicUploaded', musicAsset?.id ? 1 : 0);
+      t.metric('voiceUploaded', voiceAsset?.id ? 1 : 0);
+      t.event('tones-uploaded');
+      made = await newScene('video', { title: `Playtest audio-mix ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) {
+        jobs.stop(); t.note('the new scene did not open'); t.finish('stuck'); return;
+      }
+      const musicTr = tracks().find((x) => /music/i.test(x.name))?.id;
+      const voiceTr = tracks().find((x) => /voice/i.test(x.name))?.id;
+      if (!musicTr || !voiceTr) { jobs.stop(); t.problem('bug', 'Music or Voice track missing on a new video'); t.finish('stuck'); return; }
+      const musicDur = musicAsset.duration || 20;
+      const voiceDur = voiceAsset.duration || 4;
+      const music = addClip({ track: musicTr, asset: musicAsset.id, kind: 'audio', duration: musicDur, start: 0, label: 'music tone', history: false });
+      setClip(music.id, { start: 0, in: 0, out: Math.min(20, musicDur), volume: 1 }, { history: false });
+      const voice = addClip({ track: voiceTr, asset: voiceAsset.id, kind: 'audio', duration: voiceDur, start: 8, label: 'voice tone', history: false });
+      setClip(voice.id, { start: 8, in: 0, out: Math.min(4, voiceDur) }, { history: false });
+      await until(() => document.querySelector(`#tlTracks .clip[data-id="${music.id}"]`), 5000, 50);
+      // 1 Waveform on the music clip (peaks cached once per asset).
+      const waveEl = () => document.querySelector(`#tlTracks .clip[data-id="${music.id}"] canvas.clip-wave`);
+      const peaked = await peaks(musicAsset.id);
+      t.metric('peaksCached', peaked?.values?.length ? 1 : 0);
+      const same = await peaks(musicAsset.id);
+      t.metric('peaksOnce', same === peaked ? 1 : 0);
+      const waved = await until(() => {
+        const cv = waveEl();
+        if (!cv || cv.width < 2 || cv.height < 2) return false;
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) return true;
+        return false;
+      }, 8000, 100);
+      t.metric('waveformDrawn', waved ? 1 : 0);
+      t.event(waved ? 'waveform-on-clip' : 'waveform-missing');
+      if (!waved) t.problem('bug', 'audio clip has no drawn waveform on the timeline');
+      // 2 Fade-in handle: drag the top-left fade dot so the start is quiet.
+      const el = document.querySelector(`#tlTracks .clip[data-id="${music.id}"]`);
+      const fade = el?.querySelector('.fade-h.in');
+      t.metric('fadeHandle', fade ? 1 : 0);
+      if (!fade) { jobs.stop(); t.problem('bug', 'no fade-in handle on the music clip'); t.finish('stuck'); return; }
+      // Real pointer press first so audio unlocks and the drag registers.
+      const r = fade.getBoundingClientRect();
+      const x0 = r.left + r.width / 2, y0 = r.top + r.height / 2;
+      const px = () => el.getBoundingClientRect().width / Math.max(0.1, clipLength(music));
+      fade.dispatchEvent(new PointerEvent('pointerdown', { clientX: x0, clientY: y0, button: 0, pointerId: 1, pointerType: 'mouse', bubbles: true, cancelable: true }));
+      for (let i = 1; i <= 10; i++) {
+        window.dispatchEvent(new PointerEvent('pointermove', { clientX: x0 + (1.2 * px() * i) / 10, clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true }));
+        await sleep(30);
+      }
+      window.dispatchEvent(new PointerEvent('pointerup', { clientX: x0 + 1.2 * px(), clientY: y0, pointerId: 1, pointerType: 'mouse', bubbles: true }));
+      await sleep(150);
+      const faded = (P.doc.clips.find((c) => c.id === music.id)?.fadeIn ?? 0) >= 0.8;
+      t.metric('fadeInSet', faded ? 1 : 0);
+      t.event(faded ? 'fade-in-dragged' : 'fade-in-missing');
+      const musicNow = () => P.doc.clips.find((c) => c.id === music.id);
+      const g0 = clipGain(musicNow(), 0.05);
+      const gMid = clipGain(musicNow(), (musicNow()?.fadeIn ?? 1) / 2);
+      const g1 = clipGain(musicNow(), Math.max(1.5, (musicNow()?.fadeIn ?? 1) + 0.2));
+      const fadeSmooth = faded && g0 < gMid && gMid < g1 && g0 < g1 * 0.35 && g1 > 0.7;
+      t.metric('fadeSmooth', fadeSmooth ? 1 : 0);
+      t.event(fadeSmooth ? 'fade-smooth' : `fade-not-smooth g0=${g0.toFixed(3)} g1=${g1.toFixed(3)}`);
+      if (!faded) t.problem('bug', 'dragging the fade handle did not set fadeIn');
+      if (faded && !fadeSmooth) t.problem('bug', 'fade-in gain is not a smooth ramp');
+      // 3 Auto-duck: Voice under Music → ~10 dB in the preview maths and in an offline mixdown loudness readout.
+      const spans = dialogueSpans(P.doc.clips, trackOf, clipEnd);
+      const openG = duckAt(2, spans);
+      const underG = duckAt(10, spans);
+      const afterG = duckAt(14, spans);
+      const duckedDb = -20 * Math.log10(Math.max(1e-9, underG / Math.max(1e-9, openG)));
+      t.metric('duckOpen', Math.round(openG * 1000) / 1000);
+      t.metric('duckUnder', Math.round(underG * 1000) / 1000);
+      t.metric('duckAfter', Math.round(afterG * 1000) / 1000);
+      t.metric('duckDb', Math.round(duckedDb * 10) / 10);
+      const duckOk = Math.abs(openG - 1) < 0.02 && Math.abs(underG - DUCK_TO) < 0.03 && Math.abs(afterG - 1) < 0.05 && duckedDb > 9 && duckedDb < 11;
+      t.metric('autoDuckPreview', duckOk ? 1 : 0);
+      t.event(duckOk ? 'auto-duck-preview' : `auto-duck-preview-bad open=${openG} under=${underG}`);
+      if (!duckOk) t.problem('bug', `preview duck is ${duckedDb.toFixed(1)} dB (want ~10)`);
+      // Export plan (video.compose audio rows): Music ducks under Voice; a muted Voice does not.
+      const plan = composeAudioPlan(P.doc.clips.filter((c) => c.kind === 'audio' && c.asset), trackOf, { lengthOf: clipLength });
+      const musicRow = plan.find((r) => r.duck);
+      const voiceRow = plan.find((r) => r.dialogue);
+      t.metric('exportDuck', musicRow?.duck && Math.abs((musicRow.duckTo ?? 0) - DUCK_TO) < 0.01 ? 1 : 0);
+      t.metric('exportDialogue', voiceRow ? 1 : 0);
+      const mutedPlan = composeAudioPlan(
+        P.doc.clips.filter((c) => c.kind === 'audio' && c.asset).map((c) => (c.id === voice.id ? { ...c, muted: true } : c)),
+        trackOf,
+        { lengthOf: clipLength },
+      );
+      const mutedOk = !mutedPlan.some((r) => r.dialogue) && !mutedPlan.some((r) => r.duck);
+      t.metric('exportMutedNoDuck', mutedOk ? 1 : 0);
+      t.event(musicRow && voiceRow && mutedOk ? 'export-plan-ok' : 'export-plan-bad');
+      if (!(musicRow && voiceRow && mutedOk)) t.problem('bug', 'export audio plan missing duck/dialogue or ducks a muted voice');
+
+      // Offline mix loudness: mute the voice in the mix so RMS is the music bed, but pass the real dialogue spans so ducking still applies.
+      let mixOk = false;
+      try {
+        const duckSpans = dialogueSpans(P.doc.clips, trackOf, clipEnd, audible);
+        setClip(voice.id, { muted: true }, { history: false });
+        const buf = await mixdown(0, 20, 44100, duckSpans);
+        const rms = (from, dur) => {
+          const a = Math.floor(from * buf.sampleRate), n = Math.floor(dur * buf.sampleRate);
+          let s = 0, c = 0;
+          for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+            const d = buf.getChannelData(ch);
+            for (let i = a; i < Math.min(d.length, a + n); i++) { s += d[i] * d[i]; c++; }
+          }
+          return 10 * Math.log10(s / Math.max(1, c) + 1e-20);
+        };
+        const openL = rms(1.5, 0.5);
+        const underL = rms(9.5, 0.5);
+        const afterL = rms(13.5, 0.5);
+        const mixDb = openL - underL;
+        t.metric('mixOpenDb', Math.round(openL * 10) / 10);
+        t.metric('mixUnderDb', Math.round(underL * 10) / 10);
+        t.metric('mixAfterDb', Math.round(afterL * 10) / 10);
+        t.metric('mixDuckDb', Math.round(mixDb * 10) / 10);
+        mixOk = mixDb > 8 && mixDb < 12 && Math.abs(openL - afterL) < 2.5;
+        t.metric('autoDuckMixdown', mixOk ? 1 : 0);
+        t.event(mixOk ? 'auto-duck-mixdown' : `auto-duck-mixdown-bad dip=${mixDb.toFixed(1)}`);
+        if (!mixOk) t.problem('bug', `mixdown duck is ${mixDb.toFixed(1)} dB (want ~10)`);
+        setClip(voice.id, { muted: false }, { history: false });
+      } catch (e) {
+        t.problem('bug', `mixdown failed: ${e.message || e}`);
+        t.metric('autoDuckMixdown', 0);
+        setClip(voice.id, { muted: false }, { history: false });
+      }
+      // Play the full 20 s cut so the footage covers open music → ducked under the line → back up (real Space).
+      seek(0);
+      press(' ');
+      const through = await until(() => P.playhead >= 19.5, 45000, 100);
+      if (isPlaying()) press(' ');
+      t.metric('played20s', through ? 1 : 0);
+      t.event(through ? 'played-20s-cut' : 'play-20s-stalled');
+      if (!through) t.problem('bug', 'the 20-second test cut did not play through');
+      const gpu = jobs.sent.filter((x) => !/^(media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('jobsStarted', jobs.sent.length);
+      if (gpu.length) t.problem('blocker', `audio-mix started a paid job: ${gpu.join(', ')}`);
+      t.finish(waved && faded && fadeSmooth && duckOk && mixOk && musicRow && voiceRow && mutedOk && through && !gpu.length ? 'done' : 'stuck');
+      return;
+    }
     if (id === 'editing') {
       t.scene('Timeline editing');
       await until(() => activeScene(), 10000);
@@ -1205,6 +2166,257 @@ installPlaytest({
       t.event('delete undo/redo');
       press('z', { ctrlKey: true });
       t.finish(snapped && overlay && gone && back ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'titles') {
+      t.scene('Titles');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest titles ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const jobs = watchJobs();
+      // 1 Create > Titles: at least six presets, each with a preview that moves.
+      document.querySelector('#paneTabs button[data-pane="generate"]')?.click();
+      await until(() => document.querySelectorAll('.title-card').length >= 6, 8000, 100);
+      const cards = [...document.querySelectorAll('.title-card')];
+      t.metric('titlePresets', cards.length);
+      t.event(`titles-section ${cards.length} presets`);
+      if (cards.length < 6) t.problem('bug', `the Titles section shows ${cards.length} presets, not 6`);
+      const moving = [];
+      for (const card of cards) {
+        const cv = card.querySelector('canvas');
+        const seen = new Set();
+        for (let i = 0; i < 6; i++) { seen.add(cv.toDataURL().length + ':' + cv.toDataURL().slice(-60)); await sleep(260); }
+        moving.push(seen.size > 1);
+        if (seen.size < 2) t.problem('bug', `the ${card.dataset.title} preview does not animate`);
+      }
+      t.metric('animatedPreviews', moving.filter(Boolean).length);
+      t.event(`previews-animate ${moving.filter(Boolean).length}/${cards.length}`);
+      // Setup shortcut (named): a solid color behind everything for 8 s, so the title's ink is whatever differs from it.
+      const BASE = [58, 110, 165];
+      addClip({ track: mainTrack()?.id, kind: 'fill', color: '#3a6ea5', start: 0, seconds: 8, history: false });
+      seek(0);
+      // 2 A tap on the lower third puts it on the timeline.
+      document.querySelector('.title-card[data-title="lower-third"]')?.click();
+      const clipOf = () => P.doc.clips.find((c) => c.title === 'lower-third');
+      if (!await until(clipOf, 3000, 50)) { t.problem('bug', 'tapping the lower third did not add a title clip'); t.finish('stuck'); return; }
+      const lt = clipOf();
+      setClip(lt.id, { start: 0 }, { history: false });
+      t.event('lower-third-added');
+      const ink = async (time) => {
+        const cv = await frameAt(time), W = cv.width, H = cv.height, d = cv.getContext('2d').getImageData(0, 0, W, H).data;
+        let x0 = W, y0 = H, x1 = -1, y1 = -1, n = 0;
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          if (Math.abs(d[i] - BASE[0]) + Math.abs(d[i + 1] - BASE[1]) + Math.abs(d[i + 2] - BASE[2]) > 30) { n++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        }
+        return { n, x0, y0, x1, y1, W, H };
+      };
+      const run = async (label) => {
+        const L = clipOf().out - clipOf().in;
+        const times = [0.05, 0.2, 0.4, L / 2, L - 0.4, L - 0.2, L - 0.05];
+        const got = [];
+        for (const tt of times) got.push(await ink(tt));
+        const after = await ink(L + 0.3);
+        const rest = got[3], { W, H } = rest;
+        const edge = got.filter((g) => g.n).some((g) => g.x0 < 2 || g.y0 < 2 || g.x1 > g.W - 3 || g.y1 > g.H - 3);
+        const margin = 0.045, bottom = H > W ? 0.1 : 0.045;
+        const safe = rest.n > 0 && rest.x0 >= W * margin && rest.x1 <= W * (1 - margin) && rest.y0 >= H * margin && rest.y1 <= H * (1 - bottom);
+        const grows = got[0].n < got[1].n && got[1].n < got[3].n;
+        const leaves = got[6].n < got[3].n && got[4].n >= got[6].n && after.n === 0;
+        t.metric(`${label}Ink`, rest.n);
+        t.event(`${label}: in ${grows ? 'ok' : 'bad'} out ${leaves ? 'ok' : 'bad'} safe ${safe ? 'ok' : 'bad'} edge ${edge ? 'touched' : 'clear'} box ${rest.x0},${rest.y0}-${rest.x1},${rest.y1} of ${W}x${H}`);
+        if (!grows) t.problem('bug', `the lower third did not animate in at ${label} (ink ${got.map((g) => g.n).join(', ')})`);
+        if (!leaves) t.problem('bug', `the lower third did not animate out and clear at ${label} (ink ${got.map((g) => g.n).join(', ')}, after ${after.n})`);
+        if (edge) t.problem('bug', `the lower third touched the frame edge while animating at ${label}`);
+        if (!safe) t.problem('bug', `the lower third left the safe area at ${label}: ${rest.x0},${rest.y0}-${rest.x1},${rest.y1} of ${W}x${H}`);
+        return grows && leaves && safe && !edge;
+      };
+      const okWide = await run('wide16x9');
+      // Long words wrap inside the safe area.
+      const longName = 'Doctor Alexandra Rivera-Montgomery of the Northern Harbour Authority';
+      setClip(lt.id, { text: longName, text2: 'Chief harbour master and keeper of the western light' }, { history: false });
+      const okLong = await run('wideLongName');
+      setClip(lt.id, { text: 'Alex Rivera', text2: 'Director of photography' }, { history: false });
+      // 9:16: the Tall shape button in the scene's settings (nothing selected).
+      P.selection.clips.clear(); bus.emit('selection');
+      await until(() => document.querySelector('.shape[title^="Tall"]'), 4000, 100);
+      click('.shape[title^="Tall"]');
+      await until(() => P.doc.height > P.doc.width, 3000, 50);
+      t.metric('tallW', P.doc.width); t.metric('tallH', P.doc.height);
+      await sleep(300);
+      const okTall = await run('tall9x16');
+      setClip(lt.id, { text: longName, text2: 'Chief harbour master and keeper of the western light' }, { history: false });
+      const okTallLong = await run('tallLongName');
+      setClip(lt.id, { text: 'Alex Rivera', text2: 'Director of photography' }, { history: false });
+      // 3 Export: a title cut renders in the browser (the same draw as the preview); one moment is compared as ink masks.
+      const L = lt.out - lt.in, probe = L / 2;
+      const before = await ink(probe);
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      let match = false;
+      if (action) {
+        click('#sceneAction');
+        if (await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) {
+          const go = document.querySelector('#exportGo');
+          if (go && !go.disabled) {
+            go.click();
+            t.event('export-pressed');
+            const video = await until(() => document.querySelector('#exportResult video'), 150000, 300) && document.querySelector('#exportResult video');
+            if (video) {
+              await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+              video.pause(); video.currentTime = probe;
+              await new Promise((r) => { const to = setTimeout(r, 6000); video.addEventListener('seeked', () => { clearTimeout(to); r(); }, { once: true }); });
+              const W = before.W, H = before.H, cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+              const g = cv.getContext('2d'); g.drawImage(video, 0, 0, W, H);
+              const d = g.getImageData(0, 0, W, H).data, p0 = g.getImageData(2, 2, 1, 1).data;
+              const prev = (await frameAt(probe)).getContext('2d').getImageData(0, 0, W, H).data, pb = [prev[0], prev[1], prev[2]];
+              let both = 0, either = 0;
+              for (let i = 0; i < W * H; i++) {
+                const j = i * 4;
+                const a = Math.abs(prev[j] - pb[0]) + Math.abs(prev[j + 1] - pb[1]) + Math.abs(prev[j + 2] - pb[2]) > 60;
+                const b = Math.abs(d[j] - p0[0]) + Math.abs(d[j + 1] - p0[1]) + Math.abs(d[j + 2] - p0[2]) > 60;
+                if (a && b) both++; if (a || b) either++;
+              }
+              const iou = either ? both / either : 0;
+              t.metric('exportInkOverlapPct', Math.round(iou * 100));
+              t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+              match = iou > 0.6;
+              t.event(match ? `export-matches-preview ${Math.round(iou * 100)}%` : `export-differs ${Math.round(iou * 100)}%`);
+              if (!match) t.problem('bug', `the exported title differs from the preview (overlap ${Math.round(iou * 100)}%)`);
+            } else t.problem('bug', 'export of a cut with a title gave no file');
+            click('#exportClose');
+          } else { t.note('Export video disabled'); click('#exportClose'); }
+        }
+      }
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('gpuJobsStarted', gpu.length);
+      if (gpu.length) t.problem('blocker', `titles started a GPU job: ${gpu.join(', ')}`);
+      t.finish(cards.length >= 6 && moving.every(Boolean) && okWide && okLong && okTall && okTallLong && match && !gpu.length ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'transitions') {
+      t.scene('Clip transitions');
+      await until(() => activeScene(), 10000);
+      // Setup shortcut (named): a fresh video with two adjacent color clips on the main track (3 s each).
+      made = await newScene('video', { title: `Playtest transitions ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) { t.note('the new scene did not open'); t.finish('stuck'); return; }
+      const track = mainTrack()?.id;
+      const A = addClip({ track, kind: 'fill', color: '#1a5cff', start: 0, seconds: 3, history: false });
+      const B = addClip({ track, kind: 'fill', color: '#ff5c1a', start: 3, seconds: 3, history: false });
+      setClip(A.id, { start: 0 }, { history: false });
+      setClip(B.id, { start: 3 }, { history: false });
+      await until(() => document.querySelector(`.tl-join[data-join="${A.id}"], .tl-xf[data-join="${A.id}"]`), 5000, 50);
+      t.event('join-ready');
+      const clipOf = (c) => P.doc.clips.find((x) => x.id === c.id);
+      const joinBtn = () => document.querySelector(`.tl-join[data-join="${A.id}"]`);
+      const xfEl = () => document.querySelector(`.tl-xf[data-join="${A.id}"]`);
+      /** Real pointer press (touch type so phone criteria count): down, optional moves, up. */
+      const finger = async (el, { dx = 0, dy = 0, steps = 10 } = {}) => {
+        const r = el.getBoundingClientRect();
+        const x0 = r.left + r.width / 2, y0 = r.top + r.height / 2;
+        const opts = { pointerId: 1, pointerType: 'touch', bubbles: true, cancelable: true, button: 0 };
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: x0, clientY: y0 }));
+        for (let i = 1; i <= steps; i++) {
+          window.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x0 + (dx * i) / steps, clientY: y0 + (dy * i) / steps }));
+          await sleep(25);
+        }
+        // Window listeners (drag / tap-to-open) and the element's own pointerup both need the lift.
+        const up = new PointerEvent('pointerup', { ...opts, clientX: x0 + dx, clientY: y0 + dy });
+        window.dispatchEvent(up);
+        if (!dx && !dy) el.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x0, clientY: y0 }));
+        await sleep(120);
+      };
+      // 1 Add a crossfade: tap the + join, pick Crossfade from the menu.
+      const plus = joinBtn();
+      t.metric('joinPlus', plus ? 1 : 0);
+      if (!plus) { t.problem('bug', 'no + join between adjacent main-track clips'); t.finish('stuck'); return; }
+      await finger(plus, { steps: 1 });
+      const menu = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
+      t.metric('typeMenu', menu ? 1 : 0);
+      if (!menu) { t.problem('bug', 'transition type menu did not open'); t.finish('stuck'); return; }
+      menu.click(); // menu items are buttons; the open was a touch pointer on the join
+      const added = await until(() => clipOf(A)?.transition === 'crossfade' && xfEl(), 3000, 50);
+      t.metric('crossfadeAdded', added ? 1 : 0);
+      t.event(added ? 'crossfade-added' : 'crossfade-missing');
+      if (!added) { t.problem('bug', 'tapping Crossfade did not set a transition on the join'); t.finish('stuck'); return; }
+      // 2 Resize by dragging the right edge of the block (about +0.4 s).
+      const before = clipOf(A).transitionSeconds ?? 0.5;
+      const handle = xfEl().querySelector('.tl-xf-h.right');
+      const pxPerSec = () => {
+        const e = document.querySelector(`#tlTracks .clip[data-id="${A.id}"]`);
+        return e ? e.getBoundingClientRect().width / 3 : 60;
+      };
+      await finger(handle || xfEl(), { dx: 0.45 * pxPerSec() });
+      const resized = (clipOf(A).transitionSeconds ?? 0) > before + 0.15;
+      t.metric('resized', resized ? 1 : 0);
+      t.metric('transitionSeconds', clipOf(A).transitionSeconds ?? 0);
+      t.event(resized ? 'transition-resized' : `no-resize was=${before} now=${clipOf(A).transitionSeconds}`);
+      // 3 Change type: tap the block, pick Dip to black.
+      await finger(xfEl(), { steps: 1 });
+      const dip = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Dip to black/i.test(b.textContent)), 3000, 50);
+      if (dip) dip.click();
+      const typed = clipOf(A)?.transition === 'fadeblack';
+      t.metric('typeChanged', typed ? 1 : 0);
+      t.event(typed ? 'type-dip-black' : `type=${clipOf(A)?.transition}`);
+      // Put a crossfade back for the preview and export checks (criterion 1 + 2).
+      await finger(xfEl(), { steps: 1 });
+      const xfItem = await until(() => [...document.querySelectorAll('.menu .menu-item')].find((b) => /Crossfade/i.test(b.textContent)), 3000, 50);
+      if (xfItem) xfItem.click();
+      setClip(A.id, { transition: 'crossfade', transitionSeconds: 0.8 }, { history: false });
+      await until(() => clipOf(A)?.transition === 'crossfade', 2000, 50);
+      // 4 Preview: scrub into the join; transitionAt must report a blend (both alphas mid-range).
+      const join = 3;
+      const sec = clipOf(A).transitionSeconds ?? 0.8;
+      seek(join - sec / 2);
+      await sleep(200);
+      const mid = transitionAt(P.playhead);
+      const blended = Boolean(mid && mid.type === 'crossfade' && mid.sample.aOut > 0.2 && mid.sample.aIn > 0.2);
+      t.metric('previewBlend', blended ? 1 : 0);
+      t.metric('previewAOut', Math.round((mid?.sample.aOut ?? 0) * 100));
+      t.metric('previewAIn', Math.round((mid?.sample.aIn ?? 0) * 100));
+      t.event(blended ? 'preview-crossfade' : 'preview-no-blend');
+      if (!blended) t.problem('bug', 'scrubbing the join did not show a crossfade blend in the preview maths');
+      // 5 Export: browser path (fills) records the timeline; length stays the cut (fills force layered render).
+      //    Also prove the compose plan would shorten by the transition when the cut is plain (ops already tested).
+      const jobs = watchJobs();
+      const action = await until(() => { const b = document.querySelector('#sceneAction'); return b && !b.hidden; }, 5000, 100);
+      if (action) {
+        click('#sceneAction');
+        if (await until(() => document.querySelector('#exportDialog[open]'), 5000, 100)) {
+          t.event(`export-sheet: ${document.querySelector('#exportNote')?.textContent.trim()}`);
+          const go = document.querySelector('#exportGo');
+          if (go && !go.disabled) {
+            const t0 = performance.now();
+            go.click();
+            t.event('export-pressed');
+            const video = await until(() => document.querySelector('#exportResult video'), 120000, 300);
+            t.metric('exportSeconds', Math.round((performance.now() - t0) / 100) / 10);
+            if (video) {
+              await until(() => video.readyState >= 1 && video.duration > 0, 20000, 150);
+              t.metric('fileSeconds', Math.round((video.duration || 0) * 10) / 10);
+              // Layered (fills): duration ≈ timeline length. Compose would be shorter by the transition.
+              const expect = docLength();
+              const close = Math.abs((video.duration || 0) - expect) < 1.5;
+              t.metric('exportMatchesJoin', close ? 1 : 0);
+              t.event(close ? 'export-has-transition-cut' : `export-len ${video.duration} vs ${expect}`);
+              if (!close) t.problem('bug', `exported length ${video.duration?.toFixed?.(1)} s does not match the cut (${expect} s)`);
+              click('#exportClose');
+            } else {
+              t.problem('bug', `export gave no file${document.querySelector('#exportError:not([hidden])')?.textContent ? `: ${document.querySelector('#exportError').textContent}` : ''}`);
+              click('#exportClose');
+            }
+          } else {
+            t.note('Export video disabled for this cut');
+            click('#exportClose');
+          }
+        }
+      }
+      const gpu = jobs.sent.filter((x) => !/^(video\.compose|video\.still|media\.normalize)$/.test(x));
+      jobs.stop();
+      t.metric('gpuJobsStarted', gpu.length);
+      if (gpu.length) t.problem('blocker', `transitions export started a GPU job: ${gpu.join(', ')}`);
+      const ok = added && resized && typed && blended && !gpu.length;
+      t.finish(ok ? 'done' : 'stuck');
       return;
     }
     if (id === 'phoneperf') {
@@ -1813,6 +3025,353 @@ installPlaytest({
       t.event('scrubbed-back');
       t.progress(0.9);
       t.finish(through && again ? 'done' : 'stuck');
+      return;
+    }
+    if (id === 'a11y') {
+      const AXE_URL = 'https://cdn.jsdelivr.net/npm/axe-core@4.10.2/axe.min.js';
+      const phone = window.innerWidth <= 600;
+      const seeded = Boolean(options?.seed);
+      t.metric('phone', phone ? 1 : 0);
+      t.scene('Accessibility');
+      // axe-core is fetched here and nowhere else: the app never ships it.
+      if (!window.axe) {
+        await new Promise((ok) => { const s = document.createElement('script'); s.src = AXE_URL; s.onload = ok; s.onerror = ok; s.dataset.a11y = '1'; document.head.append(s); });
+      }
+      if (!window.axe) { t.problem('blocker', `axe-core could not be loaded from ${AXE_URL}`); t.finish('stuck'); return; }
+      t.event('axe-loaded', window.axe.version);
+      let failures = 0;
+      const nameOf = (el) => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\s+/)[0] : ''}`;
+      /** One screen through axe: every serious or critical violation becomes a problem naming its rule and the screen. */
+      const audit = async (screen, ctx = document) => {
+        let seed = null;
+        if (seeded) {
+          // Setup shortcut (named): a deliberate critical violation (a picture with no alt, a button with no name) the run must catch.
+          seed = document.createElement('div');
+          seed.innerHTML = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="8" height="8"><button type="button" style="width:20px;height:20px"></button>';
+          document.body.append(seed);
+        }
+        let res;
+        try { res = await window.axe.run(ctx, { resultTypes: ['violations'] }); } catch (e) { t.problem('bug', `axe failed on ${screen}: ${e?.message ?? e}`); failures++; return; }
+        seed?.remove();
+        const bad = res.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+        t.metric(`axe_${screen}`, bad.length);
+        t.event(`axe-${screen}`, `${bad.length} serious or critical, ${res.violations.length} in all`);
+        for (const v of bad) {
+          failures++;
+          const where = v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join('; ');
+          t.problem('bug', `a11y ${v.impact} "${v.id}" on ${screen} (${v.nodes.length}): ${v.help} - ${where}`);
+        }
+      };
+      /** Every control that is visible now and smaller than 44x44 (timeline handles and clip grips are content). */
+      const tapFaults = (screen) => {
+        const seen = (el) => { const r = el.getBoundingClientRect(); const cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' && !el.closest('[hidden], svg'); };
+        const small = [...document.querySelectorAll('button, a[href], select, summary, [role=tab], [role=button], .chip, input:not([type=hidden]):not([type=file])')]
+          .filter((el) => seen(el) && !el.closest('#tlTracks, .tl-heads, #landing[hidden]') && !el.matches('.tl-hb, .clip-act, input[type=range], input[type=color]') && !el.disabled)
+          .filter((el) => { const r = el.getBoundingClientRect(); return r.height < 43.5 || r.width < 43.5; });
+        t.metric(`smallTargets_${screen}`, small.length);
+        for (const el of small.slice(0, 6)) { failures++; const r = el.getBoundingClientRect(); t.problem('bug', `tap target ${nameOf(el)} is ${Math.round(r.width)}x${Math.round(r.height)} px on ${screen}, under 44x44`); }
+      };
+
+      // 1. Landing (the welcome someone signed out sees; the signed-in tab shows it for a moment and goes back).
+      t.scene('A11y landing');
+      showLanding();
+      await sleep(600);
+      await audit('landing');
+      if (phone) tapFaults('landing');
+      hideLanding();
+      await sleep(300);
+
+      // 2. Editor: a scene to look at, then the first 20 tab stops.
+      t.scene('A11y editor');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `A11y ${new Date().toISOString().slice(0, 16)}` });
+      await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000);
+      await sleep(800);
+      await audit('editor');
+      if (phone) tapFaults('editor');
+      // Tab order: no positive tabindex (it would jump the order), and each of the first 20 stops shows a ring when focused.
+      const stops = [...document.querySelectorAll('a[href], button, input, select, textarea, summary, [tabindex]')]
+        .filter((el) => !el.disabled && el.tabIndex >= 0 && visibleEl(el) && !el.closest('#landing'));
+      const positive = stops.filter((el) => el.tabIndex > 0);
+      t.metric('positiveTabindex', positive.length);
+      if (positive.length) { failures++; t.problem('bug', `tab order: ${positive.length} control(s) with tabindex above 0, e.g. ${nameOf(positive[0])}`); }
+      let ringless = 0;
+      for (const el of stops.slice(0, 20)) {
+        el.focus({ focusVisible: true });
+        await sleep(60);
+        const cs = getComputedStyle(el);
+        const ring = (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) || (cs.boxShadow && cs.boxShadow !== 'none');
+        if (!ring) { ringless++; failures++; t.problem('bug', `no visible focus ring on ${nameOf(el)} (tab stop ${stops.indexOf(el) + 1})`); }
+        t.event('tab-stop', `${stops.indexOf(el) + 1} ${nameOf(el)} ring=${ring ? 'yes' : 'no'}`);
+      }
+      t.metric('focusStopsChecked', Math.min(20, stops.length));
+      t.metric('focusRingMissing', ringless);
+      document.activeElement?.blur?.();
+
+      // 3. Library: axe, then Escape closes the drawer and focus goes back to the button that opened it.
+      t.scene('A11y library');
+      if (window.innerWidth <= 900) click('#mobileTabs button[data-m="media"]');
+      else click('#paneTabs button[data-pane="media"]');
+      await until(() => document.querySelectorAll('#mediaGrid .tile:not(.busy)').length > 0 || document.querySelector('#mediaGrid .empty-note'), 15000);
+      await sleep(600);
+      await audit('library');
+      if (phone) tapFaults('library');
+      const tile = document.querySelector('#mediaGrid .tile:not(.busy)');
+      if (!tile) t.note('The test account has no library files: the drawer was not exercised');
+      else {
+        const opener = tile.querySelector('.tile-info') ?? tile;
+        opener.focus();
+        opener.click();
+        const opened = await until(() => document.querySelector('#mediaDrawer .media-drawer'), 5000, 100);
+        t.metric('drawerOpens', opened ? 1 : 0);
+        if (opened) {
+          await sleep(300);
+          await audit('library-drawer', document.querySelector('#mediaDrawer'));
+          if (phone) tapFaults('library-drawer');
+          pressOn(document.activeElement ?? document.body, 'Escape');
+          const closed = await until(() => !document.querySelector('#mediaDrawer'), 3000, 100);
+          await sleep(100);
+          const back = document.activeElement === opener;
+          t.metric('escapeCloses', closed ? 1 : 0);
+          t.metric('focusReturns', back ? 1 : 0);
+          t.event(closed ? 'escape-closed-drawer' : 'escape-did-not-close');
+          if (!closed) { failures++; t.problem('bug', 'Escape does not close the library drawer'); }
+          else if (!back) { failures++; t.problem('bug', `after Escape focus is on ${document.activeElement ? nameOf(document.activeElement) : 'nothing'}, not the button that opened the drawer`); }
+        } else { failures++; t.problem('bug', 'the library drawer did not open'); }
+      }
+      t.metric('a11yFailures', failures);
+      t.event(failures ? 'a11y-failed' : 'a11y-passed', `${failures} issue(s)`);
+      t.finish(failures ? 'stuck' : 'done');
+      return;
+    }
+    if (id === 'tokens') {
+      const jobs = watchJobs();
+      const rootCs = getComputedStyle(document.documentElement);
+      const tokenNames = [
+        '--bg', '--panel', '--panel-2', '--panel-3', '--line', '--line-2', '--text', '--muted',
+        '--accent', '--accent-2', '--accent-soft', '--danger', '--danger-soft', '--warn', '--ok',
+        '--font-sans', '--font-mono', '--text-2xs', '--text-label', '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl',
+        '--space-1', '--space-2', '--space-3', '--space-4', '--space-5', '--space-6',
+        '--radius-sm', '--radius-md', '--radius', '--radius-lg', '--radius-xl', '--radius-full',
+        '--shadow-sm', '--shadow', '--focus-border', '--focus-ring', '--icon-md', '--icon-stroke',
+      ];
+      const missingTokens = tokenNames.filter((k) => !rootCs.getPropertyValue(k).trim());
+      t.metric('tokensDefined', tokenNames.length - missingTokens.length);
+      t.metric('tokensMissing', missingTokens.length);
+      for (const k of missingTokens) t.problem('bug', `missing root design token ${k}`);
+
+      const expectBg = getComputedStyle(document.body).backgroundColor;
+      const expectText = getComputedStyle(document.body).color;
+      const expectFont = getComputedStyle(document.body).fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+      let problems = missingTokens.length;
+
+      // 1. Landing page: buttons, colours, type and layout.
+      t.scene('Landing');
+      showLanding();
+      const landingShown = await until(() => document.querySelector('#landing:not([hidden])'), 6000, 100);
+      t.metric('landingShown', landingShown ? 1 : 0);
+      let landingPrimaryBg = '';
+      if (landingShown) {
+        const L = document.querySelector('#landing');
+        const lCs = getComputedStyle(L);
+        const pBtn = L.querySelector('button.primary, .ld-cta .primary');
+        const gBtn = L.querySelector('button.ghost, .ld-nav .ghost');
+        const card = L.querySelector('.ld-ex');
+        landingPrimaryBg = pBtn ? getComputedStyle(pBtn).backgroundColor : '';
+        const lOverflow = L.scrollWidth > window.innerWidth + 1;
+        t.metric('landingOverflowX', lOverflow ? 1 : 0);
+        if (lOverflow) { problems++; t.problem('bug', `landing scrolls sideways (${L.scrollWidth} > ${window.innerWidth})`); }
+        if (lCs.color !== expectText) { problems++; t.problem('bug', `landing text color ${lCs.color} !== ${expectText}`); }
+        if (!pBtn || !gBtn || !card) { problems++; t.problem('bug', 'landing missing primary button, ghost button or example card'); }
+        t.event('landing-tokens-checked');
+        await sleep(600);
+      } else {
+        problems++;
+        t.problem('bug', 'landing did not open');
+      }
+      hideLanding();
+
+      // 2. Editor and toolbars: unified buttons, inputs, chips, cards and 16px stroke icons across toolbars.
+      t.scene('Editor and toolbars');
+      await until(() => activeScene(), 10000);
+      made = await newScene('video', { title: `Playtest tokens ${new Date().toISOString().slice(0, 16)}` });
+      if (!await until(() => activeScene()?.id === made?.id && P.active && P.id === made.id, 15000)) {
+        jobs.stop();
+        t.note('the new scene did not open');
+        t.finish('stuck');
+        return;
+      }
+      press('t');
+      await until(() => P.doc.clips.length > 0 && document.querySelectorAll('#toolbar .tb').length > 0, 5000, 100);
+      await sleep(300);
+
+      const editorInput = document.querySelector('#aiInput');
+      const editorInputRadius = editorInput ? getComputedStyle(editorInput).borderRadius : '';
+
+      // Check toolbar icons across .bar, .transport, #toolbar, .tl-bar: one stroke family at 16px or 20px only.
+      const toolbarIcons = [...document.querySelectorAll('.bar .ico svg, .bar .ico-wrap svg, .transport .ico svg, .transport .ico-wrap svg, #toolbar .ico svg, #toolbar .ico-wrap svg, .tl-bar .ico svg, .tl-bar .ico-wrap svg')]
+        .filter((svg) => visibleEl(svg));
+      let badIcons = 0;
+      for (const svg of toolbarIcons) {
+        const r = svg.getBoundingClientRect();
+        const cs = getComputedStyle(svg);
+        const w = Math.round(r.width), h = Math.round(r.height);
+        const stroke = svg.getAttribute('stroke') === 'currentColor';
+        const sw = svg.getAttribute('stroke-width') === '1.8';
+        const noFill = (svg.getAttribute('fill') === 'none' || cs.fill === 'none') && !svg.querySelector('[fill="currentColor"]');
+        const sizeOk = (w === 16 || w === 20) && w === h;
+        if (!sizeOk || !stroke || !sw || !noFill) {
+          badIcons++;
+          t.problem('bug', `toolbar icon mismatch (${w}x${h}, stroke=${svg.getAttribute('stroke')}, sw=${svg.getAttribute('stroke-width')}): ${svg.closest('button')?.id || svg.closest('button')?.textContent?.trim() || 'icon'}`);
+        }
+      }
+      t.metric('toolbarIconsChecked', toolbarIcons.length);
+      t.metric('toolbarIconsConsistent', toolbarIcons.length > 0 && badIcons === 0 ? 1 : 0);
+      problems += badIcons;
+
+      // Every visible button carries one of the four variant classes; icon-only buttons need aria-label.
+      const variantRe = /\b(primary|secondary|ghost|danger)\b/;
+      const pageButtons = [...document.querySelectorAll('button, a.btn')].filter((b) => visibleEl(b));
+      let badVariant = 0, badAria = 0;
+      for (const b of pageButtons) {
+        if (!variantRe.test(b.className)) {
+          badVariant++;
+          t.problem('bug', `button missing variant class: ${b.id || b.className || b.textContent?.trim()?.slice(0, 40) || 'button'}`);
+        }
+        const labelText = (b.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!labelText && !b.getAttribute('aria-label')) {
+          badAria++;
+          t.problem('bug', `icon-only button missing aria-label: ${b.id || b.className || 'button'}`);
+        }
+      }
+      t.metric('buttonsChecked', pageButtons.length);
+      t.metric('buttonsMissingVariant', badVariant);
+      t.metric('iconButtonsMissingAria', badAria);
+      problems += badVariant + badAria;
+
+      // Focus ring: focus with focusVisible so :focus-visible rules apply (same path as Tab).
+      const focusables = [...document.querySelectorAll('button, a, input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+        .filter((el) => visibleEl(el) && !el.disabled && el.tabIndex !== -1);
+      let focusOk = 0, focusBad = 0;
+      const prev = document.activeElement;
+      const expectRing = getComputedStyle(document.documentElement).getPropertyValue('--focus-ring').trim();
+      const expectBorder = getComputedStyle(document.documentElement).getPropertyValue('--focus-border').trim() || getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+      for (const el of focusables.slice(0, 12)) {
+        try { el.focus({ preventScroll: true, focusVisible: true }); } catch { try { el.focus({ preventScroll: true }); } catch { continue; } }
+        if (document.activeElement !== el) continue;
+        const cs = getComputedStyle(el);
+        const ring = (cs.boxShadow || '').replace(/\s+/g, ' ');
+        const border = (cs.borderColor || '').replace(/\s+/g, ' ');
+        const accentRgb = expectBorder.startsWith('#') ? '' : expectBorder;
+        const hasRing = ring && ring !== 'none' && (
+          (expectRing && ring.includes('rgb'))
+          || border.includes('139') || border.includes('123')
+          || (accentRgb && border.includes(accentRgb))
+        );
+        if (hasRing) focusOk++;
+        else {
+          focusBad++;
+          t.problem('bug', `no visible focus ring on ${el.id || el.tagName.toLowerCase()}.${(el.className || '').toString().split(/\s+/).slice(0, 2).join('.')}`);
+        }
+      }
+      try { prev?.focus?.({ preventScroll: true }); } catch { /* */ }
+      t.metric('focusRingOk', focusOk);
+      t.metric('focusRingMissing', focusBad);
+      problems += focusBad;
+
+      // Verify button variants (primary, secondary, ghost, danger), input, chip and card share tokens.
+      // Probe primary background is the cross-page colour check (emptyAsk hides once the stage has clips).
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;left:-9999px;top:0;display:flex;gap:8px';
+      probe.innerHTML = '<button class="primary">P</button><button class="secondary">S</button><button class="ghost">G</button><button class="danger">D</button><input value="x"><span class="chip">C</span><div class="card">Card</div>';
+      document.body.appendChild(probe);
+      const [bP, bS, bG, bD, inEl, chipEl, cardEl] = probe.children;
+      const editorPrimaryBg = getComputedStyle(bP).backgroundColor;
+      const variantsDistinct = editorPrimaryBg !== getComputedStyle(bS).backgroundColor
+        && getComputedStyle(bG).backgroundColor === 'rgba(0, 0, 0, 0)'
+        && getComputedStyle(bD).color !== getComputedStyle(bS).color
+        && getComputedStyle(bP).borderRadius === getComputedStyle(bS).borderRadius
+        && getComputedStyle(inEl).borderRadius === getComputedStyle(bP).borderRadius
+        && getComputedStyle(chipEl).borderRadius === '999px'
+        && getComputedStyle(cardEl).borderRadius === '12px';
+      probe.remove();
+      t.metric('unifiedComponents', variantsDistinct ? 1 : 0);
+      if (!variantsDistinct) { problems++; t.problem('bug', 'button variants, input, chip or card do not match design tokens'); }
+
+      const editorOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
+      t.metric('editorOverflowX', editorOverflow ? 1 : 0);
+      if (editorOverflow) { problems++; t.problem('bug', `editor scrolls sideways (${document.documentElement.scrollWidth} > ${window.innerWidth})`); }
+      t.event('editor-tokens-checked');
+      await sleep(600);
+
+      // 3. Library (Media pane): search input, filter chips, upload button and grid.
+      t.scene('Library');
+      if (window.innerWidth <= 900) click('#mobileTabs button[data-m="media"]');
+      else click('#paneTabs button[data-pane="media"]');
+      await until(() => visibleEl(document.querySelector('#mediaSearch')) && document.querySelectorAll('#mediaFilter .chip').length >= 5, 5000, 100);
+      const libInput = document.querySelector('#mediaSearch');
+      const libChip = document.querySelector('#mediaFilter .chip.on');
+      const libInputMatches = libInput && getComputedStyle(libInput).borderRadius === editorInputRadius;
+      const libChipMatches = libChip && getComputedStyle(libChip).borderRadius === '999px';
+      const libOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
+      t.metric('libraryTokensMatch', libInputMatches && libChipMatches ? 1 : 0);
+      t.metric('libraryOverflowX', libOverflow ? 1 : 0);
+      if (!libInputMatches || !libChipMatches) { problems++; t.problem('bug', 'library search input or filter chip styles diverge from editor tokens'); }
+      if (libOverflow) { problems++; t.problem('bug', `library scrolls sideways (${document.documentElement.scrollWidth} > ${window.innerWidth})`); }
+      t.event('library-tokens-checked');
+      await sleep(600);
+
+      // 4. Admin page: load /admin in a full-viewport frame so screenshots and computed styles see it at this viewport.
+      // Probe a primary button on the admin document: the overview tab has none when signed in, and nav buttons are not primary.
+      t.scene('Admin');
+      const frame = document.createElement('iframe');
+      frame.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;border:0;z-index:260;background:var(--bg)';
+      frame.src = '/admin';
+      document.body.appendChild(frame);
+      const adminLoaded = await until(() => frame.contentDocument?.body && frame.contentDocument.readyState === 'complete', 8000, 100);
+      let adminMatches = false, adminOverflow = false, adminPrimaryBg = '';
+      if (adminLoaded) {
+        await sleep(400);
+        const aDoc = frame.contentDocument;
+        const aWin = frame.contentWindow;
+        const aBody = aDoc.body;
+        const aCs = aWin.getComputedStyle(aBody);
+        const aFont = aCs.fontFamily.split(',')[0].replace(/['"]/g, '').trim();
+        const aRoot = aWin.getComputedStyle(aDoc.documentElement);
+        const aTokensOk = ['--bg', '--text', '--accent', '--font-sans', '--radius-md', '--focus-ring', '--icon-md']
+          .every((k) => aRoot.getPropertyValue(k).trim());
+        const aProbe = aDoc.createElement('div');
+        aProbe.style.cssText = 'position:fixed;left:-9999px;top:0';
+        aProbe.innerHTML = '<button class="primary">P</button><button class="ghost">G</button><input value="x"><span class="chip">C</span><div class="card">Card</div>';
+        aBody.appendChild(aProbe);
+        const [aPrimary, aGhost, aInput, aChip, aCard] = aProbe.children;
+        adminPrimaryBg = aWin.getComputedStyle(aPrimary).backgroundColor;
+        const aComponentsOk = aWin.getComputedStyle(aGhost).backgroundColor === 'rgba(0, 0, 0, 0)'
+          && aWin.getComputedStyle(aInput).borderRadius === aWin.getComputedStyle(aPrimary).borderRadius
+          && aWin.getComputedStyle(aChip).borderRadius === '999px'
+          && aWin.getComputedStyle(aCard).borderRadius === '12px';
+        aProbe.remove();
+        adminMatches = aTokensOk && aComponentsOk
+          && aCs.backgroundColor === expectBg && aCs.color === expectText && aFont === expectFont
+          && (!landingPrimaryBg || adminPrimaryBg === landingPrimaryBg);
+        adminOverflow = aDoc.documentElement.scrollWidth > aWin.innerWidth + 1;
+      }
+      t.metric('adminTokensMatch', adminMatches ? 1 : 0);
+      t.metric('adminOverflowX', adminOverflow ? 1 : 0);
+      if (!adminMatches) { problems++; t.problem('bug', 'admin page background, text color, font or primary button does not match Gen tokens'); }
+      if (adminOverflow) { problems++; t.problem('bug', 'admin page scrolls sideways'); }
+      t.event('admin-tokens-checked');
+      await sleep(700);
+      frame.remove();
+
+      const sameAll = Boolean(landingPrimaryBg && editorPrimaryBg && adminPrimaryBg
+        && landingPrimaryBg === editorPrimaryBg && landingPrimaryBg === adminPrimaryBg && adminMatches);
+      t.metric('samePaletteAndButtonsAcrossPages', sameAll ? 1 : 0);
+      t.metric('tokenProblems', problems);
+      const started = jobs.sent.length;
+      jobs.stop();
+      if (started) t.problem('blocker', `tokens scenario started ${started} job(s)`);
+      t.finish(problems === 0 && !started ? 'done' : 'stuck');
       return;
     }
     // smoke

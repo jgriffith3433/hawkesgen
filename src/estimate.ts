@@ -18,7 +18,7 @@ import { TYPES } from './providers/comfy/fleet.ts';
 import { GenError } from './util.ts';
 import type { Tool } from './tools/types.ts';
 
-export type EstimateItem = { tool?: string; preset?: string; params?: Record<string, any>; count?: number; label?: string };
+export type EstimateItem = { tool?: string; preset?: string; params?: Record<string, any>; count?: number; label?: string; inputs?: Record<string, any> };
 type Line = { label: string; tool: string; count: number; gpuSeconds: number; apiCost: number; family: string | null; basis: string };
 
 const PRICE = TYPES['g6e.xlarge'].price;
@@ -45,13 +45,15 @@ export function scaleFrom(cur: Record<string, any>, past: Record<string, any>) {
 
 function history(tool: string) {
   const rows = db.prepare(
-    `SELECT params, gpu_seconds, cost FROM jobs WHERE tool = ? AND status = 'done' AND finished > ? ORDER BY finished DESC LIMIT 40`,
-  ).all(tool, Date.now() - 120 * 86400_000) as { params: string; gpu_seconds: number; cost: number }[];
-  return rows.map((r) => ({ params: JSON.parse(r.params || '{}'), gpu: r.gpu_seconds, cost: r.cost }));
+    `SELECT params, inputs, gpu_seconds, cost FROM jobs WHERE tool = ? AND status = 'done' AND finished > ? ORDER BY finished DESC LIMIT 40`,
+  ).all(tool, Date.now() - 120 * 86400_000) as { params: string; inputs: string | null; gpu_seconds: number; cost: number }[];
+  return rows.map((r) => ({ params: JSON.parse(r.params || '{}'), inputs: JSON.parse(r.inputs || '{}') as Record<string, any>, gpu: r.gpu_seconds, cost: r.cost }));
 }
 
-function lineFor(tool: Tool, params: Record<string, any>, count: number, label: string): Line {
-  const past = history(tool.id);
+function lineFor(tool: Tool, params: Record<string, any>, count: number, label: string, inputs?: Record<string, any>): Line {
+  // A tool whose cost splits by mode (a character or not) is priced from jobs of the same mode only.
+  const mode = tool.estimateMode?.(params, inputs);
+  const past = history(tool.id).filter((h) => !mode || tool.estimateMode!(h.params, h.inputs) === mode);
   if (tool.provider === 'comfy' || tool.family) {
     const gpuPast = past.filter((h) => h.gpu > 0);
     let per: number;
@@ -59,9 +61,9 @@ function lineFor(tool: Tool, params: Record<string, any>, count: number, label: 
     if (gpuPast.length >= 2) {
       // Scaled by size, so a 81-frame 960p clip isn't priced like a 33-frame 480p one.
       per = median(gpuPast.map((h) => h.gpu * scaleFrom(params, h.params)));
-      basis = `median of ${gpuPast.length} past jobs`;
+      basis = `median of ${gpuPast.length} past${mode ? ` ${mode}` : ''} jobs`;
     } else {
-      per = tool.gpuSeconds?.(params) ?? 30;
+      per = tool.gpuSeconds?.(params, inputs) ?? 30;
       basis = 'the tool\'s own guess (no history yet)';
     }
     return { label, tool: tool.id, count, gpuSeconds: Math.round(per * count), apiCost: 0, family: (typeof tool.family === 'function' ? tool.family(params) : tool.family) ?? null, basis };
@@ -106,6 +108,7 @@ export function estimate(
     if (!count) continue;
     const label = it.label ?? it.preset ?? it.tool ?? `item ${i + 1}`;
     const { tool, params } = resolve(project, it);
+    const inputs = it.inputs;
     if (tool.id === 'asset.make') {
       const steps: any[] = Array.isArray(params.steps) ? params.steps : [];
       const n = Math.max(1, Number(params.candidates) || 1);
@@ -126,7 +129,7 @@ export function estimate(
       if (n > 1) lines.push({ label: `${label} · pick`, tool: 'llm (pick)', count, gpuSeconds: 0, apiCost: pick * count, family: null, basis: loadSettings().brain === 'cursor' ? 'one Cursor pick per asset' : loadSettings().brain === 'copilot' ? 'one Copilot pick per asset' : 'one Claude pick per asset' });
       continue;
     }
-    lines.push(lineFor(tool, params, count, label));
+    lines.push(lineFor(tool, params, count, label, inputs));
   }
   const fleet = loadSettings().fleet;
   const families = [...new Set(lines.filter((l) => l.gpuSeconds > 0).map((l) => l.family ?? l.tool))];

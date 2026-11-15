@@ -31,7 +31,13 @@ if (spec.gpu) {
   if (!gpu.regions.includes(args.region)) throw new Error(`${spec.gpu} isn't offered for Cloud Run services in ${args.region} (offered: ${gpu.regions.join(', ')})`);
   if (spec.cpu < gpu.minCpu || spec.memoryGi < gpu.minMemoryGi) throw new Error(`${spec.gpu} needs at least ${gpu.minCpu} vCPU and ${gpu.minMemoryGi} GiB`);
 }
-const maxInstances = Math.max(1, Math.min(20, Number(args.maxInstances ?? spec.maxInstances)));
+const asked = Math.max(1, Math.min(20, Number(args.maxInstances ?? spec.maxInstances)));
+// The live region (us-east4: gen, studio and the Studio cells run there and share its Cloud Run CPU quota) gets at
+// most one CPU browser instance, whatever was asked: 2026-11-11, four 4 vCPU CPU browsers held 16 of us-east4's 20 vCPU
+// and Studio's own server couldn't start. Matches LIVE_REGION_CPU_INSTANCES in src/providers/playtester/cloudrun.ts.
+const LIVE_REGION = process.env.REGION_LIVE || 'us-east4';
+const maxInstances = variant === 'cpu' && args.region === LIVE_REGION ? Math.min(asked, 1) : asked;
+if (maxInstances < asked) console.log(`${args.region} is the live region: at most ${maxInstances} instance(s) (asked ${asked})`);
 const tabs = Math.max(1, Math.min(8, Number(args.tabs ?? spec.tabsPerInstance)));
 const image = args.image ?? readState(stateName(variant, 'image'))?.tag ?? imageTag(args, spec);
 const workerSa = args.workerSa ?? `gen-playtest@${args.project}.iam.gserviceaccount.com`;
@@ -59,7 +65,16 @@ const file = path.join(STATE_DIR, `service-${spec.name}.yaml`);
 fs.mkdirSync(STATE_DIR, { recursive: true });
 fs.writeFileSync(file, JSON.stringify(yaml, null, 2));
 console.log(`service definition: ${file}`);
-gcloud(args, ['run', 'services', 'replace', file, `--project=${args.project}`, `--region=${args.region}`]);
+// The cap is also set on the service itself (--max), which applies at once and needs no new revision. A new revision
+// needs room to start its first instance, and on 2026-11-11 the replace failed with "Quota exceeded for total allowable
+// CPU" because the old revision's own instances filled us-east4: the per-revision cap could never land. Capping the
+// service first frees that room, and capping it again after the replace keeps it if the replace cleared it.
+const where = [`--project=${args.project}`, `--region=${args.region}`];
+const capService = () => gcloud(args, ['run', 'services', 'update', spec.name, ...where, `--max=${maxInstances}`]);
+const exists = !args.apply || gcloud(args, ['run', 'services', 'describe', spec.name, ...where, '--format=value(metadata.name)'], { read: true });
+if (exists) capService();
+gcloud(args, ['run', 'services', 'replace', file, ...where]);
+capService();
 const bind = ['run', 'services', 'add-iam-policy-binding', spec.name, `--project=${args.project}`, `--region=${args.region}`, `--member=serviceAccount:${genSa}`, '--role=roles/run.invoker'];
 // GitHub's deployer (roles/run.developer) may not set a service's IAM policy: the service is up either way, and the line
 // below says what its owner runs once so Gen may call it.

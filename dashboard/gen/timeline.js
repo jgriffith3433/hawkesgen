@@ -9,6 +9,7 @@
 import { $, $$, h, fmt, bus, icon, thumb, peaks, toast, jobStatusText } from './lib.js';
 import { P, tracks, trackOf, isMagnetic, onTrack, clipLength, clipEnd, docLength, byId, remember, changed, addClip, setClip, isStill, mainTrack, addTrack, setTrack, removeTrack, moveTrack, hasSound, fitStart, neighbours, PROGRESS, stopClip, retryClip } from './project.js';
 import { seek, isPlaying, pause } from './player.js';
+import { TRANSITION_MENU, clampTransitionSeconds } from './transitions.js';
 
 const T = { z: 60, snap: true, scroll: null, canvas: null, lanes: null, raf: 0 };
 /** The timeline's zoom and scroll, to put back when a scene opens again (editor.js). */
@@ -93,7 +94,7 @@ export function initTimeline() {
   $('#tlTracks').addEventListener('pointerleave', hoverOff);
   $('#tlTracks').addEventListener('pointerdown', hoverOff, true);
   $('#tlTracks').addEventListener('pointerdown', (e) => {
-    if (lender || e.target.closest('.clip, .tl-join, .lane-item')) return;
+    if (lender || e.target.closest('.clip, .tl-join, .tl-xf, .lane-item')) return;
     const r = T.canvas.getBoundingClientRect();
     const t0 = Math.max(0, tOf(e.clientX - r.left));
     const row = e.target.closest('.tl-track');
@@ -266,13 +267,21 @@ export function fit() {
 /** The empty timeline's hint stays in the middle of what's in view, however far it's scrolled. */
 function placeEmpty() { const el = $('#tlEmpty'); if (el && T.scroll) el.style.left = `${T.scroll.scrollLeft + T.scroll.clientWidth / 2}px`; }
 
+let scrollBox = null, scrollWidth = 0;
+const scrollRO = typeof ResizeObserver === 'function' ? new ResizeObserver((es) => { for (const e of es) scrollWidth = e.contentBoxSize?.[0]?.inlineSize ?? e.contentRect.width; }) : null;
+/** The scroller's width, cached: observed once, never read from layout inside the frame loop. */
+function scrollW(el) {
+  if (el !== scrollBox) { scrollBox = el; scrollWidth = el.clientWidth; scrollRO?.disconnect(); scrollRO?.observe(el); }
+  return scrollRO ? scrollWidth : el.clientWidth;
+}
 function movePlayhead() {
   const el = $('#tlPlayhead');
   if (!el) return;
   // Reads before the write, so the frame doesn't force a layout between them.
   const playing = lender ? lender.playing?.() : isPlaying();
   const x = xOf(ph());
-  const off = playing ? x - T.scroll.scrollLeft : 0, wide = playing ? T.scroll.clientWidth : 0;
+  // clientWidth is cached by a ResizeObserver (below), so resizing the timeline never costs a layout read per frame.
+  const off = playing ? x - T.scroll.scrollLeft : 0, wide = playing ? scrollW(T.scroll) : 0;
   el.style.transform = `translateX(${x}px)`;
   // Keep the playhead in view while playing.
   if (playing && (off > wide - 40 || off < 0)) T.scroll.scrollLeft = x - 60;
@@ -319,7 +328,6 @@ export function render() {
   const width = Math.max(T.scroll.clientWidth, xOf(len + 10));
   T.canvas.style.width = `${width}px`;
   drawRuler(width);
-  const main = mainTrack()?.id;
   const rows = tracks().map((t) => h('div', {
     class: `tl-track role-${t.role}${t.id === P.selection.track ? ' on' : ''}${t.hidden ? ' off' : ''}${t.locked ? ' locked' : ''}`,
     'data-track': t.id, style: { height: `${rowH(t)}px`, '--tc': t.color ?? 'var(--accent)' },
@@ -328,17 +336,17 @@ export function render() {
     const i = tracks().findIndex((t) => t.id === c.track);
     if (i >= 0) rows[i].append(clipEl(c));
   }
-  // Transitions where the main track's clips meet.
-  const mi = tracks().findIndex((t) => t.id === main);
-  if (mi >= 0) {
-    const v = onTrack(main);
+  // Transitions where adjacent clips meet on the main (or a video) track: a small block on the join.
+  for (const tr of tracks()) {
+    if (tr.role !== 'main' && tr.role !== 'video') continue;
+    const mi = tracks().findIndex((t) => t.id === tr.id);
+    if (mi < 0) continue;
+    const v = onTrack(tr.id);
     for (let i = 0; i < v.length - 1; i++) {
       const c = v[i];
-      if (Math.abs(v[i + 1].start - clipEnd(c)) > 0.02) continue;
-      rows[mi].append(h('button', {
-        class: `tl-join${c.transition ? ' on' : ''}`, style: { left: `${xOf(clipEnd(c))}px` }, title: c.transition ? `${c.transition} (${c.transitionSeconds ?? 0.5} s)` : 'Add a transition',
-        onclick: (e) => { e.stopPropagation(); transitionMenu({ clip: c, x: e.clientX, y: e.clientY }); },
-      }, c.transition ? '⧓' : '+'));
+      const n = v[i + 1];
+      if (Math.abs(n.start - clipEnd(c)) > 0.02) continue;
+      rows[mi].append(joinEl(c, n));
     }
   }
   rows.push(h('div', { class: 'tl-track tl-new', 'data-new': '1' }, h('span', { class: 'muted small' }, 'Drop here for a new track')));
@@ -635,13 +643,108 @@ function clipPointer(e, c) {
   addEventListener('pointerdown', second, true);
 }
 
-/** The transition menu at a join of the main track. */
+/** A join on a video track: empty = a + to add; with a type = a block you drag to resize or tap to change. */
+function joinEl(c, next) {
+  const join = clipEnd(c);
+  if (!c.transition) {
+    const btn = h('button', {
+      class: 'tl-join', style: { left: `${xOf(join)}px` }, title: 'Add a transition', type: 'button',
+      'data-join': c.id,
+    }, '+');
+    // pointerup (not only click): phones and the playtest bot send touch pointers.
+    btn.addEventListener('pointerup', (e) => {
+      if (e.button != null && e.button !== 0) return;
+      e.stopPropagation();
+      transitionMenu({ clip: byId(c.id) ?? c, x: e.clientX, y: e.clientY });
+    });
+    btn.addEventListener('click', (e) => e.preventDefault());
+    return btn;
+  }
+  const T = clampTransitionSeconds(c.transitionSeconds ?? 0.5);
+  const maxT = Math.max(0.2, Math.min(2, Math.min(clipLength(c), clipLength(next)) - 0.05));
+  const w = Math.max(18, xOf(T));
+  const left = xOf(join) - w / 2;
+  const label = TRANSITION_MENU.find(([v]) => v === c.transition)?.[1] ?? c.transition;
+  const el = h('div', {
+    class: 'tl-xf on', style: { left: `${left}px`, width: `${w}px` }, title: `${label} · ${T} s — drag edge to resize, tap to change`,
+    'data-join': c.id, 'data-transition': c.transition,
+  },
+    h('span', { class: 'tl-xf-label' }, label),
+    h('span', { class: 'tl-xf-h left', title: 'Drag to change length' }),
+    h('span', { class: 'tl-xf-h right', title: 'Drag to change length' }),
+  );
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button != null && e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const handle = e.target.closest('.tl-xf-h');
+    if (handle) {
+      xfDrag(e, c, next, handle.classList.contains('left') ? -1 : 1, maxT);
+      return;
+    }
+    // Tap (no drag): open the type menu. A short move still counts as a tap.
+    const x0 = e.clientX, y0 = e.clientY;
+    const up = (ev) => {
+      removeEventListener('pointermove', move);
+      removeEventListener('pointerup', up);
+      removeEventListener('pointercancel', up);
+      if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < 8) transitionMenu({ clip: byId(c.id) ?? c, x: ev.clientX, y: ev.clientY });
+    };
+    const move = () => {};
+    addEventListener('pointermove', move);
+    addEventListener('pointerup', up);
+    addEventListener('pointercancel', up);
+  });
+  return el;
+}
+
+/** Drag a transition block's edge: length stays 0.2–2 s and within both clips. */
+function xfDrag(e, c0, next0, dir, maxT) {
+  const id = c0.id;
+  const sec0 = clampTransitionSeconds(c0.transitionSeconds ?? 0.5);
+  const x0 = e.clientX;
+  let sec = sec0;
+  const move = (ev) => {
+    const c = byId(id);
+    if (!c?.transition) return;
+    // Dragging either edge out from the join grows the block.
+    const dx = (ev.clientX - x0) * dir;
+    sec = clampTransitionSeconds(Math.min(maxT, sec0 + dx / T.z));
+    const join = clipEnd(c);
+    const w = Math.max(18, xOf(sec));
+    const el = document.querySelector(`.tl-xf[data-join="${id}"]`);
+    if (el) { el.style.width = `${w}px`; el.style.left = `${xOf(join) - w / 2}px`; el.title = `${c.transition} · ${sec} s`; }
+  };
+  const up = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    removeEventListener('pointercancel', up);
+    const c = byId(id);
+    if (c?.transition && Math.abs(sec - (c.transitionSeconds ?? 0.5)) > 0.01) setClip(id, { transitionSeconds: sec });
+    else render();
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+  addEventListener('pointercancel', up);
+}
+
+/** The transition menu at a join of a video track. */
 export function transitionMenu({ clip, x, y }) {
-  const opts = [['cut', 'Cut'], ['crossfade', 'Crossfade'], ['dissolve', 'Dissolve'], ['fadeblack', 'Fade through black'], ['fadewhite', 'Fade through white'], ['wipeleft', 'Wipe'], ['slideleft', 'Slide']];
+  const cur = byId(clip.id) ?? clip;
+  const next = onTrack(cur.track).sort((a, b) => a.start - b.start);
+  const i = next.findIndex((c) => c.id === cur.id);
+  const other = i >= 0 ? next[i + 1] : null;
+  const maxT = other ? Math.max(0.2, Math.min(2, Math.min(clipLength(cur), clipLength(other)) - 0.05)) : 2;
   popMenu(x, y, [
     h('div', { class: 'menu-title' }, 'Into the next clip'),
-    ...opts.map(([v, label]) => h('button', { class: `menu-item${(clip.transition ?? 'cut') === v ? ' on' : ''}`, onclick: () => { closeMenus(); setClip(clip.id, v === 'cut' ? { transition: null, transitionSeconds: null } : { transition: v, transitionSeconds: clip.transitionSeconds ?? 0.5 }); } }, label)),
-    h('label', { class: 'menu-row' }, 'Length', h('input', { type: 'number', min: '0.1', max: '3', step: '0.1', value: String(clip.transitionSeconds ?? 0.5), onchange: (e) => setClip(clip.id, { transitionSeconds: Number(e.target.value) || 0.5 }) }), 's'),
+    ...TRANSITION_MENU.map(([v, label]) => h('button', {
+      class: `menu-item${(cur.transition ?? 'cut') === v ? ' on' : ''}`, type: 'button',
+      onclick: () => {
+        closeMenus();
+        if (v === 'cut') setClip(cur.id, { transition: null, transitionSeconds: null });
+        else setClip(cur.id, { transition: v, transitionSeconds: clampTransitionSeconds(Math.min(maxT, cur.transitionSeconds ?? 0.5)) });
+      },
+    }, label)),
   ]);
 }
 

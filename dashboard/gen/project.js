@@ -6,6 +6,11 @@
 import { state } from './account.js';
 import { api, bus, toast, plainError, friendly, jobStatusText, sendFeedback } from './lib.js';
 import { trouble } from './trouble.js';
+import { createHistory, aiTurnLabel } from './history.js';
+import * as journal from './journal.js';
+import { replay } from './journal.js';
+
+export { aiTurnLabel };
 
 /** After something that's easy to regret, a toast with Undo (Ctrl+Z works too, but few people know). */
 const undoable = (msg) => toast(msg, { action: 'Undo', onAction: () => doUndo(), ms: 6000 });
@@ -108,21 +113,44 @@ export function layout(d = P.doc) {
 }
 
 // ------------------------------------------------------------------ undo
-const undo = [];
-const redo = [];
+const hist = createHistory({ limit: 120 });
 const snap = () => JSON.stringify(P.doc);
-/** Call before changing the document: the change becomes one undo step. */
-export function remember() {
-  undo.push(snap());
-  if (undo.length > 120) undo.shift();
-  redo.length = 0;
+/**
+ * Call before changing the document: the change becomes one undo step. `label` is what undoing reverses
+ * (shown on the Undo button and in the toast after an AI edit), e.g. "AI added 3 clips".
+ */
+export function remember(label) {
+  hist.remember(P.doc, label);
   bus.emit('history');
 }
-export const canUndo = () => undo.length > 0;
-export const canRedo = () => redo.length > 0;
-export function doUndo() { if (!undo.length) return; redo.push(snap()); P.doc = JSON.parse(undo.pop()); changed(); }
-export function doRedo() { if (!redo.length) return; undo.push(snap()); P.doc = JSON.parse(redo.pop()); changed(); }
-export function clearHistory() { undo.length = 0; redo.length = 0; bus.emit('history'); }
+export const canUndo = () => hist.canUndo();
+export const canRedo = () => hist.canRedo();
+export const undoLabel = () => hist.undoLabel();
+export const redoLabel = () => hist.redoLabel();
+export function doUndo() {
+  const r = hist.undo(P.doc);
+  if (!r) return;
+  P.doc = r.doc;
+  changed();
+}
+export function doRedo() {
+  const r = hist.redo(P.doc);
+  if (!r) return;
+  P.doc = r.doc;
+  changed();
+}
+export function clearHistory() { hist.clear(); bus.emit('history'); }
+
+/**
+ * Takes a project the AI (or /apply) just wrote: one labelled undo step, the server's version kept, and a toast with
+ * Undo so one tap puts it back (Ctrl+Z / the bar's Undo do the same).
+ */
+export function takeAiEdit(project, results) {
+  const label = aiTurnLabel(results);
+  remember(label);
+  take(project);
+  undoable(label.endsWith('.') ? label : `${label}.`);
+}
 
 /** After any change: lay magnetic tracks out, drop selections of what's gone, redraw, save soon. */
 export function changed({ save = true } = {}) {
@@ -251,6 +279,14 @@ export function setClip(id, patch, { history = true } = {}) {
   if (history) remember();
   Object.assign(c, patch);
   for (const k of Object.keys(patch)) if (patch[k] === undefined || patch[k] === null) delete c[k];
+  // Transition length stays in the handle range (0.2–2 s); cut clears both fields.
+  if ('transition' in patch || 'transitionSeconds' in patch) {
+    if (!c.transition || c.transition === 'cut') { delete c.transition; delete c.transitionSeconds; }
+    else {
+      const sec = Number(c.transitionSeconds);
+      c.transitionSeconds = Math.min(2, Math.max(0.2, Math.round((Number.isFinite(sec) ? sec : 0.5) * 100) / 100));
+    }
+  }
   changed();
 }
 
@@ -355,21 +391,27 @@ let saveTimer = 0;
 export function scheduleSave() {
   P.dirty = true;
   bus.emit('save', 'dirty');
+  if (P.id) { P.opSeq = journal.nextSeq(); journal.append({ seq: P.opSeq, scene: P.id, base: P.version, doc: JSON.parse(snap()) }); }
   clearTimeout(saveTimer);
   saveTimer = setTimeout(save, 700);
 }
+const offline = () => typeof navigator !== 'undefined' && navigator.onLine === false;
 export async function save() {
   clearTimeout(saveTimer);
   if (!P.id) { try { localStorage.setItem(LOCAL_KEY, JSON.stringify({ id: null, doc: P.doc })); } catch { /* private window */ } P.dirty = false; bus.emit('save', 'local'); return; }
   if (P.saving) return;
+  if (offline()) { bus.emit('save', 'offline'); return; }
   P.saving = true;
   bus.emit('save', 'saving');
   const sent = snap();
+  const sentSeq = P.opSeq ?? 0;
+  let failed = false;
   try {
     const r = await api(`/v1/editor/projects/${P.id}`, { method: 'PUT', body: { doc: P.doc, version: P.version } });
     P.version = r.version;
     P.dirty = snap() !== sent;
     P.saveFailed = false;
+    journal.clear(P.id, sentSeq);
     bus.emit('save', P.dirty ? 'dirty' : 'saved');
     announce();
   } catch (err) {
@@ -379,14 +421,37 @@ export async function save() {
       take(err.data.project);
       toast('This scene was changed in another tab or by the AI, so you have the newest version now. Undo brings back what you just did.');
     } else {
+      failed = true;
+      if (err.status === 0 || offline()) { bus.emit('save', 'offline'); return; }
       bus.emit('save', 'error');
       // Once per failure, not on every retry: the sentence and the next step (the work stays in this browser meanwhile).
       if (!P.saveFailed) { P.saveFailed = true; if (err.status !== 401) trouble(err, save); }
     }
   } finally {
     P.saving = false;
-    if (P.dirty) scheduleSave();
+    // A failed save waits for the online event, Retry or the next edit: no retry loop.
+    if (P.dirty && !failed) scheduleSave();
   }
+}
+
+// Back online, or the page going away: save what is waiting now (the journal keeps it if this can't finish).
+addEventListener('online', () => { if (P.dirty && P.active) save(); });
+addEventListener('offline', () => { if (P.dirty && P.active) bus.emit('save', 'offline'); });
+addEventListener('pagehide', () => { if (P.dirty && P.active) save(); });
+
+const recovered = new Set();
+/** Playtest hook: forget that this scene was recovered, so taking it again replays the journal like a fresh page load. */
+export const forgetRecovered = (id) => recovered.delete(id);
+/** On load: edits in the journal made on top of this version come back, then save. */
+async function recover(project) {
+  if (recovered.has(project.id)) return;
+  recovered.add(project.id);
+  const op = replay(await journal.pending(project.id), project.id, project.version);
+  if (!op || JSON.stringify(op.doc) === JSON.stringify(project.doc)) { journal.clear(project.id); return; }
+  if (P.id !== project.id || P.version !== project.version || P.dirty) return;
+  P.doc = op.doc;
+  changed();
+  toast('Brought back the changes that weren\'t saved.');
 }
 /** Takes a scene from the server as the current one. */
 export function take(project) {
@@ -399,6 +464,7 @@ export function take(project) {
   bus.emit('project', project);
   bus.emit('save', 'saved');
   announce();
+  recover(project).catch(() => {});
 }
 
 /** Signed out: what was built here last time (kept in this browser), else a new video. */

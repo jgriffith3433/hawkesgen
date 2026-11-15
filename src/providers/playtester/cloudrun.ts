@@ -20,7 +20,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { paths, liveRegionLast, SETTINGS_DEFAULTS, MODAL_ENDPOINT, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
+import { paths, SETTINGS_DEFAULTS, MODAL_ENDPOINT, type Settings, type PlaytestBackend, type PlaytestProvider } from '../../config.ts';
 import { gcpTokens } from '../gcp/gcs.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
 import { isDown } from '../gpu/health.ts';
@@ -103,9 +103,25 @@ export function cloudPlaytestsFor(project: string | null | undefined, settings: 
     // The CPU service's other regions: each has its own Cloud Run CPU quota (settings.playtest.cloudrunCpu.extra).
     const cpus = [one, ...(t.cloudrunCpu.extra ?? []).map((x) => ({ ...one, url: x.url, region: x.region, maxInstances: x.maxInstances }))];
     const live = settings.unityBuild?.gcp?.liveRegion ?? SETTINGS_DEFAULTS.unityBuild.gcp.liveRegion;
-    out.push(...liveRegionLast(cpus, live, (c) => c.region));
+    out.push(...spareLiveRegion(cpus, live));
   }
   return out;
+}
+
+/** CPU playtest browsers the live region may run at once when it is the only region the CPU service has. */
+export const LIVE_REGION_CPU_INSTANCES = 1;
+/**
+ * The CPU service's regions without starving the live one (settings.unityBuild.gcp.liveRegion), where live Gen and
+ * Studio run. Trying it last wasn't enough: under load every region's lane fills, so the live region's 4 instances of
+ * 4 vCPU took 16 of us-east4's 20 vCPU and Studio's own server couldn't start a new revision (2026-11-11, with RunPod
+ * out of credit sending every playtest here). With another region to play in, the live one isn't used at all; when it
+ * is the only one, it runs at most LIVE_REGION_CPU_INSTANCES browser instance.
+ */
+export function spareLiveRegion<T extends { region: string; maxInstances: number }>(cpus: T[], live: string | null | undefined): T[] {
+  if (!live) return cpus;
+  const others = cpus.filter((c) => c.region !== live);
+  if (others.length) return others;
+  return cpus.map((c) => ({ ...c, maxInstances: Math.min(c.maxInstances, LIVE_REGION_CPU_INSTANCES) }));
 }
 
 const VARIANT_OF: Record<PlaytestProvider, Variant> = { runpod: 'runpod', modal: 'modal', cloudrun: 'gpu', 'cloudrun-cpu': 'cpu' };
@@ -343,27 +359,48 @@ export const retryable = (e: any) => /\b(429|503|502|500|504|408|524)\b|Too Many
  * One browser on the service. Waits through a cold start (Cloud Run holds the request until the startup probe
  * passes: the GPU self-test) and retries a full service (429) or a starting one (503) until `timeoutMs`.
  */
-export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & Partial<Pick<CloudPlaytest, 'variant'>>, { job, site, timeoutMs = 6 * 60_000, onStep = (_s: string) => {}, deps = defaultConnectDeps() }: { job?: string; site?: string; timeoutMs?: number; onStep?: (s: string) => void; deps?: ConnectDeps } = {}) {
+/** The job was cancelled while a browser was being opened: nothing waits for a worker any more (aborted()). */
+const cancelled = () => new Error('cancelled while opening the browser');
+/** Resolves never, or rejects once `signal` aborts: raced against each wait so a cancel ends it at once. */
+const aborted = (signal?: AbortSignal) => new Promise<never>((_, reject) => {
+  if (!signal) return;
+  if (signal.aborted) return reject(cancelled());
+  signal.addEventListener('abort', () => reject(cancelled()), { once: true });
+});
+
+/**
+ * One browser on a playtest service. A cancel (signal) ends the wait at once, and a browser that connects after it is
+ * closed straight away, so a RunPod worker started for a cancelled playtest is let go instead of held until its job
+ * would have ended (J, 2026-11-11: "Just don't be wasteful").
+ */
+export async function connectOne(chromium: any, c: Pick<CloudPlaytest, 'url'> & Partial<Pick<CloudPlaytest, 'variant'>>, { job, site, timeoutMs = 6 * 60_000, onStep = (_s: string) => {}, deps = defaultConnectDeps(), signal }: { job?: string; site?: string; timeoutMs?: number; onStep?: (s: string) => void; deps?: ConnectDeps; signal?: AbortSignal } = {}) {
   const end = deps.now() + timeoutMs;
   let wait = 3_000;
+  const stop = aborted(signal);
+  stop.catch(() => {});
   for (let attempt = 1; ; attempt++) {
+    if (signal?.aborted) throw cancelled();
     const left = end - deps.now();
     // An empty RunPod balance starts no worker (gpu/credit.ts): no use waiting for one.
     const broke = c.variant === 'runpod' ? runpodCreditProblem(deps.env ? (k) => deps.env![k] : undefined) : null;
     if (broke) throw new Error(`RunPod playtest service: ${broke}`);
     try {
-      return await chromium.connect(wsEndpointOf(c.url), {
+      const connecting = Promise.resolve(chromium.connect(wsEndpointOf(c.url), {
         timeout: Math.max(10_000, Math.min(left, 5 * 60_000)),
         headers: { ...(await headersFor(c, deps.idToken, deps.env)), ...(job ? { 'x-hawkes-job': job } : {}), ...(site ? { 'x-hawkes-site': site } : {}) },
-      });
+      }));
+      // Cancelled meanwhile: a browser that connects anyway is closed at once (the worker is let go).
+      connecting.then((b: any) => { if (signal?.aborted) void b?.close?.().catch?.(() => {}); }, () => {});
+      return await Promise.race([connecting, stop]);
     } catch (e: any) {
+      if (signal?.aborted) throw cancelled();
       // A RunPod or Modal gateway may hold the handshake while a worker cold-starts until Playwright's own timeout: there
       // that is a slow start, not a refusal, so it is tried again until the whole wait is up. A refusal for money isn't.
       const gateway = c.variant === 'runpod' || c.variant === 'modal';
       const again = !refusedForMoney(e) && (retryable(e) || (gateway && /Timeout \d+ ?ms exceeded/i.test(String(e?.message ?? e))));
       if (!again || deps.now() + wait > end) throw new Error(`${serviceLabel(c.variant)} playtest service: ${String(e?.message ?? e).split('\n')[0]}`);
       onStep(`the playtest service is full or starting (attempt ${attempt}); trying again in ${Math.round(wait / 1000)} s`);
-      await deps.sleep(wait);
+      await Promise.race([deps.sleep(wait), stop]);
       wait = Math.min(30_000, wait * 2);
     }
   }
@@ -410,13 +447,14 @@ export class BrowserPool {
  * are made here (so a failure falls back to the playtesters before the run starts), local origins are served through
  * each context, the video encodes on the service, and close() records the tab-seconds as a gcp-playtest usage row.
  */
-export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 1, job, site, step = (_s: string) => {}, onUsage, chromium, connectDeps, proxyDeps, connectTimeoutMs }: {
+export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 1, job, site, step = (_s: string) => {}, onUsage, chromium, connectDeps, proxyDeps, connectTimeoutMs, signal }: {
   pageUrl: string; tabs?: number; job?: string; step?: (s: string) => void;
   /** A build the service serves itself (siteHeader): nothing is served from here then. */ site?: string;
   onUsage?: (u: { provider: string; unit: string; amount: number; cost?: number; detail?: string }) => void;
   chromium?: any; connectDeps?: ConnectDeps; proxyDeps?: ProxyDeps;
   /** How long to wait for a browser here before giving up (another region may have room); connectOne's default otherwise. */
   connectTimeoutMs?: number;
+  /** The job's: a cancel ends the wait and lets the worker go (connectOne). */ signal?: AbortSignal;
 }): Promise<PlaytestHost> {
   const pw = chromium ?? (await import('playwright')).chromium;
   // Local origins are served from here only for J's own local builds; a build the service serves itself needs none.
@@ -432,7 +470,7 @@ export async function openCloudPlaytestHost(c: CloudPlaytest, { pageUrl, tabs = 
   const releaseRunner = c.runner ? (await import('./runners.ts')).claimRunner(c.runner) : () => {};
   let pool: BrowserPool;
   try {
-    pool = await new BrowserPool(() => connectOne(pw, c, { job, site, onStep: step, deps: connectDeps, ...(connectTimeoutMs ? { timeoutMs: connectTimeoutMs } : {}) })).open(n);
+    pool = await new BrowserPool(() => connectOne(pw, c, { job, site, onStep: step, deps: connectDeps, signal, ...(connectTimeoutMs ? { timeoutMs: connectTimeoutMs } : {}) })).open(n);
   } catch (e) {
     releaseRunner();
     throw e;

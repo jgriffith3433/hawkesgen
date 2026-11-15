@@ -27,17 +27,17 @@ import { env } from '../../config.ts';
 import { GenError, sha256File } from '../../util.ts';
 import { brokerToken, brokerUrl } from '../gpu/broker.ts';
 import { runpodCreditProblem } from '../gpu/credit.ts';
-import { healthOf } from '../gpu/health.ts';
+import { BUSY_WAIT_MS, DEFAULT_COLD_WAIT_MS, PRE_WORKER_MS, WARM_MS, healthOf } from '../gpu/health.ts';
+
+/** A worker's error that is a provider's rate limit ("HTTP Error 429: Too Many Requests"). Exported for tests. */
+export const RATE_LIMITED = /HTTP Error 429|Too Many Requests/i;
 
 /** A heartbeat younger than this means the run is still going on some instance. */
 const FRESH_MS = 60_000;
+/** How many times Gen re-asks a RunPod worker to stay with a run past one load-balancer hold (12 x 5.5 min > 1 h). */
+const MAX_ATTACHES = 12;
 /** How long a job waits for a free instance (the service at max instances answers 429) before failing. */
 const WAIT_FOR_INSTANCE_MS = 45 * 60_000;
-/** How long past its wait a provider's cold worker may take to answer at all (its first pull of a new image). */
-const COLD_START_MS = 12 * 60_000;
-// An endpoint that ran a job this recently still has a worker up (Modal's scaledown_window is 20 minutes); after that, a
-// wait is a worker starting from cold (pulling the image, starting ComfyUI: several minutes), not a queue.
-const WARM_MS = 20 * 60_000;
 
 export type CloudFile = ComfyFile & { uri: string; bytes?: number };
 export type RunDeps = {
@@ -143,6 +143,11 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
 
   /** The final line of a run: its files, or an error that says what happened. */
   const finish = (m: any): CloudFile[] => {
+    // A provider (or Gen's own limiter) answered "429 Too Many Requests" to the worker part way: not the job's fault and
+    // nothing it ran is billed. The queue puts it back with a backoff (jobs.ts, `rateLimited`).
+    if (m.t !== 'done' && !m.cancelled && RATE_LIMITED.test(String(m.message ?? ''))) {
+      throw Object.assign(new Error(`${svc.name}: ${m.message}`), { rateLimited: true });
+    }
     hooks.addSeconds(Number(m.seconds) || 0, Number(m.cold?.startupSeconds) || 0);
     // What the graph held on the card at its peak (the worker samples it; older images don't send it).
     if (m.vram?.peakMB) hooks.step(`${svc.name}: GPU memory at peak ${(m.vram.peakMB / 1024).toFixed(1)} GB of ${(m.vram.totalMB / 1024).toFixed(0)} GB${m.vram.gpu ? ` (${m.vram.gpu})` : ''}, ${m.seconds} s on the worker`);
@@ -186,6 +191,12 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
     const started = deps.now();
     let posts = 0;
     let waitedSince = 0;
+    // RunPod's load balancer ends a request at about 5.5 minutes and stops a worker that has no request open once its
+    // idle timeout passes, even mid-run. So while the run's heartbeat is fresh Gen asks again with the same key: the
+    // worker attaches the new request to the run already going there (worker.py begin_run) and the worker stays up.
+    // Beta 2026-11-10: Pixal3D on a cold worker ran past the 300 s cap, went to the fleet and failed "no GPU".
+    const reattach = svc.provider === 'runpod';
+    let attaches = 0;
     for (;;) {
       if (hooks.signal.aborted) throw cancelled(key);
       // Finished before (Gen restarted after the run ended): the answer is in the bucket.
@@ -196,6 +207,16 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
       }
       // Still going on an instance (a Gen restart, or the connection dropped): wait for it rather than run it twice.
       const beat = await deps.store.readJson(`${out}heartbeat.json`).catch(() => null);
+      if (beat && deps.now() - Number(beat.at) < FRESH_MS && reattach && posts > 0 && attaches < MAX_ATTACHES) {
+        attaches++;
+        hooks.progress(`${svc.name}: ${beat.detail ?? 'running'} (still running; holding the worker)`);
+        const again = await post(key, body, true);
+        if (again) return finish(again);
+        if (deps.now() - started > (svc.graphLimitSeconds + 300) * 1000) {
+          throw Object.assign(new Error(`${svc.name}: the run passed its ${svc.graphLimitSeconds} s limit`), { overLimit: true });
+        }
+        continue;
+      }
       if (beat && deps.now() - Number(beat.at) < FRESH_MS) {
         if (!waitedSince) {
           waitedSince = deps.now();
@@ -226,47 +247,78 @@ export function cloudComfyRun(job: { id: string }, svc: CloudService, hooks: Clo
   };
 
   /** One POST /run. -> the final line, or null when the stream broke first. */
-  const post = async (key: string, body: string): Promise<any | null> => {
+  const post = async (key: string, body: string, attaching = false): Promise<any | null> => {
     const elsewhere = Boolean(svc.provider && svc.provider !== 'cloudrun');
     const lastOk = healthOf(svc.lane ?? svc.name).lastOk;
     const cold = elsewhere && (!lastOk || deps.now() - lastOk > WARM_MS);
-    const until = deps.now() + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
+    // Decide the wait from live lastOk (not only what endpointService baked at route time): short when warm/busy,
+    // coldStartMs / 12 min when cold. Cloud Run keeps its long service wait.
+    const waitMs = elsewhere
+      ? (cold ? (svc.coldStartMs ?? DEFAULT_COLD_WAIT_MS) : BUSY_WAIT_MS)
+      : (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS);
+    const until = deps.now() + waitMs;
     // Said up front: a provider's gateway may hold the request the whole time without a word.
-    if (cold) hooks.step(`${svc.name}: starting a ${where} GPU (none has run for a while; a cold start takes several minutes)`);
+    if (cold && !attaching) hooks.step(`${svc.name}: starting a ${where} GPU (none has run for a while; a cold start takes several minutes)`);
     for (let told = false; ; told = true) {
       if (hooks.signal.aborted) throw cancelled(key);
       // An empty RunPod balance starts no worker and its gateway just waits (gpu/credit.ts): hand the job on.
       const broke = svc.provider === 'runpod' ? runpodCreditProblem() : null;
       if (broke) throw unavailable(`${svc.name}: ${broke}`, { capacity: true });
       let r: Response;
+      // Elsewhere: each POST gives up waiting for headers before RunPod's LB silently kills it (~5.5m), and the next POST
+      // goes in while the worker the first one started keeps loading. Cleared as soon as headers arrive so a long graph
+      // stream is not cancelled mid-run.
+      const preWorker = elsewhere ? new AbortController() : null;
+      const preWorkerTimer = preWorker
+        ? setTimeout(() => preWorker.abort(Object.assign(new Error('pre-worker timeout'), { code: 'PRE_WORKER_TIMEOUT' })), Math.max(1_000, Math.min(PRE_WORKER_MS, until - deps.now())))
+        : null;
       try {
-        r = await deps.fetch(`${svc.url}/run`, { method: 'POST', headers: await headers(), body, signal: hooks.signal });
+        const signal = preWorker ? AbortSignal.any([hooks.signal, preWorker.signal]) : hooks.signal;
+        r = await deps.fetch(`${svc.url}/run`, { method: 'POST', headers: await headers(), body, signal });
       } catch (e: any) {
         if (hooks.signal.aborted) throw cancelled(key);
         if (e.unavailable) throw e;
-        // A provider's gateway holds the request while a worker starts; a new image's first start on a host pulls it
-        // (minutes), past fetch's 5-minute wait for headers. That is a worker on its way, not an unreachable service.
-        const starting = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT' && elsewhere && deps.now() < until + (svc.coldStartMs ?? COLD_START_MS);
-        hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.message}; trying again`);
+        const headersTimeout = e.cause?.code === 'UND_ERR_HEADERS_TIMEOUT';
+        const preWorkerAbort = elsewhere && !hooks.signal.aborted && (e.code === 'PRE_WORKER_TIMEOUT' || e.cause?.code === 'PRE_WORKER_TIMEOUT' || preWorker?.signal.aborted);
+        // No headers yet: a worker is still starting (cold: pulling the image and loading the model takes longer than
+        // one LB hold; beta 2026-11-10, Pixal3D on hawkes-gen-gpu). Keep asking until the cold-start allowance (warm:
+        // the busy wait) runs out, then hand the job on. A worker RunPod never assigns bills nothing meanwhile.
+        const starting = (headersTimeout || preWorkerAbort) && elsewhere && deps.now() < until;
+        hooks.step(starting ? `${svc.name}: a ${where} GPU is still starting (a first start pulls the image); waiting` : `${svc.name}: ${e.cause?.code ?? e.name ?? e.message}; trying again`);
         await deps.sleep(10_000);
-        if (!starting && deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.message})`);
+        if (deps.now() > until) throw unavailable(`${svc.name}: couldn't reach the service (${e.cause?.code ?? e.name ?? e.message})`, { capacity: headersTimeout || preWorkerAbort });
         continue;
+      } finally {
+        if (preWorkerTimer) clearTimeout(preWorkerTimer);
       }
       // Every instance busy (max instances) or one still starting: Cloud Run says 429 or 503, RunPod's load balancer
       // 400 "failed to assign worker" (no GPU of its types free right now). Wait our turn.
       const noWorker = r.status === 400 && svc.provider === 'runpod' && /failed to assign worker/i.test(await r.clone().text().catch(() => ''));
       if (r.status === 429 || r.status === 503 || noWorker) {
         await r.body?.cancel().catch(() => undefined);
-        // A worker starting from cold answers 429/503 until it is up: it gets the cold start's time too. RunPod's "failed
-        // to assign worker" is no GPU free, not a start.
-        const limit = until + (cold && !noWorker ? (svc.coldStartMs ?? COLD_START_MS) : 0);
-        if (deps.now() > limit) throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.round((limit - until + (svc.waitForInstanceMs ?? WAIT_FOR_INSTANCE_MS)) / 60_000)} minutes`, { capacity: true });
+        // Cold, RunPod says "failed to assign worker" to the next request while the worker the first one started is still
+        // loading: that is the start, so it gets the cold length (waitMs) like 429/503. Warm, it is no GPU free (busy wait).
+        const limit = until;
+        if (deps.now() > limit) {
+          const waited = Math.max(waitMs, limit - (until - waitMs));
+          throw unavailable(`${svc.name}: no ${where} GPU came free in ${Math.max(1, Math.round(waited / 60_000))} minutes`, { capacity: true });
+        }
         if (!told && !(cold && !noWorker)) hooks.step(`${svc.name}: waiting for a free ${where} GPU`);
         await deps.sleep(15_000);
         continue;
       }
       if ((r.status === 401 || r.status === 403) && svc.provider && svc.provider !== 'cloudrun') {
         throw unavailable(`${svc.name} (${svc.provider}) refused Gen's credentials (${r.status}): check its key in Gen's environment (docs/gpu-providers.md)`, { auth: true });
+      }
+      // Modal's own gateway answers 404 "modal-http: workspace ... is disabled" when the account is switched off (billing),
+      // and "modal-http: app ... not found / stopped" when the app isn't deployed: the provider is out, not the job
+      // (beta 2026-11-10: every image.generate failed there instead of going on to RunPod).
+      if (r.status === 404 && svc.provider === 'modal') {
+        const text = await r.clone().text().catch(() => '');
+        if (/modal-http/i.test(text)) {
+          await r.body?.cancel().catch(() => undefined);
+          throw unavailable(`${svc.name} (modal) turned Gen away: ${text.trim().slice(0, 200)}`, { auth: true });
+        }
       }
       if (r.status === 401 || r.status === 403) {
         throw new GenError(`${svc.name} refused Gen's identity (${r.status}): Gen's service account needs roles/run.invoker on it (tools/cloudrun/deploy.mjs grants it), and ADC must be able to mint ID tokens (docs/cloudrun.md, "Credentials").`);

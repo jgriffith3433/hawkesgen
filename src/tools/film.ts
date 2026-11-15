@@ -11,6 +11,7 @@ import path from 'node:path';
 import type { Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
+import { ensureLocal } from '../storage.ts';
 import { ask, usageOf } from '../providers/anthropic.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
@@ -50,11 +51,13 @@ export async function previewRender(
   });
   const done = job.status === 'done' ? job : await gen.wait(job.id, { throwOnFail: false, signal: ctx.signal });
   if (done.status !== 'done') throw new GenError(`the gate's preview render ${done.status}: ${done.error ?? done.detail}`);
-  const stills = (done.outputs ?? [])
+  const stills: string[] = [];
+  for (const x of (done.outputs ?? [])
     .filter((x: any) => /^still \d+$/i.test(String(x.title ?? '')))
-    .sort((a: any, b: any) => parseInt(String(a.title).slice(6)) - parseInt(String(b.title).slice(6)))
-    .map((x: any) => getAsset(x.asset)?.path)
-    .filter((f: unknown): f is string => typeof f === 'string' && fs.existsSync(f));
+    .sort((a: any, b: any) => parseInt(String(a.title).slice(6)) - parseInt(String(b.title).slice(6)))) {
+    const a = getAsset(x.asset);
+    if (a && (await ensureLocal(a))) stills.push(a.path);
+  }
   if (stills.length !== 4) throw new GenError(`the preview made ${stills.length} stills, not 4`);
   const sheet = ctx.tmp(`sheet-${attempt}.png`);
   await tileSheet(stills, sheet, ctx.signal);

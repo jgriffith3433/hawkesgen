@@ -10,6 +10,9 @@
 import { $, h, fileUrl, fmt, bus, icon, peaks } from './lib.js';
 import { P, tracks, trackOf, clipEnd, clipLength, docLength, byId, isVisual, hasSound, audible, setClip, selectedClips, mainTrack, onTrack, PROGRESS } from './project.js';
 import { keep, nearest, warm, onFrames, setBusy } from './frames.js';
+import { clampTransitionSeconds, precomputeTransition, sampleAt } from './transitions.js';
+import { dialogueSpans, duckFactorAt, shouldDuckClip, DUCK_TO } from './audio-mix.js';
+import { drawTitle, titleBox } from './titles.js';
 
 const S = { playing: false, t0: 0, p0: 0, source: null, raf: 0, loop: false, recording: null, dirty: true, buffering: 0, lead: null, drawn: false, keepSince: 0 };
 // Playback smoothness (J, 2026-11-01: "make the buffering of the videos a little better so we don't see hitching during
@@ -75,10 +78,13 @@ export function initPlayer() {
   $('#stepBack').addEventListener('click', () => seek(P.playhead - 1 / P.doc.fps));
   $('#stepFwd').addEventListener('click', () => seek(P.playhead + 1 / P.doc.fps));
   $('#loopBtn').addEventListener('click', () => { S.loop = !S.loop; $('#loopBtn').classList.toggle('on', S.loop); });
-  bus.on('doc', () => { fitStage(); refresh(); });
+  bus.on('doc', () => { rebuildXf(); fitStage(); refresh(); });
   bus.on('selection', () => drawHandles());
   bus.on('progressText', () => { S.dirty = true; });
-  new ResizeObserver(fitStage).observe($('#viewer'));
+  rebuildXf();
+  // While an edge is being dragged (.sizing) the stage keeps its size and is refitted once when the drag ends.
+  new ResizeObserver(() => { if (!$('#app').classList.contains('sizing')) fitStage(); }).observe($('#viewer'));
+  addEventListener('hg-sized', fitStage);
   canvas.addEventListener('pointerdown', onCanvasDown);
   handles.addEventListener('pointerdown', onCanvasDown);
   stagePinch($('#viewer'));
@@ -392,13 +398,22 @@ function route(m) {
   if (!AU.ctx || m.src) return;
   try { m.src = AU.ctx.createMediaElementSource(m.el); m.gain = AU.ctx.createGain(); m.src.connect(m.gain); } catch { /* not routable: plays on its own */ }
 }
-/** A clip's loudness at time t: its volume, its fades, mute. */
-function clipGain(c, t) {
+/** Dialogue spans for the current document (only audible, sounding Voice clips). */
+function spansNow() {
+  return dialogueSpans(P.doc.clips, trackOf, clipEnd, audible);
+}
+/** Auto-duck factor for a music clip at t (1 when clear, ~0.316 under a voice line). */
+export function duckAt(t, spans = spansNow()) {
+  return duckFactorAt(t, spans, { to: DUCK_TO });
+}
+/** A clip's loudness at time t: its volume, its fades, mute, and auto-duck under dialogue. */
+export function clipGain(c, t, spans = spansNow()) {
   if (c.muted) return 0;
   let v = c.volume ?? 1;
   const into = t - c.start, left = clipEnd(c) - t;
   if (c.fadeIn && into < c.fadeIn) v *= Math.max(0, into / c.fadeIn);
   if (c.fadeOut && left < c.fadeOut) v *= Math.max(0, left / c.fadeOut);
+  if (shouldDuckClip(c, trackOf)) v *= duckFactorAt(t, spans, { to: DUCK_TO });
   return v;
 }
 const local = (c, t) => c.in + (Math.min(t, clipEnd(c) - 0.001) - c.start) * (c.speed || 1);
@@ -411,6 +426,7 @@ const local = (c, t) => c.in + (Math.min(t, clipEnd(c) - 0.001) - c.start) * (c.
  */
 function syncMedia(t, playing, hard = false, park = false) {
   const want = new Set();
+  const duckSpans = spansNow();
   for (const c of P.doc.clips) {
     if (!c.asset || (c.kind !== 'video' && c.kind !== 'audio')) continue;
     const on = t >= c.start && t < clipEnd(c);
@@ -456,12 +472,24 @@ function syncMedia(t, playing, hard = false, park = false) {
     if (m.gain && AU.ctx) {
       const tn = trackNode(c.track);
       if (!m.wired) { m.gain.connect(tn.gain); m.wired = true; }
-      m.gain.gain.value = sounding && !m.priming ? clipGain(c, t) : 0;
+      // Ramp over ~one frame so fades and ducks don't click when the envelope moves.
+      const wantG = sounding && !m.priming ? clipGain(c, t, duckSpans) : 0;
+      const now = AU.ctx.currentTime;
+      const param = m.gain.gain;
+      try {
+        const cur = param.value;
+        if (Math.abs(cur - wantG) < 0.001) param.value = wantG;
+        else {
+          param.cancelScheduledValues(now);
+          param.setValueAtTime(cur, now);
+          param.linearRampToValueAtTime(wantG, now + 1 / 60);
+        }
+      } catch { param.value = wantG; }
       tn.gain.gain.value = tr?.volume ?? 1;
       tn.pan.pan.value = tr?.pan ?? 0;
     } else {
       m.el.muted = m.priming || !sounding || Boolean(c.muted);
-      m.el.volume = Math.min(1, clipGain(c, t) * (tr?.volume ?? 1));
+      m.el.volume = Math.min(1, clipGain(c, t, duckSpans) * (tr?.volume ?? 1));
     }
     const speed = c.speed || 1;
     // Not yet under the playhead: paused on its first frame, loading, moved there once (not every frame).
@@ -580,6 +608,7 @@ export function boxOf(c, ctx = g) {
   const W = P.doc.width, H = P.doc.height;
   const cx = (c.x ?? 0.5) * W, cy = (c.y ?? 0.5) * H;
   if (c.kind === 'fill') return c.w == null ? { x: W / 2, y: H / 2, w: W, h: H } : { x: cx, y: cy, w: c.w * W, h: c.w * W * (H / W) };
+  if (c.kind === 'text' && c.title) { const b = titleBox(ctx, c, W, H); if (b) return b; }
   if (c.kind === 'text') { const t = textFit(c, ctx); return { x: t.x, y: t.y, w: t.w, h: t.h }; }
   const src = sourceOf(c, true) ?? (c.kind === 'image' && c.asset && IMGS.get(c.asset)?.naturalWidth ? { w: IMGS.get(c.asset).naturalWidth, h: IMGS.get(c.asset).naturalHeight } : null);
   const nw = src?.w ?? W, nh = src?.h ?? H;
@@ -633,50 +662,94 @@ function textStyle(c) {
   };
 }
 
+/**
+ * Precomputed transition samples per outgoing clip id (rebuilt on doc change). The rAF loop only indexes this table —
+ * no getBoundingClientRect / layout reads while painting frames.
+ */
+let XF = new Map(); // clipId -> { joinEnd, seconds, type, nextId, samples }
+function rebuildXf() {
+  XF = new Map();
+  const fps = Math.max(1, P.doc.fps || 30);
+  for (const tr of tracks()) {
+    if (tr.role !== 'main' && tr.role !== 'video') continue;
+    const cs = onTrack(tr.id).filter(isVisual);
+    for (let i = 0; i < cs.length - 1; i++) {
+      const c = cs[i], n = cs[i + 1];
+      if (!c.transition || Math.abs(n.start - clipEnd(c)) > 0.02) continue;
+      const seconds = clampTransitionSeconds(c.transitionSeconds ?? 0.5);
+      XF.set(c.id, { joinEnd: clipEnd(c), seconds, type: c.transition, nextId: n.id, samples: precomputeTransition(c.transition, seconds, fps) });
+    }
+  }
+}
+/** Expose the join table for the playtest bot (preview maths under the playhead). */
+export const transitionAt = (t) => {
+  for (const [id, x] of XF) {
+    const s = sampleAt(x.samples, t, x.joinEnd, x.seconds);
+    if (s) return { id, type: x.type, seconds: x.seconds, joinEnd: x.joinEnd, sample: s };
+  }
+  return null;
+};
+
 /** Draws the timeline at time t onto a context at the scene's size. `live`: placeholders for clips still being made. */
 function draw(ctx, t, { live = false } = {}) {
   const W = P.doc.width, H = P.doc.height;
   ctx.save();
-  const k = ctx.canvas.width / W; // 1 except on the phone's smaller live canvas
-  ctx.setTransform(k, 0, 0, k, 0, 0);
+  const scaleK = ctx.canvas.width / W; // 1 except on the phone's smaller live canvas
+  ctx.setTransform(scaleK, 0, 0, scaleK, 0, 0);
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = 'source-over';
   ctx.clearRect(0, 0, W, H);
   const bg = P.doc.background ?? (P.kind === 'image' ? null : '#000000');
   if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H); }
   if (P.kind === 'audio') drawSound(ctx, t, live);
-  const main = mainTrack()?.id;
   for (const tr of [...tracks()].reverse()) {
     if (tr.hidden) continue;
     const cs = P.doc.clips.filter((c) => c.track === tr.id && isVisual(c)).sort((a, b) => a.start - b.start);
     for (let i = 0; i < cs.length; i++) {
       const c = cs[i];
-      if (!active(c, t)) continue;
-      // A transition at a join of the main track: the next clip comes in over the last part of this one.
-      const n = tr.id === main && c.transition && cs[i + 1] && Math.abs(cs[i + 1].start - clipEnd(c)) < 0.02 ? cs[i + 1] : null;
-      const T = c.transitionSeconds ?? 0.5;
-      const k = n && clipEnd(c) - t < T ? 1 - (clipEnd(c) - t) / T : 0;
-      if (k && /^fade/.test(c.transition)) {
-        drawClip(ctx, c, t, live, 1);
-        ctx.fillStyle = c.transition === 'fadewhite' ? '#fff' : '#000';
-        ctx.globalAlpha = Math.min(1, k * 2);
-        ctx.fillRect(0, 0, W, H);
-        ctx.globalAlpha = 1;
+      const xf = XF.get(c.id);
+      const inXf = xf && t >= xf.joinEnd - xf.seconds && t < xf.joinEnd;
+      const s = inXf ? sampleAt(xf.samples, t, xf.joinEnd, xf.seconds) : null;
+      if (!active(c, t) && !(s && s.aOut > 0.001)) continue;
+      if (s) {
+        const n = byId(xf.nextId) ?? cs[i + 1];
+        const tIn = n ? n.start + (t - (xf.joinEnd - xf.seconds)) : t;
+        drawXfPair(ctx, c, n, t, tIn, live, s, W, H);
         continue;
       }
       drawClip(ctx, c, t, live, 1);
-      if (k) {
-        ctx.save();
-        if (/^(wipe|slide)/.test(c.transition)) { ctx.beginPath(); ctx.rect(W * (1 - k), 0, W * k, H); ctx.clip(); if (c.transition.startsWith('slide')) ctx.translate(W * (1 - k), 0); drawClip(ctx, n, n.start, live, 1); } else drawClip(ctx, n, n.start, live, k);
-        ctx.restore();
-      }
     }
   }
-  // Coming in from black: the first part of a clip after a fade-through.
-  const prev = onTrack(main).find((c) => /^fade/.test(c.transition ?? '') && Math.abs(clipEnd(c) - t) < (c.transitionSeconds ?? 0.5) && t >= clipEnd(c));
-  if (prev) { ctx.fillStyle = prev.transition === 'fadewhite' ? '#fff' : '#000'; ctx.globalAlpha = Math.max(0, 1 - ((t - clipEnd(prev)) / ((prev.transitionSeconds ?? 0.5) / 2))); ctx.fillRect(0, 0, W, H); ctx.globalAlpha = 1; }
   ctx.restore();
   emptyState();
+}
+
+/** Outgoing + incoming (+ optional dip fill) from one precomputed sample. */
+function drawXfPair(ctx, out, inn, tOut, tIn, live, s, W, H) {
+  if (s.aOut > 0.001) {
+    ctx.save();
+    if (s.oxOut || s.oyOut) ctx.translate(s.oxOut * W, s.oyOut * H);
+    drawClip(ctx, out, tOut, live, s.aOut);
+    ctx.restore();
+  }
+  if (s.fill && s.fillA > 0.001) {
+    ctx.globalAlpha = s.fillA;
+    ctx.fillStyle = s.fill;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+  if (inn && s.aIn > 0.001) {
+    ctx.save();
+    if (s.clipIn) {
+      const r = s.clipIn;
+      ctx.beginPath();
+      ctx.rect(r.x * W, r.y * H, r.w * W, r.h * H);
+      ctx.clip();
+    }
+    if (s.oxIn || s.oyIn) ctx.translate(s.oxIn * W, s.oyIn * H);
+    drawClip(ctx, inn, tIn, live, s.aIn);
+    ctx.restore();
+  }
 }
 
 /** An empty scene says how to start: drop something, pick from Media, or ask the AI. */
@@ -705,6 +778,7 @@ function drawClip(ctx, c, t, live, alpha) {
     ctx.restore();
     return;
   }
+  if (c.kind === 'text' && c.title && drawTitle(ctx, c, P.kind === 'image' ? c.start + clipLength(c) / 2 : t, W, H)) { ctx.restore(); return; }
   if (c.kind === 'text') {
     const t = textFit(c, ctx);
     ctx.translate(t.x, t.y); ctx.rotate(((c.rotation ?? 0) * Math.PI) / 180);
@@ -973,8 +1047,27 @@ export async function frameAt(t = P.playhead) {
   return out;
 }
 
-/** Every sound on the timeline mixed offline (WebAudio): an audio scene's export, and the sound of a browser render. */
-export async function mixdown(from = 0, to = docLength(), rate = 44100) {
+/**
+ * Schedule a clip's gain over [s, e] (timeline seconds), including fades and auto-duck under dialogue.
+ * Uses linear ramps so fades and ducks have no clicks. `from` is the mixdown's start (gain times are relative to it).
+ */
+function scheduleClipGain(param, c, s, e, from, spans) {
+  const step = 0.05;
+  let t = s;
+  param.setValueAtTime(clipGain(c, s, spans), s - from);
+  while (t < e - 0.001) {
+    const n = Math.min(e, t + step);
+    param.linearRampToValueAtTime(clipGain(c, n, spans), n - from);
+    t = n;
+  }
+  if (t < e) param.linearRampToValueAtTime(clipGain(c, e, spans), e - from);
+}
+
+/**
+ * Every sound on the timeline mixed offline (WebAudio): an audio scene's export, and the sound of a browser render.
+ * `spans` overrides the auto-duck dialogue windows (playtests pass spans while muting the voice so RMS is music-only).
+ */
+export async function mixdown(from = 0, to = docLength(), rate = 44100, spans = spansNow()) {
   const len = Math.max(0.1, to - from);
   const off = new OfflineAudioContext(2, Math.ceil(len * rate), rate);
   const bufs = new Map();
@@ -992,10 +1085,8 @@ export async function mixdown(from = 0, to = docLength(), rate = 44100) {
       if (!b) continue;
       const src = off.createBufferSource(); src.buffer = b; src.playbackRate.value = c.speed || 1;
       const gn = off.createGain();
-      const at = s - from, dur = e - s, gain = c.volume ?? 1;
-      gn.gain.setValueAtTime(clipGain(c, s), at);
-      if (c.fadeIn && s < c.start + c.fadeIn) gn.gain.linearRampToValueAtTime(gain, c.start + c.fadeIn - from);
-      if (c.fadeOut) { const fs = Math.max(at, clipEnd(c) - c.fadeOut - from); gn.gain.setValueAtTime(clipGain(c, fs + from), fs); gn.gain.linearRampToValueAtTime(0, clipEnd(c) - from); }
+      const at = s - from, dur = e - s;
+      scheduleClipGain(gn.gain, c, s, e, from, spans);
       src.connect(gn).connect(vol);
       src.start(at, local(c, s), dur * (c.speed || 1));
     }

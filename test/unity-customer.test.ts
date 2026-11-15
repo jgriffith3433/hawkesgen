@@ -169,7 +169,7 @@ function fakeCloud({ version = '6000.3.7f1', result, jobs = {}, cacheObjects = [
     if (url.startsWith('https://storage.googleapis.com/storage/v1/b/')) {
       const key = decodeURIComponent(url.replace(/^.*\/o\//, '').replace(/\?.*$/, ''));
       if (method === 'DELETE') { writes.delete(key); return new Response(null, { status: 204 }); }
-      if ((key.endsWith('/cloud-job.json') || key.endsWith('/done.json') || key.endsWith('/unity.log')) && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
+      if ((key.endsWith('/cloud-job.json') || key.endsWith('/done.json') || key.endsWith('/unity.log') || key.endsWith('/spec.json')) && writes.has(key)) return new Response(writes.get(key) as unknown as BodyInit);
       if (key.endsWith('/result.json')) {
         const v = typeof result === 'function' ? (result as (n: number) => unknown)(runs) : result;
         return v === null ? new Response('not found', { status: 404 }) : new Response(JSON.stringify(v));
@@ -929,7 +929,9 @@ test('check: it reserves 15 credits (UNITY_CHECK_CREDITS), not the flat build pr
 test('check: a compiler error ends the job as kind compile with its errors, no artifact, no cache saved, no outcome recorded', async () => {
   const g = fakeCloud({
     result: { ok: false, stage: 'unity', kind: 'compile', error: 'the project has compiler errors (Unity exited with code 1)', exitCode: 1, unity: '6000.3.7f1', seconds: { cache: 40, unity: 90, total: 150 },
-      cache: { restoredFrom: 'build', restoredBytes: 5_000_000, saved: false, savedKey: null, skipped: 'a compile-only check restores the Library cache and never saves it' } },
+      cache: { restoredFrom: 'build', restoredBytes: 5_000_000, saved: false, savedKey: null, skipped: 'a compile-only check restores the Library cache and never saves it' },
+      // As entrypoint.sh writes it: the log it uploaded (Gen reads only a log the execution's own result names).
+      log: 'unity-builds/j_chk1/unity.log' },
     cacheObjects: ['unity-cache/cust--usr_acme--acme--rocket-game--Game-x/build.tar.zst'],
     log: CS_LOG, canCreate: true,
   });
@@ -1005,4 +1007,48 @@ test('check: entrypoint.sh compile-only command has no -buildTarget and no -exec
   assert.match(src, /stage save\nif \[ "\$CHECK" = true \]; then\n  SAVE_SKIPPED=/);
   assert.match(src, /\[ "\$CHECK" = true \] && grep -Eq 'error CS\[0-9\]\+' "\$OUT\/unity\.log"; then die compile/);
   assert.match(src, /if \[ "\$CUSTOMER" = true \] && \[ "\$CHECK" != true \]; then\n  # The build goes into HAWKES_OUT/, 'no build script is added for a check');
+});
+
+// ------------------------------------------------------------------ no note, but an earlier execution's success (j_bb4c57cd1cf3)
+// The backstop behind done.json: an earlier execution's result and artifact still in the bucket with no note of either
+// (lost, or written by a Gen from before the note) are finished from, never built over; anything else it left is cleared.
+
+const okResult = (job: string) => ({ ok: true, stage: 'end', exitCode: 0, unity: '6000.3.7f1', seconds: { unity: 300 }, cache: { restoredFrom: 'build', saved: true, savedKey: 'build' },
+  output: { object: `unity-builds/${job}/artifact.tgz`, bytes: 52_000_000, files: 12, changed: [], deleted: [] }, log: `unity-builds/${job}/unity.log` });
+
+test("a lost note and an earlier execution's success still in the bucket: kept from it, nothing runs again", async () => {
+  const job = 'j_keep2';
+  const g = fakeCloud({ result: okResult(job), cacheObjects: [`unity-builds/${job}/result.json`, `unity-builds/${job}/unity.log`, `unity-builds/${job}/artifact.tgz`, `unity-builds/${job}/spec.json`] });
+  g.writes.set(`unity-builds/${job}/spec.json`, Buffer.from(JSON.stringify({ job, cache: { prefix: 'unity-cache/cust--usr_acme--acme--rocket-game-0123456789', restore: ['build'], save: 'build', clean: false } })));
+  try {
+    // Started (the note was written) by a run long gone; the token is past GitHub's hour: nothing may need it.
+    const { ctx, logs, outputs } = ctxFor(job, C.admitCustomer(good()));
+    await runCustomerBuild(ctx);
+    assert.equal(g.runs(), 0, 'not built again');
+    assert.equal(ctx.value.ok, true);
+    assert.match(ctx.value.recovered, /earlier execution/);
+    assert.equal(outputs[1].mime, 'application/gzip');
+    assert.match(logs.join('\n'), /already built it/);
+  } finally {
+    g.restore();
+  }
+});
+
+test("a new execution's failure is its own: the earlier one's result and Unity log are cleared first and never read as its own", async () => {
+  const job = 'j_own1';
+  const fetchFail = { ok: false, stage: 'source', kind: 'source', error: "couldn't fetch acme/rocket-game at cccccccccccc (is the commit pushed, and can the GitHub token read the repo?): git said: fatal: remote error: upload-pack: not our ref", exitCode: null, seconds: { license: 7, source: 0, total: 10 }, cache: { restoredFrom: null, saved: false }, output: null, log: null };
+  const earlier = { ...okResult(job), ok: false, kind: 'build', error: 'Unity exited with code 1' };
+  const g = fakeCloud({ result: (runs: number) => (runs === 0 ? earlier : fetchFail), cacheObjects: [`unity-builds/${job}/result.json`, `unity-builds/${job}/unity.log`] });
+  try {
+    const { ctx } = ctxFor(job, C.admitCustomer(good()));
+    await assert.rejects(() => runCustomerBuild(ctx), (e: any) => e.kind === 'source' && e.message === fetchFail.error);
+    const del = (k: string) => g.calls.findIndex((c) => c.method === 'DELETE' && c.url.includes(`unity-builds%2F${job}%2F${k}`));
+    const run = g.calls.findIndex((c) => c.url.endsWith(':run'));
+    assert.ok(del('result.json') >= 0 && del('result.json') < run, "the earlier result is cleared before the new execution starts");
+    assert.ok(del('unity.log') >= 0 && del('unity.log') < run, "the earlier Unity log too");
+    assert.equal(ctx.value.logTail, '', 'no Unity log: this execution never ran Unity');
+    assert.ok(!g.calls.some((c) => c.method === 'GET' && c.url.includes(`${job}%2Funity.log`) && g.calls.indexOf(c) > run), 'the old unity.log is never read');
+  } finally {
+    g.restore();
+  }
 });

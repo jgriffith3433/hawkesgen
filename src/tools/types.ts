@@ -113,7 +113,11 @@ export type Tool = {
   /** Model files the tool uses (recorded in recipes). */
   models?: (params: Record<string, any>) => string[];
   /** Rough GPU seconds per output, for estimates. */
-  gpuSeconds?: (params: Record<string, any>) => number;
+  gpuSeconds?: (params: Record<string, any>, inputs?: Record<string, any>) => number;
+  /** Which kind of run a job is, when one tool's cost splits by it (motion.from-text with a character or BVH only).
+   * Estimates take their history, and their default, from jobs of the same mode. `inputs` is undefined when the caller
+   * of an estimate didn't say. */
+  estimateMode?: (params: Record<string, any>, inputs?: Record<string, any>) => string;
   /** Set for tools that come from a workflow folder (workflows/). */
   workflow?: { dir: string; source: unknown; models: ModelRef[]; tags: string[] };
   /** Refuses a call before it is queued (throw a GenError saying what to do instead). Runs at submit, after the params are checked. */
@@ -130,4 +134,7 @@ export type Tool = {
    *  `child` prices one child job; null falls back to the estimate. */
   quote?(params: Record<string, any>, q: { project: string; child: (tool: string, params: Record<string, any>) => number; getTool: (id: string) => Tool | null }): { credits: number; breakdown: { label: string; credits: number }[]; tool?: string } | null;
   run(ctx: RunContext): Promise<void>;
+  /** The job ended without its run finishing it (cancelled while no run in this process followed it, or failed after too
+   *  many restarts): releases what it started outside Gen (unity.build: its Cloud Run executions, so none stays queued). */
+  ended?(jobId: string): Promise<unknown>;
 };

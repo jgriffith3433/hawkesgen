@@ -60,6 +60,13 @@ export function setClientDisabled(clientId: string, disabled: boolean) {
 
 const isLoopback = (addr = '') => addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 
+/** Gen calling itself (a pipeline's steps, a judge, a view check): the self token from this machine. */
+export function isSelfCall(req: IncomingMessage): boolean {
+  const header = String(req.headers.authorization ?? '');
+  const sent = header.startsWith('Bearer ') ? header.slice(7).trim() : String(req.headers['x-hawkesgen-key'] ?? '').trim();
+  return !!sent && sent === SELF_TOKEN && isLoopback(req.socket.remoteAddress);
+}
+
 /** The dashboard's sign-in (api.ts /v1/dashboard/signin): an owner or admin key in an HttpOnly, SameSite=Strict cookie,
  *  so the dashboard's links, images and event stream (which can't send a header) work where "this machine" isn't J's PC. */
 export const KEY_COOKIE = 'hg_key';

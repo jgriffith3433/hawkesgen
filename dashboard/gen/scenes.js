@@ -63,7 +63,7 @@ export function initScenes() {
   $('#undoBtn').addEventListener('click', () => W.editor?.undo?.());
   $('#redoBtn').addEventListener('click', () => W.editor?.redo?.());
   bus.on('history', drawUndo);
-  bus.on('save', (s) => { const was = W.unsaved; W.unsaved = ['dirty', 'saving', 'error'].includes(s) ? W.active : null; if (was !== W.unsaved) drawTabs(); });
+  bus.on('save', (s) => { const was = W.unsaved; W.unsaved = ['dirty', 'saving', 'error', 'offline'].includes(s) ? W.active : null; if (was !== W.unsaved) drawTabs(); });
   bus.on('sceneTitle', ({ id, title }) => { const t = W.tabs.find((x) => x.id === id); if (t && t.title !== title) { t.title = title; keepTabs(); drawTabs(); } const l = W.list.find((x) => x.id === id); if (l) { l.title = title; drawList(); } });
   bus.on('sceneRendered', () => loadList());
   bus.on('jobDone', () => { if (W.list.length) loadList(); });
@@ -307,8 +307,15 @@ function drawAction() {
   if (a) { b.replaceChildren(icon(a.icon ?? 'download'), h('span', { class: 'btn-label' }, a.label)); b.title = a.label; }
 }
 function drawUndo() {
-  $('#undoBtn').disabled = !W.editor?.canUndo?.();
-  $('#redoBtn').disabled = !W.editor?.canRedo?.();
+  const u = $('#undoBtn');
+  const r = $('#redoBtn');
+  u.disabled = !W.editor?.canUndo?.();
+  r.disabled = !W.editor?.canRedo?.();
+  // Labelled steps (an AI turn, a delete toast): "Undo: AI added 3 clips (Ctrl+Z)"; otherwise the plain shortcut.
+  const ul = W.editor?.undoLabel?.();
+  const rl = W.editor?.redoLabel?.();
+  u.title = ul ? `Undo: ${ul} (Ctrl+Z)` : 'Undo (Ctrl+Z)';
+  r.title = rl ? `Redo: ${rl} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)';
 }
 export const refreshBar = () => { drawAction(); drawUndo(); };
 

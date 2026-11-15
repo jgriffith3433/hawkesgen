@@ -10,7 +10,7 @@ import crypto from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { paths, loadSettings, saveSettings, FLEET_MAX, env } from './config.ts';
 import { primePlatform } from './platform.ts';
-import { authenticate, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
+import { authenticate, isSelfCall, canProject, dashboardClient, KEY_COOKIE, fixedProject, requireRole, createClient, listClients, setClientDisabled, type Client } from './auth.ts';
 import { publicJob, publicText } from './publictext.ts';
 import { orgCreditsOn } from './orgcredits.ts';
 import { DASH_COOKIE, DASH_DAYS, googleClientId, googleClientIdAny, checkGoogleToken, signSession, verifyGoogle } from './dashauth.ts';
@@ -31,6 +31,7 @@ import * as storage from './storage.ts';
 import { startUpload, finishUpload } from './bigupload.ts';
 import { lodSummary, lodSummaries, pickLod, queueLods, backfillLods, pruneLods, lodStatus } from './lod.ts';
 import { usageSummary } from './usage.ts';
+import { readRunpodLive } from './providers/gpu/runpodLive.ts';
 import { listPresets, getProjectPresets, saveProjectPresets } from './presets.ts';
 import * as fleet from './providers/comfy/fleet.ts';
 import * as fleetImage from './providers/comfy/image.ts';
@@ -164,10 +165,14 @@ function withLods<T extends { items: any[] }>(list: T): T {
  *  ("Response size was too large", 2026-10-31: a 41 MB Unity build couldn't be downloaded), but streams chunked ones. */
 const CHUNK_OVER = 30 * 1024 * 1024;
 const onCloudRun = () => Boolean(process.env.K_SERVICE);
+/** Content-Length for a response of n bytes, or nothing (so Node sends it chunked) when Cloud Run would refuse it. Every route
+ *  that streams a file uses this: the CDN's origin route once sent the bucket's length for a 70 MB build, Cloud Run dropped
+ *  the response, and cdn.hawkesgen.ai answered 502 to every download (2026-11-13). */
+const lengthHeader = (n: number): Record<string, number> => (onCloudRun() && n > CHUNK_OVER ? {} : { 'Content-Length': n });
 
 function serveFile(req: IncomingMessage, res: ServerResponse, file: string, mime = mimeOf(file), extra: Record<string, string> = {}) {
   const stat = fs.statSync(file);
-  const length = (n: number) => (onCloudRun() && n > CHUNK_OVER ? {} : { 'Content-Length': n });
+  const length = lengthHeader;
   const range = /bytes=(\d*)-(\d*)/.exec(String(req.headers.range ?? ''));
   if (range) {
     const start = range[1] ? Number(range[1]) : 0;
@@ -362,8 +367,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   noteRoute(method, route);
 
   // The request limiter (src/ratelimit.ts): a token bucket per caller and class of route, before any routing.
-  // /v1/health and the Stripe webhook are never limited.
-  const wait = limitRequest(req, method, route);
+  // /v1/health and the Stripe webhook are never limited, and neither is Gen calling itself: a job's own steps were
+  // limited as one caller per project, so a batch of jobs started together failed each other ("a lot at once").
+  const wait = isSelfCall(req) ? null : limitRequest(req, method, route);
   if (wait !== null) {
     res.writeHead(429, { 'Content-Type': 'application/json; charset=utf-8', 'Retry-After': String(wait), 'Cache-Control': 'no-store' });
     return void res.end(JSON.stringify({ error: `That's a lot at once: wait ${wait} second${wait === 1 ? '' : 's'}, then try again.`, retryAfter: wait }));
@@ -506,12 +512,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       if (!r) return send(res, 404, { error: 'Not found' });
       res.writeHead(200, {
         'Content-Type': st.safeMime(r.headers.get('content-type')),
-        ...(r.headers.get('content-length') ? { 'Content-Length': r.headers.get('content-length')! } : {}),
+        ...(Number(r.headers.get('content-length')) > 0 ? lengthHeader(Number(r.headers.get('content-length'))) : {}),
         'Cache-Control': 'public, max-age=31536000, immutable', 'Access-Control-Allow-Origin': '*', 'X-Content-Type-Options': 'nosniff',
       });
       if (method === 'HEAD' || !r.body) { await r.body?.cancel().catch(() => {}); return res.end(); }
       const { Readable } = await import('node:stream');
-      Readable.fromWeb(r.body as any).pipe(res);
+      // pipeline: a bucket read that fails part way ends the response instead of leaving it open.
+      const { pipeline } = await import('node:stream/promises');
+      await pipeline(Readable.fromWeb(r.body as any), res).catch(() => {});
       return;
     }
     if (route === '/v1/health') {
@@ -520,6 +528,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       // admin key (anyone else gets the cached answer, so it can't be used to skip the cache). Not an HTTP cache: no headers.
       let deep = false;
       if (q('deep') === '1') { try { const c = authenticateRequest(req); deep = !!c && c.role !== 'user'; } catch { /* not signed in: cached answer */ } }
+      // This instance answering its lane's health: Hawkes Studio hears that the lane runs this deploy (studioannounce.ts).
+      void import('./studioannounce.ts').then((m) => m.announceDeployed()).catch(() => {});
       return send(res, 200, deep ? healthBody(true) : cachedHealth());
     }
 
@@ -662,9 +672,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
 
     await primePlatform(req);
     const client = authenticateRequest(req);
-    // The app asks "who am I?" on every visit: a signed-out visitor (no key sent) is told "nobody" rather than a 401, so a
-    // first visit logs no error in the browser's console. A key that's sent and refused is still a 401 (2026-11-08).
-    if (!client && route === '/v1/users/me' && method === 'GET' && !req.headers.authorization) return send(res, 200, { user: null });
+    // /v1/users/me stays a real auth check for API and MCP clients (401 with no key). The web app skips that probe when
+    // there is no session hint (hg.in); see dashboard/gen/index.html and account.js loadMe.
     if (!client) return send(res, 401, { error: 'Send an API key (Authorization: Bearer hg_...) or sign in' });
     // The editors connected to this account's MCP (src/genoauth.ts): listed, and disconnected one at a time.
     if (route === '/v1/users/me/connections' && method === 'GET') {
@@ -1798,8 +1807,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
         account = { at: Date.now(), value: await fleet.checkAccount().catch((e) => ({ error: e.message })) };
       }
       const busy = Object.fromEntries([...queue.busy.entries()]);
+      const runpod = await readRunpodLive().catch((e) => ({ error: String(e?.message ?? e) }));
       return send(res, 200, {
-        servers, error, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
+        servers, error, runpod, settings: { ...loadSettings().fleet, max: FLEET_MAX }, retry: retry.state, lastFailure, account: account.value,
         busy, autoStart: queue.autoStartState(), families: Object.fromEntries(queue.families), types: fleet.TYPES, regions: fleet.REGIONS, defaultType: fleet.DEFAULT_TYPE, diskPerMonth: fleet.DISK_PER_MONTH,
         disks: machines.lastDisks(),
       });

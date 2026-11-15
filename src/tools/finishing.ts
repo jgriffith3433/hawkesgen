@@ -109,7 +109,7 @@ export const audioScoreTool: Tool = {
     const takes: string[] = [];
     for (const req of musicRequests(sections, { bpm: fit.bpm, crossfade: xf, key: p.key, seed: p.seed })) {
       ctx.step(`music for section ${req.section + 1} of ${sections.length} (${sections[req.section].mood})`);
-      takes.push(firstAsset(await child(ctx, gen, `music-${req.section}`, { tool: 'audio.music', params: req.params, inputs: {} }), 'audio').path);
+      takes.push((await firstAsset(await child(ctx, gen, `music-${req.section}`, { tool: 'audio.music', params: req.params, inputs: {} }), 'audio')).path);
     }
     ctx.step('fitting the music to the cut');
     const out = ctx.tmp('score.wav');
@@ -153,7 +153,7 @@ export const audioAmbienceTool: Tool = {
     const beds: string[] = [];
     for (const [i, b] of plan.beds.entries()) {
       ctx.step(`ambience for ${b.place}`);
-      beds.push(firstAsset(await child(ctx, gen, `bed-${i}`, { tool: 'audio.sfx', params: { text: b.prompt, duration: b.seconds, loop: true, provider: 'open' }, inputs: {} }), 'audio').path);
+      beds.push((await firstAsset(await child(ctx, gen, `bed-${i}`, { tool: 'audio.sfx', params: { text: b.prompt, duration: b.seconds, loop: true, provider: 'open' }, inputs: {} }), 'audio')).path);
     }
     const out = ctx.tmp('ambience.wav');
     await ff(['-y', ...beds.flatMap((f) => ['-i', f]), '-filter_complex', ambienceGraph(plan, Number(p.crossfade) || 0.75), '-map', '[out]', '-ar', '48000', '-c:a', 'pcm_s16le', out], { signal: ctx.signal });
@@ -523,12 +523,12 @@ export const videoTrailerTool: Tool = {
       // Rough spans for the score's tempo (the compose's exact spans differ only by the short transitions).
       let t = 0;
       const spans = clips.map((c) => { const len = c.out != null ? c.out - c.in : c.clip === 1 + cardFiles.length ? 3 : 2; const s = { start: r3(t), end: r3(t + len) }; t += len; return s; });
-      const score = firstAsset(await child(ctx, gen, 'score', { tool: 'audio.score', params: { spans, length: r3(t), mood: p.mood || 'epic', ...(p.style ? { style: p.style } : {}) }, inputs: {} }), 'audio');
+      const score = await firstAsset(await child(ctx, gen, 'score', { tool: 'audio.score', params: { spans, length: r3(t), mood: p.mood || 'epic', ...(p.style ? { style: p.style } : {}) }, inputs: {} }), 'audio');
       audio.push(`asset:${score.id}`);
       tl.audio = [{ audio: 0, volume: 0.8, fadeOut: 1.5, duck: 'sidechain', duckTo: 0.35 }];
     }
     const cut = await child(ctx, gen, 'cut', { tool: 'video.compose', params: { timeline: tl, width: size.width, height: size.height, fps: size.fps, fit: 'crop', poster: false }, inputs: { clips: [v, ...cardFiles, endFile], ...(audio.length ? { audio } : {}) } });
-    const made = firstAsset(cut, 'video');
+    const made = await firstAsset(cut, 'video');
     if (ctx.done < 1) await ctx.emit({ data: fs.readFileSync(made.path), ext: '.mp4', title: 'trailer', meta: { from: made.id, seconds: cut.result?.duration ?? plan.seconds, title: plan.title } });
     ctx.result({ plan, seconds: cut.result?.duration ?? plan.seconds, cut: made.id });
   },
@@ -585,7 +585,7 @@ export const videoDeliverTool: Tool = {
         params: { ...common, title: p.title, ...(p.story ? { story: p.story } : {}), ...(p.cast ? { cast: p.cast } : {}), titleCard: p.titles !== false, credits: p.titles !== false, captionMode: wantCaptions ? p.captionMode : 'none', ...(p.captionList ? { captionList: p.captionList } : {}) },
         inputs: { video: v, ...(ctx.inputs.captions ? { captions: ctx.inputs.captions } : {}) },
       });
-      master = `asset:${firstAsset(job, 'video').id}`;
+      master = `asset:${(await firstAsset(job, 'video')).id}`;
       entries.push(...entryOf(job, 'master'));
     } else entries.push({ kind: 'master', title: 'master', asset: null, format: 'mp4', width: src.width, height: src.height, seconds: r3(src.duration), for: 'the cut as given' });
     const own = src.width && src.height ? Object.entries(ASPECTS).find(([, a]) => Math.abs(a.w / a.h - src.width! / src.height!) < 0.02)?.[0] : null;

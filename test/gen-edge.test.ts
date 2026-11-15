@@ -146,3 +146,23 @@ test('a page during a restart: a short plain page, not Google\'s', async () => {
   assert.equal(res.status, 503);
   assert.match(await res.text(), /restarting/);
 });
+
+test("a plain-text 429 from upstream on the API comes back as JSON with Retry-After; Gen's own JSON 429 passes through", async () => {
+  const real = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => new Response('Rate exceeded.', { status: 429, headers: { 'Content-Type': 'text/plain' } })) as typeof fetch;
+    const res = await worker.fetch(new Request('https://hawkesgen.ai/v1/jobs/j_1'), env);
+    assert.equal(res.status, 429);
+    assert.match(res.headers.get('Content-Type')!, /json/);
+    assert.ok(Number(res.headers.get('Retry-After')) >= 1);
+    const body: any = await res.json();
+    assert.equal(body.kind, 'busy');
+    assert.ok(body.retryAfter >= 1 && body.error);
+    globalThis.fetch = (async () => new Response('{"error":"slow down","retryAfter":7}', { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } })) as typeof fetch;
+    const own = await worker.fetch(new Request('https://hawkesgen.ai/v1/jobs/j_1'), env);
+    assert.equal(own.headers.get('Retry-After'), '7');
+    assert.equal(((await own.json()) as any).retryAfter, 7);
+  } finally {
+    globalThis.fetch = real;
+  }
+});

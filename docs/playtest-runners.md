@@ -30,7 +30,9 @@ POST /v1/jobs
 - `args`: a desktop build's command line (strings, at most 32).
 
 Everything else (`scenario`, `mode`, `options`, `seed`, `speed`, `timeout`, `bootTimeout`, `width`/`height`,
-`shotEvery`) means what it always did. `peers` (multiplayer) is web only for now.
+`shotEvery`) means what it always did. `peers` (multiplayer) is web only for now. Phone runs (`mobile: true`,
+390x844 touch, iPhone 13 + DPR 2) also apply 4x CPU + Slow 4G over CDP and put the load budget on `result.phone`
+(`mbBeforeGameplay`, `secondsToGameplay`, `fpsP5`, top assets) plus matching `metrics.phone.*` keys.
 
 ## What Gen never does
 

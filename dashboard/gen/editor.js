@@ -9,8 +9,9 @@
 
 import { $, $$, h, api, toast, bus, icon, mediaInfo, fmt, fileUrl, plainError, ApiError } from './lib.js';
 import { trouble } from './trouble.js';
-import { P, take, save, canUndo, canRedo, doUndo, doRedo, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, retryClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
+import { P, take, save, canUndo, canRedo, doUndo, doRedo, undoLabel, redoLabel, remember, changed, clearHistory, newId, clipEnd, clipLength, selectedClips, setClip, trackOf, tracks, setTrack, isVisual, hasSound, isStill, isMagnetic, docLength, defaultTrack, startFor, PROGRESS, stopClip, retryClip, splitAt, deleteSelected, duplicateSelected, addClip, onTrack, mainTrack } from './project.js';
 import { seek, pause, frameAt, mixdown, recordTimeline, refresh } from './player.js';
+import { TITLE_PRESETS, titlePreset, titleUnit, titleTiming } from './titles.js';
 import { fit, timelineRefusal, viewState, setView } from './timeline.js';
 import { openExport, clipTools } from './tools.js';
 import { libraryPicker } from './studio.js';
@@ -43,7 +44,7 @@ for (const kind of ['video', 'image', 'audio']) {
       refresh();
     },
     async unmount() { keepView(); pause(); await save(); P.active = false; $('#staleBar')?.remove(); },
-    undo: doUndo, redo: doRedo, canUndo, canRedo, save,
+    undo: doUndo, redo: doRedo, canUndo, canRedo, undoLabel, redoLabel, save,
     action: ACTION[kind],
     rename(title) { remember(); P.doc.title = title; changed(); },
     accepts: (it) => !timelineRefusal(it),
@@ -219,10 +220,12 @@ export function composable() {
   for (const c of P.doc.clips) {
     if (trackOf(c.track)?.hidden) continue;
     if (c.kind === 'audio') continue;
-    if (c.kind === 'text') { if (c.x != null || c.y != null || c.size != null || c.rotation) return false; continue; }
+    if (c.kind === 'text') { if (c.title) return false; if (c.x != null || c.y != null || c.size != null || c.rotation) return false; continue; }
     if (c.kind === 'fill') return false;
     if (c.track !== main) return false;
     if (c.w != null || c.x != null || c.y != null || c.rotation || (c.opacity ?? 1) !== 1 || (c.blend && c.blend !== 'normal')) return false;
+    // Push is drawn in the browser; video.compose only approximates it, so a cut with push records here to match preview.
+    if (c.transition === 'push') return false;
   }
   // The main track plays as one cut from 0: no gaps.
   let at = 0;
@@ -413,7 +416,20 @@ function clipPanel(c) {
     ta.addEventListener('focus', () => { typing = true; first = true; });
     ta.addEventListener('input', () => { set({ text: ta.value }, first); first = false; });
     ta.addEventListener('blur', () => { typing = false; drawInspector(); });
-    quick.push(ta, swatches(c.color ?? '#ffffff', (v) => set({ color: v })),
+    const preset = titlePreset(c.title);
+    if (preset) {
+      // A title: the words (and the second line), color, accent, size and how long it takes to come in and go out.
+      let first2 = true;
+      const t2 = preset.sub ? h('textarea', { rows: '1', placeholder: preset.sub, 'data-title-second': '1' }, c.text2 ?? '') : null;
+      if (t2) { t2.addEventListener('focus', () => { typing = true; first2 = true; }); t2.addEventListener('input', () => { set({ text2: t2.value || null }, first2); first2 = false; }); t2.addEventListener('blur', () => { typing = false; drawInspector(); }); }
+      const unit = titleUnit(P.doc.width, P.doc.height), len = clipLength(c), tm = titleTiming(c);
+      quick.push(h('div', { class: 'chips', 'data-title-presets': '1' }, ...TITLE_PRESETS.map((p) => chip(p.label, p.id === c.title, () => set({ title: p.id }), p.about))),
+        ta, ...(t2 ? [t2] : []), swatches(c.color ?? '#ffffff', (v) => set({ color: v })),
+        slider('Size', c.size ?? preset.size, { min: 0.01, max: 0.3, step: 0.005, show: (v) => `${Math.round(v * unit)} px` }, (v, f) => set({ size: v }, f)),
+        slider('Comes in', tm.inD, { min: 0, max: Math.max(0.1, len * 0.4), step: 0.05, show: (v) => `${v.toFixed(2)} s` }, (v, f) => set({ animIn: v }, f)),
+        slider('Goes out', tm.outD, { min: 0, max: Math.max(0.1, len * 0.4), step: 0.05, show: (v) => `${v.toFixed(2)} s` }, (v, f) => set({ animOut: v }, f)),
+        h('div', { class: 'chips' }, chip('Plain words', false, () => set({ title: null, text2: null, accent: null, animIn: null, animOut: null }), 'Turn it back into ordinary words')));
+    } else quick.push(ta, swatches(c.color ?? '#ffffff', (v) => set({ color: v })),
       slider('Size', c.size ?? 0.055, { min: 0.01, max: 0.4, step: 0.005, show: (v) => `${Math.round(v * P.doc.height)} px` }, (v, f) => set({ size: v }, f)),
       h('div', { class: 'chips' }, chip('Caption', c.size == null && c.y == null, () => set({ size: null, y: null, x: null, box: null }), 'Bottom center, on a soft box'), chip('Box behind', Boolean(c.box), () => set({ box: c.box ? null : 'rgba(0,0,0,.45)' }))));
   }
@@ -451,6 +467,7 @@ function clipPanel(c) {
     c.kind === 'text' ? h('div', { class: 'row ins-row' },
       h('select', { title: 'Font', onchange: (e) => set({ font: e.target.value === 'Inter' ? null : e.target.value }) }, ...FONTS.map((f) => h('option', { value: f, selected: f === (c.font ?? 'Inter') }, f))),
       h('select', { title: 'Weight', onchange: (e) => set({ weight: Number(e.target.value) === 700 ? null : Number(e.target.value) }) }, ...[300, 400, 600, 700, 900].map((w) => h('option', { value: String(w), selected: w === (c.weight ?? 700) }, String(w))))) : '',
+    c.title ? h('div', { class: 'field' }, 'Accent color (the bar, dot or line)', swatches(c.accent ?? '#ffffff', (v) => set({ accent: v }))) : '',
     c.kind === 'text' ? h('div', { class: 'chips' }, ...['left', 'center', 'right'].map((a) => chip(a[0].toUpperCase() + a.slice(1), (c.align ?? 'center') === a, () => set({ align: a === 'center' ? null : a })))) : '',
     hasSound(c) ? h('div', { class: 'ins-grid' },
       num('Fade in', c.fadeIn ?? 0, (v) => set({ fadeIn: v > 0 ? v : null }), { step: 0.1, min: 0, unit: 's' }),

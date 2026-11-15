@@ -281,7 +281,9 @@ export function answerText(r: any, schema?: unknown): string {
 /** One request through Claude Code, with the cap, the timeout and retries on rate limits. */
 export async function ask(input: AskInput, signal?: AbortSignal, opts: AskOptions = {}) {
   const timeoutMs = opts.timeoutMs ?? loadSettings().claude.timeoutMinutes * 60_000;
-  const delays = opts.retryDelaysMs ?? [20_000, 60_000, 120_000];
+  // A turn someone is waiting on (`who`) gets one quick retry on a rate limit, then a plain error they can retry:
+  // minutes of silent backoff read as "it just thinks forever". Gen's own calls keep the long backoff.
+  const delays = opts.retryDelaysMs ?? (opts.who ? [5_000] : [20_000, 60_000, 120_000]);
   for (let attempt = 0; ; attempt++) {
     const cl = loadSettings().claude;
     const release = await gate.acquire({ signal, who: opts.who, maxPerUser: cl.maxPerUser, maxWaitMs: cl.maxWaitSeconds * 1000, onWait: opts.onWait });

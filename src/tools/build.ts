@@ -6,7 +6,7 @@ import { getAsset } from '../library.ts';
 import path from 'node:path';
 import type { Tool } from './types.ts';
 import { runBuild, type BuildSpec, type BuildHooks } from '../providers/builder/builder.ts';
-import { runCloudBuild, cloudConfig, cloudBuildStarted, forgetFinishedBuild, releaseFinishedBuild, regionsOf, type BuildOptions } from '../providers/builder/cloudrun.ts';
+import { runCloudBuild, cloudConfig, cloudBuildStarted, forgetFinishedBuild, releaseFinishedBuild, regionsOf, endCloudBuild, type BuildOptions } from '../providers/builder/cloudrun.ts';
 import { resolveMachine, nextBigger, customerJobForMachine, type Machine } from '../providers/builder/sizes.ts';
 import { isCustomerMode, admitCustomer, customerBuildOf, freshCustomerToken, dropCustomerSecrets, TOKEN_KIND, probeProject, unityImages, jobForVersion, customerJobFor, assertCustomerBuildsOn } from '../providers/builder/customer.ts';
 import { refundOrgCharge } from '../orgcredits.ts';
@@ -89,6 +89,8 @@ export const unityBuild: Tool = {
     if (!['WebGL', 'StandaloneWindows64', 'Android'].includes(String(params.target ?? 'WebGL'))) throw new GenError('target must be one of WebGL, StandaloneWindows64, Android', { status: 400, kind: 'params' });
     return params;
   },
+  // A build cancelled or failed outside its run still had executions in Cloud Run: they are ended (none stays queued).
+  ended: (jobId: string) => endCloudBuild(jobId),
   async run(ctx) {
     const p = ctx.params;
     if (isCustomerMode(p)) return runCustomerBuild(ctx);
@@ -246,6 +248,7 @@ export async function runCustomerBuild(ctx: RunContext) {
         machine: { name: ran.name, cpu: ran.cpu, memoryGiB: ran.memoryGiB }, machineAsked: asked.name,
         ...(retried ? { retried: { reason: 'out of memory', from: retried.from.name, to: retried.to.name, note: `ran out of memory on ${retried.from.name} (${retried.from.cpu} vCPU, ${retried.from.memoryGiB} GiB); built again on ${retried.to.name} (${retried.to.cpu} vCPU, ${retried.to.memoryGiB} GiB)` }, totalSeconds: Math.round(spent.seconds), totalCost: Math.round(spent.cost * 1000) / 1000 } : {}),
         ...(warning ? { warnings: [warning] } : {}),
+        ...(r.recovered ? { recovered: 'kept from an earlier execution of this job that had already built it' } : {}),
       });
       if (b.check) await releaseFinishedBuild(ctx.job.id);
       if (!r.ok) throw new GenError(r.error ?? 'build failed', { kind: r.kind ?? 'build' });

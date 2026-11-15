@@ -84,7 +84,20 @@ Cooldowns live in memory, so a restart gives every provider a new chance. A succ
 **Cold starts.** An endpoint that hasn't run a job in Gen for 20 minutes (Modal's `scaledown_window`) has no worker up, so
 the next job starts one: it pulls the image and starts ComfyUI, which takes several minutes. The job says so up front
 ("starting a modal GPU (none has run for a while; a cold start takes several minutes)") instead of "waiting for a free
-GPU", and 429/503 answers while it starts get the cold start's 12 extra minutes before the provider cools down.
+GPU", and 429/503 answers while it starts get the cold-start wait (`coldStartSeconds`, default 12 minutes). On a cold
+endpoint, RunPod's "failed to assign worker" and a headers/pre-worker timeout are the worker still starting too: each POST
+gives up before RunPod's ~5.5 minute load-balancer hold and the next goes in, until the cold-start wait runs out, then the
+endpoint cools as capacity. (2026-11-10: Pixal3D's worker took longer than one hold; failing over at the first one meant
+no 3D model could ever be made.) `waitForInstanceMs` is the short busy wait only when `lastOk` is fresh; true cold uses
+the longer cold-start wait. 401/403 fail over at once (auth cool).
+
+**RunPod LOAD_BALANCER job counters.** Gen's RunPod endpoints are load-balancer type: requests go straight to a worker,
+so RunPod's in-progress job counters stay **0 even while a worker is serving Gen**. That reading is normal, not a stuck
+or "zombie" worker, and it is **not a reason to recycle** (Jaycee, 2026-11-10: hawkes-gen-gpu showed idle/ready with
+0 jobs while `currentSpendPerHr` was 0). What bills is `currentSpendPerHr` / the fleet card's RunPod spend block
+(`GET /v1/fleet` → `runpod`, `src/providers/gpu/runpodLive.ts`). Leave idle workers alone; Gen's endpoint idle timeout
+and auto-prune handle them. `--recycle` below is only for warm workers still on an **old image** after an image swap
+(FlashBoot), not for 0-job counters.
 
 **Credit.** RunPod starts no worker for an account at or below $0, and its gateway doesn't say so: requests just wait
 (2026-11-01: four playtests sat at "opening a browser on RunPod"). Gen reads the balance every 2 minutes (`credit.ts`,
@@ -186,7 +199,10 @@ the same path a dropped Cloud Run stream takes. But a host may stop an instance 
 
 - **Modal:** the generated app keeps containers 20 minutes after the last request (`scaledown_window=1200`).
 - **RunPod:** idle workers stop after the endpoint's idle timeout. So RunPod endpoints default to `graphLimitSeconds: 300`,
-  and longer graphs (video) go to the next provider.
+  and longer graphs (video) go to the next provider. A RunPod worker lets any graph run 1800 s (the 300 s still decides which graphs go there): when the load balancer
+  ends Gen's request and the run's heartbeat is still fresh, Gen sends the same request again, the worker attaches it
+  to the run already going there, and so the worker always has a request open (src/providers/cloudrun/run.ts). A run
+  that still passes its limit goes to the fleet only when the fleet can start.
 
 ## Secrets
 
@@ -233,11 +249,13 @@ datacenter: pick one with L40S to spare.
 **A new image on RunPod** (2026-10-30): `node tools/gpu-providers/runpod.mjs --image ghcr.io/jgriffith3433/hawkes-gen-gpu:<tag>
 --update <endpoint id> --apply` swaps the image in the endpoint's own template (env, worker token and disk kept). New workers
 start on it, but **RunPod keeps reusing a warm worker on the old image** (FlashBoot): add `--recycle` to end those (a job
-running on one is cut off and retried). The tag is `<comfy tag>-<context hash>` (`image-context.mjs` prints it; line endings
+running on one is cut off and retried). That `--recycle` is only for the old-image case after a swap — not for idle
+workers whose LOAD_BALANCER job counters read 0 (see above). The tag is `<comfy tag>-<context hash>` (`image-context.mjs` prints it; line endings
 don't count, so a Windows checkout names the tag GitHub's build pushes). Check it exists before pointing an endpoint at it
 (`docker manifest inspect`): a missing tag leaves every new worker unhealthy and RunPod holds requests until they time out.
-The first start on a host pulls about 6 GB, minutes: Gen waits up to 12 minutes past its usual wait for headers
-(`run.ts COLD_START_MS`), and RunPod's 400 "failed to assign worker" (no GPU of its types free) waits like a busy service.
+The first start on a host pulls about 6 GB, minutes: true cold (429/503 while booting) gets the cold-start wait
+(`coldStartSeconds` / 12 minutes). RunPod's 400 "failed to assign worker" on a warm endpoint waits like a busy
+service; on a cold one it gets the cold-start wait.
 **A new image on Modal:** `node tools/gpu-providers/modal.mjs --image <image>` rewrites `.data/modal/modal_app.py`, then
 `uvx --from modal modal deploy .data/modal/modal_app.py` with `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` from Gen's `.env` in the
 environment (the CLI reads them: no `modal setup`). Two things the app must keep (2026-10-31; before them Modal never ran a

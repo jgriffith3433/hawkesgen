@@ -24,7 +24,8 @@ import crypto from 'node:crypto';
 import type { Tool } from './types.ts';
 import { GenError, run } from '../util.ts';
 import { getAsset } from '../library.ts';
-import { ask, usageOf } from '../providers/anthropic.ts';
+import { localPath } from '../storage.ts';
+import { ask, usageOf, claudeUnavailable } from '../providers/anthropic.ts';
 // @ts-ignore: plain JS client
 import { HawkesGen } from '../../clients/js/hawkesgen.mjs';
 import { SELF_TOKEN, SELF_URL } from '../auth.ts';
@@ -168,8 +169,9 @@ export const assetMakeTool: Tool = {
         // What Claude looks at per candidate: the image, three frames of a video, or four angle stills of a mesh.
         const views: string[][] = [];
         for (const [k, a] of assets.entries()) {
-          if (a.kind === 'image') views.push([a.path]);
-          else if (a.kind === 'video') views.push(await videoFrames(a.path, ctx.tmp(`cand-${k}`), ctx.signal).catch(() => []));
+          // Each candidate's file on this instance first (it may have been made, or reused, elsewhere).
+          if (a.kind === 'image') views.push([await localPath(a, `candidate ${k}`)]);
+          else if (a.kind === 'video') views.push(await videoFrames(await localPath(a, `candidate ${k}`), ctx.tmp(`cand-${k}`), ctx.signal).catch(() => []));
           else if (a.kind === 'mesh') views.push(await meshAngles(gen, a, ctx, k).catch(() => []));
           else views.push([]);
         }
@@ -184,6 +186,8 @@ export const assetMakeTool: Tool = {
             (meshPick ? `the candidates, 4 orthographic stills each (front, right, back, left), candidates 0 to ${views.length - 1} in order.` :
               per > 1 ? `the candidates, ${per} frames each (start, middle, end of its video), candidates 0 to ${views.length - 1} in order.` :
                 `the candidates 0 to ${views.length - 1}, in order.`);
+          // Claude out of reach (the plan's limit, an outage): the candidates are made and paid for, so keep the first
+          // rather than throw them all away; the pick says why.
           const r = await ask({
             system: 'You are the art director for a small game studio. Choose the candidate that best fits the brief, the criteria, the art direction and the canon. Prefer clean, usable game assets: correct subject, on-model with the references, readable silhouette, no artifacts, no text unless asked. A candidate that breaks canon loses even if it looks better.',
             prompt: `Brief (the picked step's params): ${JSON.stringify(steps[i].params ?? {}).slice(0, 2000)}
@@ -194,9 +198,13 @@ ${ctx.params.canon ? `Canon: ${String(ctx.params.canon).slice(0, 3000)}
 ` : ''}
 ${layout}`,
             images: [...refs, ...views.flat()], schema: PICK_SCHEMA, effort: 'medium', maxTokens: 4000,
-          }, ctx.signal);
-          ctx.usage(usageOf(r, `${r.model} pick`));
-          picked = JSON.parse(r.text);
+          }, ctx.signal).catch((e: any) => {
+            if (ctx.signal?.aborted || !claudeUnavailable(e)) throw e;
+            ctx.log(`no pick (${String(e.message).slice(0, 200)}): kept candidate 0`);
+            return null;
+          });
+          if (r) ctx.usage(usageOf(r, `${r.model} pick`));
+          picked = r ? JSON.parse(r.text) : { best: 0, reason: 'Claude was not available to choose, so the first candidate was kept' };
           const best = Math.max(0, Math.min(pickJobs.length - 1, Number(picked.best) || 0));
           winner = pickJobs[best];
           ctx.log(`picked candidate ${best}: ${picked.reason}`);
@@ -216,7 +224,7 @@ ${layout}`,
         if (!a) continue;
         const sub = String(o.title ?? a.title ?? k + 1).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
         const name = made[s.i].outputs.length > 1 ? `${s.name}.${sub || k + 1}` : s.name;
-        await ctx.emit({ data: fs.readFileSync(a.path), mime: a.mime, seed: a.seed, title: name, meta: { save: name, step: s.i + 1, from: a.id } });
+        await ctx.emit({ data: fs.readFileSync(await localPath(a, `step ${s.i + 1}'s ${name}`)), mime: a.mime, seed: a.seed, title: name, meta: { save: name, step: s.i + 1, from: a.id } });
         final.push({ save: name, from: a.id });
       }
     }
@@ -253,7 +261,7 @@ async function meshAngles(gen: any, asset: { id: string }, ctx: { job: { id: str
   for (const name of ['front', 'right', 'back', 'left']) {
     const o = (done.outputs ?? []).find((x: any) => String(x.title ?? '').toLowerCase() === `angle/${name}`);
     const a = o ? getAsset(o.asset) : null;
-    if (a?.path && fs.existsSync(a.path)) paths.push(a.path);
+    if (a) paths.push(await localPath(a, `the ${name} still of mesh candidate ${k}`));
   }
   if (paths.length !== 4) throw new GenError(`mesh angles for candidate ${k}: expected 4 stills, got ${paths.length}`);
   ctx.log(`candidate ${k}: 4 angle stills from ${done.id}`);

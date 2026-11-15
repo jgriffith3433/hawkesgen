@@ -109,12 +109,11 @@ test('signup, login, session cookie auth, logout, and API key rotation', async (
   assert.match(rot.body.apiKey, /^hg_/);
   assert.notEqual(rot.body.apiKey, oldKey);
 
-  // Old key should fail when HAWKESGEN_PUBLIC_SAAS=1
+  // Old key should fail when HAWKESGEN_PUBLIC_SAAS=1; anonymous /v1/users/me stays 401 for API clients
   process.env.HAWKESGEN_PUBLIC_SAAS = '1';
   try {
     const anonRes = await reqJson('/v1/users/me');
-    assert.equal(anonRes.status, 200, 'a signed-out visit is told "nobody", not a 401');
-    assert.equal(anonRes.body?.user ?? null, null);
+    assert.equal(anonRes.status, 401, 'API clients with no key still get 401 from /v1/users/me');
 
     const oldKeyRes = await reqJson('/v1/users/me', { headers: { Authorization: `Bearer ${oldKey}` } });
     assert.equal(oldKeyRes.status, 401);
@@ -134,7 +133,7 @@ test('signup, login, session cookie auth, logout, and API key rotation', async (
   process.env.HAWKESGEN_PUBLIC_SAAS = '1';
   try {
     const afterLogout = await reqJson('/v1/users/me', { headers: { Cookie: cookieA } });
-    assert.equal(afterLogout.body?.user ?? null, null, 'the old cookie no longer signs anyone in');
+    assert.equal(afterLogout.status, 401, 'the old cookie no longer signs anyone in');
   } finally {
     delete process.env.HAWKESGEN_PUBLIC_SAAS;
   }

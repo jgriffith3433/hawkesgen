@@ -3,6 +3,9 @@
 
 import { benchTab } from './bench.js';
 import { openStream } from '/gen/stream.js';
+import { installButtonVariants } from '/gen/lib.js';
+
+installButtonVariants();
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -27,7 +30,7 @@ async function api(path, opts = {}) {
 function signIn() {
   if (signIn.open) return;
   signIn.open = true;
-  const b = modal(`<h2>Sign in to Hawkes Gen</h2><div id="sigoogle" style="margin:6px 0 14px"></div>
+  const b = modal(`<h2>Sign in to Hawkes Gen</h2><div id="sigoogle" style="margin:6px 0 14px;background:transparent;color-scheme:dark"></div>
     <details id="sikeys"><summary>Sign in with a key instead</summary>
     <p>Paste an owner or admin key (<code>hg_…</code>). On your PC it's <code>genKey</code> in <code>~/.hawkes/client.json</code>. This browser keeps you signed in for 30 days.</p>
     <div class="row"><input id="sik" type="password" autocomplete="off" style="flex:1" placeholder="hg_…"><button class="primary" id="sigo">Sign in</button></div></details><p class="small muted" id="sierr"></p>`);
@@ -44,7 +47,7 @@ function signIn() {
         callback: ({ credential }) => fetch('/v1/dashboard/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential }) })
           .then(async (r) => { if (r.ok) location.reload(); else $('#sierr', b).textContent = (await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`; }),
       });
-      google.accounts.id.renderButton($('#sigoogle', b), { theme: 'filled_black', size: 'large', text: 'continue_with', shape: 'pill' });
+      google.accounts.id.renderButton($('#sigoogle', b), { theme: 'filled_black', size: 'large', text: 'continue_with', shape: 'pill', locale: 'en' });
     };
     s.onerror = () => { $('#sikeys', b).open = true; $('#sierr', b).textContent = 'Google sign-in could not load: use a key.'; };
     document.head.append(s);
@@ -928,7 +931,7 @@ render.settings = async () => {
 // set, and the mode they're in); "Set up the webhook" points this address's Stripe endpoint at Gen and keeps its secret.
 async function payments() {
   const st = await api('/billing/config');
-  const mode = st.mode === 'live' ? '<b style="color:var(--bad, #c33)">live: real cards are charged</b>' : st.mode === 'test' ? '<b>test: no money moves</b>' : '<span class="muted">not set</span>';
+  const mode = st.mode === 'live' ? '<b style="color:var(--danger)">live: real cards are charged</b>' : st.mode === 'test' ? '<b>test: no money moves</b>' : '<span class="muted">not set</span>';
   const yes = (v) => (v ? '✓ set' : '<span class="muted">not set</span>');
   $('#payments').innerHTML = `<h3>Payments (Stripe)</h3>
     <p class="muted small">People buy credit packs and monthly plans through Stripe Checkout; Stripe's webhook adds the credits, once per payment. Beta uses Stripe's test keys (sk_test_…, card 4242 4242 4242 4242); live uses the live ones.</p>
@@ -973,7 +976,7 @@ async function gpuProviders(s) {
     ? 'No order set: each family runs where its backend setting says (the AWS fleet by default), as before.'
     : `Jobs try them in this order: <b>${esc(r.order.join(' → '))}</b>${Object.keys(r.familyOrder).length ? ` (own orders for ${esc(Object.keys(r.familyOrder).join(', '))})` : ''}. One that refuses (no GPU free, a bad key, unreachable) is skipped for a while and the job goes to the next.`;
   const rc = r.runpodCredit;
-  const credit = !rc || rc.balance == null ? '' : `<p class="small"${rc.low ? ' style="color:var(--bad, #c33)"' : ''}>RunPod balance: <b>$${rc.balance.toFixed(2)}</b>${rc.empty ? ': out of credit, so RunPod is skipped (GPU jobs and playtests go to the next provider). Add funds at runpod.io (Billing).' : rc.low ? ': low. Add funds soon at runpod.io (Billing); at $0 RunPod starts nothing.' : ''} <span class="muted">checked ${esc(fmt(rc.at))}</span></p>`;
+  const credit = !rc || rc.balance == null ? '' : `<p class="small"${rc.low ? ' style="color:var(--danger)"' : ''}>RunPod balance: <b>$${rc.balance.toFixed(2)}</b>${rc.empty ? ': out of credit, so RunPod is skipped (GPU jobs and playtests go to the next provider). Add funds at runpod.io (Billing).' : rc.low ? ': low. Add funds soon at runpod.io (Billing); at $0 RunPod starts nothing.' : ''} <span class="muted">checked ${esc(fmt(rc.at))}</span></p>`;
   $('#gpuProviders').innerHTML = `<h3>GPU providers</h3><p class="muted small">${intro}</p>${credit}
     <table><thead><tr><th>#</th><th>Provider</th><th>Kind</th><th>Where</th><th>GPU</th><th>$/hour</th><th>Families</th><th>Status</th><th>Last error</th><th></th></tr></thead><tbody>
     ${r.providers.map((p) => `<tr><td>${pos(p.id)}</td><td><b>${esc(p.id)}</b></td><td>${esc(p.provider)}</td><td>${esc(p.url ?? '')}</td><td>${esc(p.gpu)}</td><td>${p.pricePerHour != null ? p.pricePerHour.toFixed(2) : ''}</td><td>${esc(p.families.join(', '))}</td><td>${state(p)}</td>
@@ -1012,7 +1015,7 @@ async function claudeAccounts(list) {
          <details style="margin-top:10px"><summary class="small">Or paste a token (any computer, Windows too)</summary>
            <p class="muted small">In a terminal where Claude Code is installed, run <code>claude setup-token</code>, sign in, and paste the line it prints (sk-ant-oat01-…). It lasts a year.</p>
            <div class="row"><input id="catoken" type="password" autocomplete="off" style="flex:1" placeholder="sk-ant-oat01-…"><button class="primary" id="casave">Save token</button></div></details>
-         ${si?.state === 'failed' && si.error ? `<p class="small" style="color:var(--bad, #c33)">${esc(si.error)}</p>` : ''}`}`;
+         ${si?.state === 'failed' && si.error ? `<p class="small" style="color:var(--danger)">${esc(si.error)}</p>` : ''}`}`;
   // A failure redraws the card too: its buttons come back and a failed sign-in shows why in place.
   const again = (p) => p.then((r) => claudeAccounts(r)).catch((e) => { fail(e); claudeAccounts().catch(() => {}); });
   $('#castart', box)?.addEventListener('click', (e) => { e.target.disabled = true; e.target.textContent = 'Starting Claude Code…'; again(post('/claude/signin', { label: $('#calabel', box).value })); });

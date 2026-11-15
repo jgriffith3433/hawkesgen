@@ -19,6 +19,8 @@ import { getJob } from './jobs.ts';
 import { getTool } from './tools/index.ts';
 import { aiCanUse } from './editor.ts';
 import { sceneRef, type Render } from './scenes.ts';
+import { clampTransitionSeconds, isTransitionType } from './transitions.ts';
+import { isTitlePreset, titlePreset, TITLE_PRESETS } from './titles.ts';
 
 export type Role = 'main' | 'video' | 'text' | 'audio' | 'any';
 export type Track = { id: string; name: string; role: Role; magnetic?: boolean; hidden?: boolean; locked?: boolean; mute?: boolean; solo?: boolean; volume?: number; pan?: number; color?: string };
@@ -29,6 +31,8 @@ export type Clip = {
   label?: string; start: number; in: number; out: number; duration?: number | null;
   speed?: number; volume?: number; muted?: boolean; fadeIn?: number; fadeOut?: number;
   text?: string; font?: string; size?: number; weight?: number; color?: string; align?: 'left' | 'center' | 'right'; box?: string | null;
+  /** A title preset (src/titles.ts): this text clip is drawn animated by dashboard/gen/titles.js. `text2` is its second line, `accent` its bar or dot, `animIn` / `animOut` the seconds it takes to come in and go out. */
+  title?: string; text2?: string; accent?: string; animIn?: number; animOut?: number;
   x?: number; y?: number; w?: number | null; rotation?: number; opacity?: number; blend?: typeof BLENDS[number];
   transition?: string; transitionSeconds?: number; zoom?: { from?: number; to?: number; x?: number; y?: number };
   /** The scene this clip plays (a filmed stage, a rendered image, another video, an audio scene's mixdown); `asset` is its render. */
@@ -176,6 +180,10 @@ export function normalize(input: any, kind: Kind = 'video'): Doc {
         ...(c0.size != null ? { size: r4(clamp(num(c0.size, 0.06), 0.005, 1)) } : {}), ...(c0.weight != null ? { weight: clamp(Math.round(num(c0.weight, 700) / 100) * 100, 100, 900) } : {}),
         ...(color(c0.color, null) ? { color: color(c0.color, null)! } : {}), ...(['left', 'center', 'right'].includes(c0.align) ? { align: c0.align } : {}),
         ...(c0.box !== undefined ? { box: color(c0.box, null) } : {}),
+        ...(isTitlePreset(c0.title) ? {
+          title: c0.title, ...(c0.text2 ? { text2: String(c0.text2).slice(0, 300) } : {}), ...(color(c0.accent, null) ? { accent: color(c0.accent, null)! } : {}),
+          ...(c0.animIn != null ? { animIn: r3(clamp(num(c0.animIn, 0), 0, 5)) } : {}), ...(c0.animOut != null ? { animOut: r3(clamp(num(c0.animOut, 0), 0, 5)) } : {}),
+        } : {}),
       } : {}),
       ...(kind === 'fill' ? { color: color(c0.color, '#000000')! } : {}),
       // Placement on the frame: only what differs from "centered, fit to the frame, upright, opaque".
@@ -186,7 +194,7 @@ export function normalize(input: any, kind: Kind = 'video'): Doc {
       ...(c0.opacity != null && num(c0.opacity, 1) !== 1 ? { opacity: r3(clamp(num(c0.opacity, 1), 0, 1)) } : {}),
       ...((BLENDS as readonly string[]).includes(c0.blend) && c0.blend !== 'normal' ? { blend: c0.blend } : {}),
       ...(sceneRef(c0.scene) ? { scene: sceneRef(c0.scene), ...(Number.isFinite(Number(c0.sceneVersion)) ? { sceneVersion: Number(c0.sceneVersion) } : {}) } : {}),
-      ...(c0.transition && c0.transition !== 'cut' ? { transition: String(c0.transition).slice(0, 30), transitionSeconds: clamp(num(c0.transitionSeconds, 0.5), 0.1, 3) } : {}),
+      ...(c0.transition && c0.transition !== 'cut' && isTransitionType(String(c0.transition)) ? { transition: String(c0.transition), transitionSeconds: clampTransitionSeconds(c0.transitionSeconds, 0.5) } : {}),
       ...(c0.zoom && typeof c0.zoom === 'object' ? { zoom: { from: clamp(num(c0.zoom.from, 1), 1, 4), to: clamp(num(c0.zoom.to, 1), 1, 4), x: clamp(num(c0.zoom.x, 0.5), 0, 1), y: clamp(num(c0.zoom.y, 0.5), 0, 1) } } : {}),
     };
     if (!c.asset && !c.job && !c.scene && kind !== 'text' && kind !== 'fill' && !c.failed) continue;
@@ -244,7 +252,7 @@ export function defaultTrack(doc: Doc, kind: Clip['kind']): string {
 }
 
 const VISUAL_KEYS = ['x', 'y', 'w', 'rotation', 'opacity', 'blend'] as const;
-const STYLE_KEYS = ['font', 'size', 'weight', 'color', 'align', 'box'] as const;
+const STYLE_KEYS = ['font', 'size', 'weight', 'color', 'align', 'box', 'accent', 'text2', 'animIn', 'animOut'] as const;
 
 /**
  * Applies edits in order. `clip:<id>` in a generate op's inputs stands for that clip's asset. Returns the new document
@@ -401,9 +409,58 @@ export function applyOps(doc0: Doc, ops: Op[], submit?: Submit, kind: Kind = 'vi
           const c = find(op.id);
           for (const k of ['volume', 'speed', 'muted', 'transition', 'transitionSeconds', 'zoom', 'text', 'label', 'fadeIn', 'fadeOut'] as const) if (k in op) (c as any)[k] = op[k];
           look(c, op);
+          if ('title' in op && c.kind === 'text') {
+            if (op.title === null || op.title === '') delete c.title;
+            else if (isTitlePreset(op.title)) c.title = op.title;
+            else throw new Error(`title is null or ${TITLE_PRESETS.map((x) => x.id).join(', ')}`);
+          }
           if (op.start != null && !isMagnetic(doc, c.track)) c.start = Math.max(0, num(op.start, c.start));
           if (op.transition === 'cut' || op.transition === null) { delete c.transition; delete c.transitionSeconds; }
+          else if (op.transition != null) {
+            if (!isTransitionType(op.transition)) throw new Error(`transition is cut or ${['crossfade', 'fadeblack', 'fadewhite', 'slideleft', 'push'].join(', ')}`);
+            c.transitionSeconds = clampTransitionSeconds(op.transitionSeconds ?? c.transitionSeconds ?? 0.5);
+          } else if (op.transitionSeconds != null && c.transition) {
+            c.transitionSeconds = clampTransitionSeconds(op.transitionSeconds);
+          }
           results.push({ op: 'set', ok: true, id: c.id });
+          break;
+        }
+        case 'transition': {
+          // {"op":"transition","id":"c_...","type":"crossfade","seconds":0.5} add/change; type null|cut removes.
+          const c = find(op.id);
+          const tr = trackOf(doc, c.track);
+          if (!tr || (tr.role !== 'main' && tr.role !== 'video')) throw new Error('transitions sit on a video track');
+          const next = doc.clips.filter((x) => x.track === c.track).sort((a, b) => a.start - b.start);
+          const i = next.findIndex((x) => x.id === c.id);
+          if (i < 0 || i >= next.length - 1 || Math.abs(next[i + 1]!.start - clipEnd(c)) > 0.02) throw new Error('no adjacent clip after this one');
+          const type = op.type ?? op.transition;
+          if (type == null || type === 'cut' || type === '') {
+            delete c.transition;
+            delete c.transitionSeconds;
+            results.push({ op: 'transition', ok: true, id: c.id });
+            break;
+          }
+          if (!isTransitionType(type)) throw new Error(`transition is cut or crossfade, fadeblack, fadewhite, slideleft, push`);
+          c.transition = type;
+          c.transitionSeconds = clampTransitionSeconds(op.seconds ?? op.transitionSeconds ?? c.transitionSeconds ?? 0.5);
+          // A transition can't be longer than either side of the join.
+          const maxT = Math.min(clipLength(c), clipLength(next[i + 1]!)) - 0.05;
+          if (c.transitionSeconds > maxT) c.transitionSeconds = clampTransitionSeconds(Math.max(0.2, maxT));
+          results.push({ op: 'transition', ok: true, id: c.id });
+          break;
+        }
+        case 'title': {
+          // {"op":"title","preset":"lower-third","text":"Alex Rivera","text2":"Director","start":s,"end":s,"track":"<id>"} a styled, animated title.
+          const p = titlePreset(op.preset ?? op.title);
+          if (!p) throw new Error(`preset is one of ${TITLE_PRESETS.map((x) => x.id).join(', ')}`);
+          const start = Math.max(0, num(op.start, 0));
+          const c: Clip = { id: newId(), track: trackFor(op.track, 'text'), kind: 'text', start, in: 0, out: Math.max(0.5, op.end != null ? num(op.end, start + p.length) - start : num(op.seconds, p.length)), text: String(op.text ?? p.sample).slice(0, 2000), title: p.id };
+          if (op.text2 != null || p.sample2) c.text2 = String(op.text2 ?? (op.text == null ? p.sample2 : '')).slice(0, 300);
+          if (!c.text2) delete c.text2;
+          look(c, op);
+          doc.clips.push(c);
+          if (isMagnetic(doc, c.track)) placeMag(c, { start });
+          results.push({ op: 'title', ok: true, id: c.id });
           break;
         }
         case 'text': {

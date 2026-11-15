@@ -10,11 +10,19 @@ export async function loadMe() {
   // Back from Stripe: the page's early /v1/users/me may predate the credits, so wait for the checkout's answer and ask again.
   if (returning) { window.__hgMe = null; await returning.catch(() => {}); returning = null; }
   try {
-    // index.html starts this request before the scripts load; use its answer once, else ask.
+    // index.html starts this request only when hg.in says a session existed; use its answer once.
     const early = window.__hgMe ? await window.__hgMe : null;
     window.__hgMe = null;
-    if (early) { try { state.user = early.ok ? JSON.parse(early.text).user ?? null : null; } catch { state.user = null; } }
-    else state.user = (await api('/v1/users/me')).user;
+    if (early) {
+      try { state.user = early.ok ? JSON.parse(early.text).user ?? null : null; } catch { state.user = null; }
+    } else {
+      // No early probe: only ask /v1/users/me when the session hint is set. Without it, stay signed out and skip the
+      // call — that route is a real 401 for API clients, and a console error on a first visit is noise (f_9f2b737d5561).
+      let hinted = false;
+      try { hinted = localStorage.getItem('hg.in') === '1'; } catch { /* */ }
+      if (hinted) state.user = (await api('/v1/users/me')).user;
+      else state.user = null;
+    }
   } catch { state.user = null; }
   // Signed out there is nothing to ask: /v1/me would only answer 401 (a console error on every anonymous load).
   state.admin = false;
@@ -190,6 +198,8 @@ function loadGoogle() {
 }
 async function signedIn(created, notice) {
   $('#authDialog').close();
+  // Cookie is set; mark the hint so loadMe actually asks /v1/users/me (without hg.in it skips that probe).
+  try { localStorage.setItem('hg.in', '1'); } catch { /* */ }
   await loadMe();
   bus.emit('signedIn', state.user);
   if (created) { toast(notice || `Welcome! You have ${state.user?.credits ?? 0} free credits.`); bus.emit('welcome'); }
@@ -254,6 +264,8 @@ export function initAccount() {
 
 export async function signOut() {
   await api('/v1/users/logout', { method: 'POST' }).catch(() => {});
+  // Drop the session hint before reload so the next paint skips /v1/users/me (no 401 console noise after Sign out).
+  try { localStorage.removeItem('hg.in'); } catch { /* */ }
   location.reload();
 }
 

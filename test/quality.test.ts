@@ -8,6 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-quality-'));
+// These tests drive the real checks with Claude stubbed: the PR check's HAWKESGEN_QUALITY_MOCK=1 (checks.yml) would
+// replace them with the mock wholesale, so it is off here (the mock's own scoping has its test below).
+delete process.env.HAWKESGEN_QUALITY_MOCK;
 const q = await import('../src/quality/index.ts');
 const judge = await import('../src/quality/judge.ts');
 const media = await import('../src/quality/media.ts');

@@ -16,7 +16,7 @@
   // 44 px tall (and icon-only buttons 44 wide). Desktop (mouse, or wider than 900 px) is untouched. The timeline's clip
   // handles and per-track mini buttons are content, not controls: they stay as drawn. :where() keeps it weaker than page CSS.
   st.textContent += '@media (pointer: coarse) and (max-width: 900px) {' +
-    ':where(button, [role=button], [role=tab], summary, select, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]):not([type=hidden]), .chip, .btn, a.link):where(:not(.tl-hb):not(.clip-act):not(.h-l):not(.h-r):not(.fade-h):not(.xf-h)) { min-height: 44px; box-sizing: border-box; }' +
+    ':where(button, [role=button], [role=tab], summary, select, input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]):not([type=file]):not([type=hidden]), .chip, .btn, a.link):where(:not(.tl-hb):not(.clip-act):not(.h-l):not(.h-r):not(.fade-h):not(.xf-h):not(.tl-join):not(.tl-xf):not(.tl-xf-h)) { min-height: 44px; box-sizing: border-box; }' +
     ':where(.icon-btn, .icon-btn.small) { min-width: 44px; justify-content: center; }' +
     ':where(.mobile-tabs button, .scene-tab, .scene-tab button) { min-height: 44px; }' +
     ':where(html, body) { max-width: 100vw; }' +

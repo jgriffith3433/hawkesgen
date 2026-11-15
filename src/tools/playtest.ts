@@ -10,10 +10,11 @@ import path from 'node:path';
 import type { Tool, RunContext } from './types.ts';
 import { GenError, run as runProc, sleep } from '../util.ts';
 import { listAssets, getAsset, blobPath, canUseBlob } from '../library.ts';
+import { ensureLocal } from '../storage.ts';
 import { canProject, type Client } from '../auth.ts';
 import { loadSettings, PLAYTEST_TARGETS, type PlaytestTarget } from '../config.ts';
 import { parseBuild, storedBuild, checkTarget, checkEntry, checkArgs, publicUrl, resolveGithub, stageArchive, defaultStager, dropToken, type BuildRef, type FetchableBuild } from '../providers/playtester/intake.ts';
-import { runnerCandidates, isNativeTarget, claimRunner, runnerHealthKey, runnerCooldown } from '../providers/playtester/runners.ts';
+import { runnerCandidates, isNativeTarget, claimRunner, runnerHealthKey, runnerCooldown, cleanSkipProviders } from '../providers/playtester/runners.ts';
 import { runSession, groupCrashes, RunnerUnavailable, type SessionResult } from '../providers/playtester/native.ts';
 import { siteHeader, sitePageUrl, type CloudPlaytest } from '../providers/playtester/cloudrun.ts';
 import { markDown, markUp } from '../providers/gpu/health.ts';
@@ -32,6 +33,8 @@ import { startLiveShots, endLiveShots } from './liveShots.ts';
 import { beginLive } from './livePlay.ts';
 import { FeelLog, PUSH_BINDING, cutFeelClips, pickPolishFrames, polishScan, feelBrief } from './playtest-feel.ts';
 import { pickMotionWindows, motionMarks, motionStrips, motionLegend, videoFreezes, MOTION_FPS } from './playtest-motion.ts';
+import { playFirstFive } from './firstfive.ts';
+import { armPhoneNetwork, applyPhoneMetrics, buildPhoneResult, type TransferHit } from './playtest-phone.ts';
 import { ScreencastRecorder, mjpegToMp4Args, remoteEncodeScript, sizeFilter, SCREENCAST_FPS } from './screencast.ts';
 
 type Shot = { t: number; reason: string; scene?: string; file: string };
@@ -43,6 +46,11 @@ const TERMINAL = new Set(['won', 'lost', 'done', 'stuck', 'error']);
  * The page's cookies (the cookies param): at most 8, for https hosts, set Secure and HttpOnly before the page loads. Hawkes
  * Studio sends a short-lived beta-site pass (hawkes_pass / hawkes_pass_beta) so its playtests of beta sites get in.
  */
+export function tabCookies(p: { cookies?: unknown; [k: string]: unknown }) {
+  // The cookies param is access (a beta-site pass), not state, so a cold start (first-five, fresh) sets it too; the
+  // globals, storage and hints are what a cold start drops, so the page is still met as a stranger.
+  return pageCookies(p.cookies);
+}
 export function pageCookies(cookies: unknown): { name: string; value: string; domain: string; path: string; secure: true; httpOnly: true; sameSite: 'Lax' }[] {
   if (!Array.isArray(cookies)) return [];
   return cookies.filter((c: any) => c && /^[A-Za-z0-9_-]{1,64}$/.test(String(c.name)) && typeof c.value === 'string' && c.value.length <= 4096 && !/[;\s]/.test(c.value)
@@ -67,15 +75,16 @@ const FPS_SCRIPT = `(() => {
 
 export const playtestRunTool: Tool = {
   id: 'playtest.run',
-  version: 3,
+  version: 5,
   title: 'Playtest a game in the browser',
   description:
     'Opens a game or site in Chromium and plays it: through the Hawkes playtest contract (window.hawkesPlaytest: the game\'s ' +
     'own bot plays a scenario), or a generic smoke test (click, keys) when the page has none, or a crawl of every page ' +
     '(mode "site"). Records the video, screenshots every few seconds and at events, console errors, failed requests, ' +
-    'load time and frame rate. Outputs the video, screenshots and a report (the video and report also go to S3); give a ' +
-    'baseline (the previous run) to compare screenshots at matching events. A hung browser, tunnel or page ends the run as ' +
-    '"stuck" with what was recorded. Follow it with playtest.review.',
+    'load time and frame rate. Phone runs (mobile:true, 390x844 touch, iPhone 13 + DPR 2) also use 4x CPU + Slow 4G and ' +
+    'report result.phone (MB before gameplay, seconds to gameplay, fps p5). Outputs the video, screenshots and a report ' +
+    '(the video and report also go to S3); give a baseline (the previous run) to compare screenshots at matching events. ' +
+    'A hung browser, tunnel or page ends the run as "stuck" with what was recorded. Follow it with playtest.review.',
   provider: 'playtest',
   output: 'video',
   inputs: {},
@@ -85,7 +94,10 @@ export const playtestRunTool: Tool = {
     target: { type: 'enum', values: [...PLAYTEST_TARGETS], default: 'web', description: 'What the build is: web (a page, played in Chromium), electron (an Electron app), linux (a native Linux build), proton (a Windows .exe under Proton) or windows (a Windows .exe on Windows). Desktop targets play on native runners (settings.playtest.runners).' },
     exe: { type: 'string', description: 'Inside the build: the executable to launch (desktop targets; default: the runner finds the one executable) or the page to open (web; default index.html)', example: 'MyGame.exe' },
     args: { type: 'json', description: 'Command-line arguments for a desktop build: a list of strings (at most 32)', advanced: true, example: ['-screen-fullscreen', '0'] },
-    scenario: { type: 'string', default: 'smoke', description: 'The contract scenario to play (the game lists them)' },
+    scenario: { type: 'string', default: 'smoke', description: 'The contract scenario to play (the game lists them). "first-five" is built in and needs no contract: a cold player\'s first five minutes in any web game, played from what is on screen (terms, sign-in, menus, then the game); it reports milestones, taps, walls with the seconds they cost, developer panels and ftue.wordsMinuteOne.' },
+    fresh: { type: 'boolean', default: false, description: 'first-five: open the page cold (no globals, storage or hints; a scenario that is first-five always does). The cookies param is still set: a beta-site pass is access, not state', advanced: true },
+    milestones: { type: 'boolean', default: true, description: 'first-five: report milestone events (gameplay, first-input-accepted, first-success, tutorial-step:<x>)', advanced: true },
+    seconds: { type: 'integer', default: 300, min: 30, max: 900, description: 'first-five: how long to play', advanced: true },
     mode: { type: 'enum', values: ['auto', 'contract', 'generic', 'site'], default: 'auto', description: 'auto: the contract if the page has it, else the generic smoke test' },
     seed: { type: 'integer', default: 1, min: 0, max: 2147483647 },
     speed: { type: 'number', default: 1, min: 0.25, max: 16, description: 'Asks the game to run faster (if it supports it)' },
@@ -95,7 +107,7 @@ export const playtestRunTool: Tool = {
     shotEvery: { type: 'number', default: 5, min: 1, max: 120, description: 'Seconds between screenshots', advanced: true },
     width: { type: 'integer', default: 1280, min: 320, max: 3840, advanced: true },
     height: { type: 'integer', default: 720, min: 240, max: 2160, advanced: true },
-    mobile: { type: 'boolean', default: false, description: 'Emulate a phone (touch, 390x844)', advanced: true },
+    mobile: { type: 'boolean', default: false, description: 'Emulate a phone (touch, 390x844, iPhone 13 + DPR 2). Also applies 4x CPU + Slow 4G and fills result.phone with the load budget.', advanced: true },
     headed: { type: 'boolean', default: false, description: 'Show the browser window (WebGL runs on the real GPU either way)', advanced: true },
     gpu: { type: 'enum', values: ['auto', 'require', 'off'], default: 'auto', description: 'Where the browser runs. auto: this PC if it has a GPU (Windows), else the playtester (T4) if it is running, else a ready GPU fleet server, else here in software. require: one of those GPU machines or fail. off: here.', advanced: true },
     maxPages: { type: 'integer', default: 40, min: 1, max: 300, description: 'Site mode: how many pages to visit', advanced: true },
@@ -107,6 +119,9 @@ export const playtestRunTool: Tool = {
     polish: { type: 'enum', values: ['auto', 'on', 'off'], default: 'auto', description: 'The feel layer\'s cheap vision pass (Haiku scores a few frames against the 3D polish rubric: ugly buildings, z-fighting, floating objects, stretched textures, clipping). auto: when the game has the feel sensor (it pushed flags); on: always; off: never. docs/playtest.md#feel in Hawkes Studio.', advanced: true },
     polishFrames: { type: 'integer', default: 10, min: 2, max: 24, description: 'How many frames the polish pass scores', advanced: true },
     scenarioPeers: { type: 'string', description: 'With peers > 1: the scenario the other players (peer 1 and up) play (default: the same as peer 0)', advanced: true },
+    // Studio's one-shot retry after a cut-off provider (hawkesstudio playtest-finish) sends this hint. Accept it so a
+    // beta playtest never 400s with "has no param skipProviders"; the router leaves those providers out for this job.
+    skipProviders: { type: 'json', description: 'Browser providers to leave out for this run only (runpod, modal, cloudrun, cloudrun-cpu). Hawkes Studio sends this on a second try after one provider cut the job off.', advanced: true, example: ['modal'] },
   },
   admit({ params, client, project, customer }) {
     const p = { ...params };
@@ -140,6 +155,9 @@ export const playtestRunTool: Tool = {
     }
     if (p.exe === null) delete p.exe;
     if (!p.args.length) delete p.args;
+    const skip = cleanSkipProviders(p.skipProviders);
+    if (skip.length) p.skipProviders = skip;
+    else delete p.skipProviders;
     return p;
   },
   async run(ctx) {
@@ -196,7 +214,11 @@ async function webRoute(ctx: RunContext, p: Record<string, any>, build: BuildRef
   if (!customer && !site && !settings.playtest.runners.length) return null;
   // An empty RunPod balance read a while ago is read again before the router skips RunPod for it (gpu/credit.ts).
   await recheckEmptyRunpodCredit();
-  const c = runnerCandidates({ project: ctx.job.project, labels: ctx.job.labels }, 'web', customer ? 'customer' : 'studio', settings);
+  const skipProviders = cleanSkipProviders(p.skipProviders ?? ctx.job.labels?.skipProviders);
+  const c = runnerCandidates({
+    project: ctx.job.project,
+    labels: skipProviders.length ? { ...ctx.job.labels, skipProviders } : ctx.job.labels,
+  }, 'web', customer ? 'customer' : 'studio', settings);
   const clouds = c.choices.flatMap((x) => (x.kind === 'browser' ? [x.cloud] : []));
   for (const s of c.skipped) ctx.log(`runner ${s}`);
   if (!clouds.length) throw new GenError(`No runner plays web builds${customer ? ' for customers' : ''} now: ${c.skipped.join('; ') || 'none set up'}`, { kind: 'runner', status: 503 });
@@ -282,6 +304,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
     let t0 = Date.now();
     const T = () => Math.round((Date.now() - t0) / 100) / 10;
     let report: any = null;
+    let firstFive: { devShots: { event: number; shot: number }[] } | null = null;
     let outcome = 'done';
     let contract = false;
     let scenarios: any[] = [];
@@ -308,10 +331,10 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         // Cloud Run when settings.playtest says so (docs/playtest-cloudrun.md), else the playtesters / GPU servers.
         // Installing the browser on a server takes a few minutes the first time.
         // Games (anything but a site crawl) start the playtester if it's off.
-        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', game: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
+        const opening = openGpuHost(p.url, ctx.step, { startPlaytester: p.mode !== 'site', game: p.mode !== 'site', project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), signal: ctx.signal, ...(route ?? {}) });
         host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
           opening.then((h) => h?.close(), () => {});
-          if (p.gpu === 'require') throw e;
+          if (p.gpu === 'require' || ctx.signal.aborted) throw e;
           ctx.log(`no GPU browser (${e.message}); playing here in software`);
           softwareBecause = String(e.message ?? e).slice(0, 300);
           return null;
@@ -322,6 +345,8 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       }
       // A browser with no GPU (the Cloud Run CPU service, docs/playtest-cloudrun.md): the run says so, and loading and
       // playing get `slow` times longer (SwiftShader draws every frame on the CPU).
+      // Cancelled while the browser opened: its worker is let go now, not after a play nobody wants.
+      if (ctx.signal.aborted) { host?.close(); host = null; throw new Error('cancelled while opening the browser'); }
       if (host?.software) softwareBecause = host.software;
       slow = Math.max(1, host?.slow ?? 1);
       if (slow > 1) p.bootTimeout = Math.round(p.bootTimeout * slow);
@@ -344,6 +369,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
 
       // The video: a screencast (every frame, 30 fps) where it can, else Playwright's recordVideo, which has to be
       // asked for when the tab opens: a screencast that won't start reopens the tab with it.
+      const coldStart = p.scenario === 'first-five' || p.fresh === true;
       const openTab = async (video: boolean) => {
         context = await within(browser.newContext({
           ...(p.mobile ? { ...devices['iPhone 13'], deviceScaleFactor: 2 } : {}),
@@ -354,9 +380,9 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         }), 30_000, 'opening a browser tab');
         if (host?.prepareContext) await within(host.prepareContext(context), 15_000, 'preparing the tab');
         await within(context.addInitScript(FPS_SCRIPT), 15_000, 'preparing the tab');
-        const pageGlobals = globalsScript(p.globals);
+        const pageGlobals = coldStart ? null : globalsScript(p.globals);
         if (pageGlobals) await within(context.addInitScript(pageGlobals), 15_000, 'preparing the tab');
-        const jar = pageCookies(p.cookies);
+        const jar = tabCookies(p);
         if (jar.length) await within(context.addCookies(jar), 15_000, 'preparing the tab');
         // The game pushes feel flags here the moment they happen (no polling); each worth it gets a screenshot.
         await within(context.exposeBinding(PUSH_BINDING, (_src: any, msg: any) => {
@@ -413,9 +439,22 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       feelShot = shot;
       /** page.evaluate with a limit: a page that stops answering is stuck. */
       const ev = <R>(f: any, arg?: any, ms = 15_000): Promise<R> => within(page.evaluate(f, arg), ms, 'the page');
+      let phoneHits: TransferHit[] = [];
+      let phoneCdp: { detach?: () => Promise<void> } | null = null;
 
       try {
         const target = host ? host.mapUrl(withParams(p.url, {})) : withParams(p.url, {});
+        // Phone load budget: throttle before the first navigation so Studio can file MB / time / fps findings.
+        if (p.mobile) {
+          try {
+            const armed = await within(armPhoneNetwork(context, page, T), 15_000, 'phone throttling');
+            phoneHits = armed.log.hits;
+            phoneCdp = armed.cdp;
+            ctx.log('phone: 4x CPU + Slow 4G');
+          } catch (e: any) {
+            ctx.log(`phone throttling failed (${e?.message?.split('\n')[0] ?? e}); continuing without it`);
+          }
+        }
         ctx.step(`loading ${target}`);
         const resp = await within<any>(page.goto(target, { waitUntil: 'load', timeout: p.bootTimeout * 1000 }), p.bootTimeout * 1000 + 15_000, 'loading the page').catch((e: any) => {
           if (e instanceof Stuck) throw e;
@@ -426,7 +465,14 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         if (resp && resp.status() >= 400) problems.push({ severity: 'bug', message: `the page answered HTTP ${resp.status()}`, source: 'browser' });
         await shot('loaded');
 
-        if (p.mode === 'site') {
+        if (p.scenario === 'first-five' && p.mode !== 'site') {
+          // A cold player's first five minutes: no contract, no hints, only what is on screen.
+          const idx = async (reason: string) => { const n = shots.length; await shot(reason); return shots.length > n ? n : -1; };
+          const ff = await playFirstFive({ seconds: p.seconds ?? 300, mobile: Boolean(p.mobile), milestones: p.milestones !== false, T, killed: () => killed, shot: idx, ctx, ev, page });
+          report = { outcome: ff.outcome, events: ff.events, metrics: ff.metrics, log: ff.log, problems: [] };
+          firstFive = { devShots: ff.devShots };
+          outcome = ff.outcome;
+        } else if (p.mode === 'site') {
           pages = await crawl(page, target, p.maxPages, ctx, shot, problems, () => killed);
           outcome = 'done';
         } else {
@@ -601,13 +647,26 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       }
       const fps = summarizeFps(fpsSamples);
       if (fps.average && fps.average < 30 && !software) problems.push({ severity: 'warning', message: `low frame rate: ${fps.average} fps on average (worst ${fps.worst}) in this browser`, source: 'runner' });
+      await phoneCdp?.detach?.().catch(() => {});
 
       liveOutcome = outcome;
+      const metricsBase: Record<string, unknown> = { ...(report?.metrics ?? {}) };
+      const phone = p.mobile
+        ? buildPhoneResult({
+          hits: phoneHits,
+          events: report?.events ?? [],
+          metrics: metricsBase,
+          loadSeconds,
+          fpsSamples,
+          fpsP5: fps.p5,
+        })
+        : null;
       const result: any = {
-        url: p.url, target: _target, build: buildSource(p.build), mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract ? p.scenario : null, outcome,
+        url: p.url, target: _target, build: buildSource(p.build), mode: contract ? 'contract' : p.mode === 'site' ? 'site' : 'generic', scenario: contract || firstFive ? p.scenario : null, outcome,
         stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
         seconds: T(), loadSeconds, fps, renderer, software, softwareBecause, contract, scenarios,
-        metrics: report?.metrics ?? {}, events: report?.events ?? [], log: report?.log ?? [],
+        metrics: phone ? applyPhoneMetrics(metricsBase, phone) : metricsBase,
+        events: report?.events ?? [], log: report?.log ?? [],
         problems: dedupeBy(problems, (x) => x.message),
         console: { errors: errors.length, warnings: consoleLines.length - errors.length, first: consoleLines.slice(0, 30) },
         failedRequests: dedupeBy(failed, (x) => x.url).slice(0, 50),
@@ -618,6 +677,7 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
         s3: null as any,
         feel: feel.flags,
         polish: null as any,
+        ...(phone ? { phone } : {}),
       };
       feelShot = null;
       // The browser is done with: let the next playtest have it while this one saves.
@@ -674,6 +734,11 @@ async function runPage(ctx: RunContext, p: Record<string, any>, chromium: any, d
       for (const [i, s] of shots.entries()) {
         await ctx.emit({ data: fs.readFileSync(s.file), ext: '.jpg', mime: 'image/jpeg', title: `${s.t}s ${s.reason}${s.scene ? ` — ${s.scene}` : ''}`, meta: { playtest: 'shot', t: s.t, reason: s.reason, scene: s.scene ?? null } });
         result.shots[i].asset = lastAsset();
+      }
+      // First five: a developer panel's event names the screenshot asset that shows it.
+      for (const d of firstFive?.devShots ?? []) {
+        const ev0 = result.events[d.event];
+        try { ev0.detail = JSON.stringify({ ...JSON.parse(ev0.detail), shot: result.shots[d.shot]?.asset ?? null }); } catch { /* keep */ }
       }
 
       // The feel layer: a screenshot and a short clip for the worst flags, then the cheap vision pass.
@@ -869,6 +934,7 @@ type PeerRun = {
   problems: Problem[]; consoleLines: { type: string; text: string; t: number }[]; failed: { url: string; status: number | string }[];
   report: any; outcome: string | null; stuck: string | null; loadSeconds: number | null; sc: any; scenarios: any[];
   lastScene?: string; lastAnswer: number; lastProblems: number; detail: string; fpsSamples: number[]; webm: string | null;
+  phoneHits: TransferHit[];
 };
 
 /** Each player's page: the game's URL with the shared room and the player's number. */
@@ -970,10 +1036,10 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
 
   try {
     if (p.gpu === 'require' || (p.gpu === 'auto' && process.platform !== 'win32')) {
-      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, game: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), ...(route ?? {}) });
+      const opening = openGpuHost(p.url, ctx.step, { startPlaytester: true, game: true, tabs: n, project: ctx.job.project, job: ctx.job.id, onUsage: (u) => ctx.usage(u), signal: ctx.signal, ...(route ?? {}) });
       host = await within(opening, 20 * 60_000, 'opening the GPU server\'s browser').catch((e) => {
         opening.then((h) => h?.close(), () => {});
-        if (p.gpu === 'require') throw e;
+        if (p.gpu === 'require' || ctx.signal.aborted) throw e;
         ctx.log(`no GPU browser (${e.message}); playing here in software`);
         softwareBecause = String(e.message ?? e).slice(0, 300);
         return null;
@@ -981,6 +1047,8 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       if (!host && p.gpu === 'require') throw new GenError('No GPU server is ready for the playtest (start one, or use gpu: auto)', { kind: 'gpu' });
       if (!host && !softwareBecause) softwareBecause = 'no GPU machine was ready (the playtester did not start and no GPU server was running)';
     }
+    // Cancelled while the browser opened: its worker is let go now, not after a play nobody wants.
+    if (ctx.signal.aborted) { host?.close(); host = null; throw new Error('cancelled while opening the browser'); }
     if (host?.software) softwareBecause = host.software;
     slow = Math.max(1, host?.slow ?? 1);
     if (slow > 1) p.bootTimeout = Math.round(p.bootTimeout * slow);
@@ -1040,7 +1108,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       const peer: PeerRun = {
         i, scenario: i > 0 && p.scenarioPeers ? p.scenarioPeers : p.scenario, url: host ? host.mapUrl(url) : url, context, page, screencast, recorder, videoDir,
         problems: [], consoleLines: [], failed: [], report: null, outcome: null, stuck: null, loadSeconds: null, sc: null, scenarios: [],
-        lastAnswer: Date.now(), lastProblems: 0, detail: '', fpsSamples: [], webm: null,
+        lastAnswer: Date.now(), lastProblems: 0, detail: '', fpsSamples: [], webm: null, phoneHits: [],
       };
       page.setDefaultTimeout(30_000);
       page.on('console', (m: any) => {
@@ -1076,6 +1144,15 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
     try {
       ctx.step(`loading ${n} players (room ${room})`);
       await Promise.all(peers.map(async (peer) => {
+        if (p.mobile) {
+          try {
+            const armed = await within(armPhoneNetwork(peer.context, peer.page, T), 15_000, 'phone throttling');
+            peer.phoneHits = armed.log.hits;
+            ctx.log(`peer ${peer.i}: phone 4x CPU + Slow 4G`);
+          } catch (e: any) {
+            ctx.log(`peer ${peer.i}: phone throttling failed (${e?.message?.split('\n')[0] ?? e}); continuing without it`);
+          }
+        }
         const resp = await within<any>(peer.page.goto(peer.url, { waitUntil: 'load', timeout: p.bootTimeout * 1000 }), p.bootTimeout * 1000 + 15_000, 'loading the page').catch((e: any) => {
           if (e instanceof Stuck) throw e;
           peer.problems.push({ severity: 'bug', message: `the page did not load: ${e.message.split('\n')[0]}`, source: 'browser' });
@@ -1263,11 +1340,22 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
     liveOutcome = merged.outcome;
     const allConsole = peers.flatMap((x) => x.consoleLines.map((c) => ({ ...c, text: `peer ${x.i}: ${c.text}` })));
     const allErrors = allConsole.filter((c) => c.type === 'error').length;
+    const metricsBase: Record<string, unknown> = { ...(peers[0].report?.metrics ?? {}) };
+    const phone = p.mobile
+      ? buildPhoneResult({
+        hits: peers[0].phoneHits,
+        events: peers[0].report?.events ?? [],
+        metrics: metricsBase,
+        loadSeconds: peers[0].loadSeconds,
+        fpsSamples: peers[0].fpsSamples,
+        fpsP5: players[0].fps.p5,
+      })
+      : null;
     const result: any = {
       url: p.url, mode: 'contract', scenario: p.scenario, scenarioPeers: p.scenarioPeers || p.scenario, outcome: merged.outcome, room,
       stuck, device: p.mobile ? 'phone' : 'desktop', viewport, browser: host ? `${host.software ? '' : 'GPU server '}${host.server}` : 'this machine',
       seconds: T(), loadSeconds: Math.max(...peers.map((x) => x.loadSeconds ?? 0)) || null, fps: players[0].fps, renderer, software, softwareBecause, contract: true, scenarios: peers[0].scenarios,
-      metrics: peers[0].report?.metrics ?? {}, events: merged.events, log: merged.log,
+      metrics: phone ? applyPhoneMetrics(metricsBase, phone) : metricsBase, events: merged.events, log: merged.log,
       problems: dedupeBy([...problems, ...merged.problems], (x) => x.message),
       console: { errors: allErrors, warnings: allConsole.length - allErrors, first: allConsole.slice(0, 30) },
       failedRequests: dedupeBy(peers.flatMap((x) => x.failed.map((f) => ({ ...f, peer: x.i }))), (x) => `${x.peer} ${x.url}`).slice(0, 50),
@@ -1277,6 +1365,7 @@ async function runPeers(ctx: RunContext, chromium: any, devices: any, live: Retu
       video: null as string | null,
       visual: null as any,
       s3: null as any,
+      ...(phone ? { phone } : {}),
     };
     await within(browser.close(), 15_000, 'closing the browser').catch(() => {});
     host?.close();
@@ -1679,11 +1768,12 @@ function thin<T>(xs: T[], max: number) {
 
 // ----------------------------------------------------------------- review
 //
-// Reviews converge: a review reports at most a few findings (worst first; polish and ideas only when there is nothing
-// worse), never one already in the caller's list of known findings (it says by id which of those look fixed or still
-// there instead), and judges the build against the product's quality bar when one is given. Its mode says what the run
-// is for: "full" (the daily review), "verify" (did this change work, did anything regress) or "regression" (only what
-// got worse, and blockers). The caps and the mode are enforced on the answer too (settleReview), not only asked for.
+// Reviews converge: a review reports at most maxFindings findings (default 10, worst first; polish and ideas stay
+// beside bugs, sorted worst first), never one already in the caller's list of known findings (it says by id which of
+// those look fixed or still there instead), and judges the build against the product's quality bar when one is given.
+// Its mode says what the run is for: "full" (the daily review), "verify" (did this change work, did anything regress)
+// or "regression" (only what got worse, and blockers). The caps and the mode are enforced on the answer too
+// (settleReview), not only asked for.
 
 const SEVERITIES = ['blocker', 'bug', 'polish', 'idea'];
 const SEVERITY_RANK: Record<string, number> = { blocker: 0, bug: 1, polish: 2, idea: 3 };
@@ -1769,12 +1859,12 @@ Rules:
 - Report only what the evidence supports (screenshots, console errors, the report's problems and metrics). Don't invent.
 - Blocker: the game can't be played or progressed. Bug: something is wrong (broken, wrong, missing, crashing).
   Polish: works but looks or feels unfinished. Idea: an improvement worth doing.
-- At most the LIMIT findings, worst first. Polish and ideas only when you found no blocker or bug.
+- At most the LIMIT findings, worst first. Polish and ideas stay beside blockers and bugs (still worst first).
 - Never report a problem that is already in KNOWN FINDINGS (same problem, even in other words): say in "known", by id,
   whether it looks fixed or is still present, and only when this run actually shows it.
 - When a QUALITY BAR is given, judge against it: it says what "done" means for this product. Something the bar doesn't ask
-  for is not a bug. A build that meets its bar gets "ship" and at most a couple of findings.
-- "ship" comes with few or no findings and never with a blocker.
+  for is not a bug. A build that meets its bar gets "ship"; polish findings may still be listed up to the LIMIT.
+- "ship" never comes with a blocker.
 - Judge against the product's story and art direction when they are given. Flag anything off-tone.
 - Ignore problems caused only by the automation (the bot's odd movement) unless a player could hit them.
 - Don't comment on the runner's own frame-rate warning unless the screenshots also show stutter or the game reports low fps.
@@ -1810,17 +1900,16 @@ Fill "phone" with scores for these, and use area "mobile" for these findings.`;
 export type KnownFinding = { id: string; title: string; severity?: string; status?: string };
 
 /**
- * Holds a review to its mode and limits, whatever the model answered: findings worst first, polish and ideas only when
- * there is no blocker or bug, only regressions and blockers outside a full review, at most maxFindings (a "ship" verdict
- * at most 2 and never with a blocker); "known" only for ids that were given. What was cut is counted in review.trimmed.
+ * Holds a review to its mode and limits, whatever the model answered: findings worst first (polish and ideas stay
+ * beside bugs), only regressions and blockers outside a full review, at most maxFindings (default 10; a "ship" verdict
+ * with a blocker becomes fix-first); "known" only for ids that were given. What was cut is counted in review.trimmed.
  */
-export function settleReview(review: any, { mode = 'full', maxFindings = 5, known = [] as KnownFinding[] } = {}) {
+export function settleReview(review: any, { mode = 'full', maxFindings = 10, known = [] as KnownFinding[] } = {}) {
   const all: any[] = (Array.isArray(review.findings) ? review.findings : []).filter((f: any) => f?.title);
   let list = [...all].sort((a, b) => (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9));
   if (mode !== 'full') list = list.filter((f) => f.severity === 'blocker' || f.regression === true);
-  if (list.some((f) => f.severity === 'blocker' || f.severity === 'bug')) list = list.filter((f) => f.severity === 'blocker' || f.severity === 'bug');
   if (review.verdict === 'ship' && list.some((f) => f.severity === 'blocker')) review.verdict = 'fix-first';
-  const cap = Math.max(0, Math.min(maxFindings, review.verdict === 'ship' ? 2 : maxFindings));
+  const cap = Math.max(0, maxFindings);
   list = list.slice(0, cap);
   review.trimmed = all.length - list.length;
   review.findings = list;
@@ -1852,7 +1941,7 @@ async function reviewMotion(ctx: RunContext, result: any, shots: any[], max: num
   const none = (note: string) => ({ strips: [] as { file: string; asset: string | null; start: number; end: number; t: number; reason: string; scene?: string }[], hitches: null as { t: number; ms: number }[] | null, note });
   if (!max) return none('motion off');
   const vid = result?.video ? getAsset(result.video) : null;
-  if (!vid?.path || !fs.existsSync(vid.path)) return none('no video to watch');
+  if (!vid?.path || !(await ensureLocal(vid))) return none('no video to watch');
   const seconds = Number(result.seconds) || 0;
   const windows = pickMotionWindows(motionMarks(result, shots), seconds, { max: Math.min(12, max) });
   const cut = await motionStrips(ctx, vid.path, windows);
@@ -1873,7 +1962,7 @@ export const playtestReviewTool: Tool = {
   description:
     'Claude watches a playtest.run job (its screenshots, report, console and metrics) against the product\'s story, art ' +
     'direction and quality bar, and returns scores, a verdict and at most maxFindings new findings (blocker, bug, polish, ' +
-    'idea; polish and ideas only when there is nothing worse) with the screenshots that show each one and how to fix it. ' +
+    'idea; worst first, polish stays beside bugs) with the screenshots that show each one and how to fix it. ' +
     'Give the known findings (the backlog) and it reports only new problems, saying by id which known ones look fixed or ' +
     'still present. mode: full (daily), verify (did a change work, did anything regress: regressions and blockers only), ' +
     'regression (live checks: regressions and blockers only). Give a previous review to hear what changed. Give acceptance ' +
@@ -1890,7 +1979,7 @@ export const playtestReviewTool: Tool = {
     story: { type: 'text', description: 'The story doc or its key points (tone, characters, rules)' },
     focus: { type: 'text', description: 'What J wants checked this time' },
     mode: { type: 'enum', values: ['full', 'verify', 'regression'], default: 'full', description: 'full: the daily review. verify: did the change in focus work, and did anything regress. regression: only what got worse, and blockers (live checks)' },
-    maxFindings: { type: 'integer', default: 5, min: 0, max: 20, description: 'At most this many new findings, worst first' },
+    maxFindings: { type: 'integer', default: 10, min: 0, max: 20, description: 'At most this many new findings, worst first (default 10)' },
     known: { type: 'json', description: 'Findings already known (the backlog, ideas and won\'t-fix): [{ id, title, severity, status }]. Not reported again; the review says which look fixed or are still present', advanced: true },
     bar: { type: 'text', description: 'The product\'s quality bar: what "done" means for it. The review judges against it and says whether the build meets it' },
     criteria: { type: 'json', description: 'Acceptance criteria to judge, e.g. ["The main menu shows Training"]: result.criteria says for each yes, no or unclear, with evidence', advanced: true },
@@ -1917,10 +2006,17 @@ export const playtestReviewTool: Tool = {
     const rest = assets.filter((a: any) => !picked.has(a));
     const want = p.frames - picked.size;
     for (let i = 0; i < want && rest.length; i++) picked.add(rest[Math.floor((i * rest.length) / Math.max(1, want))]);
-    const frames = assets.filter((a: any) => picked.has(a));
+    // The run's screenshots may have been made on another instance (or before a restart): on this disk first.
+    const frames: any[] = [];
+    for (const a of assets.filter((a: any) => picked.has(a))) if (await ensureLocal(a)) frames.push(a);
+    if (!frames.length) throw new GenError(`${p.job}'s screenshots are not on this server and could not be restored from storage`);
     // The biggest visual changes since the previous run: their previous frames go after this run's (up to 4).
     const big = (result.visual?.pairs ?? []).filter((x: any) => x.big).sort((a: any, b: any) => b.score - a.score);
-    const before = big.slice(0, 4).map((x: any) => ({ x, asset: getAsset(x.baseline) })).filter((b: any) => b.asset && fs.existsSync(b.asset.path));
+    const before: { x: any; asset: any }[] = [];
+    for (const x of big.slice(0, 4)) {
+      const asset = getAsset(x.baseline);
+      if (asset && (await ensureLocal(asset))) before.push({ x, asset });
+    }
     const legend = [
       ...frames.map((a: any, i: number) => `[${i}] t=${a.meta.t}s ${a.meta.reason}${a.meta.scene ? ` (${a.meta.scene})` : ''}`),
       ...before.map((b: any, i: number) => `[${frames.length + i}] PREVIOUS RUN at "${b.x.key}" (compare with this run's frame at t=${b.x.t}s)`),

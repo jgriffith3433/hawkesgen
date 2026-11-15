@@ -21,13 +21,33 @@
   </script>
   <script src="/gen/nozoom.js"></script>
   <script>
-    // Start the session check now, in parallel with the module graph, so the first screen (the welcome when signed out)
-    // doesn't wait for every script to load before the question is even asked. account.js loadMe() reuses it.
-    window.__hgMe = fetch('/v1/users/me', { credentials: 'same-origin' }).then(function (r) { return r.text().then(function (t) { return { status: r.status, ok: r.ok, text: t }; }); }).catch(function () { return null; });
+    // Session cookie is HttpOnly, so hg.in (set once a session is known) is the hint. With no hint, skip /v1/users/me:
+    // that route answers 401 for anonymous API clients, and a signed-out first visit must log no console error.
+    // With a hint, start the check now (parallel with the module graph); account.js loadMe() reuses it.
+    (function () {
+      var hinted = false;
+      // A playtest run arrives with the test-session cookie already set by Studio's bot but never with the hg.in hint
+      // (a fresh browser, empty storage), so without it the bot stayed on the landing page, "stuck" at t=0. Studio opens
+      // the page with an EMPTY ?playtest= (the scenario is chosen later through start(), not the URL), so the presence of
+      // the parameter is the signal, not its value. Test sign-ins exist on beta and local copies only, never on the live
+      // host, so a live signed-out visit with the hint would only earn a 401. The scenarios that play the signed-out path
+      // themselves (signedout, first-paint) clear the hint and expect no probe, and handle a signed-in tab.
+      try {
+        var q = new URLSearchParams(location.search), pt = q.get('playtest');
+        var live = /^(www\.)?hawkesgen\.ai$/.test(location.hostname);
+        if (q.has('playtest') && !live && pt !== 'signedout' && pt !== 'first-paint') localStorage.setItem('hg.in', '1');
+      } catch (e) {}
+      try { hinted = localStorage.getItem('hg.in') === '1'; } catch (e) {}
+      if (hinted) {
+        window.__hgMe = fetch('/v1/users/me', { credentials: 'same-origin' }).then(function (r) {
+          return r.text().then(function (t) { return { status: r.status, ok: r.ok, text: t }; });
+        }).catch(function () { return null; });
+      }
+    })();
     // Never leave the cover up if the app fails to start.
     setTimeout(function () { var c = document.getElementById('bootCover'); if (c) c.remove(); }, 20000);
   </script>
-  <style>#bootCover { position: fixed; inset: 0; z-index: 240; background: #0b0c10; } #bootCover[hidden] { display: none; }</style>
+  <style>#bootCover { position: fixed; inset: 0; z-index: 240; background: var(--bg, #0b0c10); } #bootCover .boot-brand { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: var(--space-3, 12px); color: var(--text, #eceef3); font: var(--weight-semibold, 600) var(--text-xl, 22px) var(--font-sans, Inter, system-ui, sans-serif); } #bootCover[hidden] { display: none; }</style>
   <meta name="description" content="Make anything. Hawkes Gen is a studio with generative AI built in: scenes of every kind (video, 3D stages, images, audio, characters) that plug into each other, every tool for images, video, 3D, voices and music, and an AI beside you in each.">
   <link rel="icon" href="/favicon.svg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -38,7 +58,7 @@
   <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }</script>
 </head>
 <body>
-  <div id="bootCover" aria-hidden="true"></div>
+  <div id="bootCover" aria-hidden="true"><div class="boot-brand"><img src="/favicon.svg" alt="" width="48" height="48"><b>Hawkes Gen</b></div></div>
   <div class="app" id="app">
     <!-- The bar -->
     <header class="bar">
@@ -47,6 +67,8 @@
         <button class="icon-btn tabs-more" id="tabsMore" title="Every open scene" hidden><span class="ico-wrap" data-icon="chevron"></span><span class="tabs-more-n" id="tabsMoreN"></span></button>
         <button class="icon-btn" id="newSceneBtn" title="New scene"><span class="ico-wrap" data-icon="plus"></span></button>
       </div>
+      <button class="ghost small drawer-toggle" id="drawerLeft" aria-expanded="false" title="Show Media, Create and Scenes">Media</button>
+      <button class="ghost small drawer-toggle" id="drawerRight" aria-expanded="false" title="Show the AI">AI</button>
       <span id="saveState" class="save-state"></span>
       <span id="netChip" class="net-chip" role="status" hidden>Reconnecting…</span>
       <div class="bar-mid">

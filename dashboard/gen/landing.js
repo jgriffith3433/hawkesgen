@@ -26,7 +26,7 @@ const STRENGTHS = [
 
 export function initLanding() {
   bus.on('signedIn', () => hide());
-  bus.on('ready', (user) => { if (!user && !looked()) show(); });
+  bus.on('ready', (user) => { if (!user && !looked()) show(); else document.body.classList.add('app-on'); });
 }
 const looked = () => { try { return sessionStorage.getItem(LOOK_KEY) === '1'; } catch { return false; } };
 
@@ -38,7 +38,6 @@ export function show({ browsing = false } = {}) {
   el.hidden = false;
   el.scrollTop = 0;
   document.body.classList.add('landing-open');
-  void el.offsetWidth; // start the fade now (an animation frame never comes in a background tab)
   el.classList.add('in');
 }
 export function hide() {
@@ -46,7 +45,8 @@ export function hide() {
   if (!el || el.hidden) return;
   el.classList.remove('in');
   document.body.classList.remove('landing-open');
-  setTimeout(() => { el.hidden = true; }, 220);
+  el.hidden = true;
+  document.body.classList.add('app-on');
 }
 
 function start(mode) { needSignIn(() => hide(), mode); }

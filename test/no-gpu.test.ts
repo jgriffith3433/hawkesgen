@@ -92,6 +92,49 @@ test('routing: no credit, no key, a key refused and nothing set up are lasting; 
   }
 });
 
+test('fleet missing + RunPod auth cool → lasting NO_GPU_ERROR (fail fast, no cold hang)', () => {
+  resetHealth();
+  setRunpodCredit({ balance: 20, at: Date.now() });
+  markDown('runpod-a', 'runpod-a (runpod) refused Gen\'s credentials (401)', COOLDOWN.auth);
+  try {
+    const s = gpuSettings({ providers: [ep()], order: ['runpod-a', 'fleet'] });
+    const none = () => undefined as any;
+    const c = gpuCandidates(job, comfyTool, s, map, Date.now(), (k: string) => (k === 'RUNPOD_API_KEY' ? 'rp-key' : none()));
+    assert.equal(c.choices.length, 0, JSON.stringify(c));
+    assert.ok(c.blockers.every((b: any) => b.lasting), JSON.stringify(c.blockers));
+    assert.ok(c.blockers.some((b: any) => /runpod-a:/.test(b.reason) && b.lasting));
+    assert.ok(c.blockers.some((b: any) => /fleet: no AWS credentials/.test(b.reason) && b.lasting));
+    const v = noGpuVerdict(c.blockers, null, 15, Date.now());
+    assert.equal(v.fail, true);
+    assert.equal((v as any).error, NO_GPU_ERROR);
+  } finally {
+    setRunpodCredit(null);
+    resetHealth();
+  }
+});
+
+test('false-cold capacity cool is not lasting: another provider can still take the job', () => {
+  resetHealth();
+  setRunpodCredit({ balance: 20, at: Date.now() });
+  markDown('runpod-a', 'no runpod GPU accepted the job (workers unhealthy or none free)', COOLDOWN.capacity);
+  try {
+    const s = gpuSettings({
+      providers: [ep(), ep({ id: 'mod', provider: 'modal', url: 'https://m.modal.run', families: ['*'] })],
+      order: ['runpod-a', 'mod', 'fleet'],
+    });
+    const keys: Record<string, string> = { RUNPOD_API_KEY: 'rp-key', MODAL_PROXY_KEY: 'wk', MODAL_PROXY_SECRET: 'ws' };
+    const c = gpuCandidates(job, comfyTool, s, map, Date.now(), (k: string) => keys[k]);
+    assert.ok(c.choices.some((x: any) => x.kind === 'service' && x.service.lane === 'mod'), JSON.stringify(c.choices));
+    assert.equal(c.blockers.find((b: any) => /runpod-a:/.test(b.reason))?.lasting, false);
+    const v = noGpuVerdict(c.blockers.filter((b: any) => /runpod-a:/.test(b.reason)), null, 15, Date.now());
+    // Only RunPod blocked as capacity: if that were the only blocker it would wait, not lasting-fail.
+    assert.equal(v.fail, false);
+  } finally {
+    setRunpodCredit(null);
+    resetHealth();
+  }
+});
+
 // ------------------------------------------------------------------ through the queue
 
 const settle = async (getJob: (id: string) => any, id: string, until = ['done', 'failed', 'cancelled']) => {

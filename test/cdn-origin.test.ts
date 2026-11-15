@@ -25,6 +25,9 @@ const asset = (id: string, project: string, sha: string) => db.prepare(
 asset('a_game', 'doseofdestruction', SHA);
 asset('a_customer', 'usr_00000000000000aa', PRIVATE);
 
+const BIG = 'ab'.repeat(31) + 'cd';
+const BIG_SIZE = 70 * 1024 * 1024;
+asset('a_big', 'doseofdestruction', BIG);
 const asked: string[] = [];
 setTokens({ access: async () => 'tok', id: async () => 'id' });
 const realFetch = globalThis.fetch;
@@ -32,6 +35,7 @@ globalThis.fetch = (async (input: any, init?: any) => {
   const url = String(input);
   if (!url.startsWith('https://storage.googleapis.com/')) return realFetch(input, init);
   asked.push(url);
+  if (url.includes(BIG)) return new Response(new Uint8Array(BIG_SIZE), { status: 200, headers: { 'content-type': 'application/gzip', 'content-length': String(BIG_SIZE) } });
   if (url.includes('sha256')) return new Response('PNGDATA', { status: 200, headers: { 'content-type': 'image/png', 'content-length': '7' } });
   return new Response('{}', { status: 404 });
 }) as typeof fetch;
@@ -81,4 +85,19 @@ test('cdnProjects: * is every project but customers\'; names and prefixes add th
   assert.equal(cdnProject('doseofdestruction', ['dose*']), true);
   assert.equal(cdnProject('sickofit', ['dose*']), false);
   assert.equal(cdnProject('sickofit', []), false);
+});
+
+test('a 70 MB file goes out chunked on Cloud Run (a Content-Length over 32 MiB is refused there) and whole', async () => {
+  process.env.K_SERVICE = 'gen';
+  try {
+    const r = await realFetch(`${gen}/cdn/sha256/${BIG}`, { headers: { 'X-Forwarded-For': '203.0.113.9, 172.70.1.2' } });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('content-length'), null);
+    assert.equal((await r.arrayBuffer()).byteLength, BIG_SIZE);
+  } finally {
+    delete process.env.K_SERVICE;
+  }
+  const off = await realFetch(`${gen}/cdn/sha256/${BIG}`);
+  assert.equal(off.headers.get('content-length'), String(BIG_SIZE));
+  assert.equal((await off.arrayBuffer()).byteLength, BIG_SIZE);
 });
