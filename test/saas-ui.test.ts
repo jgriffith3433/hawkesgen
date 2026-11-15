@@ -100,7 +100,7 @@ test('/ is the Gen app; the operator console is /admin (its files beside it); th
       const root = await fetchRoute('/?app');
       assert.equal(root.status, 200);
       assert.match(root.text, /Make anything\./);
-      // The bare address with no session is the front page: the visualization, nothing to click, bots sent to the app.
+      // The bare address is the front page for everyone: the visualization, nothing to click, bots sent to the app.
       const front = await fetchRoute('/');
       assert.equal(front.status, 200);
       assert.match(front.text, /location\.replace\('\/\?app'/);

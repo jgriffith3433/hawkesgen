@@ -469,10 +469,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     } else if (route.startsWith('/admin/')) {
       rel = route.slice('/admin/'.length);
     } else if (route === '/') {
-      // Hawkes Gen, the app (dashboard/gen/): create, library, editor, on Gen's own accounts. A visitor with no session
+      // Hawkes Gen, the app (dashboard/gen/): create, library, editor, on Gen's own accounts. Everyone, signed in or not,
       // who asks for the bare address gets the front page instead (dashboard/gen/front.html: the visualization, nothing
-      // to click; J, 2026-11-14). A session cookie, any query string (/?app) or a bot (the page's own gate) is the app.
-      rel = !url.search && !/(?:^|;\s*)hg_session=/.test(String(req.headers.cookie ?? '')) ? 'gen/front.html' : 'gen/index.html';
+      // to click; J, 2026-11-14: "Yes, for everyone"). Any query string (/?app) or a bot (the page's own gate) is the app.
+      rel = !url.search ? 'gen/front.html' : 'gen/index.html';
     } else {
       rel = route.slice(1);
     }

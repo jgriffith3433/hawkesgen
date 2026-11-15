@@ -91,7 +91,7 @@ async function backFromCheckout() {
   if (!back) return;
   const sid = qs.get('session_id') || remembered();
   for (const k of ['billing', 'checkout', 'session_id']) qs.delete(k);
-  history.replaceState(history.state, '', `${location.pathname}${[...qs].length ? `?${qs}` : ''}${location.hash}`);
+  history.replaceState(history.state, '', `${location.pathname}${[...qs].length ? `?${qs}` : '?app'}${location.hash}`);
   forget();
   if (!sid) {
     if (back === 'success') toast('Thanks: your credits are on their way.');
