@@ -46,7 +46,7 @@ jobs:
             echo "SERVICE=gen-beta" >> "$GITHUB_ENV"; echo "HEALTH=https://beta.hawkesgen.ai/v1/health" >> "$GITHUB_ENV"
           else
             echo "RUN_REGION=$REGION" >> "$GITHUB_ENV"
-            echo "SERVICE=gen" >> "$GITHUB_ENV"; echo "HEALTH=https://hawkesgen.ai/v1/health" >> "$GITHUB_ENV"
+            echo "SERVICE=gen" >> "$GITHUB_ENV"; echo "HEALTH=https://api.hawkesgen.ai/v1/health" >> "$GITHUB_ENV"
           fi
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

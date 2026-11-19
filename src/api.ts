@@ -58,6 +58,7 @@ import { limit as limitRequest } from './ratelimit.ts';
 import { handleUpload, downloadTarget, linkTarget, shareLink, signedFileUrl, verifyFileSig } from './links.ts';
 import { handleMcp } from './mcp-http.ts';
 import { handleCollect } from './analytics/collect.ts';
+import { handleScaleChat } from './scalechat.ts';
 import { noteRoute, lagReport } from './lag.ts';
 import { mockHealth } from './mockproviders.ts';
 import { handleAnalytics } from './analytics/routes.ts';
@@ -406,6 +407,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
   if (route === '/v1/analytics/collect') return handleCollect(req, res);
   // ...and from a site's own server passing on pages that can't send themselves (a Gen key; collect.ts relayed).
   if (route === '/v1/analytics/relay' && method === 'POST') return handleCollect(req, res, { relay: true });
+  // The scale pages' "talk to the page" (src/scalechat.ts): public, its own CORS for the nine sites, short answers.
+  if (route === '/v1/public/scale-chat') return handleScaleChat(req, res);
   // Hawkes Net runs on its own box (net/, docs/net.md): Gen checks keys for it, files its usage and sends the rest there.
   if (route.startsWith('/v1/net/') || route.startsWith('/sdk/net') || route.startsWith('/sdk/hawkes-net')) return handleNetBridge(req, res, route);
 

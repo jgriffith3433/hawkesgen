@@ -10,8 +10,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "routes": [
-    { "pattern": "hawkesgen.ai/*", "zone_name": "hawkesgen.ai" },
-    { "pattern": "www.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }
+    // hawkesgen.ai and www are a GitHub Pages site since 2026-11-19; Gen answers on api.hawkesgen.ai.
+    { "pattern": "api.hawkesgen.ai/*", "zone_name": "hawkesgen.ai" }
   ],
   "vars": {
     // The Cloud Run service's own address (tools/gen-cloudrun/deploy.mjs prints it).
