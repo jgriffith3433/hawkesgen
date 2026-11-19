@@ -1,0 +1,33 @@
+# hawkesgen.ai on GitHub Pages (J, 2026-11-19): a push to main publishes the pages/ folder as it is. To change the
+# site, edit pages/ (pages/index.html is the front page) and push main. Gen's Cloud Run deploy ignores pages/.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['pages/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+      - id: deployment
+        uses: actions/deploy-pages@v4
