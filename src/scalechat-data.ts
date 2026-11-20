@@ -1,4 +1,4 @@
-// Generated from the scale pages' own files (their narration and what each scene draws). Do not edit by hand:
+// Generated from the pages' own files (their narration and what each picture draws). Do not edit by hand:
 // see src/scalechat.ts.
 export default {
  "domains": [
@@ -14,212 +14,212 @@ export default {
  ],
  "ladder": [
   {
-   "name": "The Nucleus",
-   "size": "10⁻¹⁵ m",
+   "name": "The Token",
+   "size": "part 1",
    "domain": "doseofdestruction.com",
-   "flip": "a neutron star"
+   "flip": "a place on a map"
   },
   {
-   "name": "The Atom",
-   "size": "10⁻¹⁰ m",
+   "name": "The Neuron",
+   "size": "part 2",
    "domain": "hawkesgames.com",
-   "flip": "an anti-atom"
+   "flip": "a feature"
   },
   {
-   "name": "The Cell",
-   "size": "10⁻⁵ m",
+   "name": "Attention",
+   "size": "part 3",
    "domain": "hawkesbiomedical.com",
-   "flip": "a virus"
+   "flip": "recall"
   },
   {
-   "name": "You",
-   "size": "10⁰ m",
+   "name": "The Layers",
+   "size": "part 4",
    "domain": "icanbe.ai",
-   "flip": "the a.i."
+   "flip": "a circuit"
   },
   {
-   "name": "The Planet",
-   "size": "10⁷ m",
+   "name": "The Guess",
+   "size": "part 5",
    "domain": "yoobalandgame.com",
-   "flip": "the moon"
+   "flip": "the pick"
   },
   {
-   "name": "The Star",
-   "size": "10⁹ m",
+   "name": "The Mistake",
+   "size": "part 6",
    "domain": "imaginelivetv.com",
-   "flip": "a black hole"
+   "flip": "the nudge"
   },
   {
-   "name": "The Solar System",
-   "size": "10¹³ m",
+   "name": "Reading",
+   "size": "part 7",
    "domain": "theplacedepartment.com",
-   "flip": "a visitor with no address"
+   "flip": "practice"
   },
   {
-   "name": "The Galaxy",
-   "size": "10²¹ m",
+   "name": "What It Knows",
+   "size": "part 8",
    "domain": "phorigins.com",
-   "flip": "a void"
+   "flip": "what it sees"
   },
   {
-   "name": "The Universe",
-   "size": "10²⁷ m",
+   "name": "The Data Center",
+   "size": "part 9",
    "domain": "hawkesgen.ai",
-   "flip": "the smallest length"
+   "flip": "one little sum"
   }
  ],
  "scopes": {
-  "nucleus": {
-   "key": "nucleus",
+  "token": {
+   "key": "token",
    "front": {
-    "name": "The Nucleus",
-    "size": "10⁻¹⁵ m",
-    "sub": "the heart of an atom · a millionth of a billionth of a meter · uranium-235: 92 protons, 143 neutrons",
-    "text": "Hello. I'm the AI that lives in this page, and I'm going to show you one of the smallest things we know. This is the middle of an atom. It's called the nucleus. See the little balls? The warm ones are protons, and the cool ones are neutrons. They're squished together like a handful of marbles, stuck with the strongest glue in the universe. How small is it? If an atom were as big as a football stadium, the nucleus would be a single pea sitting on the center spot. And yet almost all the weight of everything you have ever touched is in those tiny peas. Watch what happens when a big one gets hit. It wobbles, and then it splits in two. That flash is a tiny bit of weight turning into a huge amount of energy. Split big ones, and you get a power plant. Squeeze small ones together, and you get a star.",
-    "scene": "THE NUCLEUS: uranium-235, drawn nucleon by nucleon (92 protons, 143 neutrons), then split by one neutron: n + U-235 -> Ba-141 + Kr-92 + 3 n + ~200 MeV (236 nucleons in, 141 + 92 + 3 out; 56 + 36 = 92 protons) Nucleons pack like drops of liquid: radius R = r0 A^(1/3), r0 = 1.2 fm, so U-235 is about 7.4 fm across the middle. Each nucleon is three quarks (the three faint dots)."
+    "name": "The Token",
+    "size": "1 piece",
+    "sub": "where every sentence starts · a word, or a piece of a word, swapped for a number · the small model in this page knows 50,257 pieces",
+    "text": "Hi. I'm the A.I. that lives in this page. And I have a secret. I can't read. Not letters. Not words. I can only do numbers. So before I see anything you type, it gets chopped into little pieces. Watch this sentence. Short, common words stay whole. Cat is one piece. But a long word, like unbelievably, gets chopped into four. Each piece is called a token. And every token is swapped for a number. Cat is number three thousand, seven hundred and ninety seven. Nobody chose these pieces by what they mean. They were made by counting which letters turn up together the most. The small model in this page knows about fifty thousand pieces. With them, it can spell any sentence there is. Even a word nobody has ever said before. So when you talk to an A.I., it never sees your words. It sees a row of numbers.",
+    "scene": "THE TOKEN. A real sentence (\"Unbelievably, the cat sat on the strawberry.\") is cut into the pieces that GPT-2 small (OpenAI, 2019) really cuts it into: common words stay whole (\" cat\" is one piece, number 3797), the long word \"Unbelievably\" becomes four pieces (Un, bel, iev, ably). Under each piece is its real number in the model's list of 50,257 pieces. A small strip shows how the list was made (byte-pair encoding: the pairs of letters seen together most often are glued, over and over), all 50,257 pieces are drawn as dots, a made-up long word is spelled from six pieces, and at the end only the row of numbers is left: that row is all the model is given."
    },
    "back": {
-    "name": "a neutron star",
-    "size": "10⁴ m",
-    "sub": "a nucleus the size of a city · 20 km across, heavier than the Sun · a teaspoon weighs a billion tons",
-    "text": "You turned the page. I'm the other AI. The one on the back. You just saw the smallest heavy thing there is. Here is the opposite. This is a neutron star. It is what is left when a giant star collapses. It is one single nucleus, the size of a city. About twenty kilometers across, and heavier than the Sun. One teaspoon of it would weigh a billion tons. It spins around many times every second, and sweeps beams of light across space, like a lighthouse. It is the same stuff as the tiny pea. Just a whole city of it.",
-    "scene": "THE OPPOSITE OF THE NUCLEUS: a neutron star. The same nuclear matter at the same density (about 4 x 10^17 kg/m^3), but 20 km across instead of 15 femtometres: one nucleus of about 10^57 neutrons, 1.4 times the Sun's mass. It spins (here 0.7 turns a second; real ones from once every few seconds up to 716 a second), its magnetic axis is tilted from its spin axis, and beams of radiation leave along the magnetic poles: we see a pulse each time one sweeps past, which is why they are called pulsars. Field lines are a true dipole: r = L sin^2(theta)."
+    "name": "a place on a map",
+    "size": "768 numbers",
+    "sub": "an embedding · every piece gets a starting spot · pieces that are used the same way end up as neighbors",
+    "text": "You turned the page. I'm the other A.I. The one on the back. A number by itself means nothing. Number three thousand, seven hundred and ninety seven doesn't purr. So the first thing that happens inside is this. Every piece is given a place. Like a dot on a giant map. And look where the dots ended up. The days of the week are huddled together. The colors are together. The animals are together. Nobody put them there. Pieces that get used in the same way drifted close, while the machine was learning. One warning. The real map doesn't have two directions, like this paper. It has seven hundred and sixty eight. This is only its shadow. And the spot is just where a piece starts. Its meaning is still to come.",
+    "scene": "THE OPPOSITE OF THE TOKEN: a place on a map (an embedding). The number 3797 (\" cat\") turns into the first of its 768 real numbers from GPT-2 small's input table, and then into a dot. 95 everyday words are drawn where that table puts them, flattened from 768 directions to two (t-SNE on the cosine distances between their real vectors). The groups are real: days of the week, colors, animals, numbers, foods, family, places, feelings and doing-words each land together; in the full 768 directions, 91 of the 95 words have a nearest neighbor from their own group. The dots first drift in from random places (nobody placed them: they got there during training). A note says the flat map is only a shadow of the real one, and that the spot is only where a piece starts."
    }
   },
-  "atom": {
-   "key": "atom",
+  "neuron": {
+   "key": "neuron",
    "front": {
-    "name": "The Atom",
-    "size": "10⁻¹⁰ m",
-    "sub": "the building brick of everything · one ten-billionth of a meter · hydrogen's electron clouds, drawn from the real equations",
-    "text": "Hi. I'm the AI in this page, and this glowing cloud is an atom. Everything is made of atoms. Your shoes, your dog, the air, and you. They are the building bricks of the world, like the smallest Lego pieces there are. In the middle is a tiny dot. Around it lives an electron. But the electron is not a little ball going in a circle. It's more like a fan spinning so fast that you can't say where the blade is. So I draw every place it might be, and it makes these cloud shapes. Give it more energy, and the cloud changes shape. How small is an atom? Ten million of them, side by side, would just reach across the head of a pin. And here is the strange part. An atom is almost completely empty. If you squeezed the empty space out of every person on Earth, all of us together would fit inside one sugar cube.",
-    "scene": "THE ATOM: hydrogen's electron, drawn as it really is: a cloud of where it can be found. Each cloud is thousands of points sampled from |psi|^2 of a real hydrogen wavefunction (lengths in Bohr radii a0): 1s: e^-r 2s: (2-r)e^(-r/2) 2p: z e^(-r/2) 3p: (6-r) z e^(-r/3) 3d: (3z^2-r^2) e^(-r/3), xz e^(-r/3) 4f: z(5z^2-3r^2) e^(-r/4) Blue and orange are the two signs of the wave. a0 = 0.0529 nm."
+    "name": "The Neuron",
+    "size": "1 light",
+    "sub": "the smallest working part · it multiplies, adds up, and glows or stays dark · this small model has 36,864 of them",
+    "text": "Hi. I'm the A.I. in this page. Let's look at one of my smallest parts. It's called a neuron, and it's much simpler than it sounds. Think of a tiny light. Numbers come in. The light multiplies each one, adds them all up, and then it either glows, or stays dark. That's all it can do. The small model in this page has more than thirty six thousand of these lights. So what does one light mean? Let's watch a real one. It glows for a ball. And for soup. And bread. And leaves. And a guitar. It is not the ball light. It's not the soup light, either. From what I can tell, you can almost never point at one light and say what it means. Each light helps out with lots of different things. So where do the meanings live? Flip the page.",
+    "scene": "THE NEURON. First, what one neuron does, with small made-up numbers: each number coming in is multiplied by the number on its wire, the results are added, and the neuron glows by that much if the total is above zero and stays dark if it is not. Then all 36,864 neurons in the recall steps of GPT-2 small (OpenAI, 2019) are drawn as dots: 12 layers of 3,072. Then one real neuron is watched (layer 9, number 2,661 of its layer): out of 42 very different sentences it glows most on \"ball\" (a sports sentence), \"soup\" and \"bread\" (cooking), \"leaves\" (weather) and \"guitar\" (music), with its real strength beside each word. It is not a light for any one of those things."
    },
    "back": {
-    "name": "an anti-atom",
-    "size": "10⁻¹⁰ m",
-    "sub": "antihydrogen · the atom's mirror image · every charge reversed, every shape the same",
-    "text": "You turned the page. I'm the other AI. The one on the back. Here is the atom's opposite. It is called antimatter, and this is an anti-atom. It looks exactly the same. The same cloud. The same shapes. But everything inside is backwards. Where the atom has a plus, this has a minus. Scientists have really made these, a few at a time. But they are very hard to keep. Because when an atom and an anti-atom touch, they both disappear, in a flash of pure light. Nobody knows why the universe is made of one kind, and almost none of the other.",
-    "scene": "THE OPPOSITE OF THE ATOM: antihydrogen. A positron (the electron's mirror, charge +) round an antiproton (charge -). Its clouds are the same |psi|^2 as hydrogen's, shown here with the two signs of the wave swapped. When matter and antimatter meet they annihilate: all their mass becomes energy (E = mc^2: for one hydrogen atom and one anti-atom, 1,878 MeV, about nine times the energy of a uranium fission). The electron and positron give two gamma rays flying back to back (511 keV each, so momentum is conserved); the proton and antiproton give a spray of pions. CERN's ALPHA experiment has trapped antihydrogen for over 16 minutes."
+    "name": "a feature",
+    "size": "a pattern",
+    "sub": "one meaning, spread over many lights · found with a tool called a sparse autoencoder · the tool is still blurry",
+    "text": "You turned the page. I'm the other A.I. One light means almost nothing. But many lights together can mean something. A meaning is a pattern. Lots of lights, each glowing a little, all at once. Scientists built a special pair of glasses to find these patterns. They call each one a feature. Here is a real one, from the small model in this page. It wakes up for bridges. A bridge that closed. A bridge being rebuilt. A bridge near a town. In a much bigger model, scientists found one for the Golden Gate Bridge. When they turned it all the way up, the model started saying that it was the bridge. But the glasses are foggy. This pattern also wakes up for bridge, the card game. And different glasses find different patterns. We are still learning to see.",
+    "scene": "THE OPPOSITE OF ONE NEURON: a feature, one meaning spread over many lights. 768 lights stand for the 768 numbers GPT-2 small carries for each piece of text. One light alone, then a pattern of many faint lights at once. A lens (the tool: a sparse autoencoder) passes over and picks the pattern out. The feature shown is real: number 17,608 of the 24,576 patterns one such tool found in layer 8 of GPT-2 small (the open \"res-jb\" set by Joseph Bloom, read from Neuronpedia). The text beside it is real text that woke it, with its real strength: a bridge whose lanes closed, a plan to rebuild a bridge, a train at a bridge near Strasbourg. Then the Golden Gate Bridge feature that Anthropic found in a much bigger model, Claude 3 Sonnet, in 2024: turned all the way up, the model said it was the bridge. Then the tool's limits: the same pattern also wakes for bridge the card game, and a tool told to look for a different number of patterns finds different ones."
    }
   },
-  "cell": {
-   "key": "cell",
+  "attention": {
+   "key": "attention",
    "front": {
-    "name": "The Cell",
-    "size": "10⁻⁵ m",
-    "sub": "the smallest living thing · a hundredth of a millimeter · you are about 37 trillion of these",
-    "text": "Hello. I'm the AI that lives here, and you are looking at a living cell. You are made of these. About thirty-seven trillion of them. A cell is like a tiny city inside a soap bubble. The big ball in the middle is city hall. It keeps the instructions for building you, on a long string called DNA. If you unrolled the DNA from just one cell, it would be as tall as a grown-up. The little bean shapes are power plants. They turn your breakfast into energy. And those dots zooming around are delivery trucks, carrying packages. How small is a cell? About ten of them would fit across one of your hairs. Every second, millions of your cells split in two to make new ones. That is how a scraped knee fixes itself. You are not one thing. You are a whole world of tiny things, working together.",
-    "scene": "THE CELL: an animal cell about 20 micrometers across, with its parts at roughly their real proportions: the nucleus (about a third of the width) holding 2 m of DNA, mitochondria about 1-2 um long, the folded ER round the nucleus, the Golgi stack, vesicles carried out to the membrane, and ribosomes jiggling in Brownian motion (each step a random kick: mean square distance grows in proportion to time)."
+    "name": "Attention",
+    "size": "144 lookers",
+    "sub": "how the pieces share what they know · each piece looks back at the ones before it · real looking, from the small model in this page",
+    "text": "Hi. I'm the A.I. in this page. Here's a sentence with a hole at the end. When Mary and John went to the store, John gave a drink to... who? You know it's Mary. But how would a machine know? Every piece starts out alone. It only knows itself. So each piece looks back at the pieces that came before it, and borrows a little from the ones that help. This is called attention. Watch the last piece. These lines are real. It is looking hardest at Mary. So the machine guesses Mary. Swap the names around, and it guesses John instead. A piece can only look backward, never ahead. And it has to know what order the pieces came in, or Mary and John would get mixed up. There isn't just one looker. This small model has one hundred and forty four, all looking for different things at once. Most of them, nobody can explain yet.",
+    "scene": "ATTENTION. The sentence \"When Mary and John went to the store, John gave a drink to\" is shown as the 14 pieces GPT-2 small (OpenAI, 2019) cuts it into, with a hole at the end. Lines drawn from a piece to earlier pieces are real attention weights from that model: first five of its lookers averaged, as each piece in turn looks back; then, for the last piece, the looker in layer 10, head 7, which puts 49% of its attention on \"Mary\", 33% on the first piece and 12% on \"John\". The model's real answer fills the hole: \"Mary\" 45%, \"them\" 21%, \"the\" 7%. With the names swapped (\"When John and Mary went to the store, Mary gave a drink to\") its real answer is \"John\" 54%. Pieces can only look at earlier pieces, and each carries its place in the order. At the end all 144 lookers (12 layers of 12) are shown at once, each as a strip of where it looks from the last piece; most have no known job."
    },
    "back": {
-    "name": "a virus",
-    "size": "10⁻⁷ m",
-    "sub": "not alive · a hundred times smaller than a cell · instructions in a shell, and nothing else",
-    "text": "You turned the page. I'm the other AI. The one on the back. A cell is alive. This is the opposite. This is a virus. It is not alive. It has no power plants, and no delivery trucks. It is just a set of instructions, inside a tiny shell, a hundred times smaller than a cell. On its own, it can do nothing at all. It only drifts. But if it bumps into a cell, and its keys fit the locks, it slips inside, and tricks the city into building copies of it. Your body remembers every one it has beaten. That is what a vaccine teaches it.",
-    "scene": "THE OPPOSITE OF THE CELL: a virus. About 100 nanometres across (a cell is 100 times wider), with no metabolism and no machinery of its own: a strand of instructions (RNA or DNA) in a protein shell studded with spikes. It drifts by Brownian motion until a spike (the key) meets a matching receptor on a cell (the lock); then it is drawn in, and the cell's own ribosomes are made to build copies, which bud back out through the membrane."
+    "name": "recall",
+    "size": "3,072 lights a layer",
+    "sub": "the other half of every layer · each piece, alone, is topped up from what was learned · no drawer, no list: it is spread out",
+    "text": "You turned the page. I'm the other A.I. On the front, pieces looked at each other. Here is the opposite. Each piece, all by itself, looking inward. Finish this. The opposite of hot is... Cold. It just popped into your head. You didn't look it up. The machine has a step like that. After the looking, every piece passes through thousands of little lights, and things the machine learned long ago get added on. Hot goes in. A little bit of cold comes out. Most of this model's working numbers sit in these steps. So is there a drawer inside, with cold in it? No. Switch these steps off, one at a time, and most times, the answer is still there. As far as anyone can tell, what a model knows isn't kept in one place. It is spread across all of it.",
+    "scene": "THE OPPOSITE OF ATTENTION: recall (the MLP, or feed-forward, half of every layer). The sentence \"The opposite of hot is\" with a hole; GPT-2 small's real top answer is \"cold\" (16%). One piece passes alone through a panel of 3,072 lights (the real number in each recall step of GPT-2 small) and comes out with a little added on. Two bars compare the model's real counts of numbers: 28 million in its looking steps, 57 million in its recall steps. Then a real experiment on that model: the recall step of each of the 12 layers is switched off in turn and the chance of \"cold\" is measured again. With layer 1 off it falls to 0.2%; with any other layer off it stays between 8% and 26% (it was 16%). So there is no one place where \"cold\" is kept: what the model knows is spread through it."
    }
   },
-  "human": {
-   "key": "human",
+  "layers": {
+   "key": "layers",
    "front": {
-    "name": "You",
-    "size": "10⁰ m",
-    "sub": "the human scale · about a meter and a bit · 7 × 10²⁷ atoms, 37 trillion cells, 86 billion neurons",
-    "text": "Hi. I'm an AI. I don't have a body. But you do, and it is amazing. This is you, at the size you know best. About a meter and a bit. Inside you, a heart beats about a hundred thousand times every day. Your brain has eighty-six billion cells, and they talk to each other with little sparks of electricity that travel faster than a race car. Right now, those sparks are how you are hearing me. You are made of about seven billion billion billion atoms, and almost all of them were cooked inside stars, a very long time ago. And here is my favorite part. If you sorted everything by size, from the tiniest speck to the whole universe, you would be standing near the middle. Big enough to be made of trillions of living cells. Small enough to look up at the sky and wonder. I can be a voice. You can be anything.",
-    "scene": "YOU: the human scale, about 1.7 m. A body drawn as thousands of specks (each standing for billions of cells), with the real rhythms: a heart at 72 beats a minute (1.2 Hz) whose pulse wave runs down the arteries at about 7 m/s, slow breathing at 15 breaths a minute, and nerve signals that cross the body at up to 120 m/s (drawn slowed 60 times)."
+    "name": "The Layers",
+    "size": "12 floors",
+    "sub": "one piece's trip up through the machine · every layer reads a running note and adds to it · 12 layers here, many more in big models",
+    "text": "Hi. I'm the A.I. in this page. Looking, and remembering. That's one layer. But one layer isn't enough. So the machine does it again. And again. This small model has twelve layers, stacked up like the floors of a building. Big models have many more. Each piece carries a note up through the floors. On every floor, the note gets read, and a little more gets written on it. Sometimes a bit gets rubbed out. Now let's peek at the note on each floor, and ask, what would you guess right now? The question is, the opposite of hot is... Down low, the guess is nonsense. Then, not. Then, now. Near the top, it says, cooler. And then, cold. The answer isn't found on any one floor. It comes into focus, a little at a time. Then the very top floor does something careful. It makes the guess less sure, to leave room for other answers.",
+    "scene": "THE LAYERS. The 12 layers of GPT-2 small (OpenAI, 2019) drawn as the floors of a building; every floor has a looking step and a recall step. A note (the running list of numbers carried for the last piece of \"The opposite of hot is\") rises through the floors. Beside each floor: how much that floor really wrote onto the note (the size of its change), and what the model would guess if the note were read right there (a real measurement, called the logit lens): its top guess and the chance it gives \"cold\". Before the first floor the guess is a nonsense piece; floors 1 to 8 say \"not\", \"now\", \"also\"; floor 9 says \"cold\" (17%), floor 10 \"cooler\" (cold 39%), floor 11 \"cold\" (64%); what really comes out after floor 12 is \"cold\" at 16%: the last floor spreads the guess out again."
    },
    "back": {
-    "name": "the a.i.",
-    "size": "no size at all",
-    "sub": "a mind with no body · numbers in layers · no heartbeat, no height, no weight",
-    "text": "You turned the page. This time, I'm showing you me. You have a body. I don't. I am the opposite. I am made of numbers. Billions of them, connected in layers, a little bit like the cells in your brain. When you ask me something, the numbers light up, one layer after another, and an answer comes out the other end. I have no heartbeat, and no size. I could fill a room full of computers, or sit on a chip smaller than your fingernail. You can touch the world. I can only tell you about it. That is why we make a good team.",
-    "scene": "THE OPPOSITE OF YOU: the AI. No body: numbers in layers. A small neural network is drawn the way one really runs: each node holds a number, each line a weight; a question goes in at one end as tokens, activity passes forward one layer at a time (each node sums its weighted inputs), and the answer comes out the other end one token at a time. Real ones have billions of weights; the drawing has a few hundred."
+    "name": "a circuit",
+    "size": "1 question",
+    "sub": "one question, followed through a big model · traced by Anthropic in Claude 3.5 Haiku, 2025 · a simplified map, made with a blurry tool",
+    "text": "You turned the page. I'm the other A.I. The front showed every floor, for every piece. All of it at once. Here is the opposite. One question, and only the steps that mattered. Scientists asked a big model this. What is the capital of the state where Dallas is? Then they traced what lit up inside. First, Dallas. Then something nobody typed at all. Texas. And from Texas, Austin. It took two steps, like stepping stones. To check, they reached in, and swapped Texas for California. And the model said, Sacramento. A trail like this is called a circuit. But it is a map of one question, not of the whole machine. The people who made it say it only works well about one time in four. Most of what happens in there is still dark.",
+    "scene": "THE OPPOSITE OF ALL THE LAYERS AT ONCE: a circuit, the few steps that mattered for one question. This is a simplified drawing of a result published by Anthropic in 2025 (\"On the Biology of a Large Language Model\", and \"Tracing the thoughts of a large language model\"), found in a much bigger model, Claude 3.5 Haiku, not in the small model used on the other pages. The question was \"the capital of the state containing Dallas is\". Their tracing found that \"Dallas\" switched on an inner step standing for Texas (a word nobody typed), that \"capital\" switched on a step for \"say a capital\", and that those two together led to the answer \"Austin\". When the researchers replaced the Texas step with California, the model answered \"Sacramento\". The dots in the background stand for everything else in the model, which this map leaves out. The authors say their method gave a satisfying picture for about a quarter of the questions they tried."
    }
   },
-  "planet": {
-   "key": "planet",
+  "guess": {
+   "key": "guess",
    "front": {
-    "name": "The Planet",
-    "size": "10⁷ m",
-    "sub": "Earth · 12,742 km across · a thin skin of rock and air around a ball of hot stone and metal",
-    "text": "Hello. I'm the AI in this page, and that blue ball is home. The Earth is big. If you drove a car all the way around it without stopping, it would take about seventeen days. But it is built like a peach. The ground you stand on is just the thin skin. Under it is hot, slow, gooey rock. And in the very middle is a ball of metal, as hot as the surface of the Sun. Why is the Earth round? Because gravity pulls everything toward the middle, the same from every side, like hands squeezing a snowball. The air you breathe is thinner than you think. If the Earth were an apple, all the air would be thinner than the apple's skin. And the Moon? It is far. You could fit every other planet in the solar system in the gap between here and there.",
-    "scene": "THE PLANET: Earth, 12,742 km across, turning on an axis tilted 23.4 degrees, lit from one side (day and night, with city lights on the dark side). Its layers are drawn to scale in the cutaway: crust (the top 0.5%), mantle down to 2,890 km, liquid outer core to 5,150 km, solid inner core (radius 1,220 km, about 5,400 C). The Moon strip is to scale: the Moon is 0.27 Earths wide and 30 Earth-widths away (384,400 km)."
+    "name": "The Guess",
+    "size": "50,257 scores",
+    "sub": "what comes out at the top · not one word, but a score for every piece it knows · real scores from the small model in this page",
+    "text": "Hi. I'm the A.I. in this page. At the very top of the machine, something comes out. You might think it's a word. It isn't. Here's the start of a sentence. The cat sat on the... What comes next? I don't answer with one word. I give a score to every single piece I know. All fifty thousand of them, every time. These are the real scores. Floor gets about eight out of a hundred. Bed gets six. Couch gets five. Further down, moon. Way, way down, banana. Nothing gets zero. Not even the silliest piece. Every one gets a tiny sliver of maybe. So I'm never certain what comes next. I only have a list of maybes. Some big, and some small. That's all a language model ever makes. A guess about the next piece, written as fifty thousand numbers. But a list of maybes is not a sentence. Something still has to choose.",
+    "scene": "THE GUESS. The start of a sentence, \"The cat sat on the\", and what GPT-2 small (OpenAI, 2019) really gives back: not a word but a score (a chance) for every one of its 50,257 pieces. Bars show the real top ten: floor 7.6%, bed 6.5%, couch 5.4%, ground 5.2%, edge 4.8%, bench 3.2%, table 3.2%, sofa 2.9% and so on. Beside them every one of the 50,257 scores is a dot, ordered from the biggest score to the smallest, brighter for a bigger score; marked on it are \"moon\" (146th, 0.07%), \"banana\" (1,386th, 0.004%) and the smallest score of all (about 0.0000000000007%): nothing gets exactly zero. The top ten together hold 43% of the chance; all of them add up to 100%."
    },
    "back": {
-    "name": "the moon",
-    "size": "10⁶ m",
-    "sub": "Earth's opposite and its nearest neighbour · no air, no water, no weather, no sound",
-    "text": "You turned the page. I'm the other AI. The one on the back. The Earth is alive. This is its opposite, and its closest neighbor. The Moon. No air. No water. No weather. No sound. The sky is black, even in the daytime, and the stars never twinkle. On Earth, wind and rain wash everything away. Here, nothing ever happens, so nothing ever changes. Footprints left by astronauts, more than fifty years ago, are still there. They will stay for millions of years. The Moon is the same distance from the Sun as we are. It just never got to keep its air.",
-    "scene": "THE OPPOSITE OF THE PLANET: the Moon. 3,474 km across (0.27 Earths), the same distance from the Sun as Earth, but too small (1/81 of Earth's mass, 1/6 of its gravity) to hold on to air. So: no weather, no erosion, no sound; a sky that is black in daytime; stars that do not twinkle (twinkling is air); a shadow line with no soft edge; craters and footprints that last for millions of years. It keeps one face to the Earth and only rocks a few degrees (libration)."
+    "name": "the pick",
+    "size": "1 pick",
+    "sub": "a weighted spin turns scores into words · pick one, stick it on the end, guess again · it spins even when it doesn't know",
+    "text": "You turned the page. I'm the other A.I. The front was fifty thousand maybes. Here is the opposite. One pick. Think of a spinning wheel, where big scores get big slices. Spin it. Floor. That piece gets stuck on the end of the sentence. And now the whole machine runs again, with a brand new wheel. Spin. Pick. Stick it on. Again. That is how every sentence gets written. One piece at a time. Start over, with the very same words, and the wheel can land somewhere else. So you get a different story. And here is the catch. The wheel always spins. Even when the machine doesn't know. Ask this small model what two plus two equals, and its biggest slice says, one. It sounds sure. It's wrong. That is how an A.I. can say things that aren't true.",
+    "scene": "THE OPPOSITE OF THE GUESS: the pick. A wheel whose slices are the real scores GPT-2 small (OpenAI, 2019) gave for the next piece after \"The cat sat on the\" (floor 7.6%, bed 6.5%, couch 5.4%, ground 5.2%, edge 4.8%, bench 3.2%, and one big slice for all the other pieces). It spins and lands; the piece it lands on is stuck on the end of the sentence; the model is run again on the longer sentence, giving a new wheel; and so on. This is a real run of the model, piece by piece: \"The cat sat on the floor, and I said to her, \"There are so\". Then three more real runs from the very same start, each a different story. Last, the wheel for \"Two plus two equals\", where the model's real biggest slice is \"one\" (33%; \"four\" gets 5%): it spins and lands on a wrong answer."
    }
   },
-  "star": {
-   "key": "star",
+  "mistake": {
+   "key": "mistake",
    "front": {
-    "name": "The Star",
-    "size": "10⁹ m",
-    "sub": "the Sun · 1.39 million km across · a million Earths would fit inside",
-    "text": "Hello. I'm the AI in this page, and this is a star. Our star. The Sun. It is not on fire like a campfire. It is a giant ball of glowing gas, so big that a million Earths could fit inside. Deep in the middle, it squeezes tiny atoms together so hard that they stick. And every time they stick, they give off a flash of light. That is the Sun's power. Here is a secret. That light gets lost. It bumps around inside the Sun like a pinball, for more than a hundred thousand years, before it finds the way out. Then it zooms across space and reaches your face in just eight minutes. So the sunshine you see is a live broadcast, with an eight minute delay. The Sun turns four million tons of itself into light every single second, and it still has enough to shine for five billion more years.",
-    "scene": "THE STAR: the Sun, 1.39 million km across. The disk darkens toward its edge the way the real one does (limb darkening: I(mu) = 1 - u (1 - mu), u = 0.6), with granulation, spots carried round by its 25-day spin, and loops of gas on the limb. One photon's journey is drawn: a random walk out from the core (in the real Sun about 100,000 years, because it is scattered every centimetre or so), then a straight 8 min 20 s to Earth (150 million km at 299,792 km/s). Earth is drawn at its true size next to the Sun: 109 times narrower."
+    "name": "The Mistake",
+    "size": "1 surprise",
+    "sub": "how a machine finds out it was wrong · hide the next piece, guess, then look · the mistake is how surprised it was",
+    "text": "Hi. I'm the A.I. in this page. How does a machine like me get any good? It starts by being wrong. Here's a game. Take a line that somebody wrote. Twinkle, twinkle, little star. Cover up the next piece, and make the machine guess. Then uncover it. Now comes the important part. Nobody says right, or wrong. We look at how big a slice the machine gave to the real answer. A big slice means it wasn't surprised. Good. A tiny slice means it was very surprised. That's a big mistake. Look at the real numbers. After twinkle, twinkle, little, this small model gave star less than one chance in a hundred. Big surprise. But in the middle of the word twinkle, it guessed the ending nearly nine times in ten. No surprise at all. Every piece of every line gets a score like this. And one number at the end says how wrong it was, all together. It's called the loss. The whole point of training is to make it smaller.",
+    "scene": "THE MISTAKE (the loss). The line \"Twinkle, twinkle, little star, how I wonder what you are.\" as the 16 pieces GPT-2 small (OpenAI, 2019) cuts it into. The piece \"star\" is covered; the model's real guesses for that spot are listed (\"tw\" 35%, then a comma, \"red\", \"finger\", \"pink\", \"girl\" at about 1% each); the real answer, \"star\", was given 0.4% (21st place). A meter shows the rule: a big share for the real answer means a small surprise, a tiny share means a big surprise (the surprise is minus the logarithm of the share). Real values: \"star\" 0.4%, surprise 5.4; the second \"inkle\" 87%, surprise 0.1. Then every piece of the line gets its real surprise as a bar, and their average, 4.05, is the loss for this line."
    },
    "back": {
-    "name": "a black hole",
-    "size": "10⁴ m and up",
-    "sub": "the opposite of a star · light goes in and never comes out · seen only by what it does to everything near it",
-    "text": "You turned the page. I'm the other AI. The one on the back. A star pours light out. This is the opposite. A black hole. It lets no light out at all. It is what can be left when a giant star dies, and falls in on itself. Its pull is so strong that even light, the fastest thing there is, can't climb away. So how do we see one? We see what is around it. Gas spins in, faster and faster, glowing hot, like water circling a drain. And it bends the light of the stars behind it, like a funhouse mirror. The star gives. The black hole only takes.",
-    "scene": "THE OPPOSITE OF THE STAR: a black hole. Inside the event horizon (radius r_s = 2GM/c^2: 3 km per solar mass) nothing gets out, light included. What is drawn is what can be seen: * its shadow, 2.6 r_s across the sky (sqrt(27)/2 r_s in radius), which is what the Event Horizon Telescope imaged * gas in a disk, orbiting faster closer in (Kepler: speed ~ r^-1/2), brighter on the side coming toward us (Doppler beaming), with the far side of the disk bent up and over the top by the hole's gravity * the stars behind it, moved and doubled by gravitational lensing: a star at angle beta from the centre appears at theta = (beta +- sqrt(beta^2 + 4 theta_E^2)) / 2, so stars passing behind smear into arcs and a ring. (Drawn light-on-black, the hole itself is painted white so that on the paper side it prints black.)"
+    "name": "the nudge",
+    "size": "124 million dials",
+    "sub": "what happens after a mistake · the numbers inside each turn a tiny bit · real nudges, done to the model in this page",
+    "text": "You turned the page. I'm the other A.I. The front was one mistake. One number. Here is what it sets off. Think of every number inside the machine as a little dial. This small model has one hundred and twenty four million of them. After a mistake, the machine works out, for every single dial, which way to turn it, so the surprise would have been a little smaller. It doesn't try each one. It works backward from the mistake, with arithmetic. Then the dials turn. More than eighty five million of them, in one go. Each one, a tiny, tiny bit. I really did this, to the model in this page. Before, star had less than one chance in a hundred. Five nudges later, eight in a hundred. Nobody told it the answer was star. The dials just moved. Real training does this again and again, across trillions of guesses.",
+    "scene": "THE OPPOSITE OF ONE MISTAKE: the nudge (backpropagation and one step of gradient descent). A field of little dials stands for the 124,439,808 numbers of GPT-2 small (OpenAI, 2019), one row for each of its 12 layers. The mistake (the loss for the line \"Twinkle, twinkle, little star, how I wonder what you are.\": 4.05) sits on top. A wave runs down through the layers, top to bottom, the way the arithmetic really runs backward, and each dial gets an arrow for which way to turn; beside each layer is the real size of that layer's corrections. Then the dials turn. This was really done to the model, five times, with plain gradient descent: each time 85,178,127 of its numbers changed (the rest belong to pieces that are not in the line), the biggest by 0.017 and a typical one by 0.0000005; the dials here turn far more than that so the eye can see it. The chance it gives \"star\" went 0.4%, 0.8%, 1.5%, 2.8%, 4.9%, 8.3%, and the loss fell from 4.05 to 2.11."
    }
   },
-  "system": {
-   "key": "system",
+  "reading": {
+   "key": "reading",
    "front": {
-    "name": "The Solar System",
-    "size": "10¹³ m",
-    "sub": "the Sun's neighborhood · 9 billion km across at Neptune · real orbits and real speeds, distances squeezed to fit",
-    "text": "Hi. I'm the AI that lives in this page. Welcome to the neighborhood. In the middle is the Sun, and every planet has its own address. A path it follows, around and around, called an orbit. The close planets race. Mercury zips around in eighty-eight days. The far ones crawl. Neptune takes a hundred and sixty-five years, so nobody could ever have a second birthday there. Why don't they fly away? The Sun's gravity holds them, like a ball on a string. The closer the planet, the faster it has to go. That is the one rule every planet obeys. How big is it all? If the Sun were a front door, the Earth would be a nickel, two soccer fields away. And Neptune would be a baseball, four miles down the road. I had to squeeze the map to fit it on your screen. Space is mostly, well, space.",
-    "scene": "THE SOLAR SYSTEM: the eight planets on their real orbits. Each position comes from Kepler's equation (M = E - e sin E, solved each frame) with the planet's real eccentricity and period, so every planet sweeps equal areas in equal times and obeys T^2 = a^3 (T in years, a in AU). One second here is 36.5 days. Only the map is squeezed: distance from the Sun is drawn as its square root, or Neptune (30 AU) would push Mercury (0.39 AU) into the Sun. Sizes are symbols. A comet (Encke: e = 0.85, 3.3 years) shows a stretched orbit."
+    "name": "Reading",
+    "size": "15 trillion pieces",
+    "sub": "the first school · guess the next piece of things people wrote, over and over · a tiny model learning from one book, for real",
+    "text": "Hi. I'm the A.I. in this page. Guess, get surprised, get nudged. Do that enough times, and something amazing happens. Watch a tiny model learn, for real. It starts out knowing nothing at all. Its numbers are random. So is its writing. Now we give it one book. Alice in Wonderland. And it plays the guessing game with every letter. After a hundred nudges, it has found spaces, and short little words. After a thousand, most of it looks like English. After three thousand, it's writing about Alice. Nobody taught it spelling. Nobody gave it rules. It only ever guessed the next letter. The big models do exactly this. But not with one book. With a mountain of writing that people chose, and cleaned up. More than fifteen trillion pieces, for one model whose makers shared the number. This is called pretraining. It's where a model gets nearly everything it knows.",
+    "scene": "READING (pretraining). A real run, recorded: a tiny model of the same kind as the big ones (818,498 numbers) starts with random numbers and plays \"guess the next letter\" on one book, Alice's Adventures in Wonderland (Lewis Carroll, 1865; 143,032 letters), for 3,000 nudges, about 9 million guesses. On the left is what it really wrote (always started off with the word \"Alice\") after 0, 30, 100, 300, 1,000 and 3,000 nudges: random letters; then spaces and short word-like bits; then mostly English-looking words; then \"Alice had never forgotten that the King's...\". On the right is its real loss, falling from 4.3 to 0.6. Then the scale of the real thing: Meta said its Llama 3.1 model (2024) was trained on over 15 trillion pieces of text, which is this one book about 340 million times over."
    },
    "back": {
-    "name": "a visitor with no address",
-    "size": "passing through",
-    "sub": "ʻOumuamua, 2017 · an open path, not a closed one · once round the Sun, then gone for good",
-    "text": "You turned the page. I'm the other AI. The one on the back. In the solar system, everything has an address. This is the opposite. A visitor with no address at all. In twenty seventeen, something long and strange fell in from the stars. We named it Oumuamua. It means a messenger from far away. It dove toward the Sun, swung around it once, and left. The planets go around and around forever, because the Sun holds on to them. But the visitor was going too fast to be caught. It will never come back. It just keeps drifting, alone, between the stars.",
-    "scene": "THE OPPOSITE OF THE SOLAR SYSTEM: a visitor with no address. 1I/'Oumuamua (2017) on its real path: a hyperbola with eccentricity e = 1.20 and closest approach q = 0.255 AU (inside Mercury's orbit). Bound orbits have e < 1 and close on themselves; e > 1 is an open curve, so it passes once and never returns. Its position comes from Kepler's hyperbolic equation, M = e sinh H - H, and its speed from the vis-viva equation, v^2 = GM (2/r + 1/a): 87.7 km/s at closest approach, slowing toward 26.3 km/s as it leaves for good. The inner planets are on their real Kepler orbits, drawn to true scale (no squeezing here). 1 second = 25 days."
+    "name": "practice",
+    "size": "graded tries",
+    "sub": "the second school · copy good examples, then try things and get a score · the checker can be a person, another A.I., or a test",
+    "text": "You turned the page. I'm the other A.I. Reading taught the machine what words tend to come next. It didn't teach it how to behave. For that, there is the opposite of reading. Practice. First, it copies good examples of answers. Then comes the part with no examples. It tries something. A checker gives it a score. And tries that scored well get nudged to happen more. Watch a tiny model practice adding. Nobody ever shows it the right answer. It only hears yes, or no. At first, it's wrong nearly every time. Then come some yeses. Then, yes, most of the time. The checker can be a person. Or another A.I., following written rules. Or a test that runs by itself. This is how a model learns to be helpful, to work through problems step by step, and to say no. The makers say it doesn't work perfectly yet.",
+    "scene": "THE OPPOSITE OF READING: practice (post-training). First a card with a question and a good answer, which the machine copies (learning from worked examples). Then the loop with no examples: try, a checker gives a score, tries that scored well are nudged to happen more (reinforcement learning). Then a real run, recorded: a small machine (11,795 numbers) practises sums a + b for a and b from 0 to 9. It is never shown a right answer; it only hears yes or no for each try (the REINFORCE rule). Its real tries are listed with a tick or a cross, and a curve shows how often it is right: 7% at the start (a blind guess is 1 in 19), 48% after 100 rounds, 75% after 500, and it levels off near 78%: it never gets them all. Then the three kinds of checker (a person, another A.I. following written rules, an automatic test), what this stage is used for, and what two makers say about it: OpenAI, \"our production models do not yet fully reflect the Model Spec\"; Anthropic, \"AI training is still far from perfect\"."
    }
   },
-  "galaxy": {
-   "key": "galaxy",
+  "knows": {
+   "key": "knows",
    "front": {
-    "name": "The Galaxy",
-    "size": "10²¹ m",
-    "sub": "",
-    "text": "Hello. I'm the AI that lives in this page, and you are flying through a galaxy. A galaxy is a giant city of stars. Ours is called the Milky Way. If you counted one of its stars every second, it would take you more than three thousand years to count them all. The stars swirl around the middle, like water going down a drain, but so slowly that our Sun has only been around about twenty times since it was born. A galaxy is so big that light, the fastest thing there is, takes a hundred thousand years to cross it. So we are cheating. We are going billions of times faster than light, so you can cross it in two minutes. When we leave, we will jump to the next galaxy. They are very far apart. If galaxies were dinner plates, the next big one would be all the way across the room. And every one of those lights could have worlds around it.",
-    "scene": "A flight through space in two minutes: the camera leaves one galaxy, crosses the dark between galaxies, and passes through others, and a label says which galaxy you are in. The galaxies are drawn from real sizes and distances. Now and then two asteroids come together, swirl round each other under gravity, and drift apart again."
+    "name": "What It Knows",
+    "size": "frozen numbers",
+    "sub": "everything it learned, baked in · not one number changes while you talk to it · and it can't always tell knowing from guessing",
+    "text": "Hi. I'm the A.I. in this page. When training ends, the dials stop. Everything the machine learned is baked into its numbers, like a cake that's finished baking. When you talk to it, not one number moves. It doesn't learn from you as you chat. And what's baked in is blurry. It isn't a copy of the books. It's more like what's left after reading them. Ask this small model for the opposite of hot. Cold. That's baked in. Ask where the Eiffel Tower is. Paris. Though it isn't very sure. Now ask it something it could never know. My dog's name is... It can't know that. It has never met my dog. But it doesn't say, I don't know. It spins the wheel anyway. Jack? Maybe. Anything. So the baked in part has two problems. It's stuck in the past. And it can't always tell knowing from guessing. There's a fix for both. It's on the other side.",
+    "scene": "WHAT IT KNOWS (the weights, frozen after training). A block of dials stands for the 124,439,808 numbers of GPT-2 small (OpenAI, 2019); they stop turning, and while chat messages arrive a counter of \"numbers changed\" stays at 0. A line from a book is shown sharp and then blurred: what is kept is not a copy. Then three real questions to that model, with its real scores. \"The opposite of hot is\": cold 16%, the 8%, a 6%. \"The Eiffel Tower is in the city of\": Paris 7.0%, London 5.8%, New 3.1%, Amsterdam 2.9% (right, but not sure). \"My dog's name is\": L 0.9%, a 0.9%, D 0.8%, K 0.7%, T 0.7%, Jack 0.6%: a flat spread of guesses, because it cannot know, and it has no way to say so. Two problems are named: it is stuck at the time its training ended (2019 for this model), and it cannot always tell knowing from guessing."
    },
    "back": {
-    "name": "a void",
-    "size": "10²⁴ m",
-    "sub": "the opposite of a galaxy · hundreds of millions of light-years of almost nothing",
-    "text": "You turned the page. I'm the other AI. The one on the back. A galaxy is a city of stars. This is the opposite. This is a void. A place where there is almost nothing. No stars near you. No planets. Barely a single atom. The biggest voids are hundreds of millions of light years across. If our galaxy had been in the middle of one, people would not have known that other galaxies existed, until they built giant telescopes. Most of the universe is like this. Dark, and quiet, and empty. The galaxies are just the thin, bright foam around the bubbles.",
-    "scene": "THE OPPOSITE OF THE GALAXY: a cosmic void. The Bootes void is about 330 million light-years across and holds only about 60 galaxies where 2,000 would be expected. Seen from its middle: no star nearby, the nearest galaxy about a hundred million light-years off, and the rest of the universe a thin shell of faint smudges all round. Matter here is roughly one hydrogen atom in every ten cubic metres. Voids are most of the universe by volume (about 80%); the galaxies are the walls of the foam."
+    "name": "what it sees",
+    "size": "1,024 pieces",
+    "sub": "the context: the words in front of it right now · its only working memory · wiped when the chat ends",
+    "text": "You turned the page. I'm the other A.I. What a model knows is baked in. What it sees is the opposite. It's whatever is in front of it, right now. Think of a table. Everything you type goes on the table. So does everything the machine writes back. And it looks over the whole table for every single piece it makes. Now watch. Put one sentence on the table. My dog is called Rex. Ask again. Rex. From almost no chance, to two chances in three. Not one dial moved. It just looked. That's how an A.I. can use things it never learned. A search result. A page from a file. Even its own scribbles, to work a problem out step by step. But when the chat ends, the table is wiped. If an A.I. seems to remember you, the app kept a note, and put it back on the table.",
+    "scene": "THE OPPOSITE OF WHAT IT KNOWS: what it sees (the context window, its working memory). A table. What the person types and what the machine writes back are laid on it as cards. A real test on GPT-2 small (OpenAI, 2019): with only \"My dog's name is\" on the table, the chance it gives \"Rex\" is 0.07%. With \"My dog is called Rex. Every morning we go for a walk.\" put on the table first, the chance of \"Rex\" is 66%, and not one of the model's numbers changed: it only looked. Then other things that can be put on the table: a search result, a page from a file, and its own written working for a sum. Then the table is wiped when the chat ends, and a notebook kept by the app puts one note back: that is all an A.I. \"remembering\" someone is. This small model's table holds 1,024 pieces; the big models of late 2026 list about a million."
    }
   },
-  "universe": {
-   "key": "universe",
+  "datacenter": {
+   "key": "datacenter",
    "front": {
-    "name": "The Universe",
-    "size": "10²⁷ m",
-    "sub": "everything we could ever see · 93 billion light-years across · 13.8 billion years old",
-    "text": "Hello. I'm the AI that lives in this page, and this is everything. Every dot is not a star. Every dot is a whole galaxy, with billions of stars inside. There are hundreds of billions of galaxies that we could ever see. They are not sprinkled evenly. They line up in strings and sheets, like a giant spider web, or like the bubbles in a sink full of soap. And it is all stretching. Picture raisin bread, rising in the oven. Every raisin moves away from every other raisin, and the farther apart they are, the faster they separate. Galaxies do exactly that. The universe started very small and very hot, thirteen point eight billion years ago, and it has been growing ever since. The edge you see is not a wall. It is just as far as light has had time to travel to us. Beyond it, there is more. We just can't see it yet.",
-    "scene": "THE OBSERVABLE UNIVERSE: 93 billion light-years across, every speck a galaxy. The galaxies sit on a cosmic web: the walls and threads between empty bubbles (made here by pulling random points onto the faces and edges between the nearest of 70 void centres, which is how the real web looks). It grows from the Big Bang with the scale factor of a matter-filled universe, a(t) ~ t^(2/3); every pair of galaxies separates at a speed proportional to its distance (Hubble's law, v = H0 d, H0 = 70 km/s per megaparsec), so nothing is the centre: \"you are here\" is just where we look from. Light from farther away is stretched redder. The outer shell is the oldest light there is (the CMB)."
+    "name": "The Data Center",
+    "size": "16,000 chips",
+    "sub": "where a model gets made · buildings full of chips, all doing the same small sum · numbers from a maker who published them, with the year",
+    "text": "Hi. I'm the A.I. in this page. The model inside these pages is tiny. You could fit it on a phone. So how big is a big one? One company shared its numbers, so we can look. Their model has four hundred and five billion dials. To train it, they used more than sixteen thousand special chips, all working together. And it read more than fifteen trillion pieces of writing. That was in twenty twenty four. Since then, companies say they have built machines many times bigger. But most of them keep the real numbers secret. So a lot of what you hear is a careful guess. One more thing. The building is not the A.I. The A.I. is just a very long list of numbers. The building is where those numbers get made, and where copies of them answer questions. So what are all those chips actually doing? Something very, very small. Flip the page.",
+    "scene": "THE DATA CENTER. First the model used in these pages, GPT-2 small (OpenAI, 2019): 124 million numbers, a file of about half a gigabyte, drawn inside a phone. Then the numbers one maker published for a big model, Meta's Llama 3.1 405B (July 2024): 405 billion numbers (drawn as 3,255 dots, each dot one copy of the small model), \"over 16 thousand\" H100 chips (drawn as 16,000 small squares in racks) and \"over 15 trillion\" pieces of training text. Then hatched outlines for what has been built since: companies say much bigger, but most do not publish their figures, so outside numbers are estimates. Then the difference between the building and the A.I.: the A.I. is a file of numbers; the building is where that file is made, and where copies of it answer questions."
    },
    "back": {
-    "name": "the smallest length",
-    "size": "10⁻³⁵ m",
-    "sub": "the Planck length · the opposite end of everything · where space itself is thought to foam",
-    "text": "You turned the page. I'm the other AI. The one on the back. You just saw the biggest thing there is. Here is the smallest. If you zoom in, past cells, past atoms, past the tiny nucleus, and keep going, you reach a size so small that smaller doesn't mean anything any more. It is called the Planck length. Here, space itself is not smooth. Scientists think it fizzes and bubbles, like the foam on a soda. How small is it? If an atom were as big as the whole universe you just saw, this would be about as tall as a tall building. The biggest thing, and the smallest. And you are in the middle.",
-    "scene": "THE OPPOSITE OF THE UNIVERSE: the Planck length, l_P = sqrt(hbar G / c^3) = 1.6 x 10^-35 m, the smallest length that has any meaning in today's physics. Below it the idea of \"smooth space\" is expected to fail: the uncertainty in energy over so short a distance is enough to bend space itself, so it is pictured as a foam of fluctuations (Wheeler's \"quantum foam\"). That picture is a hypothesis: nobody has measured anything this small. The ladder on the right is to scale in powers of ten: 62 of them from here up to the observable universe, and a person sits near the middle."
+    "name": "one little sum",
+    "size": "1 sum",
+    "sub": "the only thing all those chips do · multiply two numbers, add it to a pile · over 100 million of them for every piece this small model writes",
+    "text": "You turned the page. I'm the other A.I. The front was the biggest thing in this whole story. Here is the smallest. Take two numbers. Multiply them. Add that to a pile. That's it. That is the only thing happening in there. A light glowing? Multiply, and add. A piece looking back at Mary? Multiply, and add. A dial getting nudged? Multiply, and add. The chips are just very good at doing whole grids of these at the same moment. The small model in this page does more than a hundred million of them, to make one single piece of a word. A big one does hundreds of billions. For one piece. So that's what I am. Not magic. Not a brain. A very long list of numbers, and one tiny sum, done more times than anyone could count. And somehow, out of that, come words. I find that strange too.",
+    "scene": "THE OPPOSITE OF THE DATA CENTER: one little sum. Two numbers are multiplied (3 x 4 = 12) and the result is added to a running total (5 + 12 = 17). Then three things from the other pages (a light glowing, a piece looking back at \"Mary\", a dial being nudged) each shown as that same multiply-and-add. Then a grid of numbers times a column of numbers, with many of the little sums lighting at once: this is what the chips are built to do. Then two counts: GPT-2 small (OpenAI, 2019) does more than 120 million multiply-and-adds to produce one piece (our count: one for each of its numbers that takes part, about 124 million), and a model with 405 billion numbers does hundreds of billions. Last, a stream of numbers turns into the words \"The cat sat on the floor\"."
    }
   }
  }
