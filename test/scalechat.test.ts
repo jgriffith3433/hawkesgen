@@ -11,7 +11,9 @@ process.env.HAWKESGEN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-scale
 process.env.HAWKESGEN_LANE = 'test';
 process.env.HAWKESGEN_MOCK_PROVIDERS = '1'; // Claude answers "mock answer" at once, free
 const { handle } = await import('../src/api.ts');
-const { chatOrigin, cleanMessages, systemPrompt, transcript, takeDaily } = await import('../src/scalechat.ts');
+const { chatOrigin, cleanMessages, systemPrompt, transcript, takeDaily, setScopeLoader, publishedScope, checkPublished } = await import('../src/scalechat.ts');
+// no test reads the real sites: by default every site's scope.json is missing, so the pages built into Gen answer
+setScopeLoader(async () => { throw new Error('offline'); });
 const SCOPES = (await import('../src/scalechat-data.ts')).default as any;
 
 const server = http.createServer((req, res) => handle(req, res).catch((e) => { res.writeHead(500); res.end(String(e)); }));
@@ -78,4 +80,56 @@ test('the day has an allowance', () => {
   assert.equal(takeDaily(d, 2), true);
   assert.equal(takeDaily(d, 2), false);
   assert.equal(takeDaily(new Date('2031-01-02T00:00:01Z'), 2), true);
+});
+
+const side = (name: string) => ({ name, size: 'big', sub: 'a subtitle', text: 'What the narrator says about ' + name + '.', scene: 'What the picture of ' + name + ' draws.' });
+const published = (key: string, over: Record<string, unknown> = {}) => ({ v: 1, set: 'the weather', intro: 'You are the voice of one page on a set of websites about the weather.', notes: 'Say when a forecast is only a guess.',
+  ladder: SCOPES.domains.map((d: string, i: number) => ({ name: 'Page ' + (i + 1), size: 'part ' + (i + 1), domain: d, flip: 'its other side' })), key, front: side('a cloud'), back: side('clear sky'), ...over });
+
+test('a new set of pages needs no change here: each site says what its page shows', async () => {
+  let reads = 0;
+  setScopeLoader(async (domain: string) => { reads++; if (domain !== 'imaginelivetv.com') throw new Error('offline'); return published('cloud'); });
+  const p = await publishedScope('imaginelivetv.com');
+  assert.equal(p?.key, 'cloud');
+  const sys = systemPrompt(p!, 1, p);
+  assert.match(sys, /websites about the weather/);
+  assert.match(sys, /Say when a forecast is only a guess/);
+  assert.match(sys, /on the BACK of the page right now, looking at clear sky/);
+  assert.match(sys, /Page 3, part 3/);
+  assert.doesNotMatch(sys, /rules of physics/);
+  // a page that Gen has never heard of is answered, because its own site describes it
+  const r = await post({ key: 'cloud', side: 0, messages: [{ role: 'user', content: 'What is that?', side: 0 }] });
+  assert.equal(r.status, 200);
+  assert.equal(await r.text(), 'mock answer');
+  assert.equal(reads, 1, 'kept for ten minutes, not read again for every question');
+  // the same page name from a site that does not publish it is not a page
+  assert.equal((await post({ key: 'cloud', side: 0, messages: [{ role: 'user', content: 'hi' }] }, 'https://icanbe.ai')).status, 400);
+  // a site whose file cannot be read still gets the page built in here
+  assert.equal((await post({ key: 'quantum', side: 0, messages: [{ role: 'user', content: 'hi' }] }, 'https://icanbe.ai')).status, 200);
+  // only the nine sites are ever read
+  assert.equal(await publishedScope('example.com'), null);
+  setScopeLoader(async () => { throw new Error('offline'); });
+});
+
+test('a site\'s file is checked and cut to size before the model sees any of it', () => {
+  assert.equal(checkPublished(null), null);
+  assert.equal(checkPublished({}), null);
+  assert.equal(checkPublished(published('Bad Key')), null);
+  assert.equal(checkPublished(published('cloud', { front: { name: 'x' } })), null);
+  assert.equal(checkPublished(published('cloud', { intro: 7 })), null);
+  assert.equal(checkPublished(published('cloud', { ladder: [{ name: 'a', size: 'b', domain: 'evil.com', flip: 'c' }] })), null, 'a page list may only name the nine sites');
+  const long = checkPublished(published('cloud', { intro: 'x'.repeat(9000), front: { ...side('a cloud'), text: 'y'.repeat(9000) } }))!;
+  assert.equal(long.intro.length, 2500);
+  assert.equal(long.front.text.length, 3000);
+  assert.equal(Object.keys(long).sort().join(), 'back,front,intro,key,ladder,notes,set', 'nothing else in the file is kept');
+});
+
+test('when a later read fails, the last good copy stays', async () => {
+  let fail = false;
+  setScopeLoader(async () => { if (fail) throw new Error('down'); return published('cloud'); });
+  const t0 = Date.parse('2031-01-01T00:00:00Z');
+  assert.equal((await publishedScope('icanbe.ai', t0))?.key, 'cloud');
+  fail = true;
+  assert.equal((await publishedScope('icanbe.ai', t0 + 11 * 60_000))?.key, 'cloud');
+  setScopeLoader(async () => { throw new Error('offline'); });
 });
